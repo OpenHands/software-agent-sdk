@@ -56,6 +56,24 @@ def _get_github_headers() -> dict[str, str]:
     }
 
 
+def _get_agent_usernames() -> set[str]:
+    """Get the set of agent usernames to identify agent comments.
+
+    Configurable via AGENT_USERNAMES environment variable (comma-separated).
+    Defaults to 'openhands-agent,all-hands-bot'.
+    """
+    usernames = os.getenv("AGENT_USERNAMES", "openhands-agent,all-hands-bot")
+    return set(name.strip() for name in usernames.split(",") if name.strip())
+
+
+def _handle_github_api_error(e: urllib.error.HTTPError, context: str) -> None:
+    """Handle GitHub API errors with rate limit awareness."""
+    if e.code == 429:
+        retry_after = e.headers.get("Retry-After", "60")
+        logger.warning(f"Rate limited by GitHub API. Retry after {retry_after}s")
+    logger.error(f"Failed to {context}: HTTP {e.code}")
+
+
 def fetch_pr_review_comments(repo: str, pr_number: str) -> list[dict]:
     """Fetch all review comments on a PR.
 
@@ -68,7 +86,7 @@ def fetch_pr_review_comments(repo: str, pr_number: str) -> list[dict]:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        logger.error(f"Failed to fetch review comments: HTTP {e.code}")
+        _handle_github_api_error(e, "fetch review comments")
         return []
 
 
@@ -81,7 +99,7 @@ def fetch_pr_issue_comments(repo: str, pr_number: str) -> list[dict]:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        logger.error(f"Failed to fetch issue comments: HTTP {e.code}")
+        _handle_github_api_error(e, "fetch issue comments")
         return []
 
 
@@ -94,7 +112,7 @@ def fetch_pr_reviews(repo: str, pr_number: str) -> list[dict]:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        logger.error(f"Failed to fetch reviews: HTTP {e.code}")
+        _handle_github_api_error(e, "fetch reviews")
         return []
 
 
@@ -110,7 +128,7 @@ def fetch_pr_diff(repo: str, pr_number: str) -> str:
         with urllib.request.urlopen(request, timeout=60) as response:
             return response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
-        logger.error(f"Failed to fetch PR diff: HTTP {e.code}")
+        _handle_github_api_error(e, "fetch PR diff")
         return ""
 
 
@@ -123,15 +141,18 @@ def fetch_pr_info(repo: str, pr_number: str) -> dict:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        logger.error(f"Failed to fetch PR info: HTTP {e.code}")
+        _handle_github_api_error(e, "fetch PR info")
         return {}
 
 
 def extract_agent_comments(
     review_comments: list[dict], issue_comments: list[dict], reviews: list[dict]
 ) -> list[dict]:
-    """Extract comments made by the review agent (openhands-agent or all-hands-bot)."""
-    agent_users = {"openhands-agent", "all-hands-bot"}
+    """Extract comments made by the review agent.
+
+    Agent usernames are configurable via AGENT_USERNAMES environment variable.
+    """
+    agent_users = _get_agent_usernames()
     agent_comments = []
 
     # Review comments (inline code comments)
@@ -181,9 +202,12 @@ def extract_human_responses(
     issue_comments: list[dict],
     agent_users: set[str] | None = None,
 ) -> list[dict]:
-    """Extract comments/responses from humans (non-agent users)."""
+    """Extract comments/responses from humans (non-agent users).
+
+    Agent usernames are configurable via AGENT_USERNAMES environment variable.
+    """
     if agent_users is None:
-        agent_users = {"openhands-agent", "all-hands-bot"}
+        agent_users = _get_agent_usernames()
     human_responses = []
 
     for comment in review_comments:
@@ -334,16 +358,23 @@ def main():
         try:
             client = LaminarClient()
 
-            # Add a preliminary score based on simple metrics
-            # The actual effectiveness score will come from the signal
+            # PLACEHOLDER SCORE: This is a simple engagement metric, NOT a measure
+            # of review effectiveness. The actual effectiveness score will come from
+            # the Laminar signal which analyzes whether suggestions were implemented.
+            #
+            # This score only indicates:
+            # - Whether humans responded to agent comments (engagement)
+            # - Whether the PR was merged (completion)
+            #
+            # It does NOT measure:
+            # - Whether agent suggestions were actually helpful
+            # - Whether suggestions were implemented in the final code
+            # - Quality of the review feedback
             preliminary_score = 0.0
             if agent_comments:
-                # Simple heuristic: if there were human responses,
-                # some engagement happened
                 engagement_ratio = min(len(human_responses) / len(agent_comments), 1.0)
                 preliminary_score = engagement_ratio * 0.5  # Scale to 0-0.5
 
-                # If PR was merged, assume some value was provided
                 if pr_merged:
                     preliminary_score += 0.3
 
@@ -355,7 +386,8 @@ def main():
                     "agent_comments": len(agent_comments),
                     "human_responses": len(human_responses),
                     "pr_merged": pr_merged,
-                    "note": "Preliminary score - signal will provide detailed analysis",
+                    "note": "Placeholder - signal provides effectiveness analysis",
+                    "score_type": "engagement_only",
                 },
             )
             logger.info(

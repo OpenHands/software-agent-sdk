@@ -78,7 +78,7 @@ runs:
         - name: Install OpenHands dependencies
           shell: bash
           run: |
-              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools
+              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr
 
         - name: Check required configuration
           shell: bash
