@@ -117,6 +117,17 @@ def test_save_creates_file(profile_store: LLMProfileStore, sample_llm: LLM) -> N
     assert profile_path.exists()
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["", ".json", ".", "..", "my/profile", "my//profile"],
+)
+def test_save_with_invalid_profile_name(
+    name: str, profile_store: LLMProfileStore, sample_llm: LLM
+) -> None:
+    with pytest.raises(ValueError, match=f"Invalid profile name: {name!r}. "):
+        profile_store.save(name, sample_llm)
+
+
 def test_save_writes_valid_json(
     profile_store: LLMProfileStore, sample_llm: LLM
 ) -> None:
