@@ -57,10 +57,11 @@ Set the following secrets in your GitHub repository settings based on your chose
   - Get one from the [OpenHands LLM Provider](https://docs.all-hands.dev/openhands/usage/llms/openhands-llms)
 
 **For Cloud Mode:**
+- **`LLM_API_KEY`** (required): Your LLM API key (sent to the cloud sandbox)
 - **`OPENHANDS_CLOUD_API_KEY`** (required): Your OpenHands Cloud API key
-  - Get one from your [OpenHands Cloud account](https://app.all-hands.dev)
+  - Get one from your [OpenHands Cloud account settings](https://app.all-hands.dev/settings/api-keys)
 
-**Note**: The workflow automatically uses the `GITHUB_TOKEN` secret that's available in all GitHub Actions workflows. For cloud mode, you may not need a GitHub token if your OpenHands Cloud account already has access to the repository.
+**Note**: The workflow automatically uses the `GITHUB_TOKEN` secret that's available in all GitHub Actions workflows. In cloud mode, this token is passed to the cloud sandbox so the agent can post review comments.
 
 ### 3. Customize the workflow (optional)
 
@@ -94,25 +95,32 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs.
 - name: Run PR Review
   uses: ./.github/actions/pr-review
   with:
-      # Review mode: 'cloud' launches the review in OpenHands Cloud
+      # Review mode: 'cloud' runs in OpenHands Cloud sandbox
       mode: cloud
+      # LLM configuration (sent to cloud sandbox)
+      llm-model: anthropic/claude-sonnet-4-5-20250929
       # Review style: roasted (other option: standard)
       review-style: roasted
       # SDK git ref to use
       sdk-version: main
       # Secrets for cloud mode
+      llm-api-key: ${{ secrets.LLM_API_KEY }}
       openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
       # Optional: custom cloud API URL
       # openhands-cloud-api-url: https://app.all-hands.dev
-      # Optional: GitHub token for posting comments (may not be needed if cloud has repo access)
+      # GitHub token - passed to cloud sandbox for posting review comments
       github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 **Cloud Mode Benefits:**
-- Faster CI completion (exits after starting the review)
-- Track review progress in OpenHands Cloud UI
-- Interact with the review conversation
-- Uses the LLM model configured in your OpenHands Cloud account
+- Runs in a fully managed cloud sandbox environment
+- No local Docker or infrastructure needed
+- Same capabilities as SDK mode but in the cloud
+
+**Cloud Mode Architecture:**
+- Uses [OpenHandsCloudWorkspace](https://docs.openhands.dev/sdk/guides/agent-server/cloud-workspace) to provision a sandbox
+- LLM configuration and GITHUB_TOKEN are sent to the cloud sandbox
+- The agent runs in the cloud and posts review comments directly
 
 ### 4. Create the review label
 

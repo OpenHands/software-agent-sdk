@@ -1,6 +1,5 @@
 """Tests for PR review agent script."""
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -54,80 +53,6 @@ def test_post_github_comment_missing_token():
         pytest.raises(ValueError, match="GITHUB_TOKEN"),
     ):
         post_github_comment("owner/repo", "123", "Test comment")
-
-
-def test_start_cloud_conversation_success():
-    """Test successful cloud conversation creation."""
-    from agent_script import (  # type: ignore[import-not-found]
-        _start_cloud_conversation,
-    )
-
-    mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps(
-        {"conversation_id": "test-conv-123"}
-    ).encode("utf-8")
-    mock_response.__enter__ = MagicMock(return_value=mock_response)
-    mock_response.__exit__ = MagicMock(return_value=False)
-
-    with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
-        result = _start_cloud_conversation(
-            cloud_api_url="https://app.all-hands.dev",
-            cloud_api_key="test-cloud-key",
-            prompt="Test prompt",
-            github_token="test-github-token",
-        )
-
-        assert result == "test-conv-123"
-        mock_urlopen.assert_called_once()
-        call_args = mock_urlopen.call_args
-        request = call_args[0][0]
-
-        assert request.full_url == "https://app.all-hands.dev/api/conversations"
-        assert request.get_header("Authorization") == "Bearer test-cloud-key"
-        assert request.get_header("Content-type") == "application/json"
-
-
-def test_start_cloud_conversation_with_id_field():
-    """Test cloud conversation handles 'id' field in response."""
-    from agent_script import (  # type: ignore[import-not-found]
-        _start_cloud_conversation,
-    )
-
-    mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({"id": "conv-456"}).encode("utf-8")
-    mock_response.__enter__ = MagicMock(return_value=mock_response)
-    mock_response.__exit__ = MagicMock(return_value=False)
-
-    with patch("urllib.request.urlopen", return_value=mock_response):
-        result = _start_cloud_conversation(
-            cloud_api_url="https://app.all-hands.dev",
-            cloud_api_key="test-key",
-            prompt="Test",
-        )
-
-        assert result == "conv-456"
-
-
-def test_start_cloud_conversation_missing_id():
-    """Test cloud conversation raises error when response missing conversation_id."""
-    from agent_script import (  # type: ignore[import-not-found]
-        _start_cloud_conversation,
-    )
-
-    mock_response = MagicMock()
-    mock_response.read.return_value = json.dumps({"status": "ok"}).encode("utf-8")
-    mock_response.__enter__ = MagicMock(return_value=mock_response)
-    mock_response.__exit__ = MagicMock(return_value=False)
-
-    with (
-        patch("urllib.request.urlopen", return_value=mock_response),
-        pytest.raises(RuntimeError, match="missing conversation_id"),
-    ):
-        _start_cloud_conversation(
-            cloud_api_url="https://app.all-hands.dev",
-            cloud_api_key="test-key",
-            prompt="Test",
-        )
 
 
 def test_prepare_review_context():
@@ -228,16 +153,44 @@ def test_cloud_mode_requires_cloud_api_key():
     """Test that cloud mode fails without OPENHANDS_CLOUD_API_KEY."""
     from agent_script import main  # type: ignore[import-not-found]
 
-    # Set up minimal environment for cloud mode but missing OPENHANDS_CLOUD_API_KEY
+    # Set up environment for cloud mode but missing OPENHANDS_CLOUD_API_KEY
+    # Note: Cloud mode now also requires LLM_API_KEY
     env = {
         "MODE": "cloud",
         "GITHUB_TOKEN": "test-token",
+        "LLM_API_KEY": "test-llm-key",
         "PR_NUMBER": "123",
         "PR_TITLE": "Test PR",
         "PR_BASE_BRANCH": "main",
         "PR_HEAD_BRANCH": "feature",
         "REPO_NAME": "owner/repo",
         # OPENHANDS_CLOUD_API_KEY intentionally missing
+    }
+
+    with (
+        patch.dict("os.environ", env, clear=True),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main()
+
+    assert exc_info.value.code == 1
+
+
+def test_cloud_mode_requires_llm_api_key():
+    """Test that cloud mode also fails without LLM_API_KEY."""
+    from agent_script import main  # type: ignore[import-not-found]
+
+    # Cloud mode requires both OPENHANDS_CLOUD_API_KEY and LLM_API_KEY
+    env = {
+        "MODE": "cloud",
+        "GITHUB_TOKEN": "test-token",
+        "OPENHANDS_CLOUD_API_KEY": "test-cloud-key",
+        "PR_NUMBER": "123",
+        "PR_TITLE": "Test PR",
+        "PR_BASE_BRANCH": "main",
+        "PR_HEAD_BRANCH": "feature",
+        "REPO_NAME": "owner/repo",
+        # LLM_API_KEY intentionally missing
     }
 
     with (
@@ -277,6 +230,7 @@ def test_both_modes_require_github_token():
     cloud_env = {
         "MODE": "cloud",
         "OPENHANDS_CLOUD_API_KEY": "test-key",
+        "LLM_API_KEY": "test-llm-key",
         "PR_NUMBER": "123",
         "PR_TITLE": "Test PR",
         "PR_BASE_BRANCH": "main",
@@ -292,59 +246,3 @@ def test_both_modes_require_github_token():
         main()
 
     assert exc_info.value.code == 1
-
-
-def test_conversation_url_format():
-    """Test that conversation URL is correctly formatted."""
-    cloud_api_url = "https://app.all-hands.dev"
-    conversation_id = "12345678-1234-1234-1234-123456789abc"
-
-    expected_url = f"{cloud_api_url}/conversations/{conversation_id}"
-    assert expected_url == (
-        "https://app.all-hands.dev/conversations/12345678-1234-1234-1234-123456789abc"
-    )
-
-
-def test_conversation_url_with_custom_api_url():
-    """Test conversation URL with custom cloud API URL."""
-    cloud_api_url = "https://custom.openhands.dev"
-    conversation_id = "test-conversation-id"
-
-    expected_url = f"{cloud_api_url}/conversations/{conversation_id}"
-    assert expected_url == (
-        "https://custom.openhands.dev/conversations/test-conversation-id"
-    )
-
-
-def test_comment_body_contains_url():
-    """Test that comment body template contains the conversation URL."""
-    from agent_script import (  # type: ignore[import-not-found]
-        CLOUD_REVIEW_COMMENT_TEMPLATE,
-    )
-
-    conversation_url = "https://app.all-hands.dev/conversations/test-id"
-    comment_body = CLOUD_REVIEW_COMMENT_TEMPLATE.format(
-        conversation_url=conversation_url
-    )
-
-    assert conversation_url in comment_body
-    assert "OpenHands PR Review Started" in comment_body
-    assert "Track progress here" in comment_body
-
-
-def test_comment_body_is_markdown():
-    """Test that comment body template uses markdown formatting."""
-    from agent_script import (  # type: ignore[import-not-found]
-        CLOUD_REVIEW_COMMENT_TEMPLATE,
-    )
-
-    conversation_url = "https://app.all-hands.dev/conversations/test-id"
-    comment_body = CLOUD_REVIEW_COMMENT_TEMPLATE.format(
-        conversation_url=conversation_url
-    )
-
-    # Check for markdown bold syntax
-    assert "**OpenHands PR Review Started**" in comment_body
-    assert "**Track progress here:**" in comment_body
-    # Check for markdown link syntax
-    assert f"[{conversation_url}]({conversation_url})" in comment_body
