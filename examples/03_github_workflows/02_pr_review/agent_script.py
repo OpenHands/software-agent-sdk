@@ -248,13 +248,18 @@ def _start_cloud_conversation(
     url = f"{cloud_api_url}/api/conversations"
 
     # Build the request payload
+    # Note: The OpenHands Cloud API does not accept secrets directly.
+    # Instead, it uses the user's connected GitHub account for repository access.
+    # The github_token is available in the agent's environment for API calls.
     payload: dict = {
         "initial_user_msg": prompt,
     }
 
-    # Add secrets if provided
     if github_token:
-        payload["secrets"] = {"GITHUB_TOKEN": github_token}
+        logger.info(
+            "GitHub token provided but not sent to Cloud API. "
+            "OpenHands Cloud uses your connected GitHub account for repository access."
+        )
 
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
