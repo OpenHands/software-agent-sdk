@@ -526,7 +526,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -588,7 +588,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )

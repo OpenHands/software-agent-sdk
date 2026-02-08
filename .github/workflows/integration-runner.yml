@@ -1,5 +1,7 @@
 ---
 name: Run Integration Tests
+run-name: >-
+    Run Integration Tests ${{ inputs.reason || github.event.label.name || 'scheduled' }}
 
 on:
     # Use pull_request_target to access secrets even on fork PRs
@@ -17,14 +19,116 @@ on:
                 description: Select which tests to run (all, integration, behavior)
                 required: false
                 default: all
+            model_ids:
+                description: >-
+                    Comma-separated model IDs to test (from resolve_model_config.py).
+                    Example: claude-sonnet-4-5-20250929,glm-4.7. Defaults to a standard set.
+                required: false
+                default: ''
+                type: string
+            issue_number:
+                description: Issue or PR number to post results to (optional)
+                required: false
+                default: ''
+                type: string
     schedule:
         - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
+    # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
+    DEFAULT_MODEL_IDS: claude-sonnet-4-5-20250929,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3-pro
 
 jobs:
-    post-initial-comment:
+    setup-matrix:
+        runs-on: ubuntu-latest
+        outputs:
+            matrix: ${{ steps.resolve-models.outputs.matrix }}
+            issue_number: ${{ steps.resolve-issue.outputs.issue_number }}
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
+                  persist-credentials: false
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.13'
+
+            - name: Resolve model configurations
+              id: resolve-models
+              env:
+                  MODEL_IDS_INPUT: ${{ github.event.inputs.model_ids || '' }}
+                  DEFAULT_MODEL_IDS: ${{ env.DEFAULT_MODEL_IDS }}
+              run: |
+                  # Use input model_ids if provided, otherwise use defaults
+                  if [ -z "$MODEL_IDS_INPUT" ]; then
+                    MODEL_IDS="$DEFAULT_MODEL_IDS"
+                    echo "No model_ids specified, using defaults: $MODEL_IDS"
+                  else
+                    MODEL_IDS="$MODEL_IDS_INPUT"
+                    echo "Using specified model_ids: $MODEL_IDS"
+                  fi
+
+                  # Resolve model configs using resolve_model_config.py
+                  # Transform output to matrix format for integration tests
+                  MATRIX=$(python3 << EOF
+                  import json
+                  import sys
+                  sys.path.insert(0, '.github/run-eval')
+                  from resolve_model_config import MODELS
+
+                  model_ids = "$MODEL_IDS".split(",")
+                  model_ids = [m.strip() for m in model_ids if m.strip()]
+
+                  matrix = []
+                  for model_id in model_ids:
+                      if model_id not in MODELS:
+                          available = ", ".join(sorted(MODELS.keys()))
+                          print(f"Error: Model ID '{model_id}' not found. Available: {available}", file=sys.stderr)
+                          sys.exit(1)
+                      model = MODELS[model_id]
+                      # Create run-suffix from model id (replace special chars with underscore)
+                      run_suffix = model_id.replace("-", "_").replace(".", "_") + "_run"
+                      matrix.append({
+                          "id": model_id,
+                          "name": model["display_name"],
+                          "run-suffix": run_suffix,
+                          "llm-config": model["llm_config"]
+                      })
+
+                  print(json.dumps(matrix))
+                  EOF
+                  )
+
+                  if [ $? -ne 0 ]; then
+                    echo "Failed to resolve model configurations" >&2
+                    exit 1
+                  fi
+
+                  echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+                  echo "Resolved models: $(echo "$MATRIX" | jq -r '.[].name' | paste -sd', ' -)"
+
+            - name: Resolve issue number
+              id: resolve-issue
+              env:
+                  ISSUE_NUMBER_INPUT: ${{ github.event.inputs.issue_number || '' }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+              run: |
+                  # Priority: explicit input > PR number from label trigger
+                  if [ -n "$ISSUE_NUMBER_INPUT" ]; then
+                    echo "issue_number=$ISSUE_NUMBER_INPUT" >> "$GITHUB_OUTPUT"
+                  elif [ -n "$PR_NUMBER" ]; then
+                    echo "issue_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "issue_number=" >> "$GITHUB_OUTPUT"
+                  fi
+
+    # Post initial comment for label triggers (no dependencies - runs immediately)
+    post-label-comment:
         if: >
             github.event_name == 'pull_request_target' && (
                 github.event.label.name == 'integration-test' ||
@@ -34,14 +138,14 @@ jobs:
         permissions:
             pull-requests: write
         steps:
-            - name: Comment on PR (integration tests)
+            - name: Comment on PR (integration tests via label)
               if: github.event.label.name == 'integration-test'
               uses: KeisukeYamashita/create-comment@v1
               with:
                   unique: false
                   comment: |
                       Hi! I started running the integration tests on your PR. You will receive a comment with the results shortly.
-            - name: Comment on PR (behavior tests)
+            - name: Comment on PR (behavior tests via label)
               if: github.event.label.name == 'behavior-test'
               uses: KeisukeYamashita/create-comment@v1
               with:
@@ -49,10 +153,42 @@ jobs:
                   comment: |
                       Hi! I started running the behavior tests on your PR. You will receive a comment with the results shortly.
 
+    # Post initial comment for workflow_dispatch (depends on setup-matrix for issue_number resolution)
+    post-dispatch-comment:
+        needs: setup-matrix
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number != ''
+        runs-on: ubuntu-latest
+        permissions:
+            issues: write
+        steps:
+            - name: Comment on issue/PR (workflow_dispatch)
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
+                  MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
+                  TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
+                  REASON: ${{ github.event.inputs.reason }}
+              run: |
+                  # Sanitize @OpenHands mentions to prevent self-mention loops
+                  SANITIZED_REASON=$(echo "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  SANITIZED_MODEL_IDS=$(echo "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  COMMENT_BODY=$(cat <<EOF
+                  **Integration Tests Triggered**
+
+                  - **Reason:** $SANITIZED_REASON
+                  - **Test type:** $TEST_TYPE
+                  - **Models:** $SANITIZED_MODEL_IDS
+                  - **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+                  Results will be posted here when complete.
+                  EOF
+                  )
+                  gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY"
+
     run-integration-tests:
         # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
         # This prevents automatic execution on fork PRs without maintainer approval
-        # Note: uses always() to run even when post-initial-comment is skipped (e.g., for workflow_dispatch)
+        # Note: uses always() to run even when comment jobs are skipped (e.g., for scheduled runs)
         # Schedule trigger only runs in the main repository, not in forks
         if: |
             always() && (
@@ -64,44 +200,19 @@ jobs:
                 ) ||
                 github.event_name == 'workflow_dispatch' ||
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
-            )
-        needs: [post-initial-comment]
-        runs-on: blacksmith-4vcpu-ubuntu-2204
+            ) && needs.setup-matrix.result == 'success'
+        needs: [setup-matrix, post-label-comment, post-dispatch-comment]
+        runs-on: ubuntu-22.04
         permissions:
             contents: read
             id-token: write
             pull-requests: write
             issues: write
         strategy:
+            fail-fast: false
             matrix:
                 python-version: ['3.13']
-                job-config:
-                    - name: Claude Sonnet 4.5
-                      run-suffix: sonnet_run
-                      llm-config:
-                          model: litellm_proxy/claude-sonnet-4-5-20250929
-                    - name: GPT-5.1 Codex Max
-                      run-suffix: gpt51_codex_run
-                      llm-config:
-                          model: litellm_proxy/gpt-5.1-codex-max
-                          temperature: 1.0
-                          reasoning_summary: detailed
-                    - name: Deepseek Chat
-                      run-suffix: deepseek_run
-                      llm-config:
-                          model: litellm_proxy/deepseek/deepseek-chat
-                    - name: Kimi K2 Thinking
-                      run-suffix: kimi_k2_run
-                      llm-config:
-                          model: litellm_proxy/moonshot/kimi-k2-thinking
-                    - name: Gemini 3 Pro
-                      run-suffix: gemini_3_pro_run
-                      llm-config:
-                          model: litellm_proxy/vertex_ai/gemini-3-pro-preview
-                    - name: Devstral 2512
-                      run-suffix: devstral_2512_run
-                      llm-config:
-                          model: litellm_proxy/mistral/devstral-2512
+                job-config: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -160,16 +271,16 @@ jobs:
                   fi
                   echo "TEST_TYPE_ARGS=$TEST_TYPE_ARGS" >> "$GITHUB_ENV"
 
-            - name: Run integration test evaluation for ${{ matrix.job-config.name }}
+            - name: Run integration test evaluation for ${{ matrix.job-config['name'] }}
               env:
-                  LLM_CONFIG: ${{ toJson(matrix.job-config.llm-config) }}
+                  LLM_CONFIG: ${{ toJson(matrix.job-config['llm-config']) }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
               run: |
                   set -eo pipefail
 
                   AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
-                  EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config.run-suffix }}"
+                  EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config['run-suffix'] }}"
 
                   echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS'"
 
@@ -180,7 +291,7 @@ jobs:
                     $TEST_TYPE_ARGS
 
                   # get integration tests JSON results
-                  RESULTS_FILE=$(find tests/integration/outputs/*${{ matrix.job-config.run-suffix }}* -name "results.json" -type f | head -n 1)
+                  RESULTS_FILE=$(find tests/integration/outputs/*${{ matrix.job-config['run-suffix'] }}* -name "results.json" -type f | head -n 1)
                   echo "RESULTS_FILE: $RESULTS_FILE"
                   if [ -f "$RESULTS_FILE" ]; then
                     echo "JSON_RESULTS_FILE=$RESULTS_FILE" >> $GITHUB_ENV
@@ -199,14 +310,14 @@ jobs:
               run: |
                   TIMESTAMP=$(date +'%y-%m-%d-%H-%M')
                   cd tests/integration/outputs  # Change to the outputs directory
-                  tar -czvf ../../../integration_tests_${{ matrix.job-config.run-suffix }}_${TIMESTAMP}.tar.gz *${{ matrix.job-config.run-suffix }}* # Include result directories for this model
+                  tar -czvf ../../../integration_tests_${{ matrix.job-config['run-suffix'] }}_${TIMESTAMP}.tar.gz *${{ matrix.job-config['run-suffix'] }}* # Include result directories for this model
 
             - name: Upload evaluation results as artifact
               uses: actions/upload-artifact@v5
               id: upload_results_artifact
               with:
-                  name: integration-test-outputs-${{ matrix.job-config.run-suffix }}-${{ github.run_id }}-${{ github.run_attempt }}
-                  path: integration_tests_${{ matrix.job-config.run-suffix }}_*.tar.gz
+                  name: integration-test-outputs-${{ matrix.job-config['run-suffix'] }}-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: integration_tests_${{ matrix.job-config['run-suffix'] }}_*.tar.gz
 
             - name: Save test results for consolidation
               run: |
@@ -215,7 +326,7 @@ jobs:
 
                   if [ -n "${{ env.JSON_RESULTS_FILE }}" ] && [ -f "${{ env.JSON_RESULTS_FILE }}" ]; then
                     # Copy the JSON results file directly
-                    cp "${{ env.JSON_RESULTS_FILE }}" "test_results_summary/${{ matrix.job-config.run-suffix }}_results.json"
+                    cp "${{ env.JSON_RESULTS_FILE }}" "test_results_summary/${{ matrix.job-config['run-suffix'] }}_results.json"
                     echo "✓ Copied JSON results file for consolidation"
                   else
                     echo "✗ No JSON results file found"
@@ -225,11 +336,11 @@ jobs:
             - name: Upload test results summary
               uses: actions/upload-artifact@v5
               with:
-                  name: test-results-${{ matrix.job-config.run-suffix }}
-                  path: test_results_summary/${{ matrix.job-config.run-suffix }}_results.json
+                  name: test-results-${{ matrix.job-config['run-suffix'] }}
+                  path: test_results_summary/${{ matrix.job-config['run-suffix'] }}_results.json
 
     consolidate-results:
-        needs: run-integration-tests
+        needs: [setup-matrix, run-integration-tests]
         if: |
             always() && (
                 (
@@ -241,7 +352,7 @@ jobs:
                 github.event_name == 'workflow_dispatch' ||
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             )
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             pull-requests: write
@@ -314,6 +425,17 @@ jobs:
                   echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
               env:
                   GH_TOKEN: ${{ github.token }}
+
+            - name: Comment on specified issue/PR (workflow_dispatch)
+              if: github.event_name == 'workflow_dispatch' && needs.setup-matrix.outputs.issue_number != ''
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  ISSUE_NUMBER: ${{ needs.setup-matrix.outputs.issue_number }}
+              run: |
+                  # Sanitize @OpenHands mentions to prevent self-mention loops
+                  COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
+                  # Use GitHub CLI to create comment on the specified issue/PR
+                  echo "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
 
             - name: Read consolidated report for tracker issue
               if: github.event_name == 'schedule'

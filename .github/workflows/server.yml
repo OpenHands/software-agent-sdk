@@ -116,7 +116,7 @@ jobs:
 
     check-openapi-schema:
         name: Check OpenAPI Schema
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
 
         steps:
             - name: Checkout PR branch
@@ -162,42 +162,44 @@ jobs:
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
+                    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility
+                    # issue with Python 3.13. See issue #1886 for details.
                     - variant: python
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
-                      runner: blacksmith-8vcpu-ubuntu-2404
+                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
-                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
                     # Java variant
                     - variant: java
                       arch: amd64
                       base_image: eclipse-temurin:17-jdk
-                      runner: blacksmith-8vcpu-ubuntu-2404
+                      runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: java
                       arch: arm64
                       base_image: eclipse-temurin:17-jdk
-                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
                     # Golang variant
                     - variant: golang
                       arch: amd64
                       base_image: golang:1.21-bookworm
-                      runner: blacksmith-8vcpu-ubuntu-2404
+                      runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: golang
                       arch: arm64
                       base_image: golang:1.21-bookworm
-                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
         runs-on: ${{ matrix.runner }}
@@ -210,7 +212,8 @@ jobs:
             ARCH: ${{ matrix.arch }}
             TARGET: binary
             PLATFORM: ${{ matrix.platform }}
-            GITHUB_SHA: ${{ github.sha }}
+            # Use PR head SHA for pull requests to match the image tag expected by run-examples.yml
+            GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
             GITHUB_REF: ${{ github.ref }}
             CI: 'true'
 
@@ -224,8 +227,8 @@ jobs:
                   version: latest
                   python-version: '3.13'
 
-            - name: Set up Docker Buildx with Blacksmith
-              uses: useblacksmith/setup-docker-builder@v1
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
 
             - name: Log in to GHCR
               uses: docker/login-action@v3
@@ -268,9 +271,9 @@ jobs:
                   echo "Versioned tags: $VERSIONED_TAGS_CSV"
                   echo "===================="
 
-            - name: Build & Push with Blacksmith (${{ matrix.variant }}-${{ matrix.arch }})
+            - name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})
               id: build
-              uses: useblacksmith/build-push-action@v2
+              uses: docker/build-push-action@v6
               with:
                   context: ${{ steps.prep.outputs.build_context }}
                   file: ${{ steps.prep.outputs.dockerfile }}
@@ -278,6 +281,8 @@ jobs:
                   platforms: ${{ env.PLATFORM }}
                   push: true
                   tags: ${{ steps.prep.outputs.tags }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
                   build-args: |
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
 
@@ -329,7 +334,7 @@ jobs:
             github.event_name == 'push' ||
             (github.event_name == 'pull_request' &&
              !github.event.pull_request.head.repo.fork)
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         strategy:
             matrix:
                 variant: [python, java, golang]
@@ -352,8 +357,8 @@ jobs:
                   echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
                   echo "Using SHORT_SHA: $SHORT_SHA"
 
-            - name: Set up Docker Buildx with Blacksmith
-              uses: useblacksmith/setup-docker-builder@v1
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
 
             - name: Log in to GHCR
               uses: docker/login-action@v3
@@ -370,7 +375,7 @@ jobs:
                   MANIFEST_TAG="${SHORT_SHA}-${VARIANT}"
 
                   # Create multi-arch manifest combining amd64 and arm64 using buildx imagetools
-                  # This properly handles manifest lists from Blacksmith builds
+                  # This properly handles manifest lists from Docker builds
                   echo "Creating multi-arch manifest: ${IMAGE}:${MANIFEST_TAG}"
                   docker buildx imagetools create -t ${IMAGE}:${MANIFEST_TAG} \
                     ${IMAGE}:${SHORT_SHA}-${VARIANT}-amd64 \
@@ -444,7 +449,7 @@ jobs:
         # Run if it's a PR and the matrix job completed (even if some variants failed)
         if: github.event_name == 'pull_request' && always() && (needs.build-and-push-image.result == 'success' || needs.build-and-push-image.result ==
             'failure')
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         outputs:
             build_summary: ${{ steps.consolidate.outputs.build_summary }}
         steps:
@@ -606,7 +611,7 @@ jobs:
         needs: consolidate-build-info
         # Only on PRs, and only if the consolidation succeeded
         if: github.event_name == 'pull_request' && needs.consolidate-build-info.result == 'success'
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             pull-requests: write

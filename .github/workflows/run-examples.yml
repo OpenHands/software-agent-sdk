@@ -23,7 +23,7 @@ jobs:
         # Schedule trigger only runs in the main repository, not in forks
         if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && 
             github.repository == 'OpenHands/software-agent-sdk')
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
