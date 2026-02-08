@@ -110,6 +110,60 @@ There are two ways to trigger an automated review of a pull request:
 
 **Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
 
+## Customizing the Code Review
+
+Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.openhands/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
+
+### How It Works
+
+The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.openhands/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
+
+### Example: Custom Code Review Skill
+
+Create `.openhands/skills/code-review.md` in your repository:
+
+```markdown
+---
+name: code-review
+description: Custom code review guidelines for my project
+triggers:
+- /codereview
+---
+
+# My Project Code Review Guidelines
+
+You are a code reviewer for this project. Follow these guidelines:
+
+## Review Decisions
+
+- **APPROVE** straightforward changes (config updates, typo fixes, documentation)
+- **COMMENT** when you have feedback or concerns
+
+## What to Check
+
+- Code follows our project conventions
+- Tests are included for new functionality
+- No security vulnerabilities introduced
+- Documentation is updated if needed
+
+## Communication Style
+
+- Be direct and constructive
+- Use GitHub suggestion syntax for code fixes
+- Approve quickly when code is good
+```
+
+### Benefits of Custom Skills
+
+1. **No forking required**: Keep using the official SDK while customizing behavior
+2. **Version controlled**: Your review guidelines live in your repository
+3. **Easy updates**: SDK updates don't overwrite your customizations
+4. **Team alignment**: Everyone uses the same review standards
+
+### Reference Example
+
+See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.openhands/skills/code-review.md) for a complete example of a custom code review skill.
+
 ## Composite Action
 
 This workflow uses a reusable composite action located at `.github/actions/pr-review/action.yml` in the software-agent-sdk repository. The composite action handles:
@@ -125,7 +179,7 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 |-------|-------------|----------|---------|
 | `llm-model` | LLM model to use | No | `anthropic/claude-sonnet-4-5-20250929` |
 | `llm-base-url` | LLM base URL (optional) | No | `''` |
-| `review-style` | Review style: 'standard' or 'roasted' | No | `standard` |
+| `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
 | `llm-api-key` | LLM API key | Yes | - |
