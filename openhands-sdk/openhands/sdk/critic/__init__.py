@@ -1,4 +1,4 @@
-from openhands.sdk.critic.base import CriticBase
+from openhands.sdk.critic.base import CriticBase, IterativeRefinementConfig
 from openhands.sdk.critic.impl import (
     AgentFinishedCritic,
     APIBasedCritic,
@@ -20,12 +20,13 @@ __all__ = [
     # Base classes
     "CriticBase",
     "CriticResult",
+    "IterativeRefinementConfig",
     # Critic implementations
     "AgentFinishedCritic",
     "APIBasedCritic",
     "EmptyPatchCritic",
     "PassCritic",
-    # Iterative refinement
+    # Iterative refinement (standalone class for advanced use)
     "CriticResultCollector",
     "IterativeRefinement",
     "IterativeRefinementResult",

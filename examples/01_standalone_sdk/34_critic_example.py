@@ -8,9 +8,9 @@ feedback that can trigger follow-up prompts when the agent hasn't completed the
 task successfully.
 
 Key concepts demonstrated:
-1. Setting up a critic to evaluate agent actions in real-time
-2. Using the SDK's IterativeRefinement class for automatic retry logic
-3. Custom follow-up prompt generation based on critic feedback
+1. Setting up a critic with IterativeRefinementConfig for automatic retry
+2. Conversation.run() automatically handles retries based on critic scores
+3. Custom follow-up prompt generation via critic.get_followup_prompt()
 4. Iterating until the task is completed successfully or max iterations reached
 
 For All-Hands LLM proxy (llm-proxy.*.all-hands.dev), the critic is auto-configured
@@ -25,7 +25,7 @@ from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.sdk.critic import (
     APIBasedCritic,
     CriticResult,
-    IterativeRefinement,
+    IterativeRefinementConfig,
     get_default_critic,
 )
 from openhands.tools.file_editor import FileEditorTool
@@ -202,7 +202,15 @@ def main() -> None:
         base_url=os.getenv("LLM_BASE_URL", None),
     )
 
-    # Setup critic - auto-configure for All-Hands proxy or use explicit env vars
+    # Setup critic with iterative refinement config
+    # The IterativeRefinementConfig tells Conversation.run() to automatically
+    # retry the task if the critic score is below the threshold
+    iterative_config = IterativeRefinementConfig(
+        success_threshold=SUCCESS_THRESHOLD,
+        max_iterations=MAX_ITERATIONS,
+    )
+
+    # Auto-configure critic for All-Hands proxy or use explicit env vars
     critic = get_default_critic(llm)
     if critic is None:
         print("⚠️  No All-Hands LLM proxy detected, trying explicit env vars...")
@@ -210,9 +218,13 @@ def main() -> None:
             server_url=get_required_env("CRITIC_SERVER_URL"),
             api_key=get_required_env("CRITIC_API_KEY"),
             model_name=get_required_env("CRITIC_MODEL_NAME"),
+            iterative_refinement=iterative_config,
         )
+    else:
+        # Add iterative refinement config to the auto-configured critic
+        critic = critic.model_copy(update={"iterative_refinement": iterative_config})
 
-    # Create agent with critic
+    # Create agent with critic (iterative refinement is built into the critic)
     agent = Agent(
         llm=llm,
         tools=[
@@ -227,28 +239,22 @@ def main() -> None:
     workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
     print(f"📁 Created workspace: {workspace}")
 
-    # Create iterative refinement runner
-    # The IterativeRefinement class handles the retry loop automatically
-    refinement = IterativeRefinement(
-        success_threshold=SUCCESS_THRESHOLD,
-        max_iterations=MAX_ITERATIONS,
-        followup_prompt_fn=get_followup_prompt,
-        verbose=True,
-    )
-
-    # Create conversation with the collector's callback
+    # Create conversation - iterative refinement is handled automatically
+    # by Conversation.run() based on the critic's config
     conversation = Conversation(
         agent=agent,
         workspace=str(workspace),
-        callbacks=[refinement.collector.callback],
     )
 
     print("\n" + "=" * 70)
     print("🚀 Starting Iterative Refinement with Critic Model")
     print("=" * 70)
+    print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
+    print(f"Max iterations: {MAX_ITERATIONS}")
 
-    # Run with iterative refinement - the SDK handles the retry loop
-    refinement.run(conversation, INITIAL_TASK_PROMPT)
+    # Send the task and run - Conversation.run() handles retries automatically
+    conversation.send_message(INITIAL_TASK_PROMPT)
+    conversation.run()
 
     # Print additional info about created files
     print("\nCreated files:")
