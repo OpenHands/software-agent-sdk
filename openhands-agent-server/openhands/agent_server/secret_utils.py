@@ -54,9 +54,7 @@ def filter_secrets_dict(secrets: dict[str, Any]) -> dict[str, Any]:
     Returns:
         A new dict containing only valid secret entries.
     """
-    return {
-        key: value for key, value in secrets.items() if not is_null_secret(value)
-    }
+    return {key: value for key, value in secrets.items() if not is_null_secret(value)}
 
 
 def filter_invalid_secrets(data: dict[str, Any]) -> None:

@@ -56,7 +56,6 @@ def _compose_conversation_info(
     )
 
 
-
 @dataclass
 class ConversationService:
     """
