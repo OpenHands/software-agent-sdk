@@ -5,7 +5,8 @@ PS1 blocks can get corrupted when concurrent terminal output (progress bars,
 spinners, or other stdout) interleaves with the shell's PS1 prompt rendering.
 This is a race condition between the shell writing PS1 and programs writing output.
 
-The fix detects nested ###PS1JSON### markers and extracts the last valid JSON block.
+The regex uses negative lookahead to match only the LAST ###PS1JSON### before
+each ###PS1END###, automatically handling corruption scenarios.
 """
 
 from unittest.mock import MagicMock
@@ -107,33 +108,27 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
 ~
 (END)"""
 
-    def test_corrupted_ps1_regex_matches_wrong_content(self):
+    def test_regex_skips_corrupted_first_block(self):
         """
-        Test demonstrating the regex bug with corrupted PS1 output.
+        Test that the regex with negative lookahead skips corrupted first blocks.
 
-        The non-greedy regex `###PS1JSON###(.*?)###PS1END###` matches from
-        the FIRST ###PS1JSON### to the ONLY ###PS1END###, creating ONE match
-        that contains corrupted JSON with interleaved output.
-
-        This test documents the raw regex behavior (before corruption recovery).
+        The regex `###PS1JSON###((?:(?!###PS1JSON###).)*?)###PS1END###` uses
+        negative lookahead to ensure no nested ###PS1JSON### in the match.
+        This means it matches only the LAST valid block before ###PS1END###.
         """
-        # Get raw regex matches (before JSON validation)
         raw_matches = list(
             CMD_OUTPUT_METADATA_PS1_REGEX.finditer(self.CORRUPTED_OUTPUT_GRUNT_CAT)
         )
 
-        # The regex finds exactly 1 match (from first PS1JSON to only PS1END)
+        # The regex finds exactly 1 match (the valid block after nested marker)
         assert len(raw_matches) == 1, (
-            f"Expected exactly 1 raw regex match, got {len(raw_matches)}. "
-            "The non-greedy regex matches from first PS1JSON to the only PS1END."
+            f"Expected exactly 1 raw regex match, got {len(raw_matches)}."
         )
 
-        # The matched content includes the SECOND ###PS1JSON### marker inside!
-        # This is the bug - the regex doesn't understand block boundaries.
+        # The matched content should NOT contain another ###PS1JSON### marker
         matched_content = raw_matches[0].group(1)
-        assert "###PS1JSON###" in matched_content, (
-            "The matched content should contain another ###PS1JSON### marker, "
-            "proving that the regex incorrectly spans multiple intended blocks."
+        assert "###PS1JSON###" not in matched_content, (
+            "The matched content should NOT contain nested ###PS1JSON### marker."
         )
 
     def test_corrupted_ps1_recovery(self):
@@ -377,18 +372,13 @@ Some command output here
         assert meta2.exit_code == 1
 
 
-def test_synthetic_match_slicing_returns_group_zero():
+def test_regex_handles_nested_markers():
     """
-    Test that terminal_content[match.start():match.end()] equals match.group(0).
+    Test that the regex correctly handles nested ###PS1JSON### markers.
 
-    This is the fundamental contract of a regex match object. When we slice
-    the original string using start() and end(), we should get the same
-    content as group(0).
-
-    See: https://github.com/OpenHands/software-agent-sdk/pull/1817#discussion_r2727556034
+    When concurrent output corrupts the first PS1 block, the regex should
+    match only the LAST ###PS1JSON### before ###PS1END###.
     """
-    # Corrupted output where ASCII art interrupts the first PS1 block
-    # The second PS1 block is valid and should be recovered
     corrupted_output = """\
 COMMAND OUTPUT BEFORE PS1
 ###PS1JSON###
@@ -396,7 +386,7 @@ COMMAND OUTPUT BEFORE PS1
   "pid": "123",
   "exit_code": "0",
   "username": "openhands"
-ASCII ART CORRUPTS THIS BLOCK
+CONCURRENT OUTPUT CORRUPTS THIS BLOCK
 ###PS1JSON###
 {
   "pid": "456",
@@ -411,16 +401,12 @@ COMMAND OUTPUT AFTER PS1"""
 
     matches = CmdOutputMetadata.matches_ps1_metadata(corrupted_output)
 
-    # We should get 1 match (the recovered valid block)
-    assert len(matches) == 1, f"Expected 1 recovered match, got {len(matches)}"
+    # We should get 1 match (the valid block after the nested marker)
+    assert len(matches) == 1, f"Expected 1 match, got {len(matches)}"
 
-    match = matches[0]
+    # Verify the match contains valid JSON
+    import json
 
-    # The content from start() to end() should match group(0)
-    sliced_content = corrupted_output[match.start() : match.end()]
-
-    assert sliced_content == match.group(0), (
-        f"Slicing with match positions gives wrong content!\n"
-        f"Expected (from group(0)):\n{match.group(0)!r}\n\n"
-        f"Got (from slicing):\n{sliced_content!r}"
-    )
+    content = matches[0].group(1).strip()
+    data = json.loads(content)
+    assert data["pid"] == "456"  # Should be the second block's data

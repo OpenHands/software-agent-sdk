@@ -1,8 +1,8 @@
 """Unified terminal session using TerminalInterface backends."""
 
+import re
 import time
 from enum import Enum
-from typing import Any
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import maybe_truncate
@@ -26,10 +26,6 @@ from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
     split_bash_commands,
 )
-
-
-# Type alias for match-like objects (re.Match or _SyntheticMatch)
-MatchLike = Any
 
 
 logger = get_logger(__name__)
@@ -139,7 +135,7 @@ class TerminalSession(TerminalSessionBase):
         self,
         command: str,
         terminal_content: str,
-        ps1_matches: list[MatchLike],
+        ps1_matches: list[re.Match],
     ) -> TerminalObservation:
         """Handle a completed command."""
         is_special_key = self._is_special_key(command)
@@ -207,7 +203,7 @@ class TerminalSession(TerminalSessionBase):
         self,
         command: str,
         terminal_content: str,
-        ps1_matches: list[MatchLike],
+        ps1_matches: list[re.Match],
     ) -> TerminalObservation:
         """Handle a command that timed out due to no output change."""
         self.prev_status = TerminalCommandStatus.NO_CHANGE_TIMEOUT
@@ -245,7 +241,7 @@ class TerminalSession(TerminalSessionBase):
         self,
         command: str,
         terminal_content: str,
-        ps1_matches: list[MatchLike],
+        ps1_matches: list[re.Match],
         timeout: float,
     ) -> TerminalObservation:
         """Handle a command that timed out due to hard timeout."""
@@ -288,7 +284,7 @@ class TerminalSession(TerminalSessionBase):
     def _combine_outputs_between_matches(
         self,
         terminal_content: str,
-        ps1_matches: list[MatchLike],
+        ps1_matches: list[re.Match],
         get_content_before_last_match: bool = False,
     ) -> str:
         """Combine all outputs between PS1 matches."""

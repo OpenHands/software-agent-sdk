@@ -3,7 +3,6 @@
 import json
 import re
 import traceback
-from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -15,50 +14,7 @@ from openhands.tools.terminal.constants import (
 )
 
 
-if TYPE_CHECKING:
-    from re import Match
-
 logger = get_logger(__name__)
-
-
-class _SyntheticMatch:
-    """A match-like object for recovered PS1 blocks.
-
-    When concurrent output corrupts the PS1 prompt, we extract the last
-    valid JSON block. This provides a match-like interface for compatibility.
-    Note: group(0) is synthesized and may not match original formatting.
-    """
-
-    def __init__(
-        self, content: str, original_match: "Match[str]", nested_marker_offset: int
-    ):
-        self._content = content
-        # nested_marker_offset: position of ###PS1JSON### in group(1)
-        self._actual_start = original_match.start(1) + nested_marker_offset
-        self._actual_end = original_match.end(0)
-
-    def group(self, index: int = 0) -> str:
-        if index == 0:
-            begin = CMD_OUTPUT_PS1_BEGIN.strip()
-            end = CMD_OUTPUT_PS1_END.strip()
-            return f"{begin}\n{self._content}\n{end}"
-        elif index == 1:
-            return self._content
-        raise IndexError(f"no such group: {index}")
-
-    def start(self, group: int = 0) -> int:
-        if group == 0:
-            return self._actual_start
-        elif group == 1:
-            return self._actual_start + len(CMD_OUTPUT_PS1_BEGIN.strip()) + 1
-        raise IndexError(f"no such group: {group}")
-
-    def end(self, group: int = 0) -> int:
-        if group == 0:
-            return self._actual_end
-        elif group == 1:
-            return self._actual_end - len(CMD_OUTPUT_PS1_END.strip()) - 1
-        raise IndexError(f"no such group: {group}")
 
 
 class CmdOutputMetadata(BaseModel):
@@ -107,43 +63,15 @@ class CmdOutputMetadata(BaseModel):
         return prompt
 
     @classmethod
-    def matches_ps1_metadata(cls, string: str) -> list[re.Match[str] | _SyntheticMatch]:
-        """Find all valid PS1 metadata blocks in the string.
-
-        Handles corruption scenarios where concurrent output (e.g., progress bars,
-        spinners, or other stdout) interrupts a PS1 block, causing a nested
-        ###PS1JSON### marker. In such cases, extracts the LAST valid JSON block.
-        """
-        matches: list[re.Match[str] | _SyntheticMatch] = []
-        nested_marker = CMD_OUTPUT_PS1_BEGIN.strip()
-
+    def matches_ps1_metadata(cls, string: str) -> list[re.Match[str]]:
+        """Find all valid PS1 metadata blocks in the string."""
+        matches: list[re.Match[str]] = []
         for match in CMD_OUTPUT_METADATA_PS1_REGEX.finditer(string):
             content = match.group(1).strip()
             try:
                 json.loads(content)
                 matches.append(match)
             except json.JSONDecodeError:
-                # Check for nested marker (corruption recovery)
-                original_content = match.group(1)
-                last_marker_pos = original_content.rfind(nested_marker)
-                if last_marker_pos != -1:
-                    content_start = last_marker_pos + len(nested_marker)
-                    if content_start < len(original_content):
-                        last_block = original_content[content_start:].strip()
-                        if last_block:
-                            try:
-                                json.loads(last_block)
-                                matches.append(
-                                    _SyntheticMatch(last_block, match, last_marker_pos)
-                                )
-                                logger.debug(
-                                    f"Recovered PS1 block: {last_block[:80]}"
-                                    f"{'...' if len(last_block) > 80 else ''}"
-                                )
-                                continue
-                            except json.JSONDecodeError:
-                                pass
-
                 logger.debug(
                     f"Failed to parse PS1 metadata - Skipping: [{content[:200]}"
                     f"{'...' if len(content) > 200 else ''}]" + traceback.format_exc()
@@ -151,9 +79,7 @@ class CmdOutputMetadata(BaseModel):
         return matches
 
     @classmethod
-    def from_ps1_match(
-        cls, match: "re.Match[str] | _SyntheticMatch"
-    ) -> "CmdOutputMetadata":
+    def from_ps1_match(cls, match: re.Match[str]) -> "CmdOutputMetadata":
         """Extract the required metadata from a PS1 prompt."""
         metadata = json.loads(match.group(1))
         # Create a copy of metadata to avoid modifying the original
