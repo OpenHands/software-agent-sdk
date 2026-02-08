@@ -2,7 +2,10 @@ import uuid
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.conversation.stuck_detector import StuckDetector
+from openhands.sdk.conversation.stuck_detector import (
+    MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION,
+    StuckDetector,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -71,6 +74,197 @@ def test_history_too_short():
 
     # Should not be stuck with only one action-observation pair after user message
     assert stuck_detector.is_stuck() is False
+
+
+class _SpySequence:
+    def __init__(self, items):
+        self._items = list(items)
+        self.slice_requests = []
+
+    def __len__(self):
+        return len(self._items)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            self.slice_requests.append(idx)
+            return self._items[idx]
+        return self._items[idx]
+
+
+class _SpyState:
+    def __init__(self, events):
+        self.events = events
+
+
+def test_is_stuck_uses_only_recent_event_window():
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    Agent(llm=llm)
+
+    # Create 50 old events (should not be scanned).
+    old_events = [
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text=f"old-{i}")]),
+        )
+        for i in range(50)
+    ]
+
+    # Ensure the last 20 events contain a user message and a repeating loop.
+    last_user = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="start")]),
+    )
+
+    loop_events = []
+    for i in range(4):
+        action = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I need to run ls command")],
+            action=TerminalAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id=f"call_{i}",
+            tool_call=MessageToolCall(
+                id=f"call_{i}",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id=f"response_{i}",
+        )
+        loop_events.append(action)
+        loop_events.append(
+            ObservationEvent(
+                source="environment",
+                observation=TerminalObservation.from_text(
+                    text="file1.txt\nfile2.txt",
+                    command="ls",
+                    exit_code=0,
+                ),
+                action_id=action.id,
+                tool_name="terminal",
+                tool_call_id=f"call_{i}",
+            )
+        )
+
+    # Add a few filler events so total length is > 20.
+    filler = [
+        MessageEvent(
+            source="agent",
+            llm_message=Message(role="assistant", content=[TextContent(text="ok")]),
+        )
+        for _ in range(3)
+    ]
+
+    all_events = old_events + [last_user] + filler + loop_events
+    spy_events = _SpySequence(all_events)
+
+    stuck_detector = StuckDetector(_SpyState(spy_events))  # pyright: ignore[reportArgumentType]
+    assert stuck_detector.is_stuck() is True
+
+    # Must have requested a single slice that only covers the last 20 items.
+    assert spy_events.slice_requests
+    sl = spy_events.slice_requests[0]
+    assert sl.step is None
+    assert sl.stop is None
+    assert sl.start == -MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION
+
+
+def test_is_stuck_without_recent_user_message_still_detects_loop():
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    Agent(llm=llm)
+
+    # No user messages at all in the last-20 window.
+    filler = [
+        MessageEvent(
+            source="agent",
+            llm_message=Message(role="assistant", content=[TextContent(text="ok")]),
+        )
+        for _ in range(12)
+    ]
+
+    loop_events = []
+    for i in range(4):
+        action = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I need to run ls command")],
+            action=TerminalAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id=f"call_{i}",
+            tool_call=MessageToolCall(
+                id=f"call_{i}",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id=f"response_{i}",
+        )
+        loop_events.append(action)
+        loop_events.append(
+            ObservationEvent(
+                source="environment",
+                observation=TerminalObservation.from_text(
+                    text="file1.txt\nfile2.txt",
+                    command="ls",
+                    exit_code=0,
+                ),
+                action_id=action.id,
+                tool_name="terminal",
+                tool_call_id=f"call_{i}",
+            )
+        )
+
+    all_events = filler + loop_events  # 12 + 8 == 20
+    spy_events = _SpySequence(all_events)
+
+    stuck_detector = StuckDetector(_SpyState(spy_events))  # pyright: ignore[reportArgumentType]
+    assert stuck_detector.is_stuck() is True
+
+
+def test_is_stuck_with_fewer_than_20_events_still_detects_loop():
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    Agent(llm=llm)
+
+    # Total events < 20 (8 events == 4 action-observation pairs)
+    loop_events = []
+    for i in range(4):
+        action = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I need to run ls command")],
+            action=TerminalAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id=f"call_{i}",
+            tool_call=MessageToolCall(
+                id=f"call_{i}",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id=f"response_{i}",
+        )
+        loop_events.append(action)
+        loop_events.append(
+            ObservationEvent(
+                source="environment",
+                observation=TerminalObservation.from_text(
+                    text="file1.txt\nfile2.txt",
+                    command="ls",
+                    exit_code=0,
+                ),
+                action_id=action.id,
+                tool_name="terminal",
+                tool_call_id=f"call_{i}",
+            )
+        )
+
+    spy_events = _SpySequence(loop_events)
+
+    stuck_detector = StuckDetector(_SpyState(spy_events))  # pyright: ignore[reportArgumentType]
+    assert stuck_detector.is_stuck() is True
+
+    # Still uses a single negative slice for the scanning window.
+    assert spy_events.slice_requests
+    sl = spy_events.slice_requests[0]
+    assert sl.start == -MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION
 
 
 def test_repeating_action_observation_not_stuck_less_than_4_repeats():
