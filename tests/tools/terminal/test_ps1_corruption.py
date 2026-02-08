@@ -1,30 +1,11 @@
 """
-Tests demonstrating PS1 metadata corruption issues.
+Tests for PS1 metadata corruption recovery.
 
-This test file documents bugs where PS1 JSON blocks get corrupted by:
-1. ASCII art from programs like grunt (cat mascot)
-2. Pager programs like `less` that produce full-screen output
+PS1 blocks can get corrupted when concurrent terminal output (progress bars,
+spinners, or other stdout) interleaves with the shell's PS1 prompt rendering.
+This is a race condition between the shell writing PS1 and programs writing output.
 
-These tests are expected to FAIL until the underlying issues are fixed.
-
-See Datadog logs for eval job eval-21310432128-claude-son for real-world examples.
-
-BUG EXPLANATION:
-----------------
-The PS1 regex uses non-greedy matching: `###PS1JSON###(.*?)###PS1END###`
-
-When grunt's ASCII cat art is interleaved with the PS1 prompt, the FIRST
-###PS1JSON### block never gets its matching ###PS1END### (because the output
-is corrupted). The regex then matches from the FIRST ###PS1JSON### all the
-way to the ONLY ###PS1END### at the end.
-
-This creates ONE giant match containing:
-- Corrupted first JSON block
-- ASCII cat art
-- Command output
-- Second (valid) JSON block
-
-The combined content fails JSON parsing → 0 valid matches → AssertionError.
+The fix detects nested ###PS1JSON### markers and extracts the last valid JSON block.
 """
 
 from unittest.mock import MagicMock
@@ -37,21 +18,11 @@ from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 
 
 class TestPS1Corruption:
-    """Tests for PS1 metadata block corruption by command output."""
+    """Tests for PS1 metadata block corruption recovery."""
 
-    # Actual corrupted output from Datadog logs (eval-21310432128-claude-son)
-    # The grunt ASCII cat art interrupts the PS1 JSON block
-    #
-    # STRUCTURE OF THIS OUTPUT:
-    # 1. ###PS1JSON### (first block starts)
-    # 2. JSON fields start but NO closing }
-    # 3. ASCII cat art from grunt gets interleaved
-    # 4. Test output ("8 passing", "Done.")
-    # 5. ###PS1JSON### (second block starts)
-    # 6. Complete valid JSON with }
-    # 7. ###PS1END### (the ONLY end marker)
-    #
-    # The non-greedy regex matches from #1 to #7, creating ONE invalid match.
+    # Corrupted output where concurrent stdout interrupts the first PS1 block.
+    # The regex matches from first ###PS1JSON### to only ###PS1END###,
+    # creating one invalid match. The fix recovers the valid second block.
     CORRUPTED_OUTPUT_GRUNT_CAT = r"""
 ###PS1JSON###
 {
@@ -142,14 +113,9 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
 
         The non-greedy regex `###PS1JSON###(.*?)###PS1END###` matches from
         the FIRST ###PS1JSON### to the ONLY ###PS1END###, creating ONE match
-        that contains corrupted JSON (ASCII art interleaved).
+        that contains corrupted JSON with interleaved output.
 
-        EXPECTED: The regex should somehow detect that the second ###PS1JSON###
-        indicates the first block was never closed, and handle this gracefully.
-
-        ACTUAL: The regex creates one giant match with invalid JSON content.
-
-        This test PASSES because it documents the current (buggy) behavior.
+        This test documents the raw regex behavior (before corruption recovery).
         """
         # Get raw regex matches (before JSON validation)
         raw_matches = list(
@@ -170,31 +136,20 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
             "proving that the regex incorrectly spans multiple intended blocks."
         )
 
-    def test_corrupted_ps1_causes_zero_valid_matches(self):
+    def test_corrupted_ps1_recovery(self):
         """
-        Test that grunt's ASCII cat art causes ZERO valid PS1 matches.
+        Test that the fix recovers valid PS1 blocks from corrupted output.
 
-        This is the ROOT CAUSE of the production error:
-        "Expected at least one PS1 metadata block, but got 0."
-
-        The regex matches one block but the content fails JSON parsing
-        because it contains ASCII art and a nested ###PS1JSON### marker.
-
-        This test FAILS because the current behavior is broken - we get
-        0 matches when there IS a valid JSON block at the end of the output.
-        A fix should return at least 1 valid match.
+        When concurrent output corrupts the first PS1 block, the fix detects
+        the nested ###PS1JSON### marker and extracts the valid second block.
         """
         matches = CmdOutputMetadata.matches_ps1_metadata(
             self.CORRUPTED_OUTPUT_GRUNT_CAT
         )
 
-        # CURRENT BUGGY BEHAVIOR: 0 matches (all fail JSON parsing)
-        # EXPECTED FIXED BEHAVIOR: 1 match (the second valid block)
         assert len(matches) >= 1, (
-            f"BUG: Expected at least 1 valid PS1 match, got {len(matches)}. "
-            "The output contains a VALID PS1 block at the end, but the "
-            "regex/parser fails to find it. This bug causes "
-            "'Expected at least one PS1 metadata block, but got 0' errors."
+            f"Expected at least 1 valid PS1 match, got {len(matches)}. "
+            "The fix should recover the valid block from corrupted output."
         )
 
     def test_handle_completed_command_fails_with_corrupted_output(self):
@@ -295,14 +250,7 @@ SOME EXTRA OUTPUT BUT NO PS1END MARKER
 
     def test_ps1_block_with_embedded_special_chars(self):
         """
-        Test PS1 parsing when special characters appear in the JSON block.
-
-        The grunt cat ASCII art contains characters like:
-        - `#PS` which looks like a partial marker
-        - Backslashes `\\`
-        - Underscores and dashes in patterns
-
-        These should not confuse the parser when they appear inside the JSON.
+        Test PS1 parsing when special characters appear in JSON field values.
         """
         # Valid PS1 block but with special chars in a field value
         ps1_with_special_chars = """
@@ -324,15 +272,10 @@ SOME EXTRA OUTPUT BUT NO PS1END MARKER
 
     def test_interleaved_output_between_ps1_markers(self):
         """
-        Test that command output interleaved between PS1 markers corrupts parsing.
+        Test that interleaved output between PS1 markers corrupts parsing.
 
-        This is the actual failure mode observed in production:
-        1. PS1 prompt starts printing (###PS1JSON###)
-        2. Command output gets printed (ASCII art)
-        3. PS1 prompt JSON is incomplete/corrupted
-        4. Another PS1 block might appear later
-
-        The parser should handle this gracefully instead of crashing.
+        When concurrent output interrupts the PS1 JSON, the parser should
+        skip the malformed block gracefully.
         """
         interleaved_output = """
 ###PS1JSON###
@@ -357,18 +300,9 @@ class TestPS1CorruptionIntegration:
 
     def test_terminal_session_handles_corrupted_output_gracefully(self):
         """
-        Test that TerminalSession handles corrupted PS1 output gracefully.
+        Test that TerminalSession raises AssertionError when no PS1 blocks found.
 
-        Currently, this raises an AssertionError which causes the evaluation
-        to fail. This test documents the current (problematic) behavior.
-
-        EXPECTED BEHAVIOR (after fix):
-        - Session should retry reading terminal output
-        - OR return a sensible default observation
-        - OR log a warning but not crash
-
-        CURRENT BEHAVIOR:
-        - Raises AssertionError and crashes the evaluation
+        This documents the current behavior when corruption recovery fails.
         """
         mock_terminal = MagicMock()
         mock_terminal.work_dir = "/workspace"
