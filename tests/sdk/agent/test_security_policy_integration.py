@@ -98,6 +98,13 @@ def test_custom_security_policy_in_system_message():
         original_self_documentation = original_prompt_dir / "self_documentation.j2"
         shutil.copy2(original_self_documentation, self_documentation_path)
 
+        # Copy professional_objectivity.j2
+        professional_objectivity_path = Path(temp_dir) / "professional_objectivity.j2"
+        original_professional_objectivity = (
+            original_prompt_dir / "professional_objectivity.j2"
+        )
+        shutil.copy2(original_professional_objectivity, professional_objectivity_path)
+
         # Create agent with custom security policy using absolute paths for both
         agent = Agent(
             llm=LLM(
