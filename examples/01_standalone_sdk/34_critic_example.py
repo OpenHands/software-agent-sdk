@@ -121,82 +121,76 @@ The task is complete ONLY when:
 """
 
 
-def main() -> None:
-    """Run the iterative refinement example with critic model."""
-    llm_api_key = get_required_env("LLM_API_KEY")
-    llm = LLM(
-        # model="anthropic/claude-haiku-4-5",
-        model="litellm_proxy/moonshot/kimi-k2.5",
-        api_key=llm_api_key,
-        top_p=0.95,
-        base_url=os.getenv("LLM_BASE_URL", None),
+llm_api_key = get_required_env("LLM_API_KEY")
+llm = LLM(
+    # Use a weaker model to increase likelihood of needing multiple iterations
+    model="anthropic/claude-haiku-4-5",
+    api_key=llm_api_key,
+    top_p=0.95,
+    base_url=os.getenv("LLM_BASE_URL", None),
+)
+
+# Setup critic with iterative refinement config
+# The IterativeRefinementConfig tells Conversation.run() to automatically
+# retry the task if the critic score is below the threshold
+iterative_config = IterativeRefinementConfig(
+    success_threshold=SUCCESS_THRESHOLD,
+    max_iterations=MAX_ITERATIONS,
+)
+
+# Auto-configure critic for All-Hands proxy or use explicit env vars
+critic = get_default_critic(llm)
+if critic is None:
+    print("⚠️  No All-Hands LLM proxy detected, trying explicit env vars...")
+    critic = APIBasedCritic(
+        server_url=get_required_env("CRITIC_SERVER_URL"),
+        api_key=get_required_env("CRITIC_API_KEY"),
+        model_name=get_required_env("CRITIC_MODEL_NAME"),
+        iterative_refinement=iterative_config,
     )
+else:
+    # Add iterative refinement config to the auto-configured critic
+    critic = critic.model_copy(update={"iterative_refinement": iterative_config})
 
-    # Setup critic with iterative refinement config
-    # The IterativeRefinementConfig tells Conversation.run() to automatically
-    # retry the task if the critic score is below the threshold
-    iterative_config = IterativeRefinementConfig(
-        success_threshold=SUCCESS_THRESHOLD,
-        max_iterations=MAX_ITERATIONS,
-    )
+# Create agent with critic (iterative refinement is built into the critic)
+agent = Agent(
+    llm=llm,
+    tools=[
+        Tool(name=TerminalTool.name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
+    ],
+    critic=critic,
+)
 
-    # Auto-configure critic for All-Hands proxy or use explicit env vars
-    critic = get_default_critic(llm)
-    if critic is None:
-        print("⚠️  No All-Hands LLM proxy detected, trying explicit env vars...")
-        critic = APIBasedCritic(
-            server_url=get_required_env("CRITIC_SERVER_URL"),
-            api_key=get_required_env("CRITIC_API_KEY"),
-            model_name=get_required_env("CRITIC_MODEL_NAME"),
-            iterative_refinement=iterative_config,
-        )
-    else:
-        # Add iterative refinement config to the auto-configured critic
-        critic = critic.model_copy(update={"iterative_refinement": iterative_config})
+# Create workspace
+workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
+print(f"📁 Created workspace: {workspace}")
 
-    # Create agent with critic (iterative refinement is built into the critic)
-    agent = Agent(
-        llm=llm,
-        tools=[
-            Tool(name=TerminalTool.name),
-            Tool(name=FileEditorTool.name),
-            Tool(name=TaskTrackerTool.name),
-        ],
-        critic=critic,
-    )
+# Create conversation - iterative refinement is handled automatically
+# by Conversation.run() based on the critic's config
+conversation = Conversation(
+    agent=agent,
+    workspace=str(workspace),
+)
 
-    # Create workspace
-    workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
-    print(f"📁 Created workspace: {workspace}")
+print("\n" + "=" * 70)
+print("🚀 Starting Iterative Refinement with Critic Model")
+print("=" * 70)
+print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
+print(f"Max iterations: {MAX_ITERATIONS}")
 
-    # Create conversation - iterative refinement is handled automatically
-    # by Conversation.run() based on the critic's config
-    conversation = Conversation(
-        agent=agent,
-        workspace=str(workspace),
-    )
+# Send the task and run - Conversation.run() handles retries automatically
+conversation.send_message(INITIAL_TASK_PROMPT)
+conversation.run()
 
-    print("\n" + "=" * 70)
-    print("🚀 Starting Iterative Refinement with Critic Model")
-    print("=" * 70)
-    print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
-    print(f"Max iterations: {MAX_ITERATIONS}")
+# Print additional info about created files
+print("\nCreated files:")
+for path in sorted(workspace.rglob("*")):
+    if path.is_file():
+        relative = path.relative_to(workspace)
+        print(f"  - {relative}")
 
-    # Send the task and run - Conversation.run() handles retries automatically
-    conversation.send_message(INITIAL_TASK_PROMPT)
-    conversation.run()
-
-    # Print additional info about created files
-    print("\nCreated files:")
-    for path in sorted(workspace.rglob("*")):
-        if path.is_file():
-            relative = path.relative_to(workspace)
-            print(f"  - {relative}")
-
-    # Report cost
-    cost = llm.metrics.accumulated_cost
-    print(f"\nEXAMPLE_COST: {cost:.4f}")
-
-
-if __name__ == "__main__":
-    main()
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"\nEXAMPLE_COST: {cost:.4f}")
