@@ -49,5 +49,5 @@ jobs:
                   sdk-version: ${{ github.event.pull_request.head.sha }}
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
-                  # Enable Laminar observability for trajectory uploads
+                  # Enable Laminar observability for trajectory uploads (optional)
                   lmnr-project-api-key: ${{ secrets.LAMINAR_ACTIONS_API_KEY }}
