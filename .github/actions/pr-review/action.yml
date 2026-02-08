@@ -42,7 +42,7 @@ inputs:
         required: false
         default: ''
     openhands-cloud-api-key:
-        description: OpenHands Cloud API key (required for 'cloud' mode)
+        description: OpenHands Cloud API key (required for 'cloud' mode), get it from https://app.all-hands.dev/settings/api-keys
         required: false
         default: ''
     openhands-cloud-api-url:
