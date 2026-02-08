@@ -3,7 +3,6 @@
 import json
 from collections.abc import Sequence
 
-import pytest
 from pydantic import Field
 
 from openhands.sdk.llm import ImageContent, TextContent
@@ -145,20 +144,19 @@ def test_kind_field_works_for_discriminated_union():
 class TestCircularSchemaHandling:
     """Tests for handling circular $ref schemas in tool schemas.
 
-    These tests verify that _process_schema_node correctly handles schemas
-    with circular $ref patterns without causing RecursionError.
+    These tests verify that circular schemas are handled gracefully without
+    RecursionError, and that the output preserves useful type information.
 
     Related: Datadog logs from conversation ab9909a07571431a86ab6f1be36f555f
     """
 
-    def test_circular_ref_in_raw_schema_handled_gracefully(self):
-        """Test that a raw schema with circular $ref is handled gracefully.
+    def test_circular_ref_preserves_non_recursive_properties(self):
+        """Test that circular ref handling preserves non-recursive properties.
 
-        The fix detects circular $ref patterns and breaks the cycle by
-        returning a generic object type instead of recursing infinitely.
+        When a circular reference is detected, the shallow expansion should
+        preserve immediate non-recursive properties (like 'name') while only
+        replacing the recursive field with a generic object.
         """
-        # Create a schema with circular $ref - this is what an MCP tool
-        # with recursive data structures would look like
         circular_schema = {
             "type": "object",
             "properties": {
@@ -172,10 +170,11 @@ class TestCircularSchemaHandling:
                 "TreeNode": {
                     "type": "object",
                     "properties": {
-                        "name": {"type": "string"},
+                        "name": {"type": "string", "description": "Node name"},
                         "children": {
                             "type": "array",
-                            "items": {"$ref": "#/$defs/TreeNode"},  # Circular!
+                            "items": {"$ref": "#/$defs/TreeNode"},
+                            "description": "Child nodes",
                         },
                     },
                 }
@@ -183,29 +182,44 @@ class TestCircularSchemaHandling:
         }
 
         defs = circular_schema.get("$defs", {})
-
-        # This should NOT raise RecursionError - the fix handles circular refs
         result = _process_schema_node(circular_schema, defs)
 
-        # Verify the result is valid and JSON-serializable
+        # Verify basic structure
         assert result["type"] == "object"
         assert "properties" in result
-        json.dumps(result)  # Should not raise
 
-    def test_self_referential_pydantic_schema_handled_gracefully(self):
-        """Test that a self-referential Pydantic Schema is handled gracefully.
+        # The top-level 'name' should be preserved
+        assert result["properties"]["name"]["type"] == "string"
+
+        # The 'children' array should be present
+        assert result["properties"]["children"]["type"] == "array"
+
+        # The items in children should be expanded TreeNodes
+        items = result["properties"]["children"]["items"]
+        assert items["type"] == "object"
+        assert "properties" in items
+
+        # The TreeNode's 'name' property should be preserved (non-recursive)
+        assert "name" in items["properties"]
+        assert items["properties"]["name"]["type"] == "string"
+        assert items["properties"]["name"]["description"] == "Node name"
+
+        # The TreeNode's 'children' should be an array of generic objects
+        # (recursive field is simplified)
+        assert "children" in items["properties"]
+        assert items["properties"]["children"]["type"] == "array"
+
+        # Should be JSON serializable
+        json.dumps(result)
+
+    def test_tree_schema_to_mcp_preserves_value_field(self):
+        """Test that self-referential Pydantic Schema preserves non-recursive fields.
 
         This is the real-world scenario: a Pydantic model with self-referential
-        fields (like a tree node) generates a JSON schema with circular $ref.
-        The fix ensures to_mcp_schema() works without RecursionError.
-
-        This test verifies the fix for the bug that caused:
-            litellm.APIConnectionError: OpenrouterException -
-            maximum recursion depth exceeded
-        in conversation ab9909a07571431a86ab6f1be36f555f
+        fields (like a tree node) should have its non-recursive fields preserved
+        in the MCP schema output.
         """
 
-        # Create a self-referential Schema (tree structure)
         class TreeNode(Schema):
             """A tree node that can have children of the same type."""
 
@@ -214,35 +228,36 @@ class TestCircularSchemaHandling:
                 default=None, description="Child nodes"
             )
 
-        # Required for forward references in Pydantic
         TreeNode.model_rebuild()
 
-        # Verify the generated schema has circular $ref
-        schema = TreeNode.model_json_schema()
-        assert "$defs" in schema
-        assert "TreeNode" in schema["$defs"]
-        # The TreeNode def should reference itself via $ref
-        tree_def = schema["$defs"]["TreeNode"]
-        assert "children" in tree_def["properties"]
-
-        # This should NOT raise RecursionError - the fix handles circular refs
         result = TreeNode.to_mcp_schema()
 
-        # Verify the result is valid
+        # Verify the result structure
         assert result["type"] == "object"
         assert "properties" in result
-        assert "value" in result["properties"]
-        # The children property should be present (as an array of generic objects)
-        assert "children" in result["properties"]
-        json.dumps(result)  # Should not raise
 
-    def test_deeply_nested_non_circular_schema_works(self):
-        """Test that deeply nested but non-circular schemas work correctly.
+        # The 'value' field should be fully preserved
+        assert "value" in result["properties"]
+        assert result["properties"]["value"]["type"] == "string"
+        assert result["properties"]["value"]["description"] == "The value of this node"
+
+        # The 'children' field should be present as an array
+        assert "children" in result["properties"]
+        children_prop = result["properties"]["children"]
+        assert children_prop["type"] == "array"
+
+        # The items should be objects (shallow expansion of TreeNode)
+        assert children_prop["items"]["type"] == "object"
+
+        # Should be JSON serializable
+        json.dumps(result)
+
+    def test_deeply_nested_non_circular_schema_fully_resolved(self):
+        """Test that deeply nested but non-circular schemas are fully resolved.
 
         This ensures we don't break valid deeply nested schemas while fixing
         the circular reference issue.
         """
-        # A deeply nested but non-circular schema
         deep_schema = {
             "type": "object",
             "properties": {
@@ -265,20 +280,22 @@ class TestCircularSchemaHandling:
             },
         }
 
-        # This should work without errors
         result = _process_schema_node(deep_schema, {})
-        assert result["type"] == "object"
-        assert "properties" in result
 
-        # Should be JSON serializable
+        # Verify full nesting is preserved
+        assert result["type"] == "object"
+        level1 = result["properties"]["level1"]
+        assert level1["type"] == "object"
+        level2 = level1["properties"]["level2"]
+        assert level2["type"] == "object"
+        level3 = level2["properties"]["level3"]
+        assert level3["type"] == "object"
+        assert level3["properties"]["value"]["type"] == "string"
+
         json.dumps(result)
 
-    def test_non_circular_ref_schema_works(self):
-        """Test that schemas with non-circular $ref work correctly.
-
-        Some schemas have $ref but they don't form a cycle. These should
-        still work correctly.
-        """
+    def test_non_circular_ref_fully_resolved(self):
+        """Test that schemas with non-circular $ref are fully resolved."""
         schema = {
             "type": "object",
             "properties": {
@@ -298,27 +315,17 @@ class TestCircularSchemaHandling:
         defs = schema.get("$defs", {})
         result = _process_schema_node(schema, defs)
 
-        # Should resolve the $ref correctly
+        # Should resolve the $ref completely
         assert result["type"] == "object"
-        assert "properties" in result
-        assert "address" in result["properties"]
-        # The address should be resolved to the actual definition
-        assert result["properties"]["address"]["type"] == "object"
+        address = result["properties"]["address"]
+        assert address["type"] == "object"
+        assert address["properties"]["street"]["type"] == "string"
+        assert address["properties"]["city"]["type"] == "string"
 
-        # Should be JSON serializable
         json.dumps(result)
 
-    def test_circular_ref_detection_stops_recursion(self):
-        """Test that circular $ref is detected and handled gracefully.
-
-        After the fix, _process_schema_node should detect circular references
-        and handle them without infinite recursion. The fix should either:
-        1. Leave circular $ref as-is (don't try to inline it)
-        2. Replace with a generic object type
-        3. Track visited refs and skip already-seen ones
-
-        This test will PASS once the fix is implemented.
-        """
+    def test_circular_ref_does_not_raise_recursion_error(self):
+        """Test that circular $ref does not cause RecursionError."""
         circular_schema = {
             "type": "object",
             "properties": {
@@ -343,24 +350,16 @@ class TestCircularSchemaHandling:
 
         defs = circular_schema.get("$defs", {})
 
-        # After fix: This should NOT raise RecursionError
-        # Instead it should return a valid schema
-        try:
-            result = _process_schema_node(circular_schema, defs)
-            # Verify the result is JSON serializable (no circular Python refs)
-            json.dumps(result)
-        except RecursionError:
-            pytest.fail(
-                "RecursionError still occurs - fix not yet implemented. "
-                "_process_schema_node needs circular reference detection."
-            )
+        # Should not raise RecursionError
+        result = _process_schema_node(circular_schema, defs)
 
-    def test_self_referential_pydantic_schema_to_mcp_works(self):
-        """Test that self-referential Pydantic Schema can be converted to MCP.
+        # Verify valid output
+        assert result["type"] == "object"
+        assert "properties" in result
+        json.dumps(result)
 
-        After the fix, a Schema with self-referential fields should be able
-        to call to_mcp_schema() without hitting RecursionError.
-        """
+    def test_linked_list_schema_to_mcp_works(self):
+        """Test that linked list Schema can be converted to MCP schema."""
 
         class LinkedListNode(Schema):
             """A linked list node with optional next pointer."""
@@ -370,16 +369,16 @@ class TestCircularSchemaHandling:
 
         LinkedListNode.model_rebuild()
 
-        # After fix: This should work without RecursionError
-        try:
-            result = LinkedListNode.to_mcp_schema()
-            # Should be JSON serializable
-            json.dumps(result)
-            # Should have the expected structure
-            assert result["type"] == "object"
-            assert "value" in result.get("properties", {})
-        except RecursionError:
-            pytest.fail(
-                "RecursionError in to_mcp_schema() - fix not yet implemented. "
-                "_process_schema_node needs circular reference detection."
-            )
+        result = LinkedListNode.to_mcp_schema()
+
+        # Verify structure
+        assert result["type"] == "object"
+        assert "value" in result["properties"]
+        assert result["properties"]["value"]["type"] == "integer"
+        assert result["properties"]["value"]["description"] == "The value"
+
+        # 'next' should be present (as a simplified object)
+        assert "next" in result["properties"]
+        assert result["properties"]["next"]["type"] == "object"
+
+        json.dumps(result)

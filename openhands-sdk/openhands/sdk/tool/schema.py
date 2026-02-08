@@ -1,3 +1,4 @@
+import logging
 from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
@@ -15,6 +16,8 @@ from openhands.sdk.utils.visualize import display_dict
 
 if TYPE_CHECKING:
     from typing import Self
+
+logger = logging.getLogger(__name__)
 
 S = TypeVar("S", bound="Schema")
 
@@ -49,6 +52,86 @@ def py_type(spec: dict[str, Any]) -> Any:
     return Any
 
 
+def _shallow_expand_circular_ref(
+    ref_def: dict[str, Any], ref_name: str
+) -> dict[str, Any]:
+    """Create a shallow expansion of a circular reference.
+
+    Instead of returning a generic {"type": "object"}, this preserves immediate
+    non-recursive properties while replacing recursive fields with generic objects.
+    This gives LLMs more context about the structure.
+
+    Args:
+        ref_def: The definition of the referenced type.
+        ref_name: The name of the reference (for detecting self-references).
+
+    Returns:
+        A shallow schema with immediate properties preserved.
+    """
+    result: dict[str, Any] = {"type": "object"}
+
+    # Copy description if present
+    if "description" in ref_def:
+        result["description"] = ref_def["description"]
+
+    # Process properties shallowly
+    if "properties" in ref_def:
+        result["properties"] = {}
+        for prop_name, prop_schema in ref_def["properties"].items():
+            # Check if this property references the circular type
+            if _contains_ref_to(prop_schema, ref_name):
+                # Replace recursive field with generic object
+                shallow_prop: dict[str, Any] = {"type": "object"}
+                if "description" in prop_schema:
+                    shallow_prop["description"] = prop_schema["description"]
+                # If it's an array of the recursive type, preserve array structure
+                if prop_schema.get("type") == "array":
+                    result["properties"][prop_name] = {
+                        "type": "array",
+                        "items": shallow_prop,
+                    }
+                    if "description" in prop_schema:
+                        result["properties"][prop_name]["description"] = prop_schema[
+                            "description"
+                        ]
+                else:
+                    result["properties"][prop_name] = shallow_prop
+            else:
+                # Non-recursive property - copy as-is (shallow)
+                result["properties"][prop_name] = _copy_simple_schema(prop_schema)
+
+    # Copy required fields if present
+    if "required" in ref_def:
+        result["required"] = ref_def["required"]
+
+    return result
+
+
+def _contains_ref_to(schema: dict[str, Any], ref_name: str) -> bool:
+    """Check if a schema contains a $ref to the given name."""
+    if "$ref" in schema:
+        return schema["$ref"] == f"#/$defs/{ref_name}"
+    if "items" in schema:
+        return _contains_ref_to(schema["items"], ref_name)
+    if "anyOf" in schema:
+        return any(_contains_ref_to(item, ref_name) for item in schema["anyOf"])
+    return False
+
+
+def _copy_simple_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Copy a simple schema without deep recursion."""
+    result: dict[str, Any] = {}
+    for key in ("type", "description", "enum"):
+        if key in schema:
+            result[key] = schema[key]
+    # Handle anyOf for optional types
+    if "anyOf" in schema:
+        non_null = [t for t in schema["anyOf"] if t.get("type") != "null"]
+        if non_null:
+            result.update(_copy_simple_schema(non_null[0]))
+    return result
+
+
 def _process_schema_node(
     node: dict[str, Any],
     defs: dict[str, Any],
@@ -70,6 +153,15 @@ def _process_schema_node(
     Returns:
         A simplified schema dict with $ref resolved (except for circular refs).
 
+    Note:
+        When a circular reference is detected, returns a shallow expansion of
+        the referenced type with immediate non-recursive properties preserved,
+        but recursive fields replaced with generic ``{"type": "object"}``.
+        This prevents infinite recursion while preserving more type information
+        than a fully generic fallback. Callers should be aware that recursive
+        data types (trees, linked lists) will have simplified schemas that may
+        not fully represent their nested structure.
+
     References:
         https://www.reddit.com/r/mcp/comments/1kjo9gt/toolinputschema_conversion_from_pydanticmodel/
         https://gist.github.com/leandromoreira/3de4819e4e4df9422d87f1d3e7465c16
@@ -86,9 +178,13 @@ def _process_schema_node(
                 # Check for circular reference - if we're already visiting this
                 # ref in the current path, don't recurse (would cause infinite loop)
                 if ref_name in _visiting:
-                    # Return a generic object type for circular refs
-                    # This breaks the cycle while preserving schema validity
-                    return {"type": "object"}
+                    logger.debug(
+                        "Circular reference detected for '%s', using shallow expansion",
+                        ref_name,
+                    )
+                    # Shallow expansion: include immediate properties but mark
+                    # recursive fields as generic objects
+                    return _shallow_expand_circular_ref(defs[ref_name], ref_name)
 
                 # Add this ref to the visiting set for this recursion path
                 new_visiting = _visiting | {ref_name}
