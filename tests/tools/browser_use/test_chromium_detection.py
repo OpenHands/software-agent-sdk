@@ -6,7 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openhands.tools.browser_use.impl import BrowserToolExecutor, _install_chromium
+from openhands.tools.browser_use.impl import (
+    _install_chromium,
+    get_browser_executor_class,
+)
+
+
+BrowserToolExecutor = get_browser_executor_class()
 
 
 class TestChromiumDetection:
