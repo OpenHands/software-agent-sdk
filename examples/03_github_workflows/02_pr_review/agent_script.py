@@ -66,6 +66,17 @@ logger = get_logger(__name__)
 # Maximum total diff size
 MAX_TOTAL_DIFF = 100000
 
+# Template for cloud mode PR comment
+CLOUD_REVIEW_COMMENT_TEMPLATE = """\
+🤖 **OpenHands PR Review Started**
+
+A code review has been initiated in OpenHands Cloud.
+
+📍 **Track progress here:** [{conversation_url}]({conversation_url})
+
+The review will analyze the changes and post inline comments \
+directly on this PR when complete."""
+
 
 def _get_required_env(name: str) -> str:
     value = os.getenv(name)
@@ -177,6 +188,46 @@ def post_github_comment(repo_name: str, pr_number: str, body: str) -> None:
         raise RuntimeError(f"GitHub comment API request failed: {e.reason}") from e
 
 
+def _prepare_review_context(pr_info: dict, review_style: str) -> tuple[str, str]:
+    """Prepare the review context including diff and prompt.
+
+    This is shared setup code used by both cloud and SDK modes.
+
+    Args:
+        pr_info: Dictionary containing PR information
+        review_style: Review style ('standard' or 'roasted')
+
+    Returns:
+        Tuple of (prompt, skill_trigger)
+    """
+    pr_diff = get_truncated_pr_diff()
+    logger.info(f"Got PR diff with {len(pr_diff)} characters")
+
+    # Get the HEAD commit SHA for inline comments
+    commit_id = get_head_commit_sha()
+    logger.info(f"HEAD commit SHA: {commit_id}")
+
+    # Determine skill trigger based on review style
+    skill_trigger = (
+        "/codereview" if review_style == "standard" else "/codereview-roasted"
+    )
+
+    # Create the review prompt using the template
+    prompt = PROMPT.format(
+        title=pr_info.get("title", "N/A"),
+        body=pr_info.get("body", "No description provided"),
+        repo_name=pr_info.get("repo_name", "N/A"),
+        base_branch=pr_info.get("base_branch", "main"),
+        head_branch=pr_info.get("head_branch", "N/A"),
+        pr_number=pr_info.get("number", "N/A"),
+        commit_id=commit_id,
+        skill_trigger=skill_trigger,
+        diff=pr_diff,
+    )
+
+    return prompt, skill_trigger
+
+
 def _start_cloud_conversation(
     cloud_api_url: str,
     cloud_api_key: str,
@@ -245,13 +296,10 @@ def run_cloud_mode(pr_info: dict, review_style: str) -> None:
         pr_info: Dictionary containing PR information
         review_style: Review style ('standard' or 'roasted')
     """
-    # Get cloud-specific configuration
-    cloud_api_key = os.getenv("OPENHANDS_CLOUD_API_KEY")
-    if not cloud_api_key:
-        logger.error("OPENHANDS_CLOUD_API_KEY is required for 'cloud' mode")
-        sys.exit(1)
-
+    # Get cloud-specific configuration (already validated in main())
+    cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
     cloud_api_url = os.getenv("OPENHANDS_CLOUD_API_URL", "https://app.all-hands.dev")
+
     logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
     logger.info(
         "Note: LLM_MODEL and LLM_BASE_URL are ignored in cloud mode. "
@@ -259,36 +307,13 @@ def run_cloud_mode(pr_info: dict, review_style: str) -> None:
     )
 
     try:
-        pr_diff = get_truncated_pr_diff()
-        logger.info(f"Got PR diff with {len(pr_diff)} characters")
-
-        # Get the HEAD commit SHA for inline comments
-        commit_id = get_head_commit_sha()
-        logger.info(f"HEAD commit SHA: {commit_id}")
-
-        # Create the review prompt
-        skill_trigger = (
-            "/codereview" if review_style == "standard" else "/codereview-roasted"
-        )
-        prompt = PROMPT.format(
-            title=pr_info.get("title", "N/A"),
-            body=pr_info.get("body", "No description provided"),
-            repo_name=pr_info.get("repo_name", "N/A"),
-            base_branch=pr_info.get("base_branch", "main"),
-            head_branch=pr_info.get("head_branch", "N/A"),
-            pr_number=pr_info.get("number", "N/A"),
-            commit_id=commit_id,
-            skill_trigger=skill_trigger,
-            diff=pr_diff,
-        )
+        # Prepare review context (shared with SDK mode)
+        prompt, _ = _prepare_review_context(pr_info, review_style)
 
         logger.info("Starting OpenHands Cloud conversation...")
 
-        # Use the cloud API to start a conversation
-        # The cloud will use the model configured in the user's account
-        github_token = os.getenv("GITHUB_TOKEN")
-
         # Create conversation via cloud API
+        github_token = os.getenv("GITHUB_TOKEN")
         conversation_id = _start_cloud_conversation(
             cloud_api_url=cloud_api_url,
             cloud_api_key=cloud_api_key,
@@ -299,16 +324,11 @@ def run_cloud_mode(pr_info: dict, review_style: str) -> None:
         # Build the cloud conversation URL
         conversation_url = f"{cloud_api_url}/conversations/{conversation_id}"
         logger.info(f"Cloud conversation URL: {conversation_url}")
-
         logger.info("Review task started in OpenHands Cloud")
 
         # Post a comment on the PR with the cloud URL
-        comment_body = (
-            f"🤖 **OpenHands PR Review Started**\n\n"
-            f"A code review has been initiated in OpenHands Cloud.\n\n"
-            f"📍 **Track progress here:** [{conversation_url}]({conversation_url})\n\n"
-            f"The review will analyze the changes and post inline comments "
-            f"directly on this PR when complete."
+        comment_body = CLOUD_REVIEW_COMMENT_TEMPLATE.format(
+            conversation_url=conversation_url
         )
 
         post_github_comment(
@@ -338,28 +358,8 @@ def run_sdk_mode(pr_info: dict, review_style: str) -> None:
     github_token = os.getenv("GITHUB_TOKEN")
 
     try:
-        pr_diff = get_truncated_pr_diff()
-        logger.info(f"Got PR diff with {len(pr_diff)} characters")
-
-        # Get the HEAD commit SHA for inline comments
-        commit_id = get_head_commit_sha()
-        logger.info(f"HEAD commit SHA: {commit_id}")
-
-        # Create the review prompt using the template
-        skill_trigger = (
-            "/codereview" if review_style == "standard" else "/codereview-roasted"
-        )
-        prompt = PROMPT.format(
-            title=pr_info.get("title", "N/A"),
-            body=pr_info.get("body", "No description provided"),
-            repo_name=pr_info.get("repo_name", "N/A"),
-            base_branch=pr_info.get("base_branch", "main"),
-            head_branch=pr_info.get("head_branch", "N/A"),
-            pr_number=pr_info.get("number", "N/A"),
-            commit_id=commit_id,
-            skill_trigger=skill_trigger,
-            diff=pr_diff,
-        )
+        # Prepare review context (shared with cloud mode)
+        prompt, skill_trigger = _prepare_review_context(pr_info, review_style)
 
         # Configure LLM
         api_key = os.getenv("LLM_API_KEY")

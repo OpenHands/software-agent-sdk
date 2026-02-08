@@ -130,6 +130,46 @@ def test_start_cloud_conversation_missing_id():
         )
 
 
+def test_prepare_review_context():
+    """Test that _prepare_review_context returns correct prompt and skill trigger."""
+    from agent_script import (  # type: ignore[import-not-found]
+        _prepare_review_context,
+    )
+
+    pr_info = {
+        "number": "123",
+        "title": "Test PR",
+        "body": "Test body",
+        "repo_name": "owner/repo",
+        "base_branch": "main",
+        "head_branch": "feature",
+    }
+
+    # Mock the functions that _prepare_review_context calls
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "GITHUB_TOKEN": "test-token",
+                "REPO_NAME": "owner/repo",
+                "PR_NUMBER": "123",
+            },
+            clear=False,
+        ),
+        patch("agent_script.get_truncated_pr_diff", return_value="mock diff content"),
+        patch("agent_script.get_head_commit_sha", return_value="abc123"),
+    ):
+        # Test standard review style
+        prompt, skill_trigger = _prepare_review_context(pr_info, "standard")
+        assert skill_trigger == "/codereview"
+        assert "Test PR" in prompt
+        assert "mock diff content" in prompt
+
+        # Test roasted review style
+        prompt, skill_trigger = _prepare_review_context(pr_info, "roasted")
+        assert skill_trigger == "/codereview-roasted"
+
+
 def test_mode_defaults_to_sdk():
     """Test that MODE defaults to 'sdk'."""
     import os
@@ -160,36 +200,98 @@ def test_mode_case_insensitive():
 
 
 def test_sdk_mode_requires_llm_api_key():
-    """Test that SDK mode requires LLM_API_KEY."""
-    base_required_vars = [
-        "GITHUB_TOKEN",
-        "PR_NUMBER",
-        "PR_TITLE",
-        "PR_BASE_BRANCH",
-        "PR_HEAD_BRANCH",
-        "REPO_NAME",
-    ]
-    sdk_required_vars = base_required_vars + ["LLM_API_KEY"]
+    """Test that SDK mode fails without LLM_API_KEY."""
+    from agent_script import main  # type: ignore[import-not-found]
 
-    assert "LLM_API_KEY" in sdk_required_vars
-    assert "OPENHANDS_CLOUD_API_KEY" not in sdk_required_vars
+    # Set up minimal environment for SDK mode but missing LLM_API_KEY
+    env = {
+        "MODE": "sdk",
+        "GITHUB_TOKEN": "test-token",
+        "PR_NUMBER": "123",
+        "PR_TITLE": "Test PR",
+        "PR_BASE_BRANCH": "main",
+        "PR_HEAD_BRANCH": "feature",
+        "REPO_NAME": "owner/repo",
+        # LLM_API_KEY intentionally missing
+    }
+
+    with (
+        patch.dict("os.environ", env, clear=True),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main()
+
+    assert exc_info.value.code == 1
 
 
 def test_cloud_mode_requires_cloud_api_key():
-    """Test that cloud mode requires OPENHANDS_CLOUD_API_KEY."""
-    base_required_vars = [
-        "GITHUB_TOKEN",
-        "PR_NUMBER",
-        "PR_TITLE",
-        "PR_BASE_BRANCH",
-        "PR_HEAD_BRANCH",
-        "REPO_NAME",
-    ]
-    cloud_required_vars = base_required_vars + ["OPENHANDS_CLOUD_API_KEY"]
+    """Test that cloud mode fails without OPENHANDS_CLOUD_API_KEY."""
+    from agent_script import main  # type: ignore[import-not-found]
 
-    assert "OPENHANDS_CLOUD_API_KEY" in cloud_required_vars
-    # Cloud mode does NOT require LLM_API_KEY
-    assert "LLM_API_KEY" not in cloud_required_vars
+    # Set up minimal environment for cloud mode but missing OPENHANDS_CLOUD_API_KEY
+    env = {
+        "MODE": "cloud",
+        "GITHUB_TOKEN": "test-token",
+        "PR_NUMBER": "123",
+        "PR_TITLE": "Test PR",
+        "PR_BASE_BRANCH": "main",
+        "PR_HEAD_BRANCH": "feature",
+        "REPO_NAME": "owner/repo",
+        # OPENHANDS_CLOUD_API_KEY intentionally missing
+    }
+
+    with (
+        patch.dict("os.environ", env, clear=True),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main()
+
+    assert exc_info.value.code == 1
+
+
+def test_both_modes_require_github_token():
+    """Test that both modes require GITHUB_TOKEN."""
+    from agent_script import main  # type: ignore[import-not-found]
+
+    # Test SDK mode without GITHUB_TOKEN
+    sdk_env = {
+        "MODE": "sdk",
+        "LLM_API_KEY": "test-key",
+        "PR_NUMBER": "123",
+        "PR_TITLE": "Test PR",
+        "PR_BASE_BRANCH": "main",
+        "PR_HEAD_BRANCH": "feature",
+        "REPO_NAME": "owner/repo",
+        # GITHUB_TOKEN intentionally missing
+    }
+
+    with (
+        patch.dict("os.environ", sdk_env, clear=True),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main()
+
+    assert exc_info.value.code == 1
+
+    # Test cloud mode without GITHUB_TOKEN
+    cloud_env = {
+        "MODE": "cloud",
+        "OPENHANDS_CLOUD_API_KEY": "test-key",
+        "PR_NUMBER": "123",
+        "PR_TITLE": "Test PR",
+        "PR_BASE_BRANCH": "main",
+        "PR_HEAD_BRANCH": "feature",
+        "REPO_NAME": "owner/repo",
+        # GITHUB_TOKEN intentionally missing
+    }
+
+    with (
+        patch.dict("os.environ", cloud_env, clear=True),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main()
+
+    assert exc_info.value.code == 1
 
 
 def test_conversation_url_format():
@@ -215,15 +317,14 @@ def test_conversation_url_with_custom_api_url():
 
 
 def test_comment_body_contains_url():
-    """Test that comment body contains the conversation URL."""
-    conversation_url = "https://app.all-hands.dev/conversations/test-id"
+    """Test that comment body template contains the conversation URL."""
+    from agent_script import (  # type: ignore[import-not-found]
+        CLOUD_REVIEW_COMMENT_TEMPLATE,
+    )
 
-    comment_body = (
-        f"🤖 **OpenHands PR Review Started**\n\n"
-        f"A code review has been initiated in OpenHands Cloud.\n\n"
-        f"📍 **Track progress here:** [{conversation_url}]({conversation_url})\n\n"
-        f"The review will analyze the changes and post inline comments "
-        f"directly on this PR when complete."
+    conversation_url = "https://app.all-hands.dev/conversations/test-id"
+    comment_body = CLOUD_REVIEW_COMMENT_TEMPLATE.format(
+        conversation_url=conversation_url
     )
 
     assert conversation_url in comment_body
@@ -232,15 +333,14 @@ def test_comment_body_contains_url():
 
 
 def test_comment_body_is_markdown():
-    """Test that comment body uses markdown formatting."""
-    conversation_url = "https://app.all-hands.dev/conversations/test-id"
+    """Test that comment body template uses markdown formatting."""
+    from agent_script import (  # type: ignore[import-not-found]
+        CLOUD_REVIEW_COMMENT_TEMPLATE,
+    )
 
-    comment_body = (
-        f"🤖 **OpenHands PR Review Started**\n\n"
-        f"A code review has been initiated in OpenHands Cloud.\n\n"
-        f"📍 **Track progress here:** [{conversation_url}]({conversation_url})\n\n"
-        f"The review will analyze the changes and post inline comments "
-        f"directly on this PR when complete."
+    conversation_url = "https://app.all-hands.dev/conversations/test-id"
+    comment_body = CLOUD_REVIEW_COMMENT_TEMPLATE.format(
+        conversation_url=conversation_url
     )
 
     # Check for markdown bold syntax

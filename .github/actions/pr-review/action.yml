@@ -38,7 +38,7 @@ inputs:
         required: false
         default: ''
     github-token:
-        description: GitHub token for API access (required for 'sdk' mode, optional for 'cloud' mode if OpenHands Cloud account has repo access)
+        description: GitHub token for API access (required for both modes - used to post PR comments)
         required: false
         default: ''
     openhands-cloud-api-key:
@@ -100,13 +100,15 @@ runs:
           run: |
               echo "Mode: $MODE"
 
+              # GITHUB_TOKEN is required for both modes (used to post PR comments)
+              if [ -z "$GITHUB_TOKEN" ]; then
+                echo "Error: github-token is required for both modes."
+                exit 1
+              fi
+
               if [ "$MODE" = "sdk" ]; then
                 if [ -z "$LLM_API_KEY" ]; then
                   echo "Error: llm-api-key is required for 'sdk' mode."
-                  exit 1
-                fi
-                if [ -z "$GITHUB_TOKEN" ]; then
-                  echo "Error: github-token is required for 'sdk' mode."
                   exit 1
                 fi
               elif [ "$MODE" = "cloud" ]; then
