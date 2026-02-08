@@ -150,6 +150,8 @@ def _get_profile_path(self, name: str) -> Path:
 
                 llm_instance = LLM.load_from_json(str(profile_path))
             except Exception as e:
+                # Re-raise as ValueError for clearer error handling
+                raise ValueError(f"Failed to load profile `{name}`: {e}") from e
                 raise ValueError(f"Failed to load profile `{name}`: {e}") from e
 
             logger.info(f"[Profile Store] Loaded profile `{name}` from {profile_path}")
