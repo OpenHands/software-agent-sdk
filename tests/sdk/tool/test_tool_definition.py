@@ -84,6 +84,21 @@ class ComplexObservation(Observation):
         return [TextContent(text=f"Data: {self.data}, Count: {self.count}")]
 
 
+class RequiredFieldsObservation(Observation):
+    """Observation with required fields for validation testing.
+
+    Note: Defined at module level to ensure a stable qualified name for
+    JSON serialization/deserialization.
+    """
+
+    message: str = Field(description="Required message field")
+    value: int = Field(description="Required value field")
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=f"{self.message}: {self.value}")]
+
+
 class MockTestTool(ToolDefinition[ToolMockAction, ToolMockObservation]):
     """Concrete mock tool for testing."""
 
@@ -423,28 +438,20 @@ class TestTool:
     def test_executor_with_observation_validation(self):
         """Test that executor return values are validated."""
 
-        class StrictObservation(Observation):
-            message: str = Field(description="Required message field")
-            value: int = Field(description="Required value field")
-
-            @property
-            def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-                return [TextContent(text=f"{self.message}: {self.value}")]
-
         class ValidExecutor(ToolExecutor):
-            def __call__(self, action, conversation=None) -> StrictObservation:
-                return StrictObservation(message="success", value=42)
+            def __call__(self, action, conversation=None) -> RequiredFieldsObservation:
+                return RequiredFieldsObservation(message="success", value=42)
 
         tool = MockTestTool(
-            description="Tool with strict observation",
+            description="Tool with required fields observation",
             action_type=ToolMockAction,
-            observation_type=StrictObservation,
+            observation_type=RequiredFieldsObservation,
             executor=ValidExecutor(),
         )
 
         action = ToolMockAction(command="test")
         result = tool(action)
-        assert isinstance(result, StrictObservation)
+        assert isinstance(result, RequiredFieldsObservation)
         assert result.message == "success"
         assert result.value == 42
 
