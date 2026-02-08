@@ -104,7 +104,13 @@ def create_terminal_session(
     system = platform.system()
 
     if system == "Windows":
-        raise NotImplementedError("Windows is not supported yet for OpenHands V1.")
+        from openhands.tools.terminal.terminal.windows_terminal import (
+            WindowsTerminal,
+        )
+
+        logger.info("Auto-detected: Using WindowsTerminal (Windows system)")
+        terminal = WindowsTerminal(work_dir, username)
+        return TerminalSession(terminal, no_change_timeout_seconds)
     else:
         # On Unix-like systems, prefer tmux if available, otherwise use subprocess
         if _is_tmux_available():
