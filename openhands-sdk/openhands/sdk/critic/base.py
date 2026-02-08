@@ -17,18 +17,6 @@ FollowupPromptFn = Callable[[CriticResult, int], str]
 """Function that generates a follow-up prompt based on critic result and iteration."""
 
 
-def _default_followup_prompt(critic_result: CriticResult, iteration: int) -> str:
-    """Generate a simple follow-up prompt based on success probability only."""
-    score_percent = critic_result.score * 100
-
-    return (
-        f"The task appears incomplete (iteration {iteration}, "
-        f"success likelihood: {score_percent:.1f}%).\n\n"
-        "Please review what you've done and verify each requirement is met.\n"
-        "List what's working and what needs fixing, then complete the task.\n"
-    )
-
-
 class IterativeRefinementConfig(BaseModel):
     """Configuration for iterative refinement based on critic feedback.
 
@@ -109,4 +97,11 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
         Returns:
             A follow-up prompt string to send to the agent.
         """
-        return _default_followup_prompt(critic_result, iteration)
+        score_percent = critic_result.score * 100
+
+        return (
+            f"The task appears incomplete (iteration {iteration}, "
+            f"predicted success likelihood: {score_percent:.1f}%).\n\n"
+            "Please review what you've done and verify each requirement is met.\n"
+            "List what's working and what needs fixing, then complete the task.\n"
+        )

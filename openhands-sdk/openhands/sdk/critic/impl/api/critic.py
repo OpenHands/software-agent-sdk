@@ -121,7 +121,7 @@ class APIBasedCritic(CriticBase, CriticClient):
         score_percent = critic_result.score * 100
         lines = [
             f"The task appears incomplete (iteration {iteration}, "
-            f"success likelihood: {score_percent:.1f}%).",
+            f"predicted success likelihood: {score_percent:.1f}%).",
             "",
         ]
 
