@@ -1,11 +1,17 @@
 ---
+# OpenHands PR Review Workflow
+#
 # To set this up:
 #  1. Copy this file to .github/workflows/pr-review.yml in your repository
-#  2. Add your LLM_API_KEY to the repository secrets
-#  3. Commit this file to your repository
-#  4. Trigger the review by either:
+#  2. Add LLM_API_KEY to repository secrets
+#  3. Customize the inputs below as needed
+#  4. Commit this file to your repository
+#  5. Trigger the review by either:
 #     - Adding the "review-this" label to any PR, OR
 #     - Requesting openhands-agent as a reviewer
+#
+# For more information, see:
+# https://github.com/OpenHands/software-agent-sdk/tree/main/examples/03_github_workflows/02_pr_review
 name: PR Review by OpenHands
 
 on:
@@ -25,90 +31,25 @@ jobs:
             github.event.label.name == 'review-this' ||
             github.event.requested_reviewer.login == 'openhands-agent'
         runs-on: ubuntu-latest
-        env:
-            # Configuration (modify these values as needed)
-            LLM_MODEL: <YOUR_LLM_MODEL>
-            LLM_BASE_URL: <YOUR_LLM_BASE_URL>
-            # Review style: 'standard' for pragmatic review, 'roasted' for Linus-style
-            REVIEW_STYLE: standard
-            # PR context will be automatically provided by the agent script
-            PR_NUMBER: ${{ github.event.pull_request.number }}
-            PR_TITLE: ${{ github.event.pull_request.title }}
-            PR_BODY: ${{ github.event.pull_request.body }}
-            PR_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-            PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-            REPO_NAME: ${{ github.repository }}
         steps:
-            - name: Checkout software-agent-sdk repository
+            - name: Checkout for composite action
               uses: actions/checkout@v4
               with:
                   repository: OpenHands/software-agent-sdk
-                  path: software-agent-sdk
+                  # Use a specific version tag or branch (e.g., 'v1.0.0' or 'main')
+                  ref: main
+                  sparse-checkout: .github/actions/pr-review
 
-            - name: Checkout PR repository
-              uses: actions/checkout@v4
+            - name: Run PR Review
+              uses: ./.github/actions/pr-review
               with:
-                  # Fetch the full history to get the diff
-                  fetch-depth: 0
-                  path: pr-repo
-                  # Check out the feature branch so agent can inspect the PR changes
-                  ref: ${{ github.event.pull_request.head.ref }}
-
-            - name: Set up Python
-              uses: actions/setup-python@v5
-              with:
-                  python-version: '3.13'
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@v6
-              with:
-                  enable-cache: true
-
-            - name: Install GitHub CLI
-              run: |
-                  # Install GitHub CLI for posting review comments
-                  sudo apt-get update
-                  sudo apt-get install -y gh
-
-            - name: Install OpenHands dependencies
-              run: |
-                  # Install OpenHands SDK and tools from local checkout
-                  uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools
-
-            - name: Check required configuration
-              env:
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-              run: |
-                  if [ -z "$LLM_API_KEY" ]; then
-                    echo "Error: LLM_API_KEY secret is not set."
-                    exit 1
-                  fi
-
-                  echo "PR Number: $PR_NUMBER"
-                  echo "PR Title: $PR_TITLE"
-                  echo "Repository: $REPO_NAME"
-                  echo "LLM model: $LLM_MODEL"
-                  if [ -n "$LLM_BASE_URL" ]; then
-                    echo "LLM base URL: $LLM_BASE_URL"
-                  fi
-
-            - name: Run PR review
-              env:
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: |
-                  # Change to the PR repository directory so agent can analyze the code
-                  cd pr-repo
-
-                  # Run the PR review script from the software-agent-sdk checkout
-                  uv run python ../software-agent-sdk/examples/03_github_workflows/02_pr_review/agent_script.py
-
-            - name: Upload logs as artifact
-              uses: actions/upload-artifact@v4
-              if: always()
-              with:
-                  name: openhands-pr-review-logs
-                  path: |
-                      *.log
-                      output/
-                  retention-days: 7
+                  # LLM configuration
+                  llm-model: anthropic/claude-sonnet-4-5-20250929
+                  llm-base-url: ''
+                  # Review style: roasted (other option: standard)
+                  review-style: roasted
+                  # SDK version to use (version tag or branch name)
+                  sdk-version: main
+                  # Secrets
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
