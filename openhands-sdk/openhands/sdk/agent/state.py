@@ -1,7 +1,5 @@
 """Agent-specific runtime state that persists across iterations."""
 
-from typing import Any
-
 from pydantic import Field
 
 from openhands.sdk.utils.models import OpenHandsModel
@@ -17,20 +15,17 @@ class AgentState(OpenHandsModel):
     The AgentState is embedded within ConversationState and is automatically
     persisted along with the conversation.
 
+    New agent-specific state should be added as typed fields to this class
+    to ensure proper validation and serialization.
+
     Example:
         # Access agent state from conversation state
         state.agent_state.iterative_refinement_iteration += 1
-
-        # Store custom metadata
-        state.agent_state.metadata["custom_key"] = "value"
 
     Attributes:
         iterative_refinement_iteration: Current iteration count for critic
             iterative refinement. Tracks how many refinement cycles have
             been performed.
-        metadata: Extensible dictionary for agent-specific data that doesn't
-            warrant a dedicated field. Use sparingly - prefer typed fields
-            for frequently used state.
     """
 
     iterative_refinement_iteration: int = Field(
@@ -38,12 +33,6 @@ class AgentState(OpenHandsModel):
         ge=0,
         description="Current iteration count for critic iterative refinement. "
         "Tracks how many refinement cycles have been performed.",
-    )
-
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extensible dictionary for agent-specific data. "
-        "Use for custom state that doesn't warrant a dedicated field.",
     )
 
     def reset_iterative_refinement(self) -> None:
