@@ -78,12 +78,21 @@ async def events_socket(
                 await event_service.send_message(message, True)
             except WebSocketDisconnect:
                 logger.info(f"Event websocket disconnected: {conversation_id}")
-                # Exit the loop when websocket disconnects
+                # Exit the loop when websocket disconnects - this is normal behavior
+                # and should NOT trigger server shutdown
+                return
+            except ConnectionError as e:
+                # Handle connection errors gracefully - the websocket is broken
+                # so we just close the connection without crashing the server
+                logger.warning(
+                    f"WebSocket connection error for {conversation_id}: {e}, "
+                    "closing connection gracefully"
+                )
                 return
             except Exception as e:
                 logger.exception("error_in_subscription", stack_info=True)
-                # For critical errors that indicate the websocket is broken, exit
-                if isinstance(e, (RuntimeError, ConnectionError)):
+                # For RuntimeError and other critical errors, re-raise to surface bugs
+                if isinstance(e, RuntimeError):
                     raise
                 # For other exceptions, continue the loop
     finally:
@@ -124,13 +133,22 @@ async def bash_events_socket(
                 request = ExecuteBashRequest.model_validate(data)
                 await bash_event_service.start_bash_command(request)
             except WebSocketDisconnect:
-                # Exit the loop when websocket disconnects
+                # Exit the loop when websocket disconnects - this is normal behavior
+                # and should NOT trigger server shutdown
                 logger.info("Bash websocket disconnected")
+                return
+            except ConnectionError as e:
+                # Handle connection errors gracefully - the websocket is broken
+                # so we just close the connection without crashing the server
+                logger.warning(
+                    f"Bash WebSocket connection error: {e}, "
+                    "closing connection gracefully"
+                )
                 return
             except Exception as e:
                 logger.exception("error_in_bash_event_subscription", stack_info=True)
-                # For critical errors that indicate the websocket is broken, exit
-                if isinstance(e, (RuntimeError, ConnectionError)):
+                # For RuntimeError and other critical errors, re-raise to surface bugs
+                if isinstance(e, RuntimeError):
                     raise
                 # For other exceptions, continue the loop
     finally:
