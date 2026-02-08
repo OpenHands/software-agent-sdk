@@ -125,7 +125,11 @@ MODELS = {
     "glm-4.7": {
         "id": "glm-4.7",
         "display_name": "GLM-4.7",
-        "llm_config": {"model": "litellm_proxy/openrouter/z-ai/glm-4.7"},
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-4.7",
+            # OpenRouter glm-4.7 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
     },
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",

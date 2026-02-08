@@ -558,6 +558,21 @@ class Message(BaseModel):
                                 "output": output_text,
                             }
                         )
+                    elif isinstance(c, ImageContent) and vision_enabled:
+                        for url in c.image_urls:
+                            items.append(
+                                {
+                                    "type": "function_call_output",
+                                    "call_id": resp_call_id,
+                                    "output": [
+                                        {
+                                            "type": "input_image",
+                                            "image_url": url,
+                                            "detail": "auto",
+                                        }
+                                    ],
+                                }
+                            )
             return items
 
         return items
