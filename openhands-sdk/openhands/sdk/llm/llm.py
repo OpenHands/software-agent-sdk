@@ -112,7 +112,9 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     LLMNoResponseError,
 )
 
-# Minimum context window size required for OpenHands to function properly
+# Minimum context window size required for OpenHands to function properly.
+# Based on typical usage: system prompt (~2k) + conversation history (~4k)
+# + tool definitions (~2k) + working memory (~8k) = ~16k minimum.
 MIN_CONTEXT_WINDOW_TOKENS = 16384
 
 # Environment variable to override the minimum context window check
@@ -1033,17 +1035,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _validate_context_window_size(self) -> None:
         """Validate that the context window is large enough for OpenHands."""
-        if (
-            self.max_input_tokens is None
-            or self.max_input_tokens >= MIN_CONTEXT_WINDOW_TOKENS
-            or os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower()
-            in ("true", "1", "yes")
+        # Allow override via environment variable
+        if os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower() in (
+            "true",
+            "1",
+            "yes",
         ):
             return
 
-        raise LLMContextWindowTooSmallError(
-            self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
-        )
+        # Unknown context window - cannot validate
+        if self.max_input_tokens is None:
+            return
+
+        # Check minimum requirement
+        if self.max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
+            raise LLMContextWindowTooSmallError(
+                self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
+            )
 
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
