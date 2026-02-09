@@ -31,8 +31,8 @@ from openhands.tools.terminal import TerminalTool
 
 
 # Configuration
-# Higher threshold (70%) makes it more likely the agent needs multiple iterations
-# to demonstrate the how iterative refinement works.
+# Higher threshold (70%) makes it more likely the agent needs multiple iterations,
+# which better demonstrates how iterative refinement works.
 # Adjust as needed to see different behaviors.
 SUCCESS_THRESHOLD = float(os.getenv("CRITIC_SUCCESS_THRESHOLD", "0.7"))
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "3"))
