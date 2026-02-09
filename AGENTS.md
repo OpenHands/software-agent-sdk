@@ -157,6 +157,14 @@ mkdir -p .pr
 - Any analysis that helps reviewers understand the PR but isn't needed long-term
 </PR_ARTIFACTS>
 
+<REVIEW_HANDLING>
+- After addressing inline review comments, mark the corresponding review threads as resolved.
+- Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
+- Prefer resolving threads only once fixes are pushed or a clear decision is documented.
+- Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+</REVIEW_HANDLING>
+
+
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
 - Use existing packages/libraries instead of implementing yourselves whenever possible.
@@ -225,6 +233,22 @@ git push -u origin <feature-name>
 - Clean caches: `make clean`
 - Run an example: `uv run python examples/01_standalone_sdk/main.py`
 </QUICK_COMMANDS>
+
+<RUNNING_EXAMPLES>
+# Running SDK Examples
+
+When implementing or modifying examples in `examples/`, always verify they work before committing:
+
+```bash
+# Run examples using the All-Hands LLM proxy
+LLM_BASE_URL="https://llm-proxy.eval.all-hands.dev" LLM_API_KEY="$LLM_API_KEY" \
+  uv run python examples/01_standalone_sdk/<example_name>.py
+```
+
+The `LLM_API_KEY` environment variable may be available in the OpenHands development environment and works with the All-Hands LLM proxy (`llm-proxy.eval.all-hands.dev` OR `llm-proxy.app.all-hands.dev`). Please consult the human user for the LLM key if it is not found.
+
+For examples that use the critic model (e.g., `34_critic_example.py`), the critic is auto-configured when using the All-Hands LLM proxy - no additional setup needed.
+</RUNNING_EXAMPLES>
 
 <REPO_CONFIG_NOTES>
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).

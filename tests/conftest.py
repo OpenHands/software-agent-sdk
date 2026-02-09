@@ -16,6 +16,10 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TOKENIZER_FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "tokenizers"
+QWEN3_TOKENIZER_CONFIG = (
+    TOKENIZER_FIXTURES_DIR / "qwen3-4b-instruct-2507-tokenizer_config.json"
+)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -55,6 +59,18 @@ def examples_results_dir(pytestconfig: pytest.Config) -> Path:
         for existing in result_dir.glob("*.json"):
             existing.unlink()
     return result_dir
+
+
+@pytest.fixture(scope="session")
+def tokenizer_fixtures_dir() -> Path:
+    """Get the tokenizer fixtures directory path."""
+    return TOKENIZER_FIXTURES_DIR
+
+
+@pytest.fixture(scope="session")
+def qwen3_tokenizer_config_path(tokenizer_fixtures_dir: Path) -> Path:
+    """Path to the cached Qwen3 tokenizer config fixture."""
+    return tokenizer_fixtures_dir / "qwen3-4b-instruct-2507-tokenizer_config.json"
 
 
 @pytest.fixture
