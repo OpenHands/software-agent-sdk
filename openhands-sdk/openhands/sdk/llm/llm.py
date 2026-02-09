@@ -406,7 +406,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
-            d["api_version"] = "2024-12-01-preview"
+            d["api_version"] = os.getenv("LLM_API_VERSION", None),
 
         # Provider rewrite: openhands/* -> litellm_proxy/*
         if model_val.startswith("openhands/"):
