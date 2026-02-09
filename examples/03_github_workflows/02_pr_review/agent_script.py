@@ -33,11 +33,14 @@ For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
 """
 
+import json
 import os
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from lmnr import Laminar
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.conversation import get_agent_final_response
@@ -287,6 +290,45 @@ def main():
                 print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
             if token_usage.cache_write_tokens > 0:
                 print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
+
+        # Capture and store trace ID for delayed evaluation
+        # When the PR is merged/closed, we can use this trace_id to evaluate
+        # how well the review comments were addressed.
+        # Note: Laminar methods gracefully handle the uninitialized case by
+        # returning None or early-returning, so no try/except needed.
+        trace_id = Laminar.get_trace_id()
+        if trace_id:
+            # Set trace metadata for later retrieval and filtering
+            Laminar.set_trace_metadata(
+                {
+                    "pr_number": pr_info["number"],
+                    "repo_name": pr_info["repo_name"],
+                    "workflow_phase": "review",
+                    "review_style": review_style,
+                }
+            )
+
+            # Store trace_id in file for GitHub artifact upload
+            # This allows the evaluation workflow to link back to this trace
+            trace_data = {
+                "trace_id": str(trace_id),
+                "pr_number": pr_info["number"],
+                "repo_name": pr_info["repo_name"],
+                "commit_id": commit_id,
+                "review_style": review_style,
+            }
+            with open("laminar_trace_info.json", "w") as f:
+                json.dump(trace_data, f, indent=2)
+            logger.info(f"Laminar trace ID: {trace_id}")
+            print("\n=== Laminar Trace ===")
+            print(f"Trace ID: {trace_id}")
+
+            # Ensure trace is flushed to Laminar before workflow ends
+            Laminar.flush()
+        else:
+            logger.warning(
+                "No Laminar trace ID found - observability may not be enabled"
+            )
 
         logger.info("PR review completed successfully")
 
