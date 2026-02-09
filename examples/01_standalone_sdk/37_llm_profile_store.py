@@ -56,6 +56,7 @@ print(f"Stored profiles: {store.list()}")
 # 4. Load a profile
 
 loaded = store.load("fast")
+assert isinstance(loaded, LLM)
 print(
     "Loaded profile. "
     f"usage:{loaded.usage_id}, "
