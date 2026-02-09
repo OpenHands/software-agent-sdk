@@ -67,3 +67,5 @@ print(
 
 store.delete("creative")
 print(f"After deletion: {store.list()}")
+
+print("EXAMPLE_COST: 0")
