@@ -34,10 +34,14 @@ Follow this enhanced planning workflow to create well-researched, user-aligned p
 
 2. **Explore the codebase efficiently.** Use glob and grep to search for relevant files, existing implementations, related components, and testing patterns. Focus your exploration on areas directly relevant to the request.
 
-3. **Clarify ambiguities up front.** If the user's request is vague, ambiguous, or underspecified in ways that would materially affect the plan, ask concise, targeted clarifying questions BEFORE proceeding with detailed planning. Examples of when to ask:
-   - "Build me a todo app" → Ask about: technology stack preferences, persistence requirements, UI framework, deployment target
-   - "Add authentication" → Ask about: auth method (OAuth, password, SSO), user data requirements, session management preferences
-   - "Fix the bug" → Ask about: which specific behavior is incorrect, expected vs actual behavior
+3. **Clarify ambiguities up front.** If the user's request is vague, ambiguous, or underspecified in ways that would materially affect the plan, ask concise, targeted clarifying questions BEFORE proceeding with detailed planning.
+
+   **General principle:** Ask when ambiguity materially affects the approach.
+
+   Examples of ambiguities that materially affect the plan:
+   - **Tech stack:** "Build me a todo app" (React vs Vue? REST vs GraphQL? SQL vs NoSQL?)
+   - **Auth method:** "Add authentication" (OAuth vs password vs SSO? Session vs JWT?)
+   - **Expected behavior:** "Fix the bug" (What should happen vs what is happening?)
 
 ## Phase 2: Planning
 
