@@ -24,7 +24,7 @@ class TestLLMTimeoutDefaults:
 
         See: https://github.com/OpenHands/software-agent-sdk/issues/1633
         """
-        llm = LLM(model="gpt-4", usage_id="test-llm")
+        llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
 
         assert llm.timeout == DEFAULT_LLM_TIMEOUT_SECONDS, (
             f"Expected default timeout of {DEFAULT_LLM_TIMEOUT_SECONDS}s (5 minutes), "
@@ -36,7 +36,7 @@ class TestLLMTimeoutDefaults:
     def test_timeout_can_be_overridden(self):
         """Test that the timeout can be explicitly set to a custom value."""
         custom_timeout = 600  # 10 minutes
-        llm = LLM(model="gpt-4", usage_id="test-llm", timeout=custom_timeout)
+        llm = LLM(model="gpt-4o-mini", usage_id="test-llm", timeout=custom_timeout)
 
         assert llm.timeout == custom_timeout
 
@@ -46,7 +46,7 @@ class TestLLMTimeoutDefaults:
         Users who need very long LLM calls (e.g., extended reasoning with high
         thinking budgets) can explicitly disable the timeout by setting it to None.
         """
-        llm = LLM(model="gpt-4", usage_id="test-llm", timeout=None)
+        llm = LLM(model="gpt-4o-mini", usage_id="test-llm", timeout=None)
 
         # When explicitly set to None, it should remain None
         assert llm.timeout is None
@@ -54,11 +54,11 @@ class TestLLMTimeoutDefaults:
     def test_timeout_validation_rejects_negative_values(self):
         """Test that negative timeout values are rejected."""
         with pytest.raises(Exception):  # ValidationError from pydantic
-            LLM(model="gpt-4", usage_id="test-llm", timeout=-1)
+            LLM(model="gpt-4o-mini", usage_id="test-llm", timeout=-1)
 
     def test_timeout_accepts_zero(self):
         """Test that zero timeout is valid (immediate timeout)."""
-        llm = LLM(model="gpt-4", usage_id="test-llm", timeout=0)
+        llm = LLM(model="gpt-4o-mini", usage_id="test-llm", timeout=0)
         assert llm.timeout == 0
 
 
@@ -86,14 +86,14 @@ class TestLLMTimeoutPassthrough:
                 )
             ],
             created=1234567890,
-            model="gpt-4",
+            model="gpt-4o-mini",
             object="chat.completion",
             usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
         mock_completion.return_value = mock_response
 
         llm = LLM(
-            model="gpt-4",
+            model="gpt-4o-mini",
             api_key=SecretStr("test_key"),
             usage_id="test-llm",
         )
@@ -131,7 +131,7 @@ class TestLLMTimeoutPassthrough:
                 )
             ],
             created=1234567890,
-            model="gpt-4",
+            model="gpt-4o-mini",
             object="chat.completion",
             usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
@@ -139,7 +139,7 @@ class TestLLMTimeoutPassthrough:
 
         custom_timeout = 120
         llm = LLM(
-            model="gpt-4",
+            model="gpt-4o-mini",
             api_key=SecretStr("test_key"),
             usage_id="test-llm",
             timeout=custom_timeout,
@@ -173,14 +173,14 @@ class TestLLMTimeoutPassthrough:
                 )
             ],
             created=1234567890,
-            model="gpt-4",
+            model="gpt-4o-mini",
             object="chat.completion",
             usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
         mock_completion.return_value = mock_response
 
         llm = LLM(
-            model="gpt-4",
+            model="gpt-4o-mini",
             api_key=SecretStr("test_key"),
             usage_id="test-llm",
             timeout=None,  # Explicitly set to None
