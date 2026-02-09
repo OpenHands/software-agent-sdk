@@ -8,7 +8,6 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.agent.state import AgentStateRegistry
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -143,12 +142,13 @@ class ConversationState(OpenHandsModel):
         description="Registry for handling secrets and sensitive data",
     )
 
-    # Agent-specific runtime state registry
-    agent_state_registry: AgentStateRegistry = Field(
-        default_factory=AgentStateRegistry,
-        description="Registry for agent-specific runtime state that persists across "
-        "iterations. Provides a loosely-coupled storage mechanism where agents can "
-        "store feature-specific state using string keys.",
+    # Agent-specific runtime state (simple dict for flexibility)
+    agent_state: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary for agent-specific runtime state that persists across "
+        "iterations. Agents can store feature-specific state using string keys. "
+        "To trigger autosave, always reassign: "
+        "state.agent_state = {**state.agent_state, key: value}",
     )
 
     # ===== Private attrs (NOT Fields) =====

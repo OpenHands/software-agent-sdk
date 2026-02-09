@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from openhands.sdk.agent.state import ITERATIVE_REFINEMENT_ITERATION_KEY
 from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import ActionEvent, LLMConvertibleEvent, MessageEvent
 from openhands.sdk.logger import get_logger
@@ -18,6 +17,9 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+# Key for storing iterative refinement iteration count in agent_state
+ITERATIVE_REFINEMENT_ITERATION_KEY = "iterative_refinement_iteration"
 
 
 class CriticMixin:
@@ -90,10 +92,10 @@ class CriticMixin:
             return False, None
 
         config = self.critic.iterative_refinement
-        registry = conversation.state.agent_state_registry
+        state = conversation.state
 
         # Get current iteration count (0-indexed)
-        iteration = registry.get(ITERATIVE_REFINEMENT_ITERATION_KEY, 0)
+        iteration = state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY, 0)
 
         # Check if we've exceeded max iterations BEFORE incrementing
         if iteration >= config.max_iterations:
@@ -120,8 +122,12 @@ class CriticMixin:
 
         # Score below threshold AND we haven't hit max iterations
         # NOW we increment the counter since we're actually continuing
+        # Use reassignment pattern to trigger autosave
         new_iteration = iteration + 1
-        registry.set(ITERATIVE_REFINEMENT_ITERATION_KEY, new_iteration)
+        state.agent_state = {
+            **state.agent_state,
+            ITERATIVE_REFINEMENT_ITERATION_KEY: new_iteration,
+        }
 
         logger.info(
             f"Iterative refinement: score {critic_result.score:.3f} < "

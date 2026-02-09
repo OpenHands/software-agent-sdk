@@ -4,8 +4,6 @@ from openhands.sdk.agent import (
     ITERATIVE_REFINEMENT_ITERATION_KEY,
     Agent,
     AgentBase,
-    AgentState,
-    AgentStateRegistry,
 )
 from openhands.sdk.context import (
     AgentContext,
@@ -87,8 +85,6 @@ __all__ = [
     "ToolDefinition",
     "AgentBase",
     "Agent",
-    "AgentState",
-    "AgentStateRegistry",
     "ITERATIVE_REFINEMENT_ITERATION_KEY",
     "Action",
     "Observation",

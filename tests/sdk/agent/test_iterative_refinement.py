@@ -5,10 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openhands.sdk.agent.critic_mixin import CriticMixin
-from openhands.sdk.agent.state import (
+from openhands.sdk.agent.critic_mixin import (
     ITERATIVE_REFINEMENT_ITERATION_KEY,
-    AgentStateRegistry,
+    CriticMixin,
 )
 from openhands.sdk.critic.base import (
     CriticBase,
@@ -35,13 +34,11 @@ class MockCriticMixin(CriticMixin):
 
 
 def create_mock_conversation(iteration: int = 0):
-    """Create a mock conversation with agent state registry."""
+    """Create a mock conversation with agent_state dict."""
     mock_state = MagicMock()
-    mock_state.agent_state_registry = AgentStateRegistry()
+    mock_state.agent_state = {}
     if iteration > 0:
-        mock_state.agent_state_registry.set(
-            ITERATIVE_REFINEMENT_ITERATION_KEY, iteration
-        )
+        mock_state.agent_state = {ITERATIVE_REFINEMENT_ITERATION_KEY: iteration}
 
     mock_conversation = MagicMock()
     mock_conversation.state = mock_state
@@ -158,10 +155,7 @@ class TestCheckIterativeRefinement:
         assert followup is None
         # Iteration should NOT have been incremented
         assert (
-            conversation.state.agent_state_registry.get(
-                ITERATIVE_REFINEMENT_ITERATION_KEY
-            )
-            == 3
+            conversation.state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY) == 3
         )
 
     def test_no_critic_result_returns_false(self):
@@ -195,9 +189,7 @@ class TestCheckIterativeRefinement:
         assert followup is None
         # Iteration should NOT have been incremented
         assert (
-            conversation.state.agent_state_registry.get(
-                ITERATIVE_REFINEMENT_ITERATION_KEY, 0
-            )
+            conversation.state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY, 0)
             == 0
         )
 
@@ -237,10 +229,7 @@ class TestCheckIterativeRefinement:
         assert "40.0%" in followup  # Score percentage in followup
         # Iteration should have been incremented
         assert (
-            conversation.state.agent_state_registry.get(
-                ITERATIVE_REFINEMENT_ITERATION_KEY
-            )
-            == 1
+            conversation.state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY) == 1
         )
 
     def test_iteration_only_increments_on_continue(self):
@@ -257,10 +246,7 @@ class TestCheckIterativeRefinement:
         should_continue, _ = mixin._check_iterative_refinement(conversation, event)
         assert should_continue is True
         assert (
-            conversation.state.agent_state_registry.get(
-                ITERATIVE_REFINEMENT_ITERATION_KEY
-            )
-            == 1
+            conversation.state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY) == 1
         )
 
         # Second call - score meets threshold, should NOT continue
@@ -269,10 +255,7 @@ class TestCheckIterativeRefinement:
         assert should_continue is False
         # Iteration should still be 1 (not incremented)
         assert (
-            conversation.state.agent_state_registry.get(
-                ITERATIVE_REFINEMENT_ITERATION_KEY
-            )
-            == 1
+            conversation.state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY) == 1
         )
 
     def test_multiple_iterations(self):
@@ -295,7 +278,7 @@ class TestCheckIterativeRefinement:
             if score < 0.8:
                 assert should_continue is True
                 assert (
-                    conversation.state.agent_state_registry.get(
+                    conversation.state.agent_state.get(
                         ITERATIVE_REFINEMENT_ITERATION_KEY
                     )
                     == i + 1
