@@ -25,6 +25,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -166,9 +167,24 @@ class ConversationState(OpenHandsModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
-        """Handle legacy 'secrets_manager' field name for backward compatibility."""
-        if isinstance(data, dict) and "secrets_manager" in data:
+    def _handle_legacy_fields(cls, data: Any) -> Any:
+        """Handle legacy field names for backward compatibility."""
+        if not isinstance(data, dict):
+            return data
+
+        # Handle legacy 'secrets_manager' field name
+        if "secrets_manager" in data:
+            warn_deprecated(
+                "ConversationState.secrets_manager",
+                deprecated_in="1.12.0",
+                removed_in="1.15.0",
+                details=(
+                    "The 'secrets_manager' field has been renamed to "
+                    "'secret_registry'. Please update your code to use "
+                    "'secret_registry' instead."
+                ),
+                stacklevel=4,
+            )
             data["secret_registry"] = data.pop("secrets_manager")
         return data
 
