@@ -27,7 +27,8 @@ MODELS = {
     "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",
         "display_name": "Kimi K2 Thinking",
-        "llm_config": {"model": "litellm_proxy/moonshot/kimi-k2-thinking"},
+        # Note: production proxy has this as kimi-k2-thinking (no moonshot/ prefix)
+        "llm_config": {"model": "litellm_proxy/kimi-k2-thinking"},
     },
     # https://www.kimi.com/blog/kimi-k2-5.html
     "kimi-k2.5": {
@@ -67,7 +68,8 @@ MODELS = {
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
-        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-pro-preview"},
+        # Note: production proxy has this as gemini-3-pro-preview (no gemini/ prefix)
+        "llm_config": {"model": "litellm_proxy/gemini-3-pro-preview"},
     },
     "gemini-3-flash": {
         "id": "gemini-3-flash",
@@ -102,10 +104,15 @@ MODELS = {
         "display_name": "MiniMax M2.1",
         "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
     },
-    "deepseek-v3.2-reasoner": {
-        "id": "deepseek-v3.2-reasoner",
-        "display_name": "DeepSeek V3.2 Reasoner",
-        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
+    "deepseek-reasoner": {
+        "id": "deepseek-reasoner",
+        "display_name": "DeepSeek Reasoner",
+        "llm_config": {"model": "litellm_proxy/deepseek-reasoner"},
+    },
+    "deepseek-chat": {
+        "id": "deepseek-chat",
+        "display_name": "DeepSeek Chat",
+        "llm_config": {"model": "litellm_proxy/deepseek-chat"},
     },
     "qwen-3-coder": {
         "id": "qwen-3-coder",

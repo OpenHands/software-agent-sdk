@@ -37,7 +37,8 @@ on:
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
     # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
-    DEFAULT_MODEL_IDS: claude-sonnet-4-5-20250929,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3-pro
+    # These models must be available on production proxy (llm-proxy.app.all-hands.dev)
+    DEFAULT_MODEL_IDS: claude-sonnet-4-5-20250929,deepseek-reasoner,kimi-k2-thinking,gpt-5.2-codex
 
 jobs:
     setup-matrix:
