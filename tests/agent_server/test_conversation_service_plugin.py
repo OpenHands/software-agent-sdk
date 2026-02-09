@@ -115,7 +115,7 @@ async def test_start_conversation_without_plugin(conversation_service):
     with tempfile.TemporaryDirectory() as temp_dir:
         request = StartConversationRequest(
             agent=Agent(
-                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
                 tools=[],
             ),
             workspace=LocalWorkspace(working_dir=temp_dir),
@@ -174,7 +174,7 @@ async def test_start_conversation_with_plugins_list(conversation_service, tmp_pa
     with tempfile.TemporaryDirectory() as temp_dir:
         request = StartConversationRequest(
             agent=Agent(
-                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
                 tools=[],
             ),
             workspace=LocalWorkspace(working_dir=temp_dir),
@@ -231,7 +231,7 @@ async def test_start_conversation_with_multiple_plugins(conversation_service, tm
     with tempfile.TemporaryDirectory() as temp_dir:
         request = StartConversationRequest(
             agent=Agent(
-                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
                 tools=[],
             ),
             workspace=LocalWorkspace(working_dir=temp_dir),
@@ -287,7 +287,7 @@ async def test_plugins_persisted_in_stored_conversation_for_lazy_loading(
     with tempfile.TemporaryDirectory() as temp_dir:
         request = StartConversationRequest(
             agent=Agent(
-                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
                 tools=[],
             ),
             workspace=LocalWorkspace(working_dir=temp_dir),
@@ -351,7 +351,7 @@ async def test_start_conversation_with_explicit_hook_config(conversation_service
         )
         request = StartConversationRequest(
             agent=Agent(
-                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
                 tools=[],
             ),
             workspace=LocalWorkspace(working_dir=temp_dir),
@@ -422,7 +422,7 @@ async def test_start_conversation_stores_both_hooks_and_plugins_for_lazy_merge(
         )
         request = StartConversationRequest(
             agent=Agent(
-                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
                 tools=[],
             ),
             workspace=LocalWorkspace(working_dir=temp_dir),
