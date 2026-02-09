@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from openhands.sdk.agent.state import ITERATIVE_REFINEMENT_ITERATION_KEY
 from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import ActionEvent, LLMConvertibleEvent, MessageEvent
 from openhands.sdk.logger import get_logger
@@ -75,6 +76,10 @@ class CriticMixin:
     ) -> tuple[bool, str | None]:
         """Check if iterative refinement should continue after a FinishAction.
 
+        This method checks the critic result and determines whether to continue
+        with another iteration. State mutation (incrementing the iteration counter)
+        only occurs when refinement will actually continue.
+
         Returns:
             A tuple of (should_continue, followup_message).
             If should_continue is True, the agent should continue with the
@@ -85,12 +90,12 @@ class CriticMixin:
             return False, None
 
         config = self.critic.iterative_refinement
+        registry = conversation.state.agent_state_registry
 
-        # Increment iteration counter using the agent state
-        conversation.state.agent_state.iterative_refinement_iteration += 1
-        iteration = conversation.state.agent_state.iterative_refinement_iteration
+        # Get current iteration count (0-indexed)
+        iteration = registry.get(ITERATIVE_REFINEMENT_ITERATION_KEY, 0)
 
-        # Check if we've exceeded max iterations
+        # Check if we've exceeded max iterations BEFORE incrementing
         if iteration >= config.max_iterations:
             logger.info(
                 f"Iterative refinement: max iterations "
@@ -113,11 +118,15 @@ class CriticMixin:
             )
             return False, None
 
-        # Score below threshold, generate follow-up prompt
+        # Score below threshold AND we haven't hit max iterations
+        # NOW we increment the counter since we're actually continuing
+        new_iteration = iteration + 1
+        registry.set(ITERATIVE_REFINEMENT_ITERATION_KEY, new_iteration)
+
         logger.info(
             f"Iterative refinement: score {critic_result.score:.3f} < "
             f"threshold {config.success_threshold:.3f}, "
-            f"iteration {iteration + 1}/{config.max_iterations}"
+            f"iteration {new_iteration}/{config.max_iterations}"
         )
-        followup = self.critic.get_followup_prompt(critic_result, iteration + 1)
+        followup = self.critic.get_followup_prompt(critic_result, new_iteration)
         return True, followup

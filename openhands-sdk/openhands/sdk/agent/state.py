@@ -1,40 +1,102 @@
-"""Agent-specific runtime state that persists across iterations."""
+"""Agent-specific runtime state registry that persists across iterations."""
+
+from typing import Any
 
 from pydantic import Field
 
 from openhands.sdk.utils.models import OpenHandsModel
 
 
-class AgentState(OpenHandsModel):
-    """Agent-specific runtime state that persists across conversation iterations.
+# Registry keys for agent state
+ITERATIVE_REFINEMENT_ITERATION_KEY = "iterative_refinement_iteration"
 
-    This class holds state that is specific to agent execution and behavior,
-    separate from conversation-level state. It provides a centralized place
-    for agent-specific features to store their runtime state.
 
-    The AgentState is embedded within ConversationState and is automatically
+class AgentStateRegistry(OpenHandsModel):
+    """Registry for agent-specific runtime state that persists across iterations.
+
+    This class provides a flexible, loosely-coupled storage mechanism for
+    agent-specific state. Instead of embedding typed fields for each feature,
+    agents store their state using string keys in a dictionary.
+
+    This design:
+    - Decouples agent-specific state from conversation-level concerns
+    - Allows different agents to store different state without modifying this class
+    - Makes it easier to compose agents with different capabilities
+    - Avoids the class becoming a dumping ground for unrelated state
+
+    The registry is embedded within ConversationState and is automatically
     persisted along with the conversation.
 
-    New agent-specific state should be added as typed fields to this class
-    to ensure proper validation and serialization.
-
     Example:
-        # Access agent state from conversation state
-        state.agent_state.iterative_refinement_iteration += 1
+        # Store state
+        registry = state.agent_state_registry
+        registry.set("my_feature_counter", 5)
 
-    Attributes:
-        iterative_refinement_iteration: Current iteration count for critic
-            iterative refinement. Tracks how many refinement cycles have
-            been performed.
+        # Retrieve state with default
+        counter = registry.get("my_feature_counter", 0)
+
+        # Check if key exists
+        if registry.has("my_feature_counter"):
+            ...
+
+    Predefined keys:
+        - ITERATIVE_REFINEMENT_ITERATION_KEY: Current iteration count for critic
+          iterative refinement.
     """
 
-    iterative_refinement_iteration: int = Field(
-        default=0,
-        ge=0,
-        description="Current iteration count for critic iterative refinement. "
-        "Tracks how many refinement cycles have been performed.",
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary storing agent-specific state. Keys are feature "
+        "identifiers, values are feature-specific state data.",
     )
 
-    def reset_iterative_refinement(self) -> None:
-        """Reset the iterative refinement counter to zero."""
-        self.iterative_refinement_iteration = 0
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a value from the registry.
+
+        Args:
+            key: The key to look up.
+            default: Value to return if key is not found.
+
+        Returns:
+            The stored value, or default if not found.
+        """
+        return self.data.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a value in the registry.
+
+        Args:
+            key: The key to store under.
+            value: The value to store.
+        """
+        self.data[key] = value
+
+    def has(self, key: str) -> bool:
+        """Check if a key exists in the registry.
+
+        Args:
+            key: The key to check.
+
+        Returns:
+            True if the key exists, False otherwise.
+        """
+        return key in self.data
+
+    def remove(self, key: str) -> Any | None:
+        """Remove a key from the registry.
+
+        Args:
+            key: The key to remove.
+
+        Returns:
+            The removed value, or None if key didn't exist.
+        """
+        return self.data.pop(key, None)
+
+    def clear(self) -> None:
+        """Clear all state from the registry."""
+        self.data.clear()
+
+
+# Backward compatibility alias
+AgentState = AgentStateRegistry

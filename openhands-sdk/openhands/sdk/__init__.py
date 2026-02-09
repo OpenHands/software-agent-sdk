@@ -1,6 +1,12 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from openhands.sdk.agent import Agent, AgentBase, AgentState
+from openhands.sdk.agent import (
+    ITERATIVE_REFINEMENT_ITERATION_KEY,
+    Agent,
+    AgentBase,
+    AgentState,
+    AgentStateRegistry,
+)
 from openhands.sdk.context import (
     AgentContext,
     load_project_skills,
@@ -82,6 +88,8 @@ __all__ = [
     "AgentBase",
     "Agent",
     "AgentState",
+    "AgentStateRegistry",
+    "ITERATIVE_REFINEMENT_ITERATION_KEY",
     "Action",
     "Observation",
     "MCPClient",

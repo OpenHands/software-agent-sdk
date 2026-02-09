@@ -48,7 +48,7 @@ def get_required_env(name: str) -> str:
     )
 
 
-def get_default_critic(llm: "LLM") -> CriticBase | None:
+def get_default_critic(llm: LLM) -> CriticBase | None:
     """Auto-configure critic for All-Hands LLM proxy.
 
     When the LLM base_url matches `llm-proxy.*.all-hands.dev`, returns an
