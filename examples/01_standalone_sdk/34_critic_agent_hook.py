@@ -1,20 +1,24 @@
-"""Critic Agent with Callback Hook Example
+"""Critic Agent with Iterative Refinement Example
 
-This example demonstrates the critic agent feature with Python callback hooks:
+This example demonstrates two approaches for using the AgentReviewCritic:
 
-- A Stop hook blocks the agent from finishing until a critic approves the
-  current git diff.
-- The critic (`AgentReviewCritic`) spawns a *separate* OpenHands agent to do a
-  PR-style review of the diff.
-- The hook uses a Python callback function instead of a shell script.
+1. **Iterative Refinement (Recommended)**: Uses the built-in iterative refinement
+   mechanism where the critic evaluates the agent's work and automatically triggers
+   follow-up prompts if the quality threshold isn't met.
 
-How it works:
+2. **Stop Hook (Alternative)**: Uses a callback hook to block the agent from
+   finishing until the critic approves the current git diff.
+
+The AgentReviewCritic spawns a *separate* OpenHands agent to do a PR-style
+review of the git diff.
+
+How Iterative Refinement works:
 1) We create a temporary git repo in a temp workspace.
-2) We ask the agent to make a change.
-3) The Stop hook runs via a Python callback, invokes the critic, and
-   denies stopping if the critic says `not_pass`, feeding the critic
-   summary back to the agent.
-4) The agent can then fix the issues and try again.
+2) We configure the critic with IterativeRefinementConfig.
+3) The agent makes changes and tries to finish.
+4) The critic evaluates the git diff and provides a score.
+5) If the score is below the threshold, a follow-up prompt is sent automatically.
+6) The process repeats until the threshold is met or max iterations reached.
 
 Requirements:
 - export LLM_API_KEY=...
@@ -34,16 +38,20 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation
-from openhands.sdk.critic.impl.agent_review import (
-    AgentReviewCritic,
-    create_critic_stop_hook,
-)
-from openhands.sdk.hooks import HookConfig, HookMatcher
+from openhands.sdk.critic import IterativeRefinementConfig
+from openhands.sdk.critic.impl.agent_review import AgentReviewCritic
 from openhands.tools.preset.critic import get_critic_agent
 from openhands.tools.preset.default import get_default_agent
 
 
 signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+
+# Configuration for iterative refinement
+# The critic will evaluate the git diff and trigger follow-up prompts
+# if the score is below the threshold
+SUCCESS_THRESHOLD = float(os.getenv("CRITIC_SUCCESS_THRESHOLD", "1.0"))
+MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "3"))
 
 
 def _git(workspace: Path, *args: str) -> None:
@@ -83,30 +91,38 @@ if __name__ == "__main__":
     _git(workspace, "add", "calc.py")
     _git(workspace, "commit", "-m", "init", "-q")
 
-    # Create the critic with the same LLM and a custom agent factory
+    # Create the critic with iterative refinement config
+    # The critic will spawn a separate agent to review the git diff
+    iterative_config = IterativeRefinementConfig(
+        success_threshold=SUCCESS_THRESHOLD,
+        max_iterations=MAX_ITERATIONS,
+    )
+
     critic = AgentReviewCritic(
         llm=llm,
         agent_factory=get_critic_agent,
         review_style="roasted",
+        workspace_dir=str(workspace),  # Tell critic where to get git diff
+        iterative_refinement=iterative_config,
     )
 
-    # Create a callback-based stop hook using the helper function
-    hook_config = HookConfig(
-        stop=[HookMatcher(hooks=[create_critic_stop_hook(critic, str(workspace))])]
-    )
+    # Create the main agent with the critic attached
+    # We start with the default agent and add the critic
+    base_agent = get_default_agent(llm=llm)
+    agent = base_agent.model_copy(update={"critic": critic})
 
-    agent = get_default_agent(llm=llm)
     conversation = Conversation(
         agent=agent,
         workspace=str(workspace),
-        hook_config=hook_config,
     )
 
     print("=" * 80)
-    print("Step 1: Ask agent to add a new function")
+    print("🚀 Iterative Refinement with Code Review Critic")
     print("=" * 80)
-    print("\nThe agent will try to finish, but the critic hook will review the diff.")
-    print("If the critic finds issues, it will deny stopping and provide feedback.\n")
+    print(f"\nSuccess threshold: {SUCCESS_THRESHOLD:.0%}")
+    print(f"Max iterations: {MAX_ITERATIONS}")
+    print("\nThe agent will make changes, and the critic will review the git diff.")
+    print("If the critic finds issues, it will provide feedback for improvement.\n")
 
     conversation.send_message(
         "Edit calc.py to add a new function multiply(a, b) that "

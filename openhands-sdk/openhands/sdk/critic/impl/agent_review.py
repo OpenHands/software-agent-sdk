@@ -57,10 +57,14 @@ class AgentReviewCritic(CriticBase):
     This critic creates a separate agent to review git diffs and provide
     feedback on code quality.
 
-    This is intended to be used together with the Stop hook: when the main agent
-    tries to finish, the Stop hook can call this critic on the current
-    conversation's events + git patch, and deny stop if the critic says
-    `not_pass`.
+    The critic can be used in two ways:
+
+    1. **Iterative Refinement**: Attach to an agent with IterativeRefinementConfig.
+       The critic will automatically get the git diff from the workspace when
+       the agent tries to finish.
+
+    2. **Stop Hook**: Use with create_critic_stop_hook() to block the agent
+       from finishing until the critic approves the diff.
 
     Args:
         llm: The LLM to use for the critic agent.
@@ -70,6 +74,28 @@ class AgentReviewCritic(CriticBase):
             openhands.tools.preset.critic.
         review_style: Style of review ("roasted" or "standard").
         max_diff_chars: Maximum characters of diff to include.
+        workspace_dir: Optional workspace directory to get git diff from.
+            If not provided, the critic will use the current working directory.
+
+    Example usage with iterative refinement:
+        from openhands.sdk.critic import IterativeRefinementConfig
+        from openhands.sdk.critic.impl.agent_review import AgentReviewCritic
+        from openhands.tools.preset.critic import get_critic_agent
+
+        critic = AgentReviewCritic(
+            llm=llm,
+            agent_factory=get_critic_agent,
+            review_style="roasted",
+            workspace_dir=str(workspace),
+            iterative_refinement=IterativeRefinementConfig(
+                success_threshold=1.0,
+                max_iterations=3,
+            ),
+        )
+        agent = Agent(llm=llm, tools=tools, critic=critic)
+        conversation = Conversation(agent=agent, workspace=str(workspace))
+        conversation.send_message("Make some changes...")
+        conversation.run()  # Will automatically retry if critic score < threshold
 
     Example usage with callback hook:
         from openhands.sdk.critic.impl.agent_review import (
@@ -101,6 +127,21 @@ class AgentReviewCritic(CriticBase):
 
     review_style: str = "roasted"
     max_diff_chars: int = 100_000
+    workspace_dir: str | None = None
+
+    def _get_git_patch(self) -> str | None:
+        """Get the git diff from the workspace directory."""
+        cwd = self.workspace_dir or "."
+        try:
+            return subprocess.check_output(
+                ["git", "diff"],
+                cwd=cwd,
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError:
+            logger.warning(f"Failed to get git diff from {cwd}")
+            return None
 
     def evaluate(
         self,
@@ -109,8 +150,16 @@ class AgentReviewCritic(CriticBase):
     ) -> CriticResult:
         from openhands.sdk import Conversation
 
+        # If no git_patch provided, try to get it from the workspace
         if not git_patch or not git_patch.strip():
-            return CriticResult(score=0.0, message="Empty git patch")
+            git_patch = self._get_git_patch()
+
+        if not git_patch or not git_patch.strip():
+            # No changes to review - consider this a pass
+            return CriticResult(
+                score=1.0,
+                message="No changes to review (empty git diff)",
+            )
 
         factory = self.agent_factory or _default_agent_factory
         critic_agent = factory(self.llm)
@@ -190,6 +239,35 @@ class AgentReviewCritic(CriticBase):
         score = 1.0 if decision == "pass" else 0.0
         summary = str(data.get("summary", "") or "").strip() or decision
         return CriticResult(score=score, message=summary)
+
+    def get_followup_prompt(self, critic_result: CriticResult, iteration: int) -> str:
+        """Generate a code-review-specific follow-up prompt for iterative refinement.
+
+        This override provides feedback based on the code review critic's evaluation,
+        including the specific issues identified in the review.
+
+        Args:
+            critic_result: The critic result from the previous iteration.
+            iteration: The current iteration number (1-indexed).
+
+        Returns:
+            A follow-up prompt string with code review feedback.
+        """
+        lines = [
+            f"## Code Review Feedback (Iteration {iteration})",
+            "",
+            "The code review critic has evaluated your changes and found issues:",
+            "",
+            f"**Review Summary:** {critic_result.message}",
+            "",
+            "Please address the issues identified in the review:",
+            "1. Review the feedback above carefully",
+            "2. Make the necessary changes to fix the identified issues",
+            "3. Verify your changes address all the concerns",
+            "4. Try to finish again once the issues are resolved",
+            "",
+        ]
+        return "\n".join(lines)
 
 
 def create_critic_stop_hook(
