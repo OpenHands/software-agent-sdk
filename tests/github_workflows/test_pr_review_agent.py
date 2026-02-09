@@ -55,44 +55,23 @@ def test_post_github_comment_missing_token():
         post_github_comment("owner/repo", "123", "Test comment")
 
 
-def test_prepare_review_context():
-    """Test that _prepare_review_context returns correct prompt and skill trigger."""
+def test_cloud_mode_instruction_format():
+    """Test that CLOUD_MODE_INSTRUCTION can be formatted correctly."""
     from agent_script import (  # type: ignore[import-not-found]
-        _prepare_review_context,
+        CLOUD_MODE_INSTRUCTION,
     )
 
-    pr_info = {
-        "number": "123",
-        "title": "Test PR",
-        "body": "Test body",
-        "repo_name": "owner/repo",
-        "base_branch": "main",
-        "head_branch": "feature",
-    }
+    # Test that the instruction can be formatted without errors
+    formatted = CLOUD_MODE_INSTRUCTION.format(
+        repo_name="owner/repo",
+        pr_number="123",
+    )
 
-    # Mock the functions that _prepare_review_context calls
-    with (
-        patch.dict(
-            "os.environ",
-            {
-                "GITHUB_TOKEN": "test-token",
-                "REPO_NAME": "owner/repo",
-                "PR_NUMBER": "123",
-            },
-            clear=False,
-        ),
-        patch("agent_script.get_truncated_pr_diff", return_value="mock diff content"),
-        patch("agent_script.get_head_commit_sha", return_value="abc123"),
-    ):
-        # Test standard review style
-        prompt, skill_trigger = _prepare_review_context(pr_info, "standard")
-        assert skill_trigger == "/codereview"
-        assert "Test PR" in prompt
-        assert "mock diff content" in prompt
-
-        # Test roasted review style
-        prompt, skill_trigger = _prepare_review_context(pr_info, "roasted")
-        assert skill_trigger == "/codereview-roasted"
+    # Verify the formatted instruction contains the expected values
+    assert "owner/repo" in formatted
+    assert "123" in formatted
+    assert "GITHUB_TOKEN" in formatted
+    assert "curl" in formatted
 
 
 def test_mode_defaults_to_sdk():

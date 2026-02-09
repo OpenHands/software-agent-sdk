@@ -19,8 +19,8 @@ Designed for use with GitHub Actions workflows triggered by PR labels.
 Environment Variables:
     MODE: Review mode ('sdk' or 'cloud', default: 'sdk')
         - 'sdk': Run the agent locally using the SDK (default)
-        - 'cloud': Run the agent in OpenHands Cloud sandbox
-    LLM_API_KEY: API key for the LLM (required for both modes)
+        - 'cloud': Run the agent in OpenHands Cloud sandbox (non-blocking)
+    LLM_API_KEY: API key for the LLM (required)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for API access (required)
@@ -36,8 +36,9 @@ Environment Variables:
 
 Note on 'cloud' mode:
 - Uses OpenHandsCloudWorkspace to provision a cloud sandbox
-- The LLM configuration is sent to the cloud sandbox
-- GITHUB_TOKEN is passed to the cloud sandbox for posting review comments
+- The agent runs asynchronously in the cloud (non-blocking)
+- Posts a comment on the PR with a link to track progress
+- Agent is instructed to post a review comment on the PR when done
 - See https://docs.openhands.dev/sdk/guides/agent-server/cloud-workspace
 
 For setup instructions, usage examples, and GitHub Actions integration,
@@ -51,6 +52,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from lmnr import Laminar
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
@@ -183,242 +185,24 @@ def post_github_comment(repo_name: str, pr_number: str, body: str) -> None:
         raise RuntimeError(f"GitHub comment API request failed: {e.reason}") from e
 
 
-def _prepare_review_context(pr_info: dict, review_style: str) -> tuple[str, str]:
-    """Prepare the review context including diff and prompt.
+# Additional instruction for cloud mode to post review comment when done
+CLOUD_MODE_INSTRUCTION = """
 
-    This is shared setup code used by both cloud and SDK modes.
+IMPORTANT: When you have completed the code review, you MUST post a summary comment
+on the PR using the GitHub API. Use the following curl command:
 
-    Args:
-        pr_info: Dictionary containing PR information
-        review_style: Review style ('standard' or 'roasted')
+```bash
+curl -X POST \\
+  -H "Authorization: Bearer $GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github.v3+json" \\
+  -H "Content-Type: application/json" \\
+  "https://api.github.com/repos/{repo_name}/issues/{pr_number}/comments" \\
+  -d '{{"body": "## Code Review Complete\\n\\n<your review summary here>"}}'
+```
 
-    Returns:
-        Tuple of (prompt, skill_trigger)
-    """
-    pr_diff = get_truncated_pr_diff()
-    logger.info(f"Got PR diff with {len(pr_diff)} characters")
-
-    # Get the HEAD commit SHA for inline comments
-    commit_id = get_head_commit_sha()
-    logger.info(f"HEAD commit SHA: {commit_id}")
-
-    # Determine skill trigger based on review style
-    skill_trigger = (
-        "/codereview" if review_style == "standard" else "/codereview-roasted"
-    )
-
-    # Create the review prompt using the template
-    prompt = PROMPT.format(
-        title=pr_info.get("title", "N/A"),
-        body=pr_info.get("body", "No description provided"),
-        repo_name=pr_info.get("repo_name", "N/A"),
-        base_branch=pr_info.get("base_branch", "main"),
-        head_branch=pr_info.get("head_branch", "N/A"),
-        pr_number=pr_info.get("number", "N/A"),
-        commit_id=commit_id,
-        skill_trigger=skill_trigger,
-        diff=pr_diff,
-    )
-
-    return prompt, skill_trigger
-
-
-def run_cloud_mode(prompt: str, skill_trigger: str) -> None:
-    """Run the PR review in OpenHands Cloud mode.
-
-    This mode uses OpenHandsCloudWorkspace to provision a sandbox in OpenHands Cloud
-    and runs the agent there. The LLM configuration and GITHUB_TOKEN are sent to
-    the cloud sandbox.
-
-    See: https://docs.openhands.dev/sdk/guides/agent-server/cloud-workspace
-
-    Args:
-        prompt: The review prompt to send to the agent
-        skill_trigger: The skill trigger to use (e.g., '/codereview')
-    """
-    # Get cloud-specific configuration (already validated in main())
-    cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
-    cloud_api_url = os.getenv("OPENHANDS_CLOUD_API_URL", "https://app.all-hands.dev")
-
-    # Get LLM configuration (required for cloud mode too)
-    api_key = _get_required_env("LLM_API_KEY")
-    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-    base_url = os.getenv("LLM_BASE_URL")
-    github_token = os.getenv("GITHUB_TOKEN")
-
-    logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
-    logger.info(f"LLM Model: {model}")
-
-    try:
-        # Configure LLM - note: base_url should be None for cloud sandbox
-        # as it needs direct access to the LLM provider
-        llm = LLM(
-            usage_id="pr_review_agent",
-            model=model,
-            base_url=base_url or None,
-            api_key=SecretStr(api_key),
-            drop_params=True,
-        )
-
-        # Create the cloud workspace
-        with OpenHandsCloudWorkspace(
-            cloud_api_url=cloud_api_url,
-            cloud_api_key=cloud_api_key,
-        ) as workspace:
-            logger.info("Cloud sandbox provisioned successfully")
-
-            # Create AgentContext with public skills enabled
-            agent_context = AgentContext(load_public_skills=True)
-
-            # Create agent with default tools
-            agent = Agent(
-                llm=llm,
-                tools=get_default_tools(enable_browser=False),
-                agent_context=agent_context,
-                system_prompt_kwargs={"cli_mode": True},
-                condenser=get_default_condenser(
-                    llm=llm.model_copy(update={"usage_id": "condenser"})
-                ),
-            )
-
-            # Create conversation with secrets for masking
-            secrets = {"LLM_API_KEY": api_key}
-            if github_token:
-                secrets["GITHUB_TOKEN"] = github_token
-
-            conversation = Conversation(
-                agent=agent,
-                workspace=workspace,
-                secrets=secrets,
-            )
-
-            logger.info("Starting PR review analysis in cloud sandbox...")
-            logger.info(f"Using skill trigger: {skill_trigger}")
-            logger.info(
-                "Agent will post inline review comments directly via GitHub API"
-            )
-
-            # Send the prompt and run the agent
-            conversation.send_message(prompt)
-            conversation.run()
-
-            # Log the final response for debugging purposes
-            review_content = get_agent_final_response(conversation.state.events)
-            if review_content:
-                logger.info(f"Agent final response: {len(review_content)} characters")
-
-            # Print cost information for CI output
-            metrics = conversation.conversation_stats.get_combined_metrics()
-            print("\n=== PR Review Cost Summary (Cloud Mode) ===")
-            print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
-            if metrics.accumulated_token_usage:
-                token_usage = metrics.accumulated_token_usage
-                print(f"Prompt Tokens: {token_usage.prompt_tokens}")
-                print(f"Completion Tokens: {token_usage.completion_tokens}")
-                if token_usage.cache_read_tokens > 0:
-                    print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
-                if token_usage.cache_write_tokens > 0:
-                    print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
-
-            logger.info("PR review completed successfully (cloud mode)")
-
-    except Exception as e:
-        logger.error(f"Cloud mode PR review failed: {e}")
-        sys.exit(1)
-
-
-def run_sdk_mode(prompt: str, skill_trigger: str) -> None:
-    """Run the PR review in SDK mode (local execution).
-
-    This is the original behavior - runs the agent locally and monitors
-    until completion.
-
-    Args:
-        prompt: The review prompt to send to the agent
-        skill_trigger: The skill trigger to use (e.g., '/codereview')
-    """
-    github_token = os.getenv("GITHUB_TOKEN")
-
-    try:
-        # Configure LLM
-        api_key = os.getenv("LLM_API_KEY")
-        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-        base_url = os.getenv("LLM_BASE_URL")
-
-        llm_config = {
-            "model": model,
-            "api_key": api_key,
-            "usage_id": "pr_review_agent",
-            "drop_params": True,
-        }
-
-        if base_url:
-            llm_config["base_url"] = base_url
-
-        llm = LLM(**llm_config)
-
-        # Get the current working directory as workspace
-        cwd = os.getcwd()
-
-        # Create AgentContext with public skills enabled
-        agent_context = AgentContext(load_public_skills=True)
-
-        # Create agent with default tools and agent context
-        agent = Agent(
-            llm=llm,
-            tools=get_default_tools(enable_browser=False),
-            agent_context=agent_context,
-            system_prompt_kwargs={"cli_mode": True},
-            condenser=get_default_condenser(
-                llm=llm.model_copy(update={"usage_id": "condenser"})
-            ),
-        )
-
-        # Create conversation with secrets for masking
-        secrets = {}
-        if api_key:
-            secrets["LLM_API_KEY"] = api_key
-        if github_token:
-            secrets["GITHUB_TOKEN"] = github_token
-
-        conversation = Conversation(
-            agent=agent,
-            workspace=cwd,
-            secrets=secrets,
-        )
-
-        logger.info("Starting PR review analysis...")
-        logger.info("Agent received the PR diff in the initial message")
-        logger.info(f"Using skill trigger: {skill_trigger}")
-        logger.info("Agent will post inline review comments directly via GitHub API")
-
-        # Send the prompt and run the agent
-        conversation.send_message(prompt)
-        conversation.run()
-
-        # Log the final response for debugging purposes
-        review_content = get_agent_final_response(conversation.state.events)
-        if review_content:
-            logger.info(f"Agent final response: {len(review_content)} characters")
-
-        # Print cost information for CI output
-        metrics = conversation.conversation_stats.get_combined_metrics()
-        print("\n=== PR Review Cost Summary ===")
-        print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
-        if metrics.accumulated_token_usage:
-            token_usage = metrics.accumulated_token_usage
-            print(f"Prompt Tokens: {token_usage.prompt_tokens}")
-            print(f"Completion Tokens: {token_usage.completion_tokens}")
-            if token_usage.cache_read_tokens > 0:
-                print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
-            if token_usage.cache_write_tokens > 0:
-                print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
-
-        logger.info("PR review completed successfully")
-
-    except Exception as e:
-        logger.error(f"PR review failed: {e}")
-        sys.exit(1)
+Replace `<your review summary here>` with a brief summary of your review findings.
+This is required because the review is running asynchronously in the cloud.
+"""
 
 
 def main():
@@ -434,27 +218,27 @@ def main():
     logger.info(f"Mode: {mode}")
 
     # Validate required environment variables based on mode
-    base_required_vars = [
+    required_vars = [
+        "LLM_API_KEY",
         "GITHUB_TOKEN",
         "PR_NUMBER",
         "PR_TITLE",
         "PR_BASE_BRANCH",
         "PR_HEAD_BRANCH",
         "REPO_NAME",
-        "LLM_API_KEY",  # Required for both modes
     ]
 
-    if mode == "sdk":
-        # SDK mode only requires base vars (including LLM_API_KEY)
-        required_vars = base_required_vars
-    else:  # cloud mode
-        # Cloud mode also requires OPENHANDS_CLOUD_API_KEY for workspace provisioning
-        required_vars = base_required_vars + ["OPENHANDS_CLOUD_API_KEY"]
+    if mode == "cloud":
+        required_vars.append("OPENHANDS_CLOUD_API_KEY")
 
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     if missing_vars:
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
+
+    # These are guaranteed to be set after validation above
+    github_token = _get_required_env("GITHUB_TOKEN")
+    api_key = _get_required_env("LLM_API_KEY")
 
     # Get PR information
     pr_info = {
@@ -475,14 +259,203 @@ def main():
     logger.info(f"Reviewing PR #{pr_info['number']}: {pr_info['title']}")
     logger.info(f"Review style: {review_style}")
 
-    # Prepare review context (shared by both modes)
-    prompt, skill_trigger = _prepare_review_context(pr_info, review_style)
+    try:
+        pr_diff = get_truncated_pr_diff()
+        logger.info(f"Got PR diff with {len(pr_diff)} characters")
 
-    # Run the appropriate mode
-    if mode == "cloud":
-        run_cloud_mode(prompt, skill_trigger)
-    else:
-        run_sdk_mode(prompt, skill_trigger)
+        # Get the HEAD commit SHA for inline comments
+        commit_id = get_head_commit_sha()
+        logger.info(f"HEAD commit SHA: {commit_id}")
+
+        # Create the review prompt using the template
+        skill_trigger = (
+            "/codereview" if review_style == "standard" else "/codereview-roasted"
+        )
+        prompt = PROMPT.format(
+            title=pr_info.get("title", "N/A"),
+            body=pr_info.get("body", "No description provided"),
+            repo_name=pr_info.get("repo_name", "N/A"),
+            base_branch=pr_info.get("base_branch", "main"),
+            head_branch=pr_info.get("head_branch", "N/A"),
+            pr_number=pr_info.get("number", "N/A"),
+            commit_id=commit_id,
+            skill_trigger=skill_trigger,
+            diff=pr_diff,
+        )
+
+        # For cloud mode, add instruction to post review comment when done
+        if mode == "cloud":
+            prompt += CLOUD_MODE_INSTRUCTION.format(
+                repo_name=pr_info["repo_name"],
+                pr_number=pr_info["number"],
+            )
+
+        # Configure LLM - shared between both modes
+        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+        base_url = os.getenv("LLM_BASE_URL")
+
+        # For cloud mode, use SecretStr for API key and don't use local proxy
+        if mode == "cloud":
+            llm = LLM(
+                usage_id="pr_review_agent",
+                model=model,
+                base_url=base_url or None,  # None for direct provider access
+                api_key=SecretStr(api_key),
+                drop_params=True,
+            )
+        else:
+            llm_config = {
+                "model": model,
+                "api_key": api_key,
+                "usage_id": "pr_review_agent",
+                "drop_params": True,
+            }
+            if base_url:
+                llm_config["base_url"] = base_url
+            llm = LLM(**llm_config)
+
+        # Create AgentContext with public skills enabled - shared between both modes
+        agent_context = AgentContext(load_public_skills=True)
+
+        # Create agent with default tools - shared between both modes
+        agent = Agent(
+            llm=llm,
+            tools=get_default_tools(enable_browser=False),
+            agent_context=agent_context,
+            system_prompt_kwargs={"cli_mode": True},
+            condenser=get_default_condenser(
+                llm=llm.model_copy(update={"usage_id": "condenser"})
+            ),
+        )
+
+        # Create secrets for masking - shared between both modes
+        secrets = {}
+        if api_key:
+            secrets["LLM_API_KEY"] = api_key
+        if github_token:
+            secrets["GITHUB_TOKEN"] = github_token
+
+        # Create workspace and conversation based on mode
+        if mode == "cloud":
+            cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
+            cloud_api_url = os.getenv(
+                "OPENHANDS_CLOUD_API_URL", "https://app.all-hands.dev"
+            )
+
+            logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
+
+            # Use OpenHandsCloudWorkspace with keep_alive=True so sandbox continues
+            # running after we exit
+            workspace = OpenHandsCloudWorkspace(
+                cloud_api_url=cloud_api_url,
+                cloud_api_key=cloud_api_key,
+                keep_alive=True,
+            )
+
+            conversation = Conversation(
+                agent=agent,
+                workspace=workspace,
+                secrets=secrets,
+            )
+
+            logger.info("Starting PR review analysis in cloud sandbox...")
+            logger.info(f"Using skill trigger: {skill_trigger}")
+
+            # Send the prompt and start the agent (non-blocking)
+            conversation.send_message(prompt)
+            conversation.run(blocking=False)
+
+            # Get the conversation URL for tracking
+            conversation_id = str(conversation.state.id)
+            conversation_url = f"{cloud_api_url}/conversations/{conversation_id}"
+
+            # Post a comment on the PR with the conversation URL
+            comment_body = (
+                f"🤖 **OpenHands PR Review Started**\n\n"
+                f"The code review is running in OpenHands Cloud.\n\n"
+                f"📍 **Track progress:** [{conversation_url}]({conversation_url})\n\n"
+                f"The agent will post a review comment when the analysis is complete."
+            )
+            post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
+
+            logger.info(f"Cloud review started: {conversation_url}")
+            logger.info("Workflow complete - review continues in cloud")
+
+        else:
+            # SDK mode - run locally and wait for completion
+            cwd = os.getcwd()
+
+            conversation = Conversation(
+                agent=agent,
+                workspace=cwd,
+                secrets=secrets,
+            )
+
+            logger.info("Starting PR review analysis...")
+            logger.info("Agent received the PR diff in the initial message")
+            logger.info(f"Using skill trigger: {skill_trigger}")
+            logger.info(
+                "Agent will post inline review comments directly via GitHub API"
+            )
+
+            # Send the prompt and run the agent (blocking)
+            conversation.send_message(prompt)
+            conversation.run()
+
+            # Log the final response for debugging purposes
+            review_content = get_agent_final_response(conversation.state.events)
+            if review_content:
+                logger.info(f"Agent final response: {len(review_content)} characters")
+
+            # Print cost information for CI output
+            metrics = conversation.conversation_stats.get_combined_metrics()
+            print("\n=== PR Review Cost Summary ===")
+            print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
+            if metrics.accumulated_token_usage:
+                token_usage = metrics.accumulated_token_usage
+                print(f"Prompt Tokens: {token_usage.prompt_tokens}")
+                print(f"Completion Tokens: {token_usage.completion_tokens}")
+                if token_usage.cache_read_tokens > 0:
+                    print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
+                if token_usage.cache_write_tokens > 0:
+                    print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
+
+            # Capture and store trace ID for delayed evaluation
+            trace_id = Laminar.get_trace_id()
+            if trace_id:
+                Laminar.set_trace_metadata(
+                    {
+                        "pr_number": pr_info["number"],
+                        "repo_name": pr_info["repo_name"],
+                        "workflow_phase": "review",
+                        "review_style": review_style,
+                    }
+                )
+
+                trace_data = {
+                    "trace_id": str(trace_id),
+                    "pr_number": pr_info["number"],
+                    "repo_name": pr_info["repo_name"],
+                    "commit_id": commit_id,
+                    "review_style": review_style,
+                }
+                with open("laminar_trace_info.json", "w") as f:
+                    json.dump(trace_data, f, indent=2)
+                logger.info(f"Laminar trace ID: {trace_id}")
+                print("\n=== Laminar Trace ===")
+                print(f"Trace ID: {trace_id}")
+
+                Laminar.flush()
+            else:
+                logger.warning(
+                    "No Laminar trace ID found - observability may not be enabled"
+                )
+
+            logger.info("PR review completed successfully")
+
+    except Exception as e:
+        logger.error(f"PR review failed: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
