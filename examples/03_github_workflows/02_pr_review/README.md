@@ -8,6 +8,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 - **`workflow.yml`**: Example GitHub Actions workflow file that uses the composite action
 - **`agent_script.py`**: Python script that runs the OpenHands agent for PR review
 - **`prompt.py`**: The prompt asking the agent to write the PR review
+- **`evaluate_review.py`**: Script to evaluate review effectiveness when PR is closed
 - **`README.md`**: This documentation file
 
 ## Features
@@ -224,12 +225,46 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
 | `mode` | Review mode: 'sdk' or 'cloud' | No | `sdk` |
-| `llm-model` | LLM model (sdk mode only) | No | `anthropic/claude-sonnet-4-5-20250929` |
-| `llm-base-url` | LLM base URL (sdk mode only) | No | `''` |
+| `llm-model` | LLM model (used in both modes) | No | `anthropic/claude-sonnet-4-5-20250929` |
+| `llm-base-url` | LLM base URL (optional, for custom LLM endpoints) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
-| `llm-api-key` | LLM API key (required for sdk mode) | No | - |
-| `github-token` | GitHub token (required for sdk mode) | No | - |
+| `llm-api-key` | LLM API key (required for both modes) | Yes | - |
+| `github-token` | GitHub token for API access (required for both modes) | Yes | - |
 | `openhands-cloud-api-key` | OpenHands Cloud API key (required for cloud mode) | No | - |
 | `openhands-cloud-api-url` | OpenHands Cloud API URL | No | `https://app.all-hands.dev` |
+| `lmnr-api-key` | Laminar API key for observability (optional) | No | - |
+
+## Review Evaluation (Observability)
+
+When Laminar observability is enabled (`lmnr-api-key` input is provided), the workflow captures trace data that enables delayed evaluation of review effectiveness.
+
+### How It Works
+
+1. **During Review**: The agent script captures the Laminar trace ID and stores it as a GitHub artifact
+2. **On PR Close/Merge**: The evaluation workflow (`pr-review-evaluation.yml`) runs automatically:
+   - Downloads the trace ID from the artifact
+   - Fetches all PR comments and the final diff from GitHub
+   - Creates an evaluation trace in Laminar with the review context
+   - Optionally scores the original review trace
+
+### Evaluation Metrics
+
+The evaluation script provides:
+- **Review Engagement Score**: Preliminary score based on human responses to agent comments
+- **Comment Analysis**: Structured data for signal processing (which comments were addressed)
+- **Final Diff Context**: The actual code changes for comparison
+
+### Laminar Signal Integration
+
+Configure a Laminar signal to analyze the evaluation traces:
+
+1. Create a signal named `pr_review_effectiveness`
+2. Filter by tag: `pr-review-evaluation`
+3. Use the signal prompt to analyze:
+   - Which agent comments were addressed in the final patch
+   - Which comments received human responses
+   - Overall review effectiveness score
+
+See [GitHub Issue #1953](https://github.com/OpenHands/software-agent-sdk/issues/1953) for the full implementation details.

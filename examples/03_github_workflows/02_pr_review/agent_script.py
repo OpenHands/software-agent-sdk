@@ -421,8 +421,13 @@ def main():
                     print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
 
             # Capture and store trace ID for delayed evaluation
+            # When the PR is merged/closed, we can use this trace_id to evaluate
+            # how well the review comments were addressed.
+            # Note: Laminar methods gracefully handle the uninitialized case by
+            # returning None or early-returning, so no try/except needed.
             trace_id = Laminar.get_trace_id()
             if trace_id:
+                # Set trace metadata for later retrieval and filtering
                 Laminar.set_trace_metadata(
                     {
                         "pr_number": pr_info["number"],
@@ -432,6 +437,8 @@ def main():
                     }
                 )
 
+                # Store trace_id in file for GitHub artifact upload
+                # This allows the evaluation workflow to link back to this trace
                 trace_data = {
                     "trace_id": str(trace_id),
                     "pr_number": pr_info["number"],
@@ -445,6 +452,7 @@ def main():
                 print("\n=== Laminar Trace ===")
                 print(f"Trace ID: {trace_id}")
 
+                # Ensure trace is flushed to Laminar before workflow ends
                 Laminar.flush()
             else:
                 logger.warning(

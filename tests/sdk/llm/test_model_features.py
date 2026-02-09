@@ -340,7 +340,7 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
         ("o3", 0.0),
         ("deepseek-chat", 0.0),
         ("llama-3.1-70b", 0.0),
-        ("azure/gpt-4", 0.0),
+        ("azure/gpt-4o-mini", 0.0),
         ("openai/gpt-4o", 0.0),
         ("anthropic/claude-3-5-sonnet", 0.0),
         ("unknown-model", 0.0),

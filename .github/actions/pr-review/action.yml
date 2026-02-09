@@ -39,8 +39,7 @@ inputs:
         default: ''
     github-token:
         description: GitHub token for API access (required for both modes - passed to cloud sandbox in cloud mode)
-        required: false
-        default: ''
+        required: true
     openhands-cloud-api-key:
         description: OpenHands Cloud API key (required for 'cloud' mode), get it from https://app.all-hands.dev/settings/api-keys
         required: false
@@ -49,6 +48,10 @@ inputs:
         description: OpenHands Cloud API URL
         required: false
         default: https://app.all-hands.dev
+    lmnr-api-key:
+        description: Laminar API key for observability (optional)
+        required: false
+        default: ''
 
 runs:
     using: composite
@@ -88,7 +91,7 @@ runs:
         - name: Install OpenHands dependencies
           shell: bash
           run: |
-              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools ./software-agent-sdk/openhands-workspace
+              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools ./software-agent-sdk/openhands-workspace lmnr
 
         - name: Check required configuration
           shell: bash
@@ -147,6 +150,7 @@ runs:
               GITHUB_TOKEN: ${{ inputs.github-token }}
               OPENHANDS_CLOUD_API_KEY: ${{ inputs.openhands-cloud-api-key }}
               OPENHANDS_CLOUD_API_URL: ${{ inputs.openhands-cloud-api-url }}
+              LMNR_PROJECT_API_KEY: ${{ inputs.lmnr-api-key }}
               PR_NUMBER: ${{ github.event.pull_request.number }}
               PR_TITLE: ${{ github.event.pull_request.title }}
               PR_BODY: ${{ github.event.pull_request.body }}
@@ -166,3 +170,12 @@ runs:
                   *.log
                   output/
               retention-days: 7
+
+        - name: Upload Laminar trace info for evaluation
+          uses: actions/upload-artifact@v4
+          if: success()
+          with:
+              name: pr-review-trace-${{ github.event.pull_request.number }}
+              path: pr-repo/laminar_trace_info.json
+              retention-days: 30
+              if-no-files-found: ignore
