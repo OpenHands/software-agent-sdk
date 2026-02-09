@@ -21,7 +21,7 @@ def sample_llm() -> LLM:
     """Create a sample LLM instance for testing."""
     return LLM(
         usage_id="test-llm",
-        model="gpt-4o",
+        model="gpt-4-turbo",
         temperature=0.7,
         max_output_tokens=2000,
     )
@@ -32,7 +32,7 @@ def sample_llm_with_secrets() -> LLM:
     """Create a sample LLM instance with secrets for testing."""
     return LLM(
         usage_id="test-llm-secrets",
-        model="gpt-4o",
+        model="gpt-4-turbo",
         temperature=0.5,
         api_key=SecretStr("secret-api-key-12345"),
     )
@@ -138,7 +138,7 @@ def test_save_writes_valid_json(
     content = profile_path.read_text()
     data = json.loads(content)
 
-    assert data["model"] == "gpt-4o"
+    assert data["model"] == "gpt-4-turbo"
     assert data["temperature"] == 0.7
 
 
@@ -162,14 +162,14 @@ def test_save_overwrites_existing(
     # Modify and save again
     modified_llm = LLM(
         usage_id="modified",
-        model="gpt-4o-mini",
+        model="gpt-3.5-turbo-16k",
         temperature=0.3,
     )
     profile_store.save("my_profile", modified_llm)
 
     # Load and verify
     loaded = profile_store.load("my_profile")
-    assert loaded.model == "gpt-4o-mini"
+    assert loaded.model == "gpt-3.5-turbo-16k"
     assert loaded.temperature == 0.3
 
 
@@ -380,9 +380,9 @@ def test_full_workflow(profile_store: LLMProfileStore) -> None:
 def test_multiple_profiles(profile_store: LLMProfileStore) -> None:
     """Test managing multiple profiles."""
     profiles_data = [
-        ("gpt4o", "gpt-4o", 0.7),
-        ("gpt4omini", "gpt-4o-mini", 0.5),
-        ("claude", "claude-sonnet-4-20250514", 0.9),
+        ("gpt4", "gpt-4-turbo", 0.7),
+        ("gpt35", "gpt-3.5-turbo-16k", 0.5),
+        ("claude", "claude-3-opus", 0.9),
     ]
 
     # Save all
