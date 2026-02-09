@@ -123,7 +123,8 @@ def test_message_event_serialization() -> None:
     from openhands.sdk.llm import Message
 
     llm_message = Message(
-        role="user", content=[TextContent(text="Hello, world!")], cache_enabled=True
+        role="user",
+        content=[TextContent(text="Hello, world!")],
     )
     event = MessageEvent(source="user", llm_message=llm_message)
 
@@ -190,10 +191,6 @@ def test_event_deserialize():
         llm_message=Message(
             role="user",
             content=[TextContent(text="Hello There!")],
-            cache_enabled=False,
-            vision_enabled=False,
-            function_calling_enabled=False,
-            force_string_serializer=False,
         ),
         activated_skills=[],
         extended_content=[],

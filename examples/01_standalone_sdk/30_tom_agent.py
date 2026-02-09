@@ -15,6 +15,7 @@ from openhands.sdk.tool import Tool
 from openhands.tools.preset.default import get_default_tools
 from openhands.tools.tom_consult import (
     SleeptimeComputeAction,
+    SleeptimeComputeObservation,
     SleeptimeComputeTool,
     TomConsultTool,
 )
@@ -70,14 +71,20 @@ conversation = Conversation(
 
 # Optionally run sleeptime compute to index existing conversations
 # This builds user preferences and patterns from conversation history
-sleeptime_compute_tool = conversation.agent.tools_map.get("sleeptime_compute")
-if sleeptime_compute_tool and sleeptime_compute_tool.executor:
-    print("\nRunning sleeptime compute to index conversations...")
-    sleeptime_result = sleeptime_compute_tool.executor(
-        SleeptimeComputeAction(), conversation
+# Using execute_tool allows running tools before conversation.run()
+print("\nRunning sleeptime compute to index conversations...")
+try:
+    sleeptime_result = conversation.execute_tool(
+        "sleeptime_compute", SleeptimeComputeAction()
     )
-    print(f"Result: {sleeptime_result.message}")
-    print(f"Sessions processed: {sleeptime_result.sessions_processed}")
+    # Cast to the expected observation type for type-safe access
+    if isinstance(sleeptime_result, SleeptimeComputeObservation):
+        print(f"Result: {sleeptime_result.message}")
+        print(f"Sessions processed: {sleeptime_result.sessions_processed}")
+    else:
+        print(f"Result: {sleeptime_result.text}")
+except KeyError as e:
+    print(f"Tool not available: {e}")
 
 # Send a potentially vague message where Tom consultation might help
 conversation.send_message(

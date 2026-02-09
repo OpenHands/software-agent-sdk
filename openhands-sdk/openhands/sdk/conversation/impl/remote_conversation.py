@@ -6,7 +6,8 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from typing import SupportsIndex, overload
+from queue import Empty, Queue
+from typing import TYPE_CHECKING, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -14,9 +15,16 @@ import websockets
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
-from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    WebSocketConnectionError,
+)
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -95,6 +103,7 @@ class WebSocketCallbackClient:
     api_key: str | None
     _thread: threading.Thread | None
     _stop: threading.Event
+    _ready: threading.Event
 
     def __init__(
         self,
@@ -109,6 +118,7 @@ class WebSocketCallbackClient:
         self.api_key = api_key
         self._thread = None
         self._stop = threading.Event()
+        self._ready = threading.Event()
 
     def start(self) -> None:
         if self._thread:
@@ -123,6 +133,38 @@ class WebSocketCallbackClient:
         self._stop.set()
         self._thread.join(timeout=5)
         self._thread = None
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait for WebSocket subscription to complete.
+
+        The server sends a ConversationStateUpdateEvent immediately after
+        subscription completes. This method blocks until that event is received,
+        the client is stopped, or the timeout expires.
+
+        Args:
+            timeout: Maximum time to wait in seconds. None means wait forever.
+
+        Returns:
+            True if the WebSocket is ready, False if stopped or timeout expired.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            # Calculate remaining timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                wait_timeout = min(0.05, remaining)
+            else:
+                wait_timeout = 0.05
+
+            # Wait efficiently using Event.wait() instead of sleep
+            if self._ready.wait(timeout=wait_timeout):
+                return True
+
+            # Check if stopped
+            if self._stop.is_set():
+                return False
 
     def _run(self) -> None:
         try:
@@ -154,6 +196,15 @@ class WebSocketCallbackClient:
                             break
                         try:
                             event = Event.model_validate(json.loads(message))
+
+                            # Set ready on first ConversationStateUpdateEvent
+                            # The server sends this immediately after subscription
+                            if (
+                                isinstance(event, ConversationStateUpdateEvent)
+                                and not self._ready.is_set()
+                            ):
+                                self._ready.set()
+
                             self.callback(event)
                         except Exception:
                             logger.exception(
@@ -219,6 +270,73 @@ class RemoteEventsList(EventsListBase):
         self._cached_event_ids.update(e.id for e in events)
         logger.debug(f"Full sync completed, {len(events)} events cached")
 
+    def reconcile(self) -> int:
+        """Reconcile local cache with server by fetching and merging events.
+
+        This method fetches all events from the server and merges them with
+        the local cache, deduplicating by event ID. This ensures no events
+        are missed due to race conditions between REST sync and WebSocket
+        subscription.
+
+        Returns:
+            Number of new events added during reconciliation.
+        """
+        logger.debug(
+            f"Performing reconciliation sync for conversation {self._conversation_id}"
+        )
+
+        events = []
+        page_id = None
+
+        while True:
+            params = {"limit": 100}
+            if page_id:
+                params["page_id"] = page_id
+
+            try:
+                resp = _send_request(
+                    self._client,
+                    "GET",
+                    f"/api/conversations/{self._conversation_id}/events/search",
+                    params=params,
+                )
+                data = resp.json()
+            except Exception as e:
+                logger.warning(f"Failed to fetch events during reconciliation: {e}")
+                break  # Return partial results rather than failing completely
+
+            events.extend([Event.model_validate(item) for item in data["items"]])
+
+            if not data.get("next_page_id"):
+                break
+            page_id = data["next_page_id"]
+
+        # Merge events into cache, acquiring lock once for all events
+        added_count = 0
+        with self._lock:
+            for event in events:
+                if event.id not in self._cached_event_ids:
+                    self._add_event_unsafe(event)
+                    added_count += 1
+
+        logger.debug(
+            f"Reconciliation completed, {added_count} new events added "
+            f"(total: {len(self._cached_events)})"
+        )
+        return added_count
+
+    def _add_event_unsafe(self, event: Event) -> None:
+        """Add event to cache without acquiring lock (caller must hold lock)."""
+        # Use bisect with key function for O(log N) insertion
+        # This ensures events are always ordered correctly even if
+        # WebSocket delivers them out of order
+        insert_pos = bisect.bisect_right(
+            self._cached_events, event.timestamp, key=lambda e: e.timestamp
+        )
+        self._cached_events.insert(insert_pos, event)
+        self._cached_event_ids.add(event.id)
+        logger.debug(f"Added event {event.id} to local cache at position {insert_pos}")
+
     def add_event(self, event: Event) -> None:
         """Add a new event to the local cache (called by WebSocket callback).
 
@@ -228,17 +346,7 @@ class RemoteEventsList(EventsListBase):
         with self._lock:
             # Check if event already exists to avoid duplicates
             if event.id not in self._cached_event_ids:
-                # Use bisect with key function for O(log N) insertion
-                # This ensures events are always ordered correctly even if
-                # WebSocket delivers them out of order
-                insert_pos = bisect.bisect_right(
-                    self._cached_events, event.timestamp, key=lambda e: e.timestamp
-                )
-                self._cached_events.insert(insert_pos, event)
-                self._cached_event_ids.add(event.id)
-                logger.debug(
-                    f"Added event {event.id} to local cache at position {insert_pos}"
-                )
+                self._add_event_unsafe(event)
 
     def append(self, event: Event) -> None:
         """Add a new event to the list (for compatibility with EventLog interface)."""
@@ -452,6 +560,8 @@ class RemoteConversation(BaseConversation):
     _client: httpx.Client
     _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
+    _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
+    delete_on_close: bool = False
 
     def __init__(
         self,
@@ -470,6 +580,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        delete_on_close: bool = False,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -504,6 +615,7 @@ class RemoteConversation(BaseConversation):
         self._client = workspace.client
         self._hook_processor = None
         self._cleanup_initiated = False
+        self._terminal_status_queue: Queue[str] = Queue()
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -603,8 +715,21 @@ class RemoteConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
+        # Add a callback that signals when run completes via WebSocket
+        # This ensures we wait for all events to be delivered before run() returns
+        def run_complete_callback(event: Event) -> None:
+            if isinstance(event, ConversationStateUpdateEvent):
+                if event.key == "execution_status":
+                    try:
+                        status = ConversationExecutionStatus(event.value)
+                        if status.is_terminal():
+                            self._terminal_status_queue.put(event.value)
+                    except ValueError:
+                        pass  # Unknown status value, ignore
+
         # Compose all callbacks into a single callback
-        composed_callback = BaseConversation.compose_callbacks(self._callbacks)
+        all_callbacks = self._callbacks + [run_complete_callback]
+        composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
         # Initialize WebSocket client for callbacks
         self._ws_client = WebSocketCallbackClient(
@@ -614,6 +739,27 @@ class RemoteConversation(BaseConversation):
             api_key=self.workspace.api_key,
         )
         self._ws_client.start()
+
+        # Wait for WebSocket subscription to complete before allowing operations.
+        # This ensures events emitted during send_message() are not missed.
+        # The server sends a ConversationStateUpdateEvent after subscription.
+        ws_timeout = 30.0
+        if not self._ws_client.wait_until_ready(timeout=ws_timeout):
+            try:
+                self._ws_client.stop()
+            except Exception:
+                pass
+            finally:
+                self._ws_client = None
+            raise WebSocketConnectionError(
+                conversation_id=self._id,
+                timeout=ws_timeout,
+            )
+
+        # Reconcile events after WebSocket is ready to catch any events that
+        # were emitted between the initial REST sync and WebSocket subscription.
+        # This is the "reconciliation" part of the subscription handshake.
+        self._state.events.reconcile()
 
         # Initialize secrets if provided
         if secrets:
@@ -641,6 +787,7 @@ class RemoteConversation(BaseConversation):
             )
             self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
             self._hook_processor.run_session_start()
+        self.delete_on_close = delete_on_close
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -735,6 +882,14 @@ class RemoteConversation(BaseConversation):
         Raises:
             ConversationRunError: If the run fails or times out.
         """
+        # Drain any stale terminal status events from previous runs.
+        # This prevents stale events from causing early returns.
+        while True:
+            try:
+                self._terminal_status_queue.get_nowait()
+            except Empty:
+                break
+
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
         try:
@@ -762,10 +917,20 @@ class RemoteConversation(BaseConversation):
         poll_interval: float = 1.0,
         timeout: float = 1800.0,
     ) -> None:
-        """Poll the server until the conversation is no longer running.
+        """Wait for the conversation run to complete.
+
+        This method waits for the run to complete by listening for the terminal
+        status event via WebSocket. This ensures all events are delivered before
+        returning, avoiding the race condition where polling sees "finished"
+        status before WebSocket delivers the final events.
+
+        As a fallback, it also polls the server periodically. If the WebSocket
+        is delayed or disconnected, we return after multiple consecutive polls
+        show a terminal status, and reconcile events to catch any that were
+        missed via WebSocket.
 
         Args:
-            poll_interval: Time in seconds between status polls.
+            poll_interval: Time in seconds between status polls (fallback).
             timeout: Maximum time in seconds to wait.
 
         Raises:
@@ -774,6 +939,14 @@ class RemoteConversation(BaseConversation):
                 responses are retried until timeout.
         """
         start_time = time.monotonic()
+        consecutive_terminal_polls = 0
+        # Return after this many consecutive terminal polls (fallback for WS issues).
+        # We use 3 polls to balance latency vs reliability:
+        # - 1 poll could be a transient state during shutdown
+        # - 2 polls might still catch a race condition
+        # - 3 polls (with default 1s interval = 3s total) provides high confidence
+        #   that the run is truly complete while keeping fallback latency reasonable
+        TERMINAL_POLL_THRESHOLD = 3
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -786,20 +959,57 @@ class RemoteConversation(BaseConversation):
                     ),
                 )
 
+            # Wait for either:
+            # 1. WebSocket delivers terminal status event (preferred)
+            # 2. Poll interval expires (fallback - check status via REST)
+            try:
+                ws_status = self._terminal_status_queue.get(timeout=poll_interval)
+                # Handle ERROR/STUCK states - raises ConversationRunError
+                self._handle_conversation_status(ws_status)
+
+                logger.info(
+                    "Run completed via WebSocket notification "
+                    "(status: %s, elapsed: %.1fs)",
+                    ws_status,
+                    elapsed,
+                )
+                return
+            except Empty:
+                pass  # Queue.get() timed out, fall through to REST polling
+
+            # Poll the server for status as a health check and fallback.
+            # This catches ERROR/STUCK states that need immediate attention,
+            # and provides a fallback if WebSocket is delayed/disconnected.
             try:
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
+                consecutive_terminal_polls = 0  # Reset on error
             else:
-                if self._handle_conversation_status(status):
-                    logger.info(
-                        "Run completed with status: %s (elapsed: %.1fs)",
-                        status,
-                        elapsed,
-                    )
-                    return
+                # Raises ConversationRunError for ERROR/STUCK states
+                self._handle_conversation_status(status)
 
-            time.sleep(poll_interval)
+                # Track consecutive terminal polls as a fallback for WS issues.
+                # If WebSocket is delayed/disconnected, we return after multiple
+                # consecutive polls confirm the terminal status.
+                if status and ConversationExecutionStatus(status).is_terminal():
+                    consecutive_terminal_polls += 1
+                    if consecutive_terminal_polls >= TERMINAL_POLL_THRESHOLD:
+                        logger.info(
+                            "Run completed via REST fallback after %d consecutive "
+                            "terminal polls (status: %s, elapsed: %.1fs). "
+                            "Reconciling events...",
+                            consecutive_terminal_polls,
+                            status,
+                            elapsed,
+                        )
+                        # Reconcile events to catch any that were missed via WS.
+                        # This is only called in the fallback path, so it doesn't
+                        # add overhead in the common case where WS works.
+                        self._state.events.reconcile()
+                        return
+                else:
+                    consecutive_terminal_polls = 0
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
@@ -989,6 +1199,28 @@ class RemoteConversation(BaseConversation):
         """
         _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
 
+    def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
+        """Execute a tool directly without going through the agent loop.
+
+        Note: This method is not yet supported for RemoteConversation.
+        Tool execution for remote conversations happens on the server side
+        during the normal agent loop.
+
+        Args:
+            tool_name: The name of the tool to execute
+            action: The action to pass to the tool executor
+
+        Raises:
+            NotImplementedError: Always, as this feature is not yet supported
+                for remote conversations.
+        """
+        raise NotImplementedError(
+            "execute_tool is not yet supported for RemoteConversation. "
+            "Tool execution for remote conversations happens on the server side "
+            "during the normal agent loop. Use LocalConversation for direct "
+            "tool execution."
+        )
+
     def close(self) -> None:
         """Close the conversation and clean up resources.
 
@@ -1010,6 +1242,13 @@ class RemoteConversation(BaseConversation):
             pass
 
         self._end_observability_span()
+        if self.delete_on_close:
+            try:
+                # trigger server-side delete_conversation to release resources
+                # like tmux sessions
+                _send_request(self._client, "DELETE", f"/api/conversations/{self.id}")
+            except Exception:
+                pass
 
     def __del__(self) -> None:
         try:

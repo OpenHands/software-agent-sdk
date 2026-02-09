@@ -333,6 +333,8 @@ _DEFAULT_PACKAGE_VERSION = _package_version()
 
 
 class BuildOptions(BaseModel):
+    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+    # with Python 3.13. See issue #1886 for details.
     base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22")
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
@@ -662,6 +664,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--base-image",
+        # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+        # with Python 3.13. See issue #1886.
         default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22"),
         help="Base image to use (default from $BASE_IMAGE).",
     )

@@ -41,6 +41,9 @@ a = Analysis(
         *collect_data_files("openhands.sdk.context.condenser", includes=["prompts/*.j2"]),
         *collect_data_files("openhands.sdk.context.prompts", includes=["templates/*.j2"]),
 
+        # OpenHands Tools templates
+        *collect_data_files("openhands.tools.delegate", includes=["templates/*.j2"]),
+
         # Package metadata for importlib.metadata
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),

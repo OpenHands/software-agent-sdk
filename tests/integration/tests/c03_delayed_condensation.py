@@ -1,4 +1,4 @@
-"""Test soft condensation requirement behavior.
+"""Test delayed condensation with soft requirements.
 
 This test verifies that:
 1. When a soft condensation requirement is triggered (via max_size)
@@ -21,8 +21,8 @@ INSTRUCTION = """Using the echo command, print the numbers 1 through 10.
 Use exactly 10 separate echo commands, one for each number."""
 
 
-class SoftCondensationRequirementTest(BaseIntegrationTest):
-    """Test that soft requirements gracefully continue when condensation unavailable."""
+class DelayedCondensationTest(BaseIntegrationTest):
+    """Test that soft requirements allow delayed condensation."""
 
     INSTRUCTION: str = INSTRUCTION
 
