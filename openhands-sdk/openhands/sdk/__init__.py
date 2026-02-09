@@ -1,7 +1,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.sdk.agent import (
-    ITERATIVE_REFINEMENT_ITERATION_KEY,
     Agent,
     AgentBase,
 )
@@ -85,7 +84,6 @@ __all__ = [
     "ToolDefinition",
     "AgentBase",
     "Agent",
-    "ITERATIVE_REFINEMENT_ITERATION_KEY",
     "Action",
     "Observation",
     "MCPClient",
