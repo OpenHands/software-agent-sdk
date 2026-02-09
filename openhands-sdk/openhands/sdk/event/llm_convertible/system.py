@@ -14,10 +14,10 @@ class SystemPromptEvent(LLMConvertibleEvent):
 
     The system prompt can optionally include dynamic context that varies between
     conversations. When ``dynamic_context`` is provided, it is included as a
-    second content block in the same system message (without a cache marker).
-    The static block carries ``cache_prompt=True`` so that Anthropic's prefix
-    caching covers only the constant portion, enabling cross-conversation cache
-    hits while the dynamic portion is re-processed each time.
+    second content block in the same system message. Cache markers are NOT
+    applied here - they are applied by ``LLM._apply_prompt_caching()`` when
+    caching is enabled, ensuring provider-specific cache control is only added
+    when appropriate.
 
     Attributes:
         system_prompt: The static system prompt text (cacheable across conversations)
@@ -76,15 +76,16 @@ class SystemPromptEvent(LLMConvertibleEvent):
         """Convert to a single system LLM message.
 
         When ``dynamic_context`` is present the message contains two content
-        blocks: the static prompt (with ``cache_prompt=True`` so it acts as an
-        Anthropic prefix-cache breakpoint) followed by the dynamic context
-        (unmarked, so it is not cached).  When there is no dynamic context the
-        message contains only the static prompt with the cache marker.
+        blocks: the static prompt followed by the dynamic context. Cache markers
+        are NOT applied here - they are applied by ``LLM._apply_prompt_caching()``
+        when caching is enabled, which marks the static block (index 0) and leaves
+        the dynamic block (index 1) unmarked for cross-conversation cache sharing.
         """
-        static_block = self.system_prompt.model_copy(update={"cache_prompt": True})
         if self.dynamic_context:
-            return Message(role="system", content=[static_block, self.dynamic_context])
-        return Message(role="system", content=[static_block])
+            return Message(
+                role="system", content=[self.system_prompt, self.dynamic_context]
+            )
+        return Message(role="system", content=[self.system_prompt])
 
     def __str__(self) -> str:
         """Plain text string representation for SystemPromptEvent."""

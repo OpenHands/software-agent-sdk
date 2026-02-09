@@ -267,18 +267,29 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         removed_in="1.13.0",
         details=(
             "Use static_system_message for the cacheable system prompt and "
-            "dynamic_context for per-conversation content. This separation enables "
-            "cross-conversation prompt caching."
+            "dynamic_context for per-conversation content. Using system_message "
+            "DISABLES cross-conversation prompt caching because it combines static "
+            "and dynamic content into a single string."
         ),
     )
     def system_message(self) -> str:
-        """Compute system message on-demand to maintain statelessness.
+        """Return the combined system message (static + dynamic).
 
         .. deprecated:: 1.11.0
             Use :attr:`static_system_message` for the cacheable system prompt and
             :attr:`dynamic_context` for per-conversation content. This separation
             enables cross-conversation prompt caching. Will be removed in 1.13.0.
+
+        .. warning::
+            Using this property DISABLES cross-conversation prompt caching because
+            it combines static and dynamic content into a single string. Use
+            :attr:`static_system_message` and :attr:`dynamic_context` separately
+            to enable caching.
         """
+        logger.warning(
+            "Accessing system_message property disables cross-conversation prompt "
+            "caching. Use static_system_message and dynamic_context separately."
+        )
         system_message = self.static_system_message
         dynamic = self.dynamic_context
         if dynamic:

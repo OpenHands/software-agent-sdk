@@ -1,9 +1,10 @@
 """Test that dynamic context is handled via cache breakpoints in system message.
 
 When SystemPromptEvent has dynamic_context, it should be included as a second
-content block inside the system message (with no cache marker), while the
-static block carries cache_prompt=True.  This enables cross-conversation
-prompt caching via Anthropic's prefix-cache breakpoints.
+content block inside the system message. Cache markers are NOT applied by
+SystemPromptEvent - they are applied by LLM._apply_prompt_caching() when
+caching is enabled. This ensures provider-specific cache control is only
+added when appropriate.
 """
 
 from typing import cast
@@ -118,8 +119,13 @@ def test_dynamic_context_content_preserved_in_system_message():
     assert user_content_texts == ["Hi"]
 
 
-def test_cache_marker_on_static_block_only():
-    """cache_prompt is True on static block, False on dynamic."""
+def test_to_llm_message_does_not_set_cache_markers():
+    """SystemPromptEvent.to_llm_message() should NOT set cache markers.
+
+    Cache markers are applied by LLM._apply_prompt_caching() when caching is
+    enabled, not by the event itself. This ensures provider-specific cache
+    control is only added when appropriate.
+    """
     system_event = SystemPromptEvent(
         source="agent",
         system_prompt=TextContent(text="Static prompt"),
@@ -130,18 +136,18 @@ def test_cache_marker_on_static_block_only():
     msg = system_event.to_llm_message()
 
     assert len(msg.content) == 2
-    # Static block has cache marker
-    assert msg.content[0].cache_prompt is True
+    # Neither block should have cache markers set by to_llm_message()
     assert isinstance(msg.content[0], TextContent)
     assert msg.content[0].text == "Static prompt"
-    # Dynamic block does NOT have cache marker
-    assert msg.content[1].cache_prompt is False
+    assert msg.content[0].cache_prompt is False  # Default value, not set
+
     assert isinstance(msg.content[1], TextContent)
     assert msg.content[1].text == "Dynamic context"
+    assert msg.content[1].cache_prompt is False  # Default value, not set
 
 
-def test_cache_marker_when_no_dynamic_context():
-    """Single static block still gets cache marker."""
+def test_to_llm_message_single_block_no_cache_marker():
+    """Single block should also not have cache marker set by to_llm_message()."""
     system_event = SystemPromptEvent(
         source="agent",
         system_prompt=TextContent(text="Static prompt"),
@@ -152,6 +158,6 @@ def test_cache_marker_when_no_dynamic_context():
     msg = system_event.to_llm_message()
 
     assert len(msg.content) == 1
-    assert msg.content[0].cache_prompt is True
     assert isinstance(msg.content[0], TextContent)
     assert msg.content[0].text == "Static prompt"
+    assert msg.content[0].cache_prompt is False  # Default value, not set
