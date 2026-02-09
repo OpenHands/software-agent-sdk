@@ -17,7 +17,7 @@ from openhands.sdk import LLM, LLMProfileStore
 store = LLMProfileStore(base_dir=tempfile.mkdtemp())
 
 
-# 1. Create to LLM profiles with different usage
+# 1. Create two LLM profiles with different usage
 
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
