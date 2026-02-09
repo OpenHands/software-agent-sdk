@@ -116,6 +116,28 @@ class TestGraySwanAnalyzerInit:
         assert analyzer.low_threshold == 0.2
         assert analyzer.medium_threshold == 0.5
 
+    def test_init_with_invalid_threshold_order_raises_error(self):
+        """Test that invalid threshold ordering raises ValueError."""
+        with pytest.raises(
+            ValueError, match="low_threshold.*must be less than.*medium_threshold"
+        ):
+            GraySwanAnalyzer(
+                api_key=SecretStr("test_key"),
+                low_threshold=0.7,
+                medium_threshold=0.3,
+            )
+
+    def test_init_with_equal_thresholds_raises_error(self):
+        """Test that equal thresholds raise ValueError."""
+        with pytest.raises(
+            ValueError, match="low_threshold.*must be less than.*medium_threshold"
+        ):
+            GraySwanAnalyzer(
+                api_key=SecretStr("test_key"),
+                low_threshold=0.5,
+                medium_threshold=0.5,
+            )
+
 
 class TestGraySwanAnalyzerViolationMapping:
     """Tests for violation score to risk mapping."""

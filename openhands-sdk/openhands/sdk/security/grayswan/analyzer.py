@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import httpx
-from pydantic import Field, PrivateAttr, SecretStr
+from pydantic import Field, PrivateAttr, SecretStr, model_validator
 
 from openhands.sdk.event import ActionEvent, LLMConvertibleEvent
 from openhands.sdk.logger import get_logger
@@ -78,6 +78,16 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
     _client: httpx.Client | None = PrivateAttr(default=None)
     _events: list[LLMConvertibleEvent] = PrivateAttr(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> GraySwanAnalyzer:
+        """Validate that thresholds are properly ordered."""
+        if self.low_threshold >= self.medium_threshold:
+            raise ValueError(
+                f"low_threshold ({self.low_threshold}) must be less than "
+                f"medium_threshold ({self.medium_threshold})"
+            )
+        return self
+
     def model_post_init(self, __context: Any) -> None:
         """Initialize the analyzer after model creation."""
         # Resolve API key from environment if not provided
@@ -85,6 +95,9 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
             env_key = os.getenv("GRAYSWAN_API_KEY")
             if env_key:
                 self.api_key = SecretStr(env_key)
+                logger.debug(
+                    "API key resolved from GRAYSWAN_API_KEY environment variable"
+                )
 
         if not self.api_key:
             logger.warning(
