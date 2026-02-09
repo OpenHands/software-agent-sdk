@@ -1,4 +1,3 @@
-import logging
 from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
@@ -8,6 +7,7 @@ from rich.text import Text
 
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.llm.message import content_to_str
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
 )
@@ -17,7 +17,7 @@ from openhands.sdk.utils.visualize import display_dict
 if TYPE_CHECKING:
     from typing import Self
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 S = TypeVar("S", bound="Schema")
 
