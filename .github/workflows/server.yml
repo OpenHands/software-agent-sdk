@@ -162,17 +162,15 @@ jobs:
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
-                    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility
-                    # issue with Python 3.13. See issue #1886 for details.
                     - variant: python
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
