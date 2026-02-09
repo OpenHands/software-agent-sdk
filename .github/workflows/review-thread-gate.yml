@@ -1,0 +1,114 @@
+---
+name: Review Thread Gate
+
+on:
+    pull_request:
+        branches: [main]
+        types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+    contents: read
+    pull-requests: read
+
+concurrency:
+    group: review-thread-gate-${{ github.event.pull_request.number || github.sha }}
+    cancel-in-progress: true
+
+jobs:
+    unresolved-review-threads:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Fail when unresolved review threads remain (unless waived)
+              uses: actions/github-script@v8
+              with:
+                  script: |
+                      const pr = context.payload.pull_request;
+                      if (!pr) {
+                        core.info('No pull_request payload available; skipping.');
+                        return;
+                      }
+
+                      const waiverMatch = pr.body?.match(
+                        /review-thread-waiver\s*:\s*(.+?)(?:\n|$)/i,
+                      );
+                      const waiverReason = waiverMatch?.[1]?.trim() || null;
+
+                      const unresolved = [];
+                      let cursor = null;
+                      do {
+                        const query = `
+                          query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                            repository(owner: $owner, name: $repo) {
+                              pullRequest(number: $number) {
+                                reviewThreads(first: 100, after: $cursor) {
+                                  nodes {
+                                    id
+                                    isResolved
+                                    isOutdated
+                                    comments(first: 1) {
+                                      nodes {
+                                        author { login }
+                                        path
+                                        line
+                                        url
+                                      }
+                                    }
+                                  }
+                                  pageInfo {
+                                    hasNextPage
+                                    endCursor
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        `;
+                        const result = await github.graphql(query, {
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          number: pr.number,
+                          cursor,
+                        });
+
+                        const page = result.repository.pullRequest.reviewThreads;
+                        for (const thread of page.nodes) {
+                          if (thread.isResolved) continue;
+                          const firstComment = thread.comments.nodes[0];
+                          unresolved.push({
+                            url: firstComment?.url ?? '(no-url)',
+                            author: firstComment?.author?.login ?? 'unknown',
+                            path: firstComment?.path ?? 'unknown',
+                            line: firstComment?.line ?? '?',
+                            outdated: thread.isOutdated,
+                          });
+                        }
+
+                        cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+                      } while (cursor);
+
+                      if (unresolved.length === 0) {
+                        core.info('No unresolved review threads found.');
+                        return;
+                      }
+
+                      const summaryLines = unresolved.map(
+                        (thread) =>
+                          `- ${thread.url} (author: ${thread.author}, file: ${thread.path}:${thread.line}, outdated: ${thread.outdated})`,
+                      );
+                      await core.summary
+                        .addHeading(`Unresolved review threads: ${unresolved.length}`)
+                        .addRaw(summaryLines.join('\n'))
+                        .write();
+
+                      if (waiverReason) {
+                        core.warning(
+                          `Unresolved review threads remain (${unresolved.length}), but waiver provided: ${waiverReason}`,
+                        );
+                        return;
+                      }
+
+                      core.setFailed(
+                        `Found ${unresolved.length} unresolved review thread(s). Resolve all threads or add ` +
+                        '`review-thread-waiver: <reason>` to the PR body for an intentional waiver.',
+                      );
+
