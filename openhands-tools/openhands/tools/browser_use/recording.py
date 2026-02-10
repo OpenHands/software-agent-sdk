@@ -7,6 +7,8 @@ import json
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk import get_logger
@@ -17,6 +19,9 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+# Directory containing JavaScript files
+_JS_DIR = Path(__file__).parent / "js"
 
 
 # =============================================================================
@@ -84,167 +89,46 @@ DEFAULT_CONFIG = RecordingConfig()
 
 
 # =============================================================================
-# JavaScript Code
+# JavaScript Code Loading
 # =============================================================================
+
+
+@lru_cache(maxsize=16)
+def _load_js_file(filename: str) -> str:
+    """Load a JavaScript file from the js/ directory with caching."""
+    filepath = _JS_DIR / filename
+    return filepath.read_text()
 
 
 def get_rrweb_loader_js(cdn_url: str) -> str:
     """Generate the rrweb loader JavaScript with the specified CDN URL."""
-    return (
-        """
-(function() {
-    if (window.__rrweb_loaded) return;
-    window.__rrweb_loaded = true;
-
-    // Initialize storage for events (per-page, will be flushed to backend)
-    window.__rrweb_events = window.__rrweb_events || [];
-    // Flag to indicate if recording should auto-start on new pages (cross-page)
-    // This is ONLY set after explicit start_recording call, not on initial load
-    window.__rrweb_should_record = window.__rrweb_should_record || false;
-    // Flag to track if rrweb failed to load
-    window.__rrweb_load_failed = false;
-
-    // Create a Promise that resolves when rrweb loads (event-driven waiting)
-    var resolveReady;
-    window.__rrweb_ready_promise = new Promise(function(resolve) {
-        resolveReady = resolve;
-    });
-
-    function loadRrweb() {
-        var s = document.createElement('script');
-        s.src = '"""
-        + cdn_url
-        + """';
-        s.onload = function() {
-            window.__rrweb_ready = true;
-            console.log('[rrweb] Loaded successfully from CDN');
-            resolveReady({success: true});
-            // Auto-start recording ONLY if flag is set (for cross-page continuity)
-            // This flag is only true after an explicit start_recording call
-            if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
-                window.startRecordingInternal();
-            }
-        };
-        s.onerror = function() {
-            console.error('[rrweb] Failed to load from CDN');
-            window.__rrweb_load_failed = true;
-            resolveReady({success: false, error: 'load_failed'});
-        };
-        (document.head || document.documentElement).appendChild(s);
-    }
-
-    // Internal function to start recording (used for auto-start on navigation)
-    window.startRecordingInternal = function() {
-        var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
-                       (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
-        if (!recordFn || window.__rrweb_stopFn) return;
-
-        window.__rrweb_events = [];
-        window.__rrweb_stopFn = recordFn({
-            emit: function(event) {
-                window.__rrweb_events.push(event);
-            }
-        });
-        console.log('[rrweb] Auto-started recording on new page');
-    };
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', loadRrweb);
-    } else {
-        loadRrweb();
-    }
-})();
-"""
-    )
+    template = _load_js_file("rrweb-loader.js")
+    return template.replace("{{CDN_URL}}", cdn_url)
 
 
-# JavaScript to flush recording events from browser to Python
-FLUSH_EVENTS_JS = """
-(function() {
-    var events = window.__rrweb_events || [];
-    // Clear browser-side events after flushing
-    window.__rrweb_events = [];
-    return JSON.stringify({events: events});
-})();
-"""
+def _get_flush_events_js() -> str:
+    """Get the JavaScript to flush recording events from browser to Python."""
+    return _load_js_file("flush-events.js")
 
-# JavaScript to start recording on a page (used for restart after navigation)
-START_RECORDING_SIMPLE_JS = """
-(function() {
-    var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
-                   (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
-    if (!recordFn) return {status: 'not_loaded'};
-    if (window.__rrweb_stopFn) return {status: 'already_recording'};
 
-    window.__rrweb_events = [];
-    window.__rrweb_stopFn = recordFn({
-        emit: function(event) {
-            window.__rrweb_events.push(event);
-        }
-    });
-    return {status: 'started'};
-})();
-"""
+def _get_start_recording_simple_js() -> str:
+    """Get the JavaScript to start recording on a page (simple version)."""
+    return _load_js_file("start-recording-simple.js")
 
-# JavaScript to start recording (full version with load failure check)
-START_RECORDING_JS = """
-(function() {
-    if (window.__rrweb_stopFn) return {status: 'already_recording'};
-    // Check if rrweb failed to load from CDN
-    if (window.__rrweb_load_failed) return {status: 'load_failed'};
-    // rrweb UMD module exports to window.rrweb (not rrwebRecord)
-    var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
-                   (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
-    if (!recordFn) return {status: 'not_loaded'};
-    window.__rrweb_events = [];
-    window.__rrweb_should_record = true;
-    window.__rrweb_stopFn = recordFn({
-        emit: function(event) {
-            window.__rrweb_events.push(event);
-        }
-    });
-    return {status: 'started'};
-})();
-"""
 
-# JavaScript to stop recording and collect remaining events
-STOP_RECORDING_JS = """
-(function() {
-    var events = window.__rrweb_events || [];
+def _get_start_recording_js() -> str:
+    """Get the JavaScript to start recording (full version with load failure check)."""
+    return _load_js_file("start-recording.js")
 
-    // Stop the recording if active
-    if (window.__rrweb_stopFn) {
-        window.__rrweb_stopFn();
-        window.__rrweb_stopFn = null;
-    }
 
-    // Clear flags
-    window.__rrweb_should_record = false;
-    window.__rrweb_events = [];
+def _get_stop_recording_js() -> str:
+    """Get the JavaScript to stop recording and collect remaining events."""
+    return _load_js_file("stop-recording.js")
 
-    return JSON.stringify({events: events});
-})();
-"""
 
-# JavaScript to wait for rrweb to load using Promise (event-driven)
-WAIT_FOR_RRWEB_JS = """
-(function() {
-    // If Promise doesn't exist, scripts weren't injected yet
-    if (!window.__rrweb_ready_promise) {
-        return Promise.resolve({success: false, error: 'not_injected'});
-    }
-    // If already loaded, return immediately
-    if (window.__rrweb_ready) {
-        return Promise.resolve({success: true});
-    }
-    // If already failed, return immediately
-    if (window.__rrweb_load_failed) {
-        return Promise.resolve({success: false, error: 'load_failed'});
-    }
-    // Wait for the Promise to resolve
-    return window.__rrweb_ready_promise;
-})();
-"""
+def _get_wait_for_rrweb_js() -> str:
+    """Get the JavaScript to wait for rrweb to load using Promise."""
+    return _load_js_file("wait-for-rrweb.js")
 
 
 # =============================================================================
@@ -431,7 +315,7 @@ class RecordingSession:
         try:
             cdp_session = await browser_session.get_or_create_cdp_session()
             result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                params={"expression": FLUSH_EVENTS_JS, "returnByValue": True},
+                params={"expression": _get_flush_events_js(), "returnByValue": True},
                 session_id=cdp_session.session_id,
             )
 
@@ -487,7 +371,7 @@ class RecordingSession:
             result = await asyncio.wait_for(
                 cdp_session.cdp_client.send.Runtime.evaluate(
                     params={
-                        "expression": WAIT_FOR_RRWEB_JS,
+                        "expression": _get_wait_for_rrweb_js(),
                         "awaitPromise": True,
                         "returnByValue": True,
                     },
@@ -569,7 +453,7 @@ class RecordingSession:
 
             # rrweb is loaded, now start recording
             result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                params={"expression": START_RECORDING_JS, "returnByValue": True},
+                params={"expression": _get_start_recording_js(), "returnByValue": True},
                 session_id=cdp_session.session_id,
             )
 
@@ -639,7 +523,7 @@ class RecordingSession:
 
             # Stop recording on current page and get remaining events
             result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                params={"expression": STOP_RECORDING_JS, "returnByValue": True},
+                params={"expression": _get_stop_recording_js(), "returnByValue": True},
                 session_id=cdp_session.session_id,
             )
 
@@ -710,7 +594,7 @@ class RecordingSession:
             cdp_session = await browser_session.get_or_create_cdp_session()
             result = await cdp_session.cdp_client.send.Runtime.evaluate(
                 params={
-                    "expression": START_RECORDING_SIMPLE_JS,
+                    "expression": _get_start_recording_simple_js(),
                     "returnByValue": True,
                 },
                 session_id=cdp_session.session_id,
