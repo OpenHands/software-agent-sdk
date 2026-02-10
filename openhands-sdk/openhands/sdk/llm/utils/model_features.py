@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+from functools import lru_cache
+
+from litellm import get_supported_openai_params
 
 
 def model_matches(model: str, patterns: list[str]) -> bool:
@@ -49,31 +52,38 @@ class ModelFeatures:
     supports_prompt_cache_retention: bool
 
 
-# Model lists capturing current behavior. Keep entries lowercase.
+LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
-REASONING_EFFORT_MODELS: list[str] = [
-    # Mirror main behavior exactly (no unintended expansion)
-    "o1-2024-12-17",
-    "o1",
-    "o3",
-    "o3-2025-04-16",
-    "o3-mini-2025-01-31",
-    "o3-mini",
-    "o4-mini",
-    "o4-mini-2025-04-16",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    # Gemini 3 family
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
-    # OpenAI GPT-5 family (includes mini variants)
-    "gpt-5",
-    # Anthropic Opus 4.5 and 4.6
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    # Nova 2 Lite
-    "nova-2-lite",
-]
+
+@lru_cache
+def _supports_reasoning_effort(model: str | None) -> bool:
+    """Return True if the model supports reasoning_effort via LiteLLM params."""
+    if not model:
+        return False
+
+    normalized = model.strip().lower()
+    if not normalized:
+        return False
+
+    if normalized.startswith(LITELLM_PROXY_PREFIX):
+        normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
+
+    custom_provider = None
+    model_id = normalized
+    if "/" in normalized:
+        custom_provider, model_id = normalized.split("/", 1)
+
+    try:
+        params = get_supported_openai_params(
+            model=model_id, custom_llm_provider=custom_provider
+        )
+    except Exception:
+        return False
+
+    return bool(params and "reasoning_effort" in params)
+
+
+# Model lists capturing current behavior. Keep entries lowercase.
 
 EXTENDED_THINKING_MODELS: list[str] = [
     # Anthropic model family
@@ -166,7 +176,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
     return ModelFeatures(
-        supports_reasoning_effort=model_matches(model, REASONING_EFFORT_MODELS),
+        supports_reasoning_effort=_supports_reasoning_effort(model),
         supports_extended_thinking=model_matches(model, EXTENDED_THINKING_MODELS),
         supports_prompt_cache=model_matches(model, PROMPT_CACHE_MODELS),
         supports_stop_words=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
