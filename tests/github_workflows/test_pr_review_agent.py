@@ -133,50 +133,18 @@ class TestPostGithubComment:
             post_github_comment("owner/repo", "123", "Test comment")
 
 
-class TestStartCloudConversation:
-    """Tests for the _start_cloud_conversation function."""
+class TestRunCloudMode:
+    """Tests for the run_cloud_mode function using OpenHandsCloudWorkspace."""
 
-    def test_success(self):
-        """Test successful cloud conversation creation."""
+    def test_cloud_mode_requires_llm_api_key(self):
+        """Test that cloud mode requires LLM_API_KEY."""
         from agent_script import (  # type: ignore[import-not-found]
-            _start_cloud_conversation,
+            _get_required_vars_for_mode,
         )
 
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"conversation_id": "abc123"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-
-        with patch("urllib.request.urlopen", return_value=mock_response):
-            conv_id, conv_url = _start_cloud_conversation(
-                "https://app.all-hands.dev",
-                "test-api-key",
-                "Hello, review this PR",
-            )
-
-            assert conv_id == "abc123"
-            assert conv_url == "https://app.all-hands.dev/conversations/abc123"
-
-    def test_missing_conversation_id_raises_error(self):
-        """Test that missing conversation_id in response raises RuntimeError."""
-        from agent_script import (  # type: ignore[import-not-found]
-            _start_cloud_conversation,
-        )
-
-        mock_response = MagicMock()
-        mock_response.read.return_value = b'{"error": "something went wrong"}'
-        mock_response.__enter__ = MagicMock(return_value=mock_response)
-        mock_response.__exit__ = MagicMock(return_value=False)
-
-        with (
-            patch("urllib.request.urlopen", return_value=mock_response),
-            pytest.raises(RuntimeError, match="No conversation_id in response"),
-        ):
-            _start_cloud_conversation(
-                "https://app.all-hands.dev",
-                "test-api-key",
-                "Hello",
-            )
+        vars = _get_required_vars_for_mode("cloud")
+        assert "LLM_API_KEY" in vars
+        assert "OPENHANDS_CLOUD_API_KEY" in vars
 
 
 class TestCloudModePrompt:
@@ -216,15 +184,17 @@ class TestGetRequiredVarsForMode:
         assert "LLM_API_KEY" in vars
         assert "OPENHANDS_CLOUD_API_KEY" not in vars
 
-    def test_cloud_mode_requires_cloud_api_key(self):
-        """Test that cloud mode requires OPENHANDS_CLOUD_API_KEY."""
+    def test_cloud_mode_requires_both_api_keys(self):
+        """Test that cloud mode requires OPENHANDS_CLOUD_API_KEY and LLM_API_KEY."""
         from agent_script import (  # type: ignore[import-not-found]
             _get_required_vars_for_mode,
         )
 
         vars = _get_required_vars_for_mode("cloud")
         assert "OPENHANDS_CLOUD_API_KEY" in vars
-        assert "LLM_API_KEY" not in vars
+        # Cloud mode now requires LLM_API_KEY because OpenHandsCloudWorkspace
+        # sends the LLM config to the cloud sandbox
+        assert "LLM_API_KEY" in vars
 
     def test_both_modes_require_github_token(self):
         """Test that both modes require GITHUB_TOKEN."""
@@ -297,6 +267,30 @@ class TestMainValidation:
 
         env = {
             "MODE": "cloud",
+            "LLM_API_KEY": "test-llm-key",
+            "GITHUB_TOKEN": "test-token",
+            "PR_NUMBER": "123",
+            "PR_TITLE": "Test PR",
+            "PR_BASE_BRANCH": "main",
+            "PR_HEAD_BRANCH": "feature",
+            "REPO_NAME": "owner/repo",
+        }
+
+        with (
+            patch.dict("os.environ", env, clear=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+
+    def test_cloud_mode_fails_without_llm_api_key(self):
+        """Test that cloud mode fails without LLM_API_KEY."""
+        from agent_script import main  # type: ignore[import-not-found]
+
+        env = {
+            "MODE": "cloud",
+            "OPENHANDS_CLOUD_API_KEY": "test-cloud-key",
             "GITHUB_TOKEN": "test-token",
             "PR_NUMBER": "123",
             "PR_TITLE": "Test PR",
@@ -337,7 +331,8 @@ class TestMainValidation:
 
         cloud_env = {
             "MODE": "cloud",
-            "OPENHANDS_CLOUD_API_KEY": "test-key",
+            "OPENHANDS_CLOUD_API_KEY": "test-cloud-key",
+            "LLM_API_KEY": "test-llm-key",
             "PR_NUMBER": "123",
             "PR_TITLE": "Test PR",
             "PR_BASE_BRANCH": "main",

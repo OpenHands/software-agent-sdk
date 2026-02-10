@@ -3,7 +3,7 @@
 
 Supports two modes:
 - 'sdk': Run locally using the SDK (default)
-- 'cloud': Run in OpenHands Cloud (non-blocking)
+- 'cloud': Run in OpenHands Cloud using OpenHandsCloudWorkspace
 
 See README.md for setup instructions and usage examples.
 """
@@ -19,12 +19,18 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from lmnr import Laminar
+from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.git.utils import run_git_command
-from openhands.tools.preset.default import get_default_condenser, get_default_tools
+from openhands.tools.preset.default import (
+    get_default_agent,
+    get_default_condenser,
+    get_default_tools,
+)
+from openhands.workspace import OpenHandsCloudWorkspace
 
 
 # Add the script directory to Python path so we can import prompt.py
@@ -226,39 +232,13 @@ Replace `<your review summary here>` with a brief summary of your review finding
 """
 
 
-def _start_cloud_conversation(
-    cloud_api_url: str,
-    cloud_api_key: str,
-    initial_message: str,
-) -> tuple[str, str]:
-    """Start a conversation via OpenHands Cloud API.
-
-    Returns:
-        Tuple of (conversation_id, conversation_url)
-    """
-    url = f"{cloud_api_url}/api/conversations"
-    headers = {"Authorization": f"Bearer {cloud_api_key}"}
-
-    response_data = _make_http_request(
-        url,
-        method="POST",
-        headers=headers,
-        data={"initial_user_msg": initial_message},
-        timeout=120,
-        error_prefix="OpenHands Cloud API request",
-    )
-
-    result = json.loads(response_data.decode("utf-8"))
-    conversation_id = result.get("conversation_id")
-    if not conversation_id:
-        raise RuntimeError(f"No conversation_id in response: {result}")
-
-    conversation_url = f"{cloud_api_url}/conversations/{conversation_id}"
-    return conversation_id, conversation_url
-
-
 def run_cloud_mode(pr_info: PRInfo, skill_trigger: str) -> None:
-    """Run PR review in OpenHands Cloud (non-blocking)."""
+    """Run PR review in OpenHands Cloud using OpenHandsCloudWorkspace.
+
+    This creates a cloud sandbox and runs the review conversation there.
+    The sandbox is kept alive after the workflow exits so the review can
+    continue asynchronously.
+    """
     prompt = CLOUD_MODE_PROMPT.format(
         skill_trigger=skill_trigger,
         repo_name=pr_info["repo_name"],
@@ -272,27 +252,70 @@ def run_cloud_mode(pr_info: PRInfo, skill_trigger: str) -> None:
     cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
     cloud_api_url = os.getenv("OPENHANDS_CLOUD_API_URL", "https://app.all-hands.dev")
 
+    # LLM configuration is required for OpenHandsCloudWorkspace
+    # The LLM config is sent to the cloud sandbox
+    llm_api_key = _get_required_env("LLM_API_KEY")
+    llm_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+    llm_base_url = os.getenv("LLM_BASE_URL")
+
     logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
     logger.info(f"Using skill trigger: {skill_trigger}")
+    logger.info(f"Using LLM model: {llm_model}")
 
-    conversation_id, conversation_url = _start_cloud_conversation(
+    # Create LLM configuration
+    llm = LLM(
+        usage_id="pr_review_agent",
+        model=llm_model,
+        api_key=SecretStr(llm_api_key),
+        base_url=llm_base_url or None,
+    )
+
+    # Create cloud workspace with keep_alive=True so the sandbox continues
+    # running after we exit
+    with OpenHandsCloudWorkspace(
         cloud_api_url=cloud_api_url,
         cloud_api_key=cloud_api_key,
-        initial_message=prompt,
-    )
+        keep_alive=True,
+    ) as workspace:
+        # Create agent with default tools
+        agent = get_default_agent(llm=llm, cli_mode=True)
 
-    logger.info(f"Cloud conversation started: {conversation_id}")
+        # Get GitHub token for the conversation secrets
+        github_token = _get_required_env("GITHUB_TOKEN")
 
-    comment_body = (
-        f"🤖 **OpenHands PR Review Started**\n\n"
-        f"The code review is running in OpenHands Cloud.\n\n"
-        f"📍 **Track progress:** [{conversation_url}]({conversation_url})\n\n"
-        f"The agent will post review comments when the analysis is complete."
-    )
-    post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
+        # Create conversation
+        conversation = Conversation(
+            agent=agent,
+            workspace=workspace,
+            secrets={"LLM_API_KEY": llm_api_key, "GITHUB_TOKEN": github_token},
+        )
 
-    logger.info(f"Cloud review URL: {conversation_url}")
-    logger.info("Workflow complete - review continues in cloud")
+        # Send the initial message
+        conversation.send_message(prompt)
+
+        # Get conversation ID and construct URL
+        conversation_id = str(conversation.id)
+        conversation_url = f"{cloud_api_url}/conversations/{conversation_id}"
+
+        logger.info(f"Cloud conversation started: {conversation_id}")
+
+        # Post comment with tracking URL
+        comment_body = (
+            f"🤖 **OpenHands PR Review Started**\n\n"
+            f"The code review is running in OpenHands Cloud.\n\n"
+            f"📍 **Track progress:** [{conversation_url}]({conversation_url})\n\n"
+            f"The agent will post review comments when the analysis is complete."
+        )
+        post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
+
+        # Run the conversation - this will execute the review
+        conversation.run()
+
+        # Print cost summary
+        _print_cost_summary(conversation)
+
+        logger.info(f"Cloud review URL: {conversation_url}")
+        logger.info("Cloud review completed")
 
 
 def run_sdk_mode(pr_info: PRInfo, skill_trigger: str, review_style: str) -> None:
@@ -421,7 +444,9 @@ def _get_required_vars_for_mode(mode: str) -> list[str]:
         "REPO_NAME",
     ]
     if mode == "cloud":
-        return ["OPENHANDS_CLOUD_API_KEY"] + common_vars
+        # Cloud mode requires both OPENHANDS_CLOUD_API_KEY and LLM_API_KEY
+        # The LLM config is sent to the cloud sandbox
+        return ["OPENHANDS_CLOUD_API_KEY", "LLM_API_KEY"] + common_vars
     return ["LLM_API_KEY"] + common_vars
 
 
