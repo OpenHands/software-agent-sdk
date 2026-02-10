@@ -41,7 +41,8 @@ RRWEB_LOADER_JS = (
 
     // Initialize storage for events (per-page, will be flushed to backend)
     window.__rrweb_events = window.__rrweb_events || [];
-    // Flag to indicate if we should auto-start recording (set by backend)
+    // Flag to indicate if recording should auto-start on new pages (cross-page)
+    // This is ONLY set after explicit start_recording call, not on initial load
     window.__rrweb_should_record = window.__rrweb_should_record || false;
     // Flag to track if rrweb failed to load
     window.__rrweb_load_failed = false;
@@ -54,9 +55,10 @@ RRWEB_LOADER_JS = (
         s.onload = function() {
             window.__rrweb_ready = true;
             console.log('[rrweb] Loaded successfully from CDN');
-            // Auto-start recording if flag is set (for cross-page continuity)
+            // Auto-start recording ONLY if flag is set (for cross-page continuity)
+            // This flag is only true after an explicit start_recording call
             if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
-                startRecordingInternal();
+                window.startRecordingInternal();
             }
         };
         s.onerror = function() {
@@ -423,10 +425,10 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
 
-            # Set flag so new pages auto-start recording
-            await self._set_recording_flag(True)
-
             # Retry loop for starting recording
+            # NOTE: We do NOT set the recording flag before starting - that would
+            # cause a race condition where the rrweb loader's onload callback
+            # could auto-start recording before START_RECORDING_JS runs.
             for attempt in range(RRWEB_START_MAX_RETRIES):
                 result = await cdp_session.cdp_client.send.Runtime.evaluate(
                     params={"expression": START_RECORDING_JS, "returnByValue": True},
@@ -437,6 +439,8 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 status = value.get("status") if isinstance(value, dict) else value
 
                 if status == "started":
+                    # Set flag AFTER recording started so new pages auto-start
+                    await self._set_recording_flag(True)
                     # Start periodic flush task
                     self._recording_flush_task = asyncio.create_task(
                         self._periodic_flush_task()
@@ -447,6 +451,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 elif status == "already_recording":
                     # Recording is already active on the page, but we still need
                     # to start the periodic flush task if it's not running
+                    await self._set_recording_flag(True)
                     if not self._recording_flush_task:
                         self._recording_flush_task = asyncio.create_task(
                             self._periodic_flush_task()
