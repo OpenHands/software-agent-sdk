@@ -75,14 +75,6 @@ REASONING_EFFORT_MODELS: list[str] = [
     "nova-2-lite",
 ]
 
-# Claude 4+ models accept temperature OR top_p, not both.
-CLAUDE_SINGLE_SAMPLING_MODELS: list[str] = [
-    "claude-opus-4",
-    "claude-sonnet-4",
-    "claude-haiku-4",
-    "claude-4",
-]
-
 EXTENDED_THINKING_MODELS: list[str] = [
     # Anthropic model family
     # We did not include sonnet 3.7 and 4 here as they don't brings

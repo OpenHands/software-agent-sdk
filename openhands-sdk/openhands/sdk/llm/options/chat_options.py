@@ -3,11 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
-from openhands.sdk.llm.utils.model_features import (
-    CLAUDE_SINGLE_SAMPLING_MODELS,
-    get_features,
-    model_matches,
-)
+from openhands.sdk.llm.utils.model_features import get_features
 
 
 def select_chat_options(
@@ -51,11 +47,6 @@ def select_chat_options(
         if "gemini-2.5-pro" in llm.model:
             if llm.reasoning_effort in {None, "none"}:
                 out["reasoning_effort"] = "low"
-
-    # Claude 4+ models accept temperature OR top_p, not both
-    if model_matches(llm.model, CLAUDE_SINGLE_SAMPLING_MODELS):
-        if "temperature" in out and "top_p" in out:
-            out.pop("top_p", None)
 
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:
