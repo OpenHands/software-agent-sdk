@@ -14,6 +14,11 @@ This example demonstrates how to use skills for code review:
 The agent posts inline review comments on specific lines of code using the
 GitHub API, rather than posting one giant comment under the PR.
 
+The agent also considers previous review context including:
+- Existing review comments and their resolution status
+- Previous review decisions (APPROVED, CHANGES_REQUESTED, etc.)
+- Review threads (resolved and unresolved)
+
 Designed for use with GitHub Actions workflows triggered by PR labels.
 
 Environment Variables:
@@ -33,12 +38,15 @@ For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 from lmnr import Laminar
 
@@ -52,13 +60,15 @@ from openhands.tools.preset.default import get_default_condenser, get_default_to
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 
-from prompt import PROMPT  # noqa: E402
+from prompt import format_prompt  # noqa: E402
 
 
 logger = get_logger(__name__)
 
 # Maximum total diff size
 MAX_TOTAL_DIFF = 100000
+# Maximum size for review context to avoid overwhelming the prompt
+MAX_REVIEW_CONTEXT = 30000
 
 
 def _get_required_env(name: str) -> str:
@@ -66,6 +76,330 @@ def _get_required_env(name: str) -> str:
     if not value:
         raise ValueError(f"{name} environment variable is required")
     return value
+
+
+def _github_api_request(
+    url: str,
+    method: str = "GET",
+    data: dict[str, Any] | None = None,
+    accept: str = "application/vnd.github+json",
+) -> Any:
+    """Make a GitHub API request.
+
+    Args:
+        url: Full API URL or path (will be prefixed with api.github.com if needed)
+        method: HTTP method (GET, POST, etc.)
+        data: JSON data to send (for POST/PUT requests)
+        accept: Accept header value
+
+    Returns:
+        Parsed JSON response or raw text for diff requests
+    """
+    token = _get_required_env("GITHUB_TOKEN")
+
+    if not url.startswith("http"):
+        url = f"https://api.github.com{url}"
+
+    request = urllib.request.Request(url, method=method)
+    request.add_header("Accept", accept)
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+
+    if data:
+        request.add_header("Content-Type", "application/json")
+        request.data = json.dumps(data).encode("utf-8")
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw_data = response.read()
+            if "diff" in accept:
+                return raw_data.decode("utf-8", errors="replace")
+            return json.loads(raw_data.decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        details = (e.read() or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"GitHub API request failed: HTTP {e.code} {e.reason}. {details}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GitHub API request failed: {e.reason}") from e
+
+
+def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
+    """Fetch all reviews for a PR.
+
+    Returns a list of review objects containing:
+    - id: Review ID
+    - user: Author information
+    - body: Review body text
+    - state: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
+    - submitted_at: When the review was submitted
+    """
+    repo = _get_required_env("REPO_NAME")
+    url = f"/repos/{repo}/pulls/{pr_number}/reviews"
+    return _github_api_request(url)
+
+
+def get_pr_review_comments(pr_number: str) -> list[dict[str, Any]]:
+    """Fetch all review comments (inline comments) for a PR.
+
+    Returns a list of comment objects containing:
+    - id: Comment ID
+    - user: Author information
+    - body: Comment text
+    - path: File path
+    - line: Line number (may be None for outdated comments)
+    - original_line: Original line number
+    - diff_hunk: The diff context
+    - in_reply_to_id: Parent comment ID if this is a reply
+    - created_at: When the comment was created
+    """
+    repo = _get_required_env("REPO_NAME")
+    comments: list[dict[str, Any]] = []
+    page = 1
+    per_page = 100
+
+    while True:
+        url = (
+            f"/repos/{repo}/pulls/{pr_number}/comments?per_page={per_page}&page={page}"
+        )
+        page_comments = _github_api_request(url)
+        if not page_comments:
+            break
+        comments.extend(page_comments)
+        if len(page_comments) < per_page:
+            break
+        page += 1
+
+    return comments
+
+
+def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
+    """Fetch review threads with resolution status using GraphQL API.
+
+    The REST API doesn't expose thread resolution status, so we use GraphQL.
+
+    Returns a list of thread objects containing:
+    - id: Thread ID
+    - isResolved: Whether the thread is resolved
+    - isOutdated: Whether the thread is outdated (code changed)
+    - path: File path
+    - line: Line number
+    - comments: List of comments in the thread
+    """
+    repo = _get_required_env("REPO_NAME")
+    owner, repo_name = repo.split("/")
+
+    query = """
+    query($owner: String!, $repo: String!, $pr_number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr_number) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              isResolved
+              isOutdated
+              path
+              line
+              comments(first: 50) {
+                nodes {
+                  id
+                  author {
+                    login
+                  }
+                  body
+                  createdAt
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    threads: list[dict[str, Any]] = []
+    cursor = None
+
+    while True:
+        variables = {
+            "owner": owner,
+            "repo": repo_name,
+            "pr_number": int(pr_number),
+            "cursor": cursor,
+        }
+
+        result = _github_api_request(
+            "https://api.github.com/graphql",
+            method="POST",
+            data={"query": query, "variables": variables},
+        )
+
+        if "errors" in result:
+            logger.warning(f"GraphQL errors: {result['errors']}")
+            break
+
+        pr_data = result.get("data", {}).get("repository", {}).get("pullRequest")
+        if not pr_data:
+            break
+
+        review_threads = pr_data.get("reviewThreads", {})
+        nodes = review_threads.get("nodes", [])
+        threads.extend(nodes)
+
+        page_info = review_threads.get("pageInfo", {})
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+
+    return threads
+
+
+def format_review_context(
+    reviews: list[dict[str, Any]],
+    threads: list[dict[str, Any]],
+    max_size: int = MAX_REVIEW_CONTEXT,
+) -> str:
+    """Format review history into a context string for the agent.
+
+    Args:
+        reviews: List of review objects from get_pr_reviews()
+        threads: List of thread objects from get_review_threads_graphql()
+        max_size: Maximum size of the formatted context
+
+    Returns:
+        Formatted markdown string with review history
+    """
+    if not reviews and not threads:
+        return ""
+
+    lines: list[str] = []
+
+    # Format reviews (high-level review decisions)
+    if reviews:
+        lines.append("### Previous Reviews\n")
+        for review in reviews:
+            user = review.get("user", {}).get("login", "unknown")
+            state = review.get("state", "UNKNOWN")
+            body = review.get("body", "").strip()
+
+            # Map state to emoji for visual clarity
+            state_emoji = {
+                "APPROVED": "✅",
+                "CHANGES_REQUESTED": "🔴",
+                "COMMENTED": "💬",
+                "DISMISSED": "❌",
+                "PENDING": "⏳",
+            }.get(state, "❓")
+
+            lines.append(f"- {state_emoji} **{user}** ({state})")
+            if body:
+                # Indent the body and truncate if too long
+                body_preview = body[:500] + "..." if len(body) > 500 else body
+                indented = "\n".join(f"  > {line}" for line in body_preview.split("\n"))
+                lines.append(indented)
+            lines.append("")
+
+    # Format review threads with resolution status
+    if threads:
+        resolved_threads = [t for t in threads if t.get("isResolved")]
+        unresolved_threads = [t for t in threads if not t.get("isResolved")]
+
+        if unresolved_threads:
+            lines.append("### Unresolved Review Threads\n")
+            lines.append(
+                "*These threads have not been resolved and may need attention:*\n"
+            )
+            for thread in unresolved_threads:
+                lines.extend(_format_thread(thread))
+
+        if resolved_threads:
+            lines.append("### Resolved Review Threads\n")
+            lines.append("*These threads have been resolved but provide context:*\n")
+            for thread in resolved_threads:
+                lines.extend(_format_thread(thread))
+
+    result = "\n".join(lines)
+
+    # Truncate if too long
+    if len(result) > max_size:
+        result = (
+            result[:max_size]
+            + f"\n\n... [review context truncated, {len(result):,} chars total] ..."
+        )
+
+    return result
+
+
+def _format_thread(thread: dict[str, Any]) -> list[str]:
+    """Format a single review thread.
+
+    Args:
+        thread: Thread object from GraphQL
+
+    Returns:
+        List of formatted lines
+    """
+    lines: list[str] = []
+    path = thread.get("path", "unknown")
+    line_num = thread.get("line")
+    is_outdated = thread.get("isOutdated", False)
+    is_resolved = thread.get("isResolved", False)
+
+    # Thread header
+    status = "✅ RESOLVED" if is_resolved else "⚠️ UNRESOLVED"
+    outdated = " (outdated)" if is_outdated else ""
+    location = f"{path}"
+    if line_num:
+        location += f":{line_num}"
+
+    lines.append(f"**{location}**{outdated} - {status}")
+
+    # Thread comments
+    comments = thread.get("comments", {}).get("nodes", [])
+    for comment in comments:
+        author = comment.get("author", {}).get("login", "unknown")
+        body = comment.get("body", "").strip()
+        if body:
+            # Truncate individual comments if too long
+            body_preview = body[:300] + "..." if len(body) > 300 else body
+            indented = "\n".join(f"  > {line}" for line in body_preview.split("\n"))
+            lines.append(f"  - **{author}**:")
+            lines.append(indented)
+
+    lines.append("")
+    return lines
+
+
+def get_pr_review_context(pr_number: str) -> str:
+    """Get all review context for a PR.
+
+    Fetches reviews and review threads, then formats them into a context string.
+
+    Args:
+        pr_number: The PR number
+
+    Returns:
+        Formatted review context string, or empty string if no context
+    """
+    try:
+        reviews = get_pr_reviews(pr_number)
+        logger.info(f"Fetched {len(reviews)} reviews")
+    except Exception as e:
+        logger.warning(f"Failed to fetch reviews: {e}")
+        reviews = []
+
+    try:
+        threads = get_review_threads_graphql(pr_number)
+        logger.info(f"Fetched {len(threads)} review threads")
+    except Exception as e:
+        logger.warning(f"Failed to fetch review threads: {e}")
+        threads = []
+
+    return format_review_context(reviews, threads)
 
 
 def get_pr_diff_via_github_api(pr_number: str) -> str:
@@ -190,21 +524,30 @@ def main():
         commit_id = get_head_commit_sha()
         logger.info(f"HEAD commit SHA: {commit_id}")
 
+        # Fetch previous review context (comments, threads, resolution status)
+        pr_number = pr_info.get("number", "")
+        review_context = get_pr_review_context(pr_number)
+        if review_context:
+            logger.info(f"Got review context with {len(review_context)} characters")
+        else:
+            logger.info("No previous review context found")
+
         # Create the review prompt using the template
         # Include the skill trigger keyword to activate the appropriate skill
         skill_trigger = (
             "/codereview" if review_style == "standard" else "/codereview-roasted"
         )
-        prompt = PROMPT.format(
+        prompt = format_prompt(
+            skill_trigger=skill_trigger,
             title=pr_info.get("title", "N/A"),
             body=pr_info.get("body", "No description provided"),
             repo_name=pr_info.get("repo_name", "N/A"),
             base_branch=pr_info.get("base_branch", "main"),
             head_branch=pr_info.get("head_branch", "N/A"),
-            pr_number=pr_info.get("number", "N/A"),
+            pr_number=pr_number,
             commit_id=commit_id,
-            skill_trigger=skill_trigger,
             diff=pr_diff,
+            review_context=review_context,
         )
 
         # Configure LLM

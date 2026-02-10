@@ -20,6 +20,11 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - See exactly which lines the feedback refers to
   - Address issues one by one
   - Have focused discussions on specific code sections
+- **Review Context Awareness**: The agent considers previous review history:
+  - **Previous reviews**: Sees all past review decisions (APPROVED, CHANGES_REQUESTED, etc.)
+  - **Review threads**: Fetches all review threads including their resolution status
+  - **Smart commenting**: Avoids repeating issues that have already been raised and addressed
+  - **Unresolved focus**: Prioritizes unresolved threads that may still need attention
 - **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
