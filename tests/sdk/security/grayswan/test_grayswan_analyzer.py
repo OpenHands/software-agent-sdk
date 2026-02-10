@@ -409,13 +409,16 @@ class TestGraySwanAnalyzerHTTPClientLifecycle:
 
         action = create_mock_action_event()
 
-        # First call should work
-        result = analyzer.security_risk(action)
-        assert result == SecurityRisk.LOW
+        try:
+            # First call should work
+            result = analyzer.security_risk(action)
+            assert result == SecurityRisk.LOW
 
-        # Second call should reuse the same client
-        result = analyzer.security_risk(action)
-        assert result == SecurityRisk.LOW
+            # Second call should reuse the same client
+            result = analyzer.security_risk(action)
+            assert result == SecurityRisk.LOW
+        finally:
+            analyzer.close()
 
     def test_client_recreated_after_close(self):
         """Test that client is recreated after close() is called."""
@@ -434,24 +437,27 @@ class TestGraySwanAnalyzerHTTPClientLifecycle:
 
         action = create_mock_action_event()
 
-        # First call
-        result = analyzer.security_risk(action)
-        assert result == SecurityRisk.LOW
-        assert call_count == 1
-
-        # Close the client
-        analyzer.close()
-        assert analyzer._client is None
-
-        # Next call should create a new client (but we need to mock it again)
-        # Since _get_client creates a real client, we patch it for this test
-        with patch.object(analyzer, "_create_client") as mock_create:
-            new_transport = httpx.MockTransport(mock_handler)
-            mock_create.return_value = httpx.Client(transport=new_transport)
-
+        try:
+            # First call
             result = analyzer.security_risk(action)
             assert result == SecurityRisk.LOW
-            mock_create.assert_called_once()
+            assert call_count == 1
+
+            # Close the client
+            analyzer.close()
+            assert analyzer._client is None
+
+            # Next call should create a new client (but we need to mock it again)
+            # Since _get_client creates a real client, we patch it for this test
+            with patch.object(analyzer, "_create_client") as mock_create:
+                new_transport = httpx.MockTransport(mock_handler)
+                mock_create.return_value = httpx.Client(transport=new_transport)
+
+                result = analyzer.security_risk(action)
+                assert result == SecurityRisk.LOW
+                mock_create.assert_called_once()
+        finally:
+            analyzer.close()
 
     def test_client_handles_json_decode_error(self):
         """Test that invalid JSON response is handled gracefully."""
@@ -464,5 +470,8 @@ class TestGraySwanAnalyzerHTTPClientLifecycle:
         analyzer._client = httpx.Client(transport=transport)
 
         action = create_mock_action_event()
-        result = analyzer.security_risk(action)
-        assert result == SecurityRisk.UNKNOWN
+        try:
+            result = analyzer.security_risk(action)
+            assert result == SecurityRisk.UNKNOWN
+        finally:
+            analyzer.close()
