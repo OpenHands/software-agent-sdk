@@ -23,7 +23,7 @@ Environment Variables:
     LLM_API_KEY: API key for the LLM (required for 'sdk' mode only)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
-    GITHUB_TOKEN: GitHub token for API access (required for 'sdk' mode only)
+    GITHUB_TOKEN: GitHub token for API access (required for both modes)
     PR_NUMBER: Pull request number (required)
     PR_TITLE: Pull request title (required)
     PR_BODY: Pull request body (optional)
@@ -37,9 +37,10 @@ Environment Variables:
 Note on 'cloud' mode:
 - Creates a conversation directly via OpenHands Cloud API
 - No LLM credentials needed - uses the user's cloud-configured LLM
-- No GITHUB_TOKEN needed - agent has access via user's cloud-configured credentials
+- GITHUB_TOKEN needed to post initial comment with conversation URL
+- Agent has GitHub access via cloud credentials for the actual review
 - The agent runs asynchronously in the cloud (non-blocking)
-- Agent fetches PR diff and posts review comments using its GitHub access
+- Posts a comment on the PR with a link to track progress in the UI
 
 For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
@@ -286,12 +287,14 @@ def main():
     logger.info(f"Mode: {mode}")
 
     # Validate required environment variables based on mode
-    # Cloud mode only needs OPENHANDS_CLOUD_API_KEY:
+    # Cloud mode needs OPENHANDS_CLOUD_API_KEY and GITHUB_TOKEN:
     # - LLM: uses user's cloud-configured LLM
-    # - GITHUB_TOKEN: agent has access via user's cloud-configured GitHub credentials
+    # - GITHUB_TOKEN: needed to post initial comment with conversation URL
+    #   (agent has GitHub access via cloud credentials for the actual review)
     if mode == "cloud":
         required_vars = [
             "OPENHANDS_CLOUD_API_KEY",
+            "GITHUB_TOKEN",  # Needed to post initial "review started" comment
             "PR_NUMBER",
             "PR_TITLE",
             "PR_BASE_BRANCH",
@@ -314,8 +317,8 @@ def main():
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
-    # Get credentials (GITHUB_TOKEN optional in cloud mode)
-    github_token = os.getenv("GITHUB_TOKEN")
+    # Get credentials
+    github_token = _get_required_env("GITHUB_TOKEN")
     api_key = os.getenv("LLM_API_KEY")  # May be None in cloud mode
 
     # Get PR information
@@ -374,6 +377,16 @@ def main():
             )
 
             logger.info(f"Cloud conversation started: {conversation_id}")
+
+            # Post a comment on the PR with the conversation URL
+            comment_body = (
+                f"🤖 **OpenHands PR Review Started**\n\n"
+                f"The code review is running in OpenHands Cloud.\n\n"
+                f"📍 **Track progress:** [{conversation_url}]({conversation_url})\n\n"
+                f"The agent will post review comments when the analysis is complete."
+            )
+            post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
+
             logger.info(f"Cloud review URL: {conversation_url}")
             logger.info("Workflow complete - review continues in cloud")
 
