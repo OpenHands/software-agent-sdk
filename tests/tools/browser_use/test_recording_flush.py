@@ -157,7 +157,8 @@ class TestSizeThresholdFlush:
     async def test_flush_creates_new_file_when_size_threshold_exceeded(
         self, server_with_mock_browser, mock_cdp_session
     ):
-        """Test that events are flushed to a new file when size threshold is exceeded."""
+        """Test that events are flushed to a new file when size
+        threshold is exceeded."""
         server = server_with_mock_browser
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -267,7 +268,8 @@ class TestSizeThresholdFlush:
     async def test_multiple_flushes_create_sequential_files(
         self, server_with_mock_browser, mock_cdp_session
     ):
-        """Test that multiple size-triggered flushes create sequentially numbered files."""
+        """Test that multiple size-triggered flushes
+        create sequentially numbered files."""
         server = server_with_mock_browser
 
         with tempfile.TemporaryDirectory() as temp_dir:

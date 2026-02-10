@@ -6,16 +6,6 @@ to capture and save a recording of the agent's browser interactions using rrweb.
 The recording can be replayed later using rrweb-player to visualize the agent's
 browsing session.
 
-Usage:
-    # Set your LLM API key
-    export LLM_API_KEY=your_api_key_here
-
-    # Optionally set model (defaults to claude-sonnet)
-    export LLM_MODEL=anthropic/claude-sonnet-4-5-20250929
-
-    # Run the example
-    python 33_browser_session_recording.py
-
 The recording will be automatically saved to the persistence directory when
 browser_stop_recording is called. You can replay it with:
     - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player
