@@ -51,18 +51,19 @@ cp examples/03_github_workflows/02_pr_review/workflow.yml .github/workflows/pr-r
 
 ### 2. Configure secrets
 
-Set the following secrets in your GitHub repository settings:
+Set the following secrets in your GitHub repository settings based on your chosen mode:
 
-**For Both Modes:**
+**For SDK Mode (default):**
 - **`LLM_API_KEY`** (required): Your LLM API key
   - Get one from the [OpenHands LLM Provider](https://docs.all-hands.dev/openhands/usage/llms/openhands-llms)
 - **`GITHUB_TOKEN`** (auto-available): Used for PR diff and posting comments
 
-**For Cloud Mode (additionally):**
+**For Cloud Mode:**
 - **`OPENHANDS_CLOUD_API_KEY`** (required): Your OpenHands Cloud API key
   - Get one from your [OpenHands Cloud account settings](https://app.all-hands.dev/settings/api-keys)
+- **`GITHUB_TOKEN`** (auto-available): Used to post initial comment with conversation URL
 
-**Note**: Cloud mode runs the same agent as SDK mode, but in an OpenHands Cloud sandbox (using `OpenHandsCloudWorkspace`). Both modes require `LLM_API_KEY` because the LLM configuration is sent to the cloud sandbox.
+**Note**: In cloud mode, you don't need `LLM_API_KEY` - OpenHands Cloud uses your account's configured LLM. The workflow uses `GITHUB_TOKEN` to post a comment linking to the conversation URL. The agent running in cloud has its own GitHub access for the actual review.
 
 ### 3. Customize the workflow (optional)
 
@@ -96,25 +97,28 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs.
 - name: Run PR Review
   uses: ./.github/actions/pr-review
   with:
-      # Review mode: 'cloud' runs in OpenHands Cloud sandbox
+      # Review mode: 'cloud' runs in OpenHands Cloud
       mode: cloud
-      # LLM configuration (same as SDK mode)
-      llm-model: anthropic/claude-sonnet-4-5-20250929
       # Review style: roasted (other option: standard)
       review-style: roasted
       # SDK git ref to use
       sdk-version: main
-      # Secrets (same as SDK mode, plus cloud API key)
-      llm-api-key: ${{ secrets.LLM_API_KEY }}
-      github-token: ${{ secrets.GITHUB_TOKEN }}
+      # Cloud mode secrets
       openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
+      github-token: ${{ secrets.GITHUB_TOKEN }}
       # Optional: custom cloud API URL
       # openhands-cloud-api-url: https://app.all-hands.dev
 ```
 
 **Cloud Mode Benefits:**
-- **Managed sandbox**: Runs in OpenHands Cloud infrastructure
-- **Same agent logic**: Uses exactly the same Agent and Conversation as SDK mode
+- **No LLM setup**: Uses your OpenHands Cloud account's configured LLM
+- **Faster CI completion**: Starts the review and exits immediately
+- **Track progress in UI**: Posts a comment with a link to the conversation URL
+
+**Cloud Mode Prerequisites:**
+> ⚠️ The OpenHands Cloud account that owns the `OPENHANDS_CLOUD_API_KEY` must have GitHub access to the repository you want to review. The agent running in cloud uses your account's GitHub credentials to fetch the PR diff and post review comments.
+>
+> Follow the [GitHub Installation Guide](https://docs.openhands.dev/openhands/usage/cloud/github-installation) to connect your GitHub account to OpenHands Cloud.
 
 ### 4. Create the review label
 
@@ -223,11 +227,11 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
-| `llm-api-key` | LLM API key | Yes | - |
+| `llm-api-key` | LLM API key (sdk mode only) | sdk mode | - |
 | `github-token` | GitHub token for API access | Yes | - |
 | `openhands-cloud-api-key` | OpenHands Cloud API key (cloud mode only) | cloud mode | - |
 | `openhands-cloud-api-url` | OpenHands Cloud API URL | No | `https://app.all-hands.dev` |
-| `lmnr-api-key` | Laminar API key for observability | No | - |
+| `lmnr-api-key` | Laminar API key for observability (sdk mode only) | No | - |
 
 ## Review Evaluation (Observability)
 
