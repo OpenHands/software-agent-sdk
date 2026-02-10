@@ -34,9 +34,7 @@ from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
 @pytest.fixture
-def server_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Generator[dict, None, None]:
+def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
     We set OPENHANDS_AGENT_SERVER_CONFIG_PATH before creating the app so that

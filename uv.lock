@@ -1547,11 +1547,7 @@ wheels = [
 [[package]]
 name = "libtmux"
 version = "0.53.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e7/28/e2b252817cb181aec2f42fe2d1d7fac5ec9c4d15bfb2b8ea4bd1179e4244/libtmux-0.53.0.tar.gz", hash = "sha256:1d19af4cea0c19543954d7e7317c7025c0739b029cccbe3b843212fae238f1bd", size = 405001, upload-time = "2025-12-14T11:59:11.337Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/d0/2e8bc5caa639ebb9f8801ba0be7070a28d48d8ed60e2a428d40f71fb88b8/libtmux-0.53.0-py3-none-any.whl", hash = "sha256:024b7ae6a12aae55358e8feb914c8632b3ab9bd61c0987c53559643c6a58ee4f", size = 77582, upload-time = "2025-12-14T11:59:09.739Z" },
-]
+source = { git = "https://github.com/neubig/libtmux.git?rev=fix%2Fnew-session-race-condition#6d202e082030efb04074b9231c152510386aebca" }
 
 [[package]]
 name = "litellm"
@@ -2205,7 +2201,7 @@ requires-dist = [
     { name = "browser-use", specifier = ">=0.8.0" },
     { name = "cachetools" },
     { name = "func-timeout", specifier = ">=4.3.5" },
-    { name = "libtmux", specifier = ">=0.53.0" },
+    { name = "libtmux", git = "https://github.com/neubig/libtmux.git?rev=fix%2Fnew-session-race-condition" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "tom-swe", specifier = ">=1.0.3" },

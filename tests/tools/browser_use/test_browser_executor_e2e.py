@@ -103,7 +103,7 @@ PAGE2_HTML = """<!DOCTYPE html>
 
 
 @pytest.fixture(scope="module")
-def test_server() -> Generator[str, None, None]:
+def test_server() -> Generator[str]:
     """Set up a local HTTP server for testing."""
     temp_dir = tempfile.mkdtemp()
     server_process = None
@@ -144,7 +144,7 @@ def test_server() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def browser_executor() -> Generator[BrowserToolExecutor, None, None]:
+def browser_executor() -> Generator[BrowserToolExecutor]:
     """Create a real BrowserToolExecutor for testing."""
     executor = None
     try:
