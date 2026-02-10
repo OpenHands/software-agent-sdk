@@ -410,6 +410,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("azure"):
             d["api_version"] = os.getenv("LLM_API_VERSION", d.get("api_version"))
 
+
         # Provider rewrite: openhands/* -> litellm_proxy/*
         if model_val.startswith("openhands/"):
             model_name = model_val.removeprefix("openhands/")
@@ -427,6 +428,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @model_validator(mode="after")
     def _set_env_side_effects(self):
+        # Reasoning effort from env var
+        effort_from_env = os.getenv("REASONING_EFFORT")
+        if effort_from_env:
+            valid_efforts: tuple[str, ...] = (
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "none",
+            )
+            if effort_from_env in valid_efforts:
+                self.reasoning_effort = (
+                    effort_from_env  # type: ignore[assignment]
+                )
         if self.openrouter_site_url:
             os.environ["OR_SITE_URL"] = self.openrouter_site_url
         if self.openrouter_app_name:
