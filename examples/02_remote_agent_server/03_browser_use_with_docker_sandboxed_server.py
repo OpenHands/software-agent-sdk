@@ -35,11 +35,11 @@ def get_server_image():
     """Get the server image tag, using PR-specific image in CI."""
     platform_str = detect_platform()
     arch = "arm64" if "arm64" in platform_str else "amd64"
-    # If GITHUB_SHA is set (e.g. running in CI of a PR), use that to ensure consistency
-    # Otherwise, use the latest image from main
-    github_sha = os.getenv("GITHUB_SHA")
-    if github_sha:
-        return f"ghcr.io/openhands/agent-server:{github_sha[:7]}-python-{arch}"
+    # AGENT_SERVER_SHA is set by CI to the PR head commit SHA
+    # This avoids conflict with GitHub's default GITHUB_SHA (merge commit)
+    server_sha = os.getenv("AGENT_SERVER_SHA")
+    if server_sha:
+        return f"ghcr.io/openhands/agent-server:{server_sha[:7]}-python-{arch}"
     return "ghcr.io/openhands/agent-server:latest-python"
 
 

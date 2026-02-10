@@ -70,7 +70,9 @@ jobs:
                   PR_NUMBER: ${{ github.event.pull_request.number }}
                   REPO_OWNER: ${{ github.repository_owner }}
                   REPO_NAME: ${{ github.event.repository.name }}
-                  GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+                  # Use custom var name to avoid conflict with GitHub's default GITHUB_SHA
+                  # which points to the merge commit, not the PR head commit
+                  AGENT_SERVER_SHA: ${{ github.event.pull_request.head.sha }}
                   OPENHANDS_CLOUD_API_KEY: ${{ secrets.ALLHANDS_BOT_OPENHANDS_SAAS_API_KEY }}
               run: |
                   RESULTS_DIR=".example-test-results"
