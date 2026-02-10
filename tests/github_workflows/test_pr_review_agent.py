@@ -55,23 +55,28 @@ def test_post_github_comment_missing_token():
         post_github_comment("owner/repo", "123", "Test comment")
 
 
-def test_cloud_mode_instruction_format():
-    """Test that CLOUD_MODE_INSTRUCTION can be formatted correctly."""
+def test_cloud_mode_prompt_format():
+    """Test that CLOUD_MODE_PROMPT can be formatted correctly."""
     from agent_script import (  # type: ignore[import-not-found]
-        CLOUD_MODE_INSTRUCTION,
+        CLOUD_MODE_PROMPT,
     )
 
-    # Test that the instruction can be formatted without errors
-    formatted = CLOUD_MODE_INSTRUCTION.format(
+    # Test that the prompt can be formatted without errors
+    formatted = CLOUD_MODE_PROMPT.format(
+        skill_trigger="/codereview",
         repo_name="owner/repo",
         pr_number="123",
+        title="Test PR",
+        body="Test body",
+        base_branch="main",
+        head_branch="feature",
     )
 
-    # Verify the formatted instruction contains the expected values
+    # Verify the formatted prompt contains the expected values
     assert "owner/repo" in formatted
     assert "123" in formatted
     assert "GITHUB_TOKEN" in formatted
-    assert "curl" in formatted
+    assert "gh" in formatted  # Uses gh CLI instead of curl
 
 
 def test_mode_defaults_to_sdk():
@@ -133,43 +138,16 @@ def test_cloud_mode_requires_cloud_api_key():
     from agent_script import main  # type: ignore[import-not-found]
 
     # Set up environment for cloud mode but missing OPENHANDS_CLOUD_API_KEY
-    # Note: Cloud mode now also requires LLM_API_KEY
+    # Note: Cloud mode does NOT require LLM_API_KEY - uses cloud-configured LLM
     env = {
         "MODE": "cloud",
         "GITHUB_TOKEN": "test-token",
-        "LLM_API_KEY": "test-llm-key",
         "PR_NUMBER": "123",
         "PR_TITLE": "Test PR",
         "PR_BASE_BRANCH": "main",
         "PR_HEAD_BRANCH": "feature",
         "REPO_NAME": "owner/repo",
         # OPENHANDS_CLOUD_API_KEY intentionally missing
-    }
-
-    with (
-        patch.dict("os.environ", env, clear=True),
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        main()
-
-    assert exc_info.value.code == 1
-
-
-def test_cloud_mode_requires_llm_api_key():
-    """Test that cloud mode also fails without LLM_API_KEY."""
-    from agent_script import main  # type: ignore[import-not-found]
-
-    # Cloud mode requires both OPENHANDS_CLOUD_API_KEY and LLM_API_KEY
-    env = {
-        "MODE": "cloud",
-        "GITHUB_TOKEN": "test-token",
-        "OPENHANDS_CLOUD_API_KEY": "test-cloud-key",
-        "PR_NUMBER": "123",
-        "PR_TITLE": "Test PR",
-        "PR_BASE_BRANCH": "main",
-        "PR_HEAD_BRANCH": "feature",
-        "REPO_NAME": "owner/repo",
-        # LLM_API_KEY intentionally missing
     }
 
     with (
@@ -206,10 +184,10 @@ def test_both_modes_require_github_token():
     assert exc_info.value.code == 1
 
     # Test cloud mode without GITHUB_TOKEN
+    # Note: Cloud mode does NOT require LLM_API_KEY - uses cloud-configured LLM
     cloud_env = {
         "MODE": "cloud",
         "OPENHANDS_CLOUD_API_KEY": "test-key",
-        "LLM_API_KEY": "test-llm-key",
         "PR_NUMBER": "123",
         "PR_TITLE": "Test PR",
         "PR_BASE_BRANCH": "main",
