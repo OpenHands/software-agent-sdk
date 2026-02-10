@@ -405,8 +405,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise ValueError("model must be specified in LLM")
 
         # Azure default version
-        if model_val.startswith("azure") and not d.get("api_version"):
-            d["api_version"] = os.getenv("LLM_API_VERSION", None),
+        logger.debug(d)
+        logger.debug(d.get("api_version"))
+        if model_val.startswith("azure"):
+            d["api_version"] = os.getenv("LLM_API_VERSION", d.get("api_version"))
 
         # Provider rewrite: openhands/* -> litellm_proxy/*
         if model_val.startswith("openhands/"):
