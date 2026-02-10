@@ -67,12 +67,12 @@ MODELS = {
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
-        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-pro-preview"},
+        "llm_config": {"model": "litellm_proxy/gemini-3-pro-preview"},
     },
     "gemini-3-flash": {
         "id": "gemini-3-flash",
         "display_name": "Gemini 3 Flash",
-        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-flash-preview"},
+        "llm_config": {"model": "litellm_proxy/gemini-3-flash-preview"},
     },
     "gpt-5.2": {
         "id": "gpt-5.2",
@@ -102,6 +102,15 @@ MODELS = {
         "display_name": "MiniMax M2.1",
         "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
     },
+    "jade-spark-2862": {
+        "id": "jade-spark-2862",
+        "display_name": "Jade Spark 2862",
+        "llm_config": {
+            "model": "litellm_proxy/jade-spark-2862",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
@@ -125,7 +134,11 @@ MODELS = {
     "glm-4.7": {
         "id": "glm-4.7",
         "display_name": "GLM-4.7",
-        "llm_config": {"model": "litellm_proxy/openrouter/z-ai/glm-4.7"},
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-4.7",
+            # OpenRouter glm-4.7 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
     },
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",

@@ -59,6 +59,85 @@ def mock_repo_dir(tmp_path):
     return repo_dir
 
 
+@pytest.fixture
+def mock_repo_with_agentskills_references(tmp_path):
+    """Create a mock repo with AgentSkills-style skills with reference markdown files.
+
+    This reproduces the issue where markdown files in subdirectories of a SKILL.md
+    directory (like themes/ or references/) are incorrectly loaded as separate skills.
+    See: https://github.com/OpenHands/software-agent-sdk/issues/1981
+    """
+    repo_dir = tmp_path / "mock_repo"
+    repo_dir.mkdir()
+
+    # Create skills directory
+    skills_dir = repo_dir / "skills"
+    skills_dir.mkdir()
+
+    # Create theme-factory skill with SKILL.md and reference markdown files in themes/
+    theme_factory_dir = skills_dir / "theme-factory"
+    theme_factory_dir.mkdir()
+
+    # Main SKILL.md file
+    skill_md = theme_factory_dir / "SKILL.md"
+    skill_md.write_text(
+        "---\n"
+        "name: theme-factory\n"
+        "description: Toolkit for styling artifacts with a theme.\n"
+        "---\n"
+        "# Theme Factory Skill\n\n"
+        "This skill provides a curated collection of professional themes.\n"
+    )
+
+    # Create themes subdirectory with reference markdown files
+    themes_dir = theme_factory_dir / "themes"
+    themes_dir.mkdir()
+
+    # These are reference files, NOT separate skills
+    (themes_dir / "arctic-frost.md").write_text(
+        "# Arctic Frost\n\nA cool and crisp winter-inspired theme.\n"
+    )
+    (themes_dir / "ocean-depths.md").write_text(
+        "# Ocean Depths\n\nA professional and calming maritime theme.\n"
+    )
+    (themes_dir / "sunset-boulevard.md").write_text(
+        "# Sunset Boulevard\n\nWarm and vibrant sunset colors.\n"
+    )
+
+    # Create readiness-report skill with references/ subdirectory
+    readiness_dir = skills_dir / "readiness-report"
+    readiness_dir.mkdir()
+
+    (readiness_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: readiness-report\n"
+        "description: Generate readiness reports.\n"
+        "---\n"
+        "# Readiness Report Skill\n"
+    )
+
+    # Create references subdirectory with reference markdown files
+    refs_dir = readiness_dir / "references"
+    refs_dir.mkdir()
+
+    (refs_dir / "criteria.md").write_text("# Criteria\n\nEvaluation criteria.\n")
+    (refs_dir / "maturity-levels.md").write_text(
+        "# Maturity Levels\n\nMaturity level definitions.\n"
+    )
+
+    # Create a regular legacy skill (not AgentSkills format)
+    legacy_skill = skills_dir / "legacy-skill.md"
+    legacy_skill.write_text(
+        "---\nname: legacy-skill\ntriggers:\n  - legacy\n---\nA legacy format skill.\n"
+    )
+
+    # Create .git directory to simulate a git repo
+    git_dir = repo_dir / ".git"
+    git_dir.mkdir()
+
+    return repo_dir
+
+
 def test_load_public_skills_success(mock_repo_dir, tmp_path):
     """Test successfully loading skills from cached repository."""
 
@@ -414,3 +493,74 @@ def test_load_public_skills_custom_branch(mock_repo_dir, tmp_path):
     ):
         skills = load_public_skills(branch="develop")
         assert len(skills) == 3
+
+
+def test_load_public_skills_excludes_reference_markdown_in_agentskills_folders(
+    mock_repo_with_agentskills_references, tmp_path
+):
+    """Test that markdown files in SKILL.md subdirs are NOT loaded as skills.
+
+    This is a regression test for issue #1981:
+    https://github.com/OpenHands/software-agent-sdk/issues/1981
+
+    When a skill directory contains a SKILL.md file (AgentSkills format), any
+    markdown files in subdirectories (like themes/, references/, etc.) should
+    be treated as reference materials for that skill, NOT as separate skills.
+
+    Expected behavior:
+    - theme-factory/SKILL.md -> loaded as "theme-factory" skill
+    - theme-factory/themes/*.md -> NOT loaded (reference files)
+    - readiness-report/SKILL.md -> loaded as "readiness-report" skill
+    - readiness-report/references/*.md -> NOT loaded (reference files)
+    - legacy-skill.md -> loaded as "legacy-skill" skill
+    """
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return mock_repo_with_agentskills_references
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        skills = load_public_skills()
+
+        # Get all skill names
+        skill_names = {s.name for s in skills}
+
+        # Should have exactly 3 skills: theme-factory, readiness-report, legacy-skill
+        assert len(skills) == 3, (
+            f"Expected 3 skills but got {len(skills)}. "
+            f"Skill names: {skill_names}. "
+            "Reference markdown files in themes/ or references/ subdirectories "
+            "should NOT be loaded as separate skills."
+        )
+
+        # Verify the correct skills are loaded
+        assert "theme-factory" in skill_names
+        assert "readiness-report" in skill_names
+        assert "legacy-skill" in skill_names
+
+        # Verify reference files are NOT loaded as skills
+        # These would be loaded with names like "theme-factory/themes/arctic-frost"
+        for skill in skills:
+            assert "arctic-frost" not in skill.name, (
+                f"Reference arctic-frost.md loaded as skill: {skill.name}"
+            )
+            assert "ocean-depths" not in skill.name, (
+                f"Reference ocean-depths.md loaded as skill: {skill.name}"
+            )
+            assert "sunset-boulevard" not in skill.name, (
+                f"Reference sunset-boulevard.md loaded as skill: {skill.name}"
+            )
+            assert "criteria" not in skill.name, (
+                f"Reference criteria.md loaded as skill: {skill.name}"
+            )
+            assert "maturity-levels" not in skill.name, (
+                f"Reference maturity-levels.md loaded as skill: {skill.name}"
+            )

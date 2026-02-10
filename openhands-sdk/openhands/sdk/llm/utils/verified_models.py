@@ -23,6 +23,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
+    "claude-opus-4-6",
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
     "claude-opus-4-1-20250805",
@@ -45,6 +46,7 @@ VERIFIED_MISTRAL_MODELS = [
 
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-5-20251101",
+    "claude-opus-4-6",
     "claude-sonnet-4-5-20250929",
     "gpt-5.2",
     "gpt-5.2-codex",

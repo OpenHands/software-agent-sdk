@@ -812,6 +812,10 @@ def load_public_skills(
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
 
+    Note: When a skill directory contains a SKILL.md file (AgentSkills format),
+    any other markdown files in that directory or its subdirectories are treated
+    as reference materials for that skill, NOT as separate skills.
+
     Args:
         repo_url: URL of the skills repository. Defaults to the official
             OpenHands skills repository.
@@ -848,13 +852,21 @@ def load_public_skills(
             logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        # Find all .md files in the skills directory
-        md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
+        # Find SKILL.md directories (AgentSkills format) and regular .md files
+        # This ensures that markdown files in SKILL.md directories are NOT loaded
+        # as separate skills - they are reference materials for the parent skill.
+        skill_md_files = find_skill_md_directories(skills_dir)
+        skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
+        regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
 
-        logger.info(f"Found {len(md_files)} skill files in public skills repository")
+        # Combine all skill files to load
+        all_skill_files = list(skill_md_files) + list(regular_md_files)
+        logger.info(
+            f"Found {len(all_skill_files)} skill files in public skills repository"
+        )
 
         # Load each skill file
-        for skill_file in md_files:
+        for skill_file in all_skill_files:
             try:
                 skill = Skill.load(
                     path=skill_file,

@@ -5,6 +5,7 @@ from pydantic import ValidationError, model_validator
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
@@ -17,11 +18,9 @@ from openhands.sdk.conversation import (
     LocalConversation,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
-    LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -72,12 +71,13 @@ maybe_init_laminar()
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
-class Agent(AgentBase):
+class Agent(CriticMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
     interact with tools, process messages, and execute actions. It inherits from
-    AgentBase and implements the agent execution logic.
+    AgentBase and implements the agent execution logic. Critic-related functionality
+    is provided by CriticMixin.
 
     Example:
         >>> from openhands.sdk import LLM, Agent, Tool
@@ -194,48 +194,6 @@ class Agent(AgentBase):
             tools=list(self.tools_map.values()),
         )
         on_event(event)
-
-    def _should_evaluate_with_critic(self, action: Action | None) -> bool:
-        """Determine if critic should evaluate based on action type and mode."""
-        if self.critic is None:
-            return False
-
-        if self.critic.mode == "all_actions":
-            return True
-
-        # For "finish_and_message" mode, only evaluate FinishAction
-        # (MessageEvent will be handled separately in step())
-        if isinstance(action, FinishAction):
-            return True
-
-        return False
-
-    def _evaluate_with_critic(
-        self, conversation: LocalConversation, event: ActionEvent | MessageEvent
-    ) -> CriticResult | None:
-        """Run critic evaluation on the current event and history."""
-        if self.critic is None:
-            return None
-
-        try:
-            # Build event history including the current event
-            events = list(conversation.state.events) + [event]
-            llm_convertible_events = [
-                e for e in events if isinstance(e, LLMConvertibleEvent)
-            ]
-
-            # Evaluate without git_patch for now
-            critic_result = self.critic.evaluate(
-                events=llm_convertible_events, git_patch=None
-            )
-            logger.info(
-                f"✓ Critic evaluation: score={critic_result.score:.3f}, "
-                f"success={critic_result.success}"
-            )
-            return critic_result
-        except Exception as e:
-            logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
-            return None
 
     def _execute_actions(
         self,
@@ -704,7 +662,22 @@ class Agent(AgentBase):
 
         # Set conversation state
         if tool.name == FinishTool.name:
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            # Check if iterative refinement should continue
+            should_continue, followup = self._check_iterative_refinement(
+                conversation, action_event
+            )
+            if should_continue and followup:
+                # Send follow-up message and continue agent loop
+                followup_msg = MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text=followup)]
+                    ),
+                )
+                on_event(followup_msg)
+                # Don't set FINISHED - let the agent continue
+            else:
+                state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
 
     def _maybe_emit_vllm_tokens(
