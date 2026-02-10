@@ -51,8 +51,14 @@ jobs:
 
             - name: Update sdk_ref default in run-eval workflow
               run: |
-                  echo "🔧 Updating sdk_ref default to v${{ inputs.version }} in run-eval.yml"
-                  sed -i "s/^\([[:space:]]*default: v\)[0-9]\+\.[0-9]\+\.[0-9]\+\([[:space:]]*$\)/\1${{ inputs.version }}\2/" .github/workflows/run-eval.yml
+                  OLD_VERSION=$(grep -oP "default: v\K[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?" .github/workflows/run-eval.yml || echo "unknown")
+                  echo "🔧 Updating sdk_ref default from v${OLD_VERSION} to v${{ inputs.version }} in run-eval.yml"
+                  sed -i "s/^\([[:space:]]*default: v\)[0-9]\+\.[0-9]\+\.[0-9]\+\(-[a-zA-Z0-9.]\+\)\?\([[:space:]]*$\)/\1${{ inputs.version }}\3/" .github/workflows/run-eval.yml
+                  if ! grep -q "default: v${{ inputs.version }}" .github/workflows/run-eval.yml; then
+                    echo "❌ Failed to update sdk_ref default in run-eval.yml"
+                    exit 1
+                  fi
+                  echo "✅ Successfully updated sdk_ref to v${{ inputs.version }}"
 
             - name: Commit version changes
               run: |
