@@ -791,9 +791,6 @@ class TestBrowserExecutorE2E:
                 if executor:
                     try:
                         executor.close()
-                    except Exception:
-                        pass
-
                     except Exception as e:
                         # Ignore errors during cleanup but log for debugging purposes
                         print(
