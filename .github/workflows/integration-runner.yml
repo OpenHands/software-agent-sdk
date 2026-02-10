@@ -274,8 +274,8 @@ jobs:
             - name: Run integration test evaluation for ${{ matrix.job-config['name'] }}
               env:
                   LLM_CONFIG: ${{ toJson(matrix.job-config['llm-config']) }}
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
+                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
               run: |
                   set -eo pipefail
 
