@@ -144,6 +144,7 @@ async def test_browser_executor_initialization_idempotent(mock_browser_executor)
 
 async def test_start_recording_initializes_session(mock_browser_executor):
     """Test that start_recording initializes a recording session with correct state."""
+    import tempfile
     from unittest.mock import AsyncMock
 
     from openhands.tools.browser_use.recording import RecordingSession, RecordingState
@@ -168,15 +169,21 @@ async def test_start_recording_initializes_session(mock_browser_executor):
         return_value=mock_cdp_session
     )
 
-    # Create a real RecordingSession and test its behavior
-    session = RecordingSession(save_dir="/tmp/test-recording")
-    result = await session.start(mock_browser_session)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a real RecordingSession and test its behavior
+        # Use base_save_dir - start() will create a timestamped subfolder
+        session = RecordingSession(base_save_dir=temp_dir)
+        result = await session.start(mock_browser_session)
 
-    # Verify the session state was properly initialized
-    assert session.state == RecordingState.RECORDING
-    assert session.is_active is True
-    assert result == "Recording started"
-    assert session._scripts_injected is True
+        # Verify the session state was properly initialized
+        assert session.state == RecordingState.RECORDING
+        assert session.is_active is True
+        assert result == "Recording started"
+        assert session._scripts_injected is True
+        # Verify a timestamped subfolder was created
+        assert session.save_dir is not None
+        assert session.save_dir.startswith(temp_dir)
+        assert "recording-" in session.save_dir
 
 
 async def test_stop_recording_returns_summary_with_event_counts():
@@ -190,7 +197,9 @@ async def test_stop_recording_returns_summary_with_event_counts():
 
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a recording session in RECORDING state with some events
-        session = RecordingSession(save_dir=temp_dir)
+        # Set _save_dir directly to bypass start() which creates timestamped subfolder
+        session = RecordingSession()
+        session._save_dir = temp_dir
         session._state = RecordingState.RECORDING
         session._scripts_injected = True
 

@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -153,10 +154,19 @@ class RecordingSession:
     - Uses asyncio.Lock to protect flush operations from concurrent access
     - The periodic flush loop and navigation-triggered flushes both acquire
       the lock before modifying the event buffer or file counter
+
+    Recording Isolation:
+    - Each recording session creates a timestamped subfolder under base_save_dir
+    - Format: {base_save_dir}/recording-{timestamp}/
+    - This ensures multiple start/stop cycles don't mix events
     """
 
-    save_dir: str | None = None
+    # Base directory for recordings - each session creates a subfolder
+    base_save_dir: str | None = None
     config: RecordingConfig = field(default_factory=lambda: DEFAULT_CONFIG)
+
+    # Actual save directory for current recording (timestamped subfolder)
+    _save_dir: str | None = field(default=None, repr=False)
 
     # State machine
     _state: RecordingState = RecordingState.IDLE
@@ -175,6 +185,26 @@ class RecordingSession:
 
     # Concurrency control
     _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    @property
+    def save_dir(self) -> str | None:
+        """Get the actual save directory for the current recording session."""
+        return self._save_dir
+
+    def _create_recording_subfolder(self) -> str | None:
+        """Create a timestamped subfolder for this recording session.
+
+        Returns:
+            Path to the created subfolder, or None if base_save_dir is not set.
+        """
+        if not self.base_save_dir:
+            return None
+
+        # Generate timestamp in ISO format (safe for filenames)
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
+        subfolder = os.path.join(self.base_save_dir, f"recording-{timestamp}")
+        os.makedirs(subfolder, exist_ok=True)
+        return subfolder
 
     @property
     def is_active(self) -> bool:
@@ -210,10 +240,10 @@ class RecordingSession:
         Returns:
             Path to the saved file, or None if save_dir is not configured or no events.
         """
-        if not self.save_dir or not self._event_buffer:
+        if not self._save_dir or not self._event_buffer:
             return None
 
-        os.makedirs(self.save_dir, exist_ok=True)
+        os.makedirs(self._save_dir, exist_ok=True)
 
         # Find the next available filename with safety limit
         attempts = 0
@@ -221,7 +251,7 @@ class RecordingSession:
             self._next_file_index += 1
             attempts += 1
             filename = f"{self._next_file_index}.json"
-            filepath = os.path.join(self.save_dir, filename)
+            filepath = os.path.join(self._save_dir, filename)
             if not os.path.exists(filepath):
                 break
         else:
@@ -399,6 +429,9 @@ class RecordingSession:
         polling anti-patterns. This waits exactly as long as needed and fails
         immediately if loading fails.
 
+        Each recording session creates a new timestamped subfolder under base_save_dir
+        to ensure multiple start/stop cycles don't mix events.
+
         Returns:
             Status message indicating success or failure.
         """
@@ -412,6 +445,9 @@ class RecordingSession:
         self._next_file_index = 0
         self._files_written = 0
         self._total_events = 0
+
+        # Create a new timestamped subfolder for this recording session
+        self._save_dir = self._create_recording_subfolder()
 
         try:
             cdp_session = await browser_session.get_or_create_cdp_session()
@@ -617,8 +653,10 @@ class RecordingSession:
         """Reset the recording session state for reuse."""
         self._event_buffer.clear()
         self._state = RecordingState.IDLE
+        self._save_dir = None  # Clear the current recording's save directory
         self._next_file_index = 0
         self._files_written = 0
         self._total_events = 0
         self._flush_task = None
         # Note: _scripts_injected is NOT reset - scripts persist in browser session
+        # Note: base_save_dir is NOT reset - it's the parent dir for all recordings

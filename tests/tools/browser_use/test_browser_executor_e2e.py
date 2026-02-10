@@ -730,7 +730,7 @@ class TestBrowserExecutorE2E:
         print(f"\n✓ Stop recording result: {stop_result.text}")
 
     def test_recording_save_to_file(self, test_server: str):
-        """Test that recording is automatically saved to files."""
+        """Test that recording is saved to files in a timestamped subfolder."""
         with tempfile.TemporaryDirectory() as temp_save_dir:
             executor = None
             try:
@@ -764,8 +764,22 @@ class TestBrowserExecutorE2E:
                 assert "Recording stopped" in stop_result.text
                 assert "events" in stop_result.text.lower()
 
-                # Verify files were created in the save directory
-                files = os.listdir(temp_save_dir)
+                # Verify a timestamped subfolder was created
+                subdirs = [
+                    d
+                    for d in os.listdir(temp_save_dir)
+                    if os.path.isdir(os.path.join(temp_save_dir, d))
+                ]
+                assert len(subdirs) == 1, (
+                    f"Expected exactly one recording subfolder, got {subdirs}"
+                )
+                assert subdirs[0].startswith("recording-"), (
+                    f"Expected subfolder to start with 'recording-', got {subdirs[0]}"
+                )
+
+                # Verify files were created in the timestamped subfolder
+                recording_dir = os.path.join(temp_save_dir, subdirs[0])
+                files = os.listdir(recording_dir)
                 json_files = [f for f in files if f.endswith(".json")]
                 assert len(json_files) > 0, (
                     "Expected at least one JSON file to be created"
@@ -774,7 +788,7 @@ class TestBrowserExecutorE2E:
                 # Read and verify the saved file(s)
                 total_events = 0
                 for json_file in json_files:
-                    filepath = os.path.join(temp_save_dir, json_file)
+                    filepath = os.path.join(recording_dir, json_file)
                     assert os.path.getsize(filepath) > 0
                     with open(filepath) as f:
                         events = json.load(f)
@@ -783,7 +797,7 @@ class TestBrowserExecutorE2E:
 
                 assert total_events > 0, "Expected at least some events to be saved"
 
-                print(f"\n✓ Recording saved to {temp_save_dir}")
+                print(f"\n✓ Recording saved to {recording_dir}")
                 print(f"✓ Created {len(json_files)} file(s)")
                 print(f"✓ Total events: {total_events}")
 
