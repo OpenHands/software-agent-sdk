@@ -62,7 +62,6 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-opus-4-6",
             "temperature": 0.0,
-            "top_p": None,
         },
     },
     "gemini-3-pro": {
