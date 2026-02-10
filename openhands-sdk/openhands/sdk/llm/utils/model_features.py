@@ -188,12 +188,13 @@ DEFAULT_TEMPERATURE_MODELS: list[tuple[str, float]] = [
 ]
 
 
-def get_default_temperature(model: str) -> float:
+def get_default_temperature(model: str) -> float | None:
     """Return the default temperature for a given model pattern.
 
     Uses case-insensitive substring matching via model_matches.
+    Returns None for most models to use provider defaults.
     """
     for pattern, value in DEFAULT_TEMPERATURE_MODELS:
         if model_matches(model, [pattern]):
             return value
-    return 0.0
+    return None

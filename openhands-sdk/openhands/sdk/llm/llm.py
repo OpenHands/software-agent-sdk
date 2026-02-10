@@ -180,7 +180,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description=(
             "Sampling temperature for response generation. "
-            "Defaults to 0 for most models and provider default for reasoning models."
+            "Defaults to provider default (None) for most models."
         ),
     )
     top_p: float | None = Field(default=1.0, ge=0, le=1)

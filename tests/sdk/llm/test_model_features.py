@@ -326,24 +326,24 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
         # kimi-k2.5 models should also default to 1.0
         ("kimi-k2.5", 1.0),
         ("Kimi-K2.5", 1.0),  # Case insensitive
-        # All other models should default to 0.0
-        ("kimi-k2-instruct", 0.0),  # Different kimi variant
-        ("gpt-4", 0.0),
-        ("gpt-4o", 0.0),
-        ("gpt-4o-mini", 0.0),
-        ("claude-3-5-sonnet", 0.0),
-        ("claude-3-7-sonnet", 0.0),
-        ("gemini-1.5-pro", 0.0),
-        ("gemini-2.5-pro-experimental", 0.0),
-        ("o1", 0.0),
-        ("o1-mini", 0.0),
-        ("o3", 0.0),
-        ("deepseek-chat", 0.0),
-        ("llama-3.1-70b", 0.0),
-        ("azure/gpt-4o-mini", 0.0),
-        ("openai/gpt-4o", 0.0),
-        ("anthropic/claude-3-5-sonnet", 0.0),
-        ("unknown-model", 0.0),
+        # All other models should default to None (use provider default)
+        ("kimi-k2-instruct", None),  # Different kimi variant
+        ("gpt-4", None),
+        ("gpt-4o", None),
+        ("gpt-4o-mini", None),
+        ("claude-3-5-sonnet", None),
+        ("claude-3-7-sonnet", None),
+        ("gemini-1.5-pro", None),
+        ("gemini-2.5-pro-experimental", None),
+        ("o1", None),
+        ("o1-mini", None),
+        ("o3", None),
+        ("deepseek-chat", None),
+        ("llama-3.1-70b", None),
+        ("azure/gpt-4o-mini", None),
+        ("openai/gpt-4o", None),
+        ("anthropic/claude-3-5-sonnet", None),
+        ("unknown-model", None),
     ],
 )
 def test_get_default_temperature(model, expected_temperature):
@@ -352,9 +352,9 @@ def test_get_default_temperature(model, expected_temperature):
 
 
 def test_get_default_temperature_fallback():
-    """Test that get_default_temperature returns 0.0 for unknown models."""
-    assert get_default_temperature("completely-unknown-model-12345") == 0.0
-    assert get_default_temperature("some-random-model") == 0.0
+    """Test that get_default_temperature returns None for unknown models."""
+    assert get_default_temperature("completely-unknown-model-12345") is None
+    assert get_default_temperature("some-random-model") is None
 
 
 def test_get_default_temperature_case_insensitive():
