@@ -103,6 +103,15 @@ MODELS = {
         "display_name": "MiniMax M2.1",
         "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
     },
+    "jade-spark-2862": {
+        "id": "jade-spark-2862",
+        "display_name": "Jade Spark 2862",
+        "llm_config": {
+            "model": "litellm_proxy/jade-spark-2862",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
