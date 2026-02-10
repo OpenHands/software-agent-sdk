@@ -278,7 +278,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         .. deprecated:: 1.11.0
             Use :attr:`static_system_message` for the cacheable system prompt and
             :attr:`dynamic_context` for per-conversation content. This separation
-            enables cross-conversation prompt caching. Will be removed in 1.13.0.
+            enables cross-conversation prompt caching. Will be removed in 1.16.0.
 
         .. warning::
             Using this property DISABLES cross-conversation prompt caching because
