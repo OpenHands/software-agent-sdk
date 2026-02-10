@@ -7,6 +7,7 @@ to detect potential security risks.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Sequence
 from typing import Any
@@ -100,6 +101,10 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
                 )
 
         if not self.api_key:
+            # Design choice: Graceful degradation instead of fail-fast.
+            # This allows deployment without API key configured, returning UNKNOWN
+            # risk for all analyses. This is intentional to support environments
+            # where security analysis is optional or configured later.
             logger.warning(
                 "GRAYSWAN_API_KEY not set. GraySwanAnalyzer will return UNKNOWN risk."
             )
@@ -128,18 +133,24 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
         """
         self._events = list(events)
 
+    def _create_client(self) -> httpx.Client:
+        """Create a new HTTP client instance."""
+        api_key_value = self.api_key.get_secret_value() if self.api_key else ""
+        return httpx.Client(
+            timeout=self.timeout,
+            headers={
+                "Authorization": f"Bearer {api_key_value}",
+                "Content-Type": "application/json",
+            },
+        )
+
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
-        if self._client is None or self._client.is_closed:
-            api_key_value = self.api_key.get_secret_value() if self.api_key else ""
-            self._client = httpx.Client(
-                timeout=self.timeout,
-                headers={
-                    # GraySwan API accepts authentication via Bearer token
-                    "Authorization": f"Bearer {api_key_value}",
-                    "Content-Type": "application/json",
-                },
-            )
+        # Split condition to avoid AttributeError when _client is None
+        if self._client is None:
+            self._client = self._create_client()
+        elif self._client.is_closed:
+            self._client = self._create_client()
         return self._client
 
     def _map_violation_to_risk(self, violation_score: float) -> SecurityRisk:
@@ -184,7 +195,12 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
             response = client.post(self.api_url, json=payload)
 
             if response.status_code == 200:
-                result = response.json()
+                try:
+                    result = response.json()
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON from GraySwan API: {response.text}")
+                    return SecurityRisk.UNKNOWN
+
                 violation_score = result.get("violation")
 
                 # Validate response structure

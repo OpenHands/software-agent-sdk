@@ -390,3 +390,79 @@ class TestGraySwanAnalyzerClose:
         analyzer = GraySwanAnalyzer(api_key=SecretStr("test_key"))
         # Should not raise
         analyzer.close()
+
+
+class TestGraySwanAnalyzerHTTPClientLifecycle:
+    """Integration tests for HTTP client lifecycle using MockTransport."""
+
+    def test_client_creation_and_reuse(self):
+        """Test that HTTP client is created and reused correctly."""
+
+        def mock_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"violation": 0.1})
+
+        transport = httpx.MockTransport(mock_handler)
+        analyzer = GraySwanAnalyzer(api_key=SecretStr("test_key"))
+
+        # Manually set the client with mock transport
+        analyzer._client = httpx.Client(transport=transport)
+
+        action = create_mock_action_event()
+
+        # First call should work
+        result = analyzer.security_risk(action)
+        assert result == SecurityRisk.LOW
+
+        # Second call should reuse the same client
+        result = analyzer.security_risk(action)
+        assert result == SecurityRisk.LOW
+
+    def test_client_recreated_after_close(self):
+        """Test that client is recreated after close() is called."""
+        call_count = 0
+
+        def mock_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(200, json={"violation": 0.1})
+
+        analyzer = GraySwanAnalyzer(api_key=SecretStr("test_key"))
+
+        # Create initial client with mock transport
+        transport = httpx.MockTransport(mock_handler)
+        analyzer._client = httpx.Client(transport=transport)
+
+        action = create_mock_action_event()
+
+        # First call
+        result = analyzer.security_risk(action)
+        assert result == SecurityRisk.LOW
+        assert call_count == 1
+
+        # Close the client
+        analyzer.close()
+        assert analyzer._client is None
+
+        # Next call should create a new client (but we need to mock it again)
+        # Since _get_client creates a real client, we patch it for this test
+        with patch.object(analyzer, "_create_client") as mock_create:
+            new_transport = httpx.MockTransport(mock_handler)
+            mock_create.return_value = httpx.Client(transport=new_transport)
+
+            result = analyzer.security_risk(action)
+            assert result == SecurityRisk.LOW
+            mock_create.assert_called_once()
+
+    def test_client_handles_json_decode_error(self):
+        """Test that invalid JSON response is handled gracefully."""
+
+        def mock_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"not valid json")
+
+        transport = httpx.MockTransport(mock_handler)
+        analyzer = GraySwanAnalyzer(api_key=SecretStr("test_key"))
+        analyzer._client = httpx.Client(transport=transport)
+
+        action = create_mock_action_event()
+        result = analyzer.security_risk(action)
+        assert result == SecurityRisk.UNKNOWN
