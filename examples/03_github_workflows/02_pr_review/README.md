@@ -115,6 +115,11 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs.
 - **Faster CI completion**: Starts the review and exits immediately
 - **Track progress in UI**: Posts a comment with a link to the conversation URL
 
+**Cloud Mode Prerequisites:**
+> ⚠️ The OpenHands Cloud account that owns the `OPENHANDS_CLOUD_API_KEY` must have GitHub access to the repository you want to review. The agent running in cloud uses your account's GitHub credentials to fetch the PR diff and post review comments.
+>
+> Follow the [GitHub Installation Guide](https://docs.openhands.dev/openhands/usage/cloud/github-installation) to connect your GitHub account to OpenHands Cloud.
+
 ### 4. Create the review label
 
 Create a `review-this` label in your repository:
