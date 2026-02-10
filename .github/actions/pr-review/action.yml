@@ -33,11 +33,10 @@ inputs:
         required: false
         default: main
     llm-api-key:
-        description: LLM API key (required for 'sdk' mode only, cloud mode uses user's configured LLM)
-        required: false
-        default: ''
+        description: LLM API key (required for both modes)
+        required: true
     github-token:
-        description: GitHub token for API access (required for both modes - used to post initial comment in cloud mode)
+        description: GitHub token for API access (required for both modes)
         required: true
     openhands-cloud-api-key:
         description: OpenHands Cloud API key (required for 'cloud' mode), get it from https://app.all-hands.dev/settings/api-keys
@@ -102,24 +101,25 @@ runs:
           run: |
               echo "Mode: $MODE"
 
-              # GITHUB_TOKEN is required for both modes
+              # Both modes require LLM_API_KEY and GITHUB_TOKEN
+              if [ -z "$LLM_API_KEY" ]; then
+                echo "Error: llm-api-key is required."
+                exit 1
+              fi
               if [ -z "$GITHUB_TOKEN" ]; then
-                echo "Error: github-token is required for both modes."
+                echo "Error: github-token is required."
                 exit 1
               fi
 
               if [ "$MODE" = "sdk" ]; then
-                # SDK mode also requires LLM_API_KEY
-                if [ -z "$LLM_API_KEY" ]; then
-                  echo "Error: llm-api-key is required for 'sdk' mode."
-                  exit 1
-                fi
+                echo "Running in SDK mode (local execution)"
               elif [ "$MODE" = "cloud" ]; then
-                # Cloud mode requires OPENHANDS_CLOUD_API_KEY (LLM is configured in cloud)
+                # Cloud mode additionally requires OPENHANDS_CLOUD_API_KEY
                 if [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
                   echo "Error: openhands-cloud-api-key is required for 'cloud' mode."
                   exit 1
                 fi
+                echo "Running in cloud mode (OpenHandsCloudWorkspace)"
               else
                 echo "Error: mode must be 'sdk' or 'cloud', got '$MODE'."
                 exit 1
@@ -129,14 +129,12 @@ runs:
               echo "PR Title: ${{ github.event.pull_request.title }}"
               echo "Repository: ${{ github.repository }}"
               echo "SDK Version: ${{ inputs.sdk-version }}"
-              if [ "$MODE" = "sdk" ]; then
-                echo "LLM model: ${{ inputs.llm-model }}"
-                if [ -n "${{ inputs.llm-base-url }}" ]; then
-                  echo "LLM base URL: ${{ inputs.llm-base-url }}"
-                fi
-              else
+              echo "LLM model: ${{ inputs.llm-model }}"
+              if [ -n "${{ inputs.llm-base-url }}" ]; then
+                echo "LLM base URL: ${{ inputs.llm-base-url }}"
+              fi
+              if [ "$MODE" = "cloud" ]; then
                 echo "OpenHands Cloud API URL: ${{ inputs.openhands-cloud-api-url }}"
-                echo "Note: LLM is configured in your OpenHands Cloud account"
               fi
 
         - name: Run PR review
