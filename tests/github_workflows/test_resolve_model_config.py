@@ -28,8 +28,8 @@ def test_find_models_by_id_single_model():
         result = find_models_by_id(model_ids)
 
     assert len(result) == 1
-    assert result[0]["id"] == "claude-sonnet-4-5-20250929"
-    assert result[0]["display_name"] == "Claude Sonnet 4.5"
+    assert result[0]["id"] == "gpt-4"
+    assert result[0]["display_name"] == "GPT-4"
 
 
 def test_find_models_by_id_multiple_models():
@@ -45,8 +45,8 @@ def test_find_models_by_id_multiple_models():
         result = find_models_by_id(model_ids)
 
     assert len(result) == 2
-    assert result[0]["id"] == "claude-sonnet-4-5-20250929"
-    assert result[1]["id"] == "deepseek-chat"
+    assert result[0]["id"] == "gpt-4"
+    assert result[1]["id"] == "claude-3"
 
 
 def test_find_models_by_id_preserves_order():
@@ -113,11 +113,11 @@ def test_find_models_by_id_preserves_full_config():
         result = find_models_by_id(model_ids)
 
     assert len(result) == 1
-    assert result[0]["id"] == "claude-sonnet-4-5-20250929"
-    assert (
-        result[0]["llm_config"]["model"] == "litellm_proxy/claude-sonnet-4-5-20250929"
-    )
-    assert result[0]["llm_config"]["temperature"] == 0.0
+    assert result[0]["id"] == "custom-model"
+    assert result[0]["llm_config"]["model"] == "custom-model"
+    assert result[0]["llm_config"]["api_key"] == "test-key"
+    assert result[0]["llm_config"]["base_url"] == "https://example.com"
+    assert result[0]["extra_field"] == "should be preserved"
 
 
 # Tests for expected models from issue #1495

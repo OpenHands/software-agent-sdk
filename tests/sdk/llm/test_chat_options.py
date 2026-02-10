@@ -60,6 +60,14 @@ def test_gpt5_uses_reasoning_effort_and_strips_temp_top_p():
     assert "top_p" not in out
 
 
+def test_claude_4_strips_top_p_when_temperature_set():
+    llm = DummyLLM(model="claude-sonnet-4-20250514", temperature=0.5, top_p=0.8)
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert out.get("temperature") == 0.5
+    assert "top_p" not in out
+
+
 def test_gemini_2_5_pro_defaults_reasoning_effort_low_when_none():
     llm = DummyLLM(model="gemini-2.5-pro-experimental", reasoning_effort=None)
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
