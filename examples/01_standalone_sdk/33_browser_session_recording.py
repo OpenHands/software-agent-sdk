@@ -22,7 +22,6 @@ browser_stop_recording is called. You can replay it with:
     - Online viewer: https://www.rrweb.io/demo/
 """
 
-import glob
 import json
 import os
 
@@ -73,10 +72,10 @@ def conversation_callback(event: Event):
 
 # Create conversation with persistence_dir set to save browser recordings
 conversation = Conversation(
-    agent=agent, 
-    callbacks=[conversation_callback], 
+    agent=agent,
+    callbacks=[conversation_callback],
     workspace=cwd,
-    persistence_dir="./.conversations"
+    persistence_dir="./.conversations",
 )
 
 # The prompt instructs the agent to:
@@ -97,7 +96,8 @@ Please complete the following task to demonstrate browser session recording:
    - Get the page content
    - Scroll down to see more content
 
-4. Finally, use `browser_stop_recording` to stop the recording. Events are automatically saved.
+4. Finally, use `browser_stop_recording` to stop the recording.
+   Events are automatically saved.
 """
 
 print("=" * 80)
@@ -116,32 +116,52 @@ print("=" * 80)
 persistence_dir = conversation.state.persistence_dir
 assert persistence_dir
 
-# Check if the recording file was created
-files = os.listdir(os.path.join(persistence_dir, "observations"))
-recording_file = files[0] if len(files) > 0 else ""
+# Check if the recording files were created
+observations_dir = os.path.join(persistence_dir, "observations")
+if os.path.exists(observations_dir):
+    files = sorted(os.listdir(observations_dir))
+    json_files = [f for f in files if f.endswith(".json")]
 
-recording_file = os.path.join(persistence_dir, f"observations/{recording_file}")
-if os.path.exists(recording_file):
-    with open(recording_file) as f:
-        recording_data = json.load(f)
+    if json_files:
+        print(f"\n✓ Recording saved to: {observations_dir}")
+        print(f"✓ Number of files: {len(json_files)}")
 
-    print(f"\n✓ Recording saved to: {recording_file}")
-    print(f"✓ Number of events: {recording_data.get('count', len(recording_data.get('events', [])))}")
-    print(f"✓ File size: {os.path.getsize(recording_file)} bytes")
+        # Count total events across all files
+        total_events = 0
+        all_event_types = {}
+        total_size = 0
 
-    # Show event types
-    events = recording_data.get("events", [])
-    if events:
-        event_types = {}
-        for event in events:
-            event_type = event.get("type", "unknown")
-            event_types[event_type] = event_types.get(event_type, 0) + 1
-        print(f"✓ Event types: {event_types}")
+        for json_file in json_files:
+            filepath = os.path.join(observations_dir, json_file)
+            file_size = os.path.getsize(filepath)
+            total_size += file_size
 
-    print("\nTo replay this recording, you can use:")
-    print("  - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player")
+            with open(filepath) as f:
+                events = json.load(f)
+
+            # Events are stored as a list in each file
+            if isinstance(events, list):
+                total_events += len(events)
+                for event in events:
+                    event_type = event.get("type", "unknown")
+                    all_event_types[event_type] = all_event_types.get(event_type, 0) + 1
+
+            print(f"  - {json_file}: {len(events)} events, {file_size} bytes")
+
+        print(f"✓ Total events: {total_events}")
+        print(f"✓ Total size: {total_size} bytes")
+        if all_event_types:
+            print(f"✓ Event types: {all_event_types}")
+
+        print("\nTo replay this recording, you can use:")
+        print(
+            "  - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player"
+        )
+    else:
+        print(f"\n✗ No recording files found in: {observations_dir}")
+        print("  The agent may not have completed the recording task.")
 else:
-    print(f"\n✗ Recording file not found at: {recording_file}")
+    print(f"\n✗ Observations directory not found: {observations_dir}")
     print("  The agent may not have completed the recording task.")
 
 print("\n" + "=" * 100)
@@ -151,5 +171,5 @@ print("=" * 100)
 
 # Report cost
 cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f'Conversation ID: {conversation.id}')
+print(f"Conversation ID: {conversation.id}")
 print(f"EXAMPLE_COST: {cost}")

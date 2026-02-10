@@ -445,6 +445,15 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     return "Recording started"
 
                 elif status == "already_recording":
+                    # Recording is already active on the page, but we still need
+                    # to start the periodic flush task if it's not running
+                    if not self._recording_flush_task:
+                        self._recording_flush_task = asyncio.create_task(
+                            self._periodic_flush_task()
+                        )
+                        logger.info(
+                            "Recording already active, started periodic flush task"
+                        )
                     return "Already recording"
 
                 elif status == "load_failed":
