@@ -682,10 +682,14 @@ BROWSER_START_RECORDING_DESCRIPTION = """Start recording the browser session.
 This tool starts recording all browser interactions using rrweb. The recording
 captures DOM mutations, mouse movements, clicks, scrolls, and other user interactions.
 
-Call browser_stop_recording to stop recording and retrieve the recorded events.
+Recording events are periodically flushed to numbered JSON files (1.json, 2.json, etc.)
+in the configured save directory. Events are flushed every 5 seconds or when they
+exceed 1 MB.
 
-Note: Recording is per-page. Navigation to a new page will require calling
-start_recording again on the new page.
+Call browser_stop_recording to stop recording and save any remaining events.
+
+Note: Recording persists across page navigations - the recording will automatically
+restart on new pages.
 """
 
 
@@ -722,14 +726,14 @@ class BrowserStopRecordingAction(BrowserAction):
     pass
 
 
-BROWSER_STOP_RECORDING_DESCRIPTION = """Stop recording and retrieve the recorded events.
+BROWSER_STOP_RECORDING_DESCRIPTION = """Stop recording the browser session.
 
-This tool stops the current recording session and returns all captured events as JSON.
-The events can be replayed using rrweb-player to visualize the recorded session.
+This tool stops the current recording session and saves any remaining events to disk.
+Events are saved as numbered JSON files (1.json, 2.json, etc.) in the configured
+save directory. These files can be replayed using rrweb-player to visualize the
+recorded session.
 
-Returns a JSON object with:
-- events: Array of rrweb events
-- count: Number of events recorded
+Returns a summary message with the total event count, file count, and save directory.
 """
 
 

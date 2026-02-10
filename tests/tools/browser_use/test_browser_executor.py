@@ -173,15 +173,18 @@ async def test_browser_executor_action_routing_stop_recording(
 
 
 @patch("openhands.tools.browser_use.impl.BrowserToolExecutor.stop_recording")
-async def test_browser_executor_stop_recording_returns_json(
+async def test_browser_executor_stop_recording_returns_summary(
     mock_stop_recording, mock_browser_executor
 ):
-    """Test that stop_recording returns valid JSON with events."""
-    mock_stop_recording.return_value = '{"events": [{"type": 1}], "count": 1}'
+    """Test that stop_recording returns a summary message."""
+    mock_stop_recording.return_value = (
+        "Recording stopped. Captured 42 events in 3 file(s). Saved to: /tmp/recording"
+    )
 
     action = BrowserStopRecordingAction()
     result = await mock_browser_executor._execute_action(action)
 
     assert not result.is_error
-    assert "events" in result.text
-    assert "count" in result.text
+    assert "Recording stopped" in result.text
+    assert "42 events" in result.text
+    assert "3 file(s)" in result.text
