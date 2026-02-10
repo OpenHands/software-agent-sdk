@@ -22,6 +22,7 @@ on:
             model_ids:
                 description: >-
                     Comma-separated model IDs to test (from resolve_model_config.py).
+                    Use 'all' to run all available models.
                     Example: claude-sonnet-4-5-20250929,glm-4.7. Defaults to a standard set.
                 required: false
                 default: ''
@@ -65,9 +66,13 @@ jobs:
                   DEFAULT_MODEL_IDS: ${{ env.DEFAULT_MODEL_IDS }}
               run: |
                   # Use input model_ids if provided, otherwise use defaults
+                  # Special value 'all' expands to all available models
                   if [ -z "$MODEL_IDS_INPUT" ]; then
                     MODEL_IDS="$DEFAULT_MODEL_IDS"
                     echo "No model_ids specified, using defaults: $MODEL_IDS"
+                  elif [ "$MODEL_IDS_INPUT" = "all" ]; then
+                    MODEL_IDS="all"
+                    echo "Using all available models"
                   else
                     MODEL_IDS="$MODEL_IDS_INPUT"
                     echo "Using specified model_ids: $MODEL_IDS"
@@ -81,8 +86,15 @@ jobs:
                   sys.path.insert(0, '.github/run-eval')
                   from resolve_model_config import MODELS
 
-                  model_ids = "$MODEL_IDS".split(",")
-                  model_ids = [m.strip() for m in model_ids if m.strip()]
+                  model_ids_input = "$MODEL_IDS"
+
+                  # Handle 'all' keyword to expand to all available models
+                  if model_ids_input == "all":
+                      model_ids = list(MODELS.keys())
+                      print(f"Expanding 'all' to {len(model_ids)} models", file=sys.stderr)
+                  else:
+                      model_ids = model_ids_input.split(",")
+                      model_ids = [m.strip() for m in model_ids if m.strip()]
 
                   matrix = []
                   for model_id in model_ids:
