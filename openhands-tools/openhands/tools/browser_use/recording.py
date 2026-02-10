@@ -34,34 +34,25 @@ class RecordingState(Enum):
 
 @dataclass
 class EventBuffer:
-    """Encapsulates event storage and size tracking.
+    """Encapsulates event storage.
 
-    This class manages the in-memory buffer of recording events,
-    tracking both the events themselves and their cumulative size.
+    This class manages the in-memory buffer of recording events.
     """
 
     events: list[dict] = field(default_factory=list)
-    size_bytes: int = 0
 
     def add(self, event: dict) -> None:
-        """Add a single event to the buffer and update size."""
+        """Add a single event to the buffer."""
         self.events.append(event)
-        self.size_bytes += len(json.dumps(event))
 
     def add_batch(self, events: list[dict]) -> None:
         """Add multiple events to the buffer."""
-        for event in events:
-            self.add(event)
-
-    def should_flush(self, threshold_mb: float) -> bool:
-        """Check if buffer size exceeds the threshold."""
-        return self.size_bytes > threshold_mb * 1024 * 1024
+        self.events.extend(events)
 
     def clear(self) -> list[dict]:
         """Clear the buffer and return the events."""
         events = self.events
         self.events = []
-        self.size_bytes = 0
         return events
 
     def __len__(self) -> int:
@@ -83,7 +74,6 @@ class RecordingConfig:
     """Configuration for recording sessions."""
 
     flush_interval_seconds: float = 5.0
-    flush_size_mb: float = 1.0
     rrweb_load_timeout_ms: int = 10000  # Timeout for rrweb to load from CDN
     max_file_counter: int = 100000  # Safety limit for filename counter
     cdn_url: str = "https://unpkg.com/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
@@ -425,12 +415,12 @@ class RecordingSession:
         """Flush recording events from browser to Python storage.
 
         This collects events from the browser and adds them to the EventBuffer.
-        If events exceed the size threshold, they are saved to disk.
+        Events are saved to disk by the periodic flush loop or when recording stops.
 
         Thread Safety:
             This method acquires _flush_lock to protect concurrent access to
-            the event buffer and file counter from the periodic flush loop
-            and navigation-triggered flushes.
+            the event buffer from the periodic flush loop and navigation-triggered
+            flushes.
 
         Returns:
             Number of events flushed.
@@ -451,10 +441,6 @@ class RecordingSession:
                 async with self._flush_lock:
                     self._event_buffer.add_batch(events)
                     logger.debug(f"Flushed {len(events)} recording events from browser")
-
-                    # Check if we should save to disk (size threshold)
-                    if self._event_buffer.should_flush(self.config.flush_size_mb):
-                        self.save_events_to_file()
 
             return len(events)
         except Exception as e:
