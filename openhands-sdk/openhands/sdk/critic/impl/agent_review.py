@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from pydantic import ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.llm import LLM, TextContent
@@ -120,8 +121,11 @@ class AgentReviewCritic(CriticBase):
     model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 
     llm: LLM
-    # Exclude agent_factory from serialization since Callable types can't be serialized
-    agent_factory: Annotated[AgentFactory | None, Field(exclude=True)] = None
+    # Exclude agent_factory from serialization and JSON schema since Callable types
+    # can't be serialized. SkipJsonSchema prevents OpenAPI schema generation errors.
+    agent_factory: SkipJsonSchema[
+        Annotated[AgentFactory | None, Field(exclude=True)]
+    ] = None
 
     review_style: str = "roasted"
     max_diff_chars: int = 100_000

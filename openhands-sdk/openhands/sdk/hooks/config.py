@@ -65,7 +65,8 @@ class HookDefinition(BaseModel):
 
     type: HookType = HookType.COMMAND
     command: str | None = None
-    callback: Any | None = None  # HookCallback type, but Any for Pydantic compat
+    # Exclude callback from JSON schema since Callable types can't be serialized
+    callback: Any | None = Field(default=None, exclude=True)
     timeout: int = 60
 
     @model_validator(mode="after")
