@@ -33,7 +33,7 @@ inputs:
         required: false
         default: main
     llm-api-key:
-        description: LLM API key (required for 'sdk' mode only, cloud mode uses user's configured LLM)
+        description: LLM API key (required for both 'sdk' and 'cloud' modes - cloud mode sends LLM config to the sandbox)
         required: false
         default: ''
     github-token:
@@ -90,7 +90,7 @@ runs:
         - name: Install OpenHands dependencies
           shell: bash
           run: |
-              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr
+              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools ./software-agent-sdk/openhands-workspace lmnr requests
 
         - name: Check required configuration
           shell: bash
@@ -108,18 +108,21 @@ runs:
                 exit 1
               fi
 
+              # LLM_API_KEY is required for both modes
+              if [ -z "$LLM_API_KEY" ]; then
+                echo "Error: llm-api-key is required for both 'sdk' and 'cloud' modes."
+                exit 1
+              fi
+
               if [ "$MODE" = "sdk" ]; then
-                # SDK mode also requires LLM_API_KEY
-                if [ -z "$LLM_API_KEY" ]; then
-                  echo "Error: llm-api-key is required for 'sdk' mode."
-                  exit 1
-                fi
+                echo "SDK mode: LLM runs locally in GitHub Actions"
               elif [ "$MODE" = "cloud" ]; then
-                # Cloud mode requires OPENHANDS_CLOUD_API_KEY (LLM is configured in cloud)
+                # Cloud mode also requires OPENHANDS_CLOUD_API_KEY
                 if [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
                   echo "Error: openhands-cloud-api-key is required for 'cloud' mode."
                   exit 1
                 fi
+                echo "Cloud mode: LLM config will be sent to cloud sandbox"
               else
                 echo "Error: mode must be 'sdk' or 'cloud', got '$MODE'."
                 exit 1

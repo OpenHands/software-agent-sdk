@@ -13,11 +13,10 @@ from __future__ import annotations
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, TypedDict
 
+import requests
 from lmnr import Laminar
 from pydantic import SecretStr
 
@@ -66,55 +65,6 @@ def _get_required_env(name: str) -> str:
     return value
 
 
-def _make_http_request(
-    url: str,
-    *,
-    method: str = "GET",
-    headers: dict[str, str] | None = None,
-    data: dict[str, Any] | None = None,
-    timeout: int = 60,
-    error_prefix: str = "HTTP request",
-) -> bytes:
-    """Make an HTTP request and return the response body.
-
-    Args:
-        url: The URL to request
-        method: HTTP method (GET, POST, etc.)
-        headers: Optional headers to add to the request
-        data: Optional JSON data to send (will be encoded)
-        timeout: Request timeout in seconds
-        error_prefix: Prefix for error messages
-
-    Returns:
-        Response body as bytes
-
-    Raises:
-        RuntimeError: If the request fails
-    """
-    request = urllib.request.Request(url, method=method)
-
-    if headers:
-        for key, value in headers.items():
-            request.add_header(key, value)
-
-    if data is not None:
-        encoded_data = json.dumps(data).encode("utf-8")
-        request.data = encoded_data
-        if "Content-Type" not in (headers or {}):
-            request.add_header("Content-Type", "application/json")
-
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as e:
-        details = (e.read() or b"").decode("utf-8", errors="replace").strip()
-        raise RuntimeError(
-            f"{error_prefix} failed: HTTP {e.code} {e.reason}. {details}"
-        ) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"{error_prefix} failed: {e.reason}") from e
-
-
 def get_pr_diff_via_github_api(pr_number: str) -> str:
     """Fetch the PR diff exactly as GitHub renders it."""
     repo = _get_required_env("REPO_NAME")
@@ -127,10 +77,9 @@ def get_pr_diff_via_github_api(pr_number: str) -> str:
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    data = _make_http_request(
-        url, headers=headers, error_prefix="GitHub diff API request"
-    )
-    return data.decode("utf-8", errors="replace")
+    response = requests.get(url, headers=headers, timeout=60)
+    response.raise_for_status()
+    return response.text
 
 
 def truncate_text(diff_text: str, max_total: int = MAX_TOTAL_DIFF) -> str:
@@ -183,13 +132,8 @@ def post_github_comment(repo_name: str, pr_number: str, body: str) -> None:
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    _make_http_request(
-        url,
-        method="POST",
-        headers=headers,
-        data={"body": body},
-        error_prefix="GitHub comment API request",
-    )
+    response = requests.post(url, headers=headers, json={"body": body}, timeout=60)
+    response.raise_for_status()
     logger.info(f"Posted comment to PR #{pr_number}")
 
 
@@ -309,13 +253,28 @@ def run_cloud_mode(pr_info: PRInfo, skill_trigger: str) -> None:
         post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
 
         # Run the conversation - this will execute the review
-        conversation.run()
+        try:
+            conversation.run()
+            logger.info("Cloud review completed")
+        except Exception as e:
+            # Post failure comment so user knows the review failed
+            error_comment = (
+                f"❌ **OpenHands PR Review Failed**\n\n"
+                f"The code review encountered an error: `{e}`\n\n"
+                f"📍 **Check logs:** [{conversation_url}]({conversation_url})"
+            )
+            try:
+                post_github_comment(
+                    pr_info["repo_name"], pr_info["number"], error_comment
+                )
+            except Exception as comment_error:
+                logger.warning(f"Failed to post error comment: {comment_error}")
+            raise
 
         # Print cost summary
         _print_cost_summary(conversation)
 
         logger.info(f"Cloud review URL: {conversation_url}")
-        logger.info("Cloud review completed")
 
 
 def run_sdk_mode(pr_info: PRInfo, skill_trigger: str, review_style: str) -> None:
