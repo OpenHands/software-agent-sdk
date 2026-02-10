@@ -161,3 +161,111 @@ def test_to_llm_message_single_block_no_cache_marker():
     assert isinstance(msg.content[0], TextContent)
     assert msg.content[0].text == "Static prompt"
     assert msg.content[0].cache_prompt is False  # Default value, not set
+
+
+def test_apply_prompt_caching_sets_markers_on_two_block_system():
+    """LLM._apply_prompt_caching() must mark static block, leave dynamic unmarked.
+
+    This test verifies the actual caching behavior by calling _apply_prompt_caching()
+    on messages created from SystemPromptEvent.to_llm_message(). The static block
+    (index 0) should be marked with cache_prompt=True, while the dynamic block
+    (index 1) should remain cache_prompt=False for cross-conversation cache sharing.
+    """
+    from pydantic import SecretStr
+
+    from openhands.sdk import LLM
+
+    llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("fake-key"),
+        usage_id="test",
+        caching_prompt=True,
+    )
+
+    # Create SystemPromptEvent with dynamic context
+    system_event = SystemPromptEvent(
+        source="agent",
+        system_prompt=TextContent(text="Static system prompt"),
+        tools=[],
+        dynamic_context=TextContent(text="Dynamic context: hosts, repos, etc."),
+    )
+
+    user_message = MessageEvent(
+        source="user",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Hello")],
+        ),
+    )
+
+    # Convert events to messages
+    events = cast(list[LLMConvertibleEvent], [system_event, user_message])
+    messages = LLMConvertibleEvent.events_to_messages(events)
+
+    # Verify initial state: no cache markers set
+    assert messages[0].content[0].cache_prompt is False
+    assert messages[0].content[1].cache_prompt is False
+
+    # Apply prompt caching
+    llm._apply_prompt_caching(messages)
+
+    # Verify cache markers are correctly set
+    assert messages[0].content[0].cache_prompt is True, (
+        "Static block (index 0) should be marked for caching"
+    )
+    assert messages[0].content[1].cache_prompt is False, (
+        "Dynamic block (index 1) should NOT be marked for caching"
+    )
+    # User message's last content should also be marked
+    assert messages[1].content[-1].cache_prompt is True
+
+
+def test_apply_prompt_caching_sets_marker_on_single_block_system():
+    """LLM._apply_prompt_caching() must mark single system block.
+
+    When there's only one content block in the system message (no dynamic context),
+    that block should be marked with cache_prompt=True.
+    """
+    from pydantic import SecretStr
+
+    from openhands.sdk import LLM
+
+    llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("fake-key"),
+        usage_id="test",
+        caching_prompt=True,
+    )
+
+    # Create SystemPromptEvent without dynamic context
+    system_event = SystemPromptEvent(
+        source="agent",
+        system_prompt=TextContent(text="Static system prompt only"),
+        tools=[],
+        dynamic_context=None,
+    )
+
+    user_message = MessageEvent(
+        source="user",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Hello")],
+        ),
+    )
+
+    # Convert events to messages
+    events = cast(list[LLMConvertibleEvent], [system_event, user_message])
+    messages = LLMConvertibleEvent.events_to_messages(events)
+
+    # Verify initial state: no cache marker set
+    assert messages[0].content[0].cache_prompt is False
+
+    # Apply prompt caching
+    llm._apply_prompt_caching(messages)
+
+    # Verify cache marker is set on the single block
+    assert messages[0].content[0].cache_prompt is True, (
+        "Single system block should be marked for caching"
+    )
+    # User message's last content should also be marked
+    assert messages[1].content[-1].cache_prompt is True
