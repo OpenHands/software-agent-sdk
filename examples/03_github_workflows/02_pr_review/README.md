@@ -61,9 +61,8 @@ Set the following secrets in your GitHub repository settings based on your chose
 **For Cloud Mode:**
 - **`OPENHANDS_CLOUD_API_KEY`** (required): Your OpenHands Cloud API key
   - Get one from your [OpenHands Cloud account settings](https://app.all-hands.dev/settings/api-keys)
-- **`GITHUB_TOKEN`** (auto-available): Used for PR diff and posting "review started" comment
 
-**Note**: In cloud mode, you don't need `LLM_API_KEY` - OpenHands Cloud uses your account's configured LLM. The agent running in cloud also has `GITHUB_TOKEN` automatically available for posting the final review.
+**Note**: In cloud mode, you don't need `LLM_API_KEY` or `GITHUB_TOKEN` - OpenHands Cloud uses your account's configured LLM and GitHub credentials. The agent has full access to fetch the PR diff and post review comments.
 
 ### 3. Customize the workflow (optional)
 
@@ -103,18 +102,18 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs.
       review-style: roasted
       # SDK git ref to use
       sdk-version: main
-      # Cloud mode secrets
+      # Cloud mode only needs the API key - LLM and GitHub are configured in your account
       openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
-      github-token: ${{ secrets.GITHUB_TOKEN }}
       # Optional: custom cloud API URL
       # openhands-cloud-api-url: https://app.all-hands.dev
 ```
 
 **Cloud Mode Benefits:**
+- **Minimal configuration**: Only needs `OPENHANDS_CLOUD_API_KEY`
 - **No LLM setup**: Uses your OpenHands Cloud account's configured LLM
+- **No GITHUB_TOKEN needed**: Agent uses your cloud-configured GitHub credentials
 - **Faster CI completion**: Starts the review and exits immediately
-- **Track progress in UI**: View the review at the conversation URL
-- **Agent has GitHub access**: GITHUB_TOKEN is auto-available for the agent to post reviews
+- **Track progress in UI**: View the review at the conversation URL printed in logs
 
 ### 4. Create the review label
 
@@ -224,7 +223,7 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
 | `llm-api-key` | LLM API key (sdk mode only) | sdk mode | - |
-| `github-token` | GitHub token for API access | Yes | - |
+| `github-token` | GitHub token (sdk mode only) | sdk mode | - |
 | `openhands-cloud-api-key` | OpenHands Cloud API key (cloud mode only) | cloud mode | - |
 | `openhands-cloud-api-url` | OpenHands Cloud API URL | No | `https://app.all-hands.dev` |
 | `lmnr-api-key` | Laminar API key for observability (sdk mode only) | No | - |

@@ -23,7 +23,7 @@ Environment Variables:
     LLM_API_KEY: API key for the LLM (required for 'sdk' mode only)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
-    GITHUB_TOKEN: GitHub token for API access (required for both modes)
+    GITHUB_TOKEN: GitHub token for API access (required for 'sdk' mode only)
     PR_NUMBER: Pull request number (required)
     PR_TITLE: Pull request title (required)
     PR_BODY: Pull request body (optional)
@@ -37,10 +37,9 @@ Environment Variables:
 Note on 'cloud' mode:
 - Creates a conversation directly via OpenHands Cloud API
 - No LLM credentials needed - uses the user's cloud-configured LLM
-- GITHUB_TOKEN needed for PR diff and posting "started" comment
-- Agent in cloud has GITHUB_TOKEN automatically available for posting reviews
+- No GITHUB_TOKEN needed - agent has access via user's cloud-configured credentials
 - The agent runs asynchronously in the cloud (non-blocking)
-- Posts a comment on the PR with a link to track progress in the UI
+- Agent fetches PR diff and posts review comments using its GitHub access
 
 For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
@@ -184,25 +183,42 @@ def post_github_comment(repo_name: str, pr_number: str, body: str) -> None:
         raise RuntimeError(f"GitHub comment API request failed: {e.reason}") from e
 
 
-# Additional instruction for cloud mode to post review comment when done
+# Prompt template for cloud mode - agent fetches the PR diff itself
 # Note: GITHUB_TOKEN is automatically available in OpenHands Cloud environments
-CLOUD_MODE_INSTRUCTION = """
+CLOUD_MODE_PROMPT = """{skill_trigger}
+/github-pr-review
+
+Review the PR and identify issues that need to be addressed.
+
+## Pull Request Information
+- **Repository**: {repo_name}
+- **PR Number**: {pr_number}
+- **Title**: {title}
+- **Description**: {body}
+- **Base Branch**: {base_branch}
+- **Head Branch**: {head_branch}
+
+## Instructions
+
+1. First, clone the repository and fetch the PR diff:
+   ```bash
+   gh pr diff {pr_number} --repo {repo_name}
+   ```
+
+2. Analyze the changes thoroughly
+
+3. Post your review using the GitHub API (GITHUB_TOKEN is already available)
 
 IMPORTANT: When you have completed the code review, you MUST post a summary comment
-on the PR using the GitHub API. The GITHUB_TOKEN environment variable is already
-available in the cloud environment. Use the following curl command:
+on the PR. You can use the `gh` CLI:
 
 ```bash
-curl -X POST \\
-  -H "Authorization: Bearer $GITHUB_TOKEN" \\
-  -H "Accept: application/vnd.github.v3+json" \\
-  -H "Content-Type: application/json" \\
-  "https://api.github.com/repos/{repo_name}/issues/{pr_number}/comments" \\
-  -d '{{"body": "## Code Review Complete\\n\\n<your review summary here>"}}'
+gh pr comment {pr_number} --repo {repo_name} --body "## Code Review Complete
+
+<your review summary here>"
 ```
 
 Replace `<your review summary here>` with a brief summary of your review findings.
-This is required because the review is running asynchronously in the cloud.
 """
 
 
@@ -270,13 +286,12 @@ def main():
     logger.info(f"Mode: {mode}")
 
     # Validate required environment variables based on mode
-    # Both modes need GITHUB_TOKEN for fetching PR diff and posting comments
-    # Cloud mode doesn't need LLM_API_KEY - uses user's cloud-configured LLM
-    # Note: The agent running in cloud mode has GITHUB_TOKEN auto-available
+    # Cloud mode only needs OPENHANDS_CLOUD_API_KEY:
+    # - LLM: uses user's cloud-configured LLM
+    # - GITHUB_TOKEN: agent has access via user's cloud-configured GitHub credentials
     if mode == "cloud":
         required_vars = [
             "OPENHANDS_CLOUD_API_KEY",
-            "GITHUB_TOKEN",  # Needed for PR diff and posting "started" comment
             "PR_NUMBER",
             "PR_TITLE",
             "PR_BASE_BRANCH",
@@ -299,8 +314,8 @@ def main():
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
-    # Get credentials
-    github_token = _get_required_env("GITHUB_TOKEN")
+    # Get credentials (GITHUB_TOKEN optional in cloud mode)
+    github_token = os.getenv("GITHUB_TOKEN")
     api_key = os.getenv("LLM_API_KEY")  # May be None in cloud mode
 
     # Get PR information
@@ -322,37 +337,24 @@ def main():
     logger.info(f"Reviewing PR #{pr_info['number']}: {pr_info['title']}")
     logger.info(f"Review style: {review_style}")
 
+    # Determine skill trigger based on review style
+    skill_trigger = (
+        "/codereview" if review_style == "standard" else "/codereview-roasted"
+    )
+
     try:
-        pr_diff = get_truncated_pr_diff()
-        logger.info(f"Got PR diff with {len(pr_diff)} characters")
-
-        # Get the HEAD commit SHA for inline comments
-        commit_id = get_head_commit_sha()
-        logger.info(f"HEAD commit SHA: {commit_id}")
-
-        # Create the review prompt using the template
-        skill_trigger = (
-            "/codereview" if review_style == "standard" else "/codereview-roasted"
-        )
-        prompt = PROMPT.format(
-            title=pr_info.get("title", "N/A"),
-            body=pr_info.get("body", "No description provided"),
-            repo_name=pr_info.get("repo_name", "N/A"),
-            base_branch=pr_info.get("base_branch", "main"),
-            head_branch=pr_info.get("head_branch", "N/A"),
-            pr_number=pr_info.get("number", "N/A"),
-            commit_id=commit_id,
-            skill_trigger=skill_trigger,
-            diff=pr_diff,
-        )
-
         # Handle cloud mode - uses OpenHands Cloud API directly
+        # No GITHUB_TOKEN needed - agent has access via user's cloud credentials
         if mode == "cloud":
-            # Add instruction to post review comment when done
-            # Note: GITHUB_TOKEN is automatically available in cloud environments
-            prompt += CLOUD_MODE_INSTRUCTION.format(
-                repo_name=pr_info["repo_name"],
-                pr_number=pr_info["number"],
+            # Create prompt for cloud mode - agent will fetch PR diff itself
+            prompt = CLOUD_MODE_PROMPT.format(
+                skill_trigger=skill_trigger,
+                repo_name=pr_info.get("repo_name", "N/A"),
+                pr_number=pr_info.get("number", "N/A"),
+                title=pr_info.get("title", "N/A"),
+                body=pr_info.get("body", "No description provided"),
+                base_branch=pr_info.get("base_branch", "main"),
+                head_branch=pr_info.get("head_branch", "N/A"),
             )
 
             cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
@@ -364,7 +366,7 @@ def main():
             logger.info(f"Using skill trigger: {skill_trigger}")
 
             # Create conversation via Cloud API
-            # This uses the user's cloud-configured LLM - no LLM credentials needed
+            # This uses the user's cloud-configured LLM and GitHub credentials
             conversation_id, conversation_url = _start_cloud_conversation(
                 cloud_api_url=cloud_api_url,
                 cloud_api_key=cloud_api_key,
@@ -372,21 +374,33 @@ def main():
             )
 
             logger.info(f"Cloud conversation started: {conversation_id}")
-
-            # Post a comment on the PR with the conversation URL
-            comment_body = (
-                f"🤖 **OpenHands PR Review Started**\n\n"
-                f"The code review is running in OpenHands Cloud.\n\n"
-                f"📍 **Track progress:** [{conversation_url}]({conversation_url})\n\n"
-                f"The agent will post a review comment when the analysis is complete."
-            )
-            post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
-
             logger.info(f"Cloud review URL: {conversation_url}")
             logger.info("Workflow complete - review continues in cloud")
 
         else:
             # SDK mode - run locally and wait for completion
+            # Requires GITHUB_TOKEN for fetching PR diff
+
+            # Fetch PR diff for the prompt
+            pr_diff = get_truncated_pr_diff()
+            logger.info(f"Got PR diff with {len(pr_diff)} characters")
+
+            # Get the HEAD commit SHA for inline comments
+            commit_id = get_head_commit_sha()
+            logger.info(f"HEAD commit SHA: {commit_id}")
+
+            # Create the review prompt using the template
+            prompt = PROMPT.format(
+                title=pr_info.get("title", "N/A"),
+                body=pr_info.get("body", "No description provided"),
+                repo_name=pr_info.get("repo_name", "N/A"),
+                base_branch=pr_info.get("base_branch", "main"),
+                head_branch=pr_info.get("head_branch", "N/A"),
+                pr_number=pr_info.get("number", "N/A"),
+                commit_id=commit_id,
+                skill_trigger=skill_trigger,
+                diff=pr_diff,
+            )
 
             # Configure LLM for SDK mode
             model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")

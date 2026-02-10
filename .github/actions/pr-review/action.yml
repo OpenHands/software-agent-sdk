@@ -37,8 +37,9 @@ inputs:
         required: false
         default: ''
     github-token:
-        description: GitHub token for API access (required for both modes)
-        required: true
+        description: GitHub token for API access (required for 'sdk' mode only, cloud mode uses user's configured credentials)
+        required: false
+        default: ''
     openhands-cloud-api-key:
         description: OpenHands Cloud API key (required for 'cloud' mode), get it from https://app.all-hands.dev/settings/api-keys
         required: false
@@ -102,20 +103,19 @@ runs:
           run: |
               echo "Mode: $MODE"
 
-              # GITHUB_TOKEN is required for both modes (PR diff and posting comments)
-              if [ -z "$GITHUB_TOKEN" ]; then
-                echo "Error: github-token is required for both modes."
-                exit 1
-              fi
-
               if [ "$MODE" = "sdk" ]; then
-                # SDK mode also requires LLM_API_KEY
+                # SDK mode requires LLM_API_KEY and GITHUB_TOKEN
                 if [ -z "$LLM_API_KEY" ]; then
                   echo "Error: llm-api-key is required for 'sdk' mode."
                   exit 1
                 fi
+                if [ -z "$GITHUB_TOKEN" ]; then
+                  echo "Error: github-token is required for 'sdk' mode."
+                  exit 1
+                fi
               elif [ "$MODE" = "cloud" ]; then
-                # Cloud mode requires OPENHANDS_CLOUD_API_KEY (LLM is configured in cloud)
+                # Cloud mode only requires OPENHANDS_CLOUD_API_KEY
+                # LLM and GitHub credentials are configured in the user's cloud account
                 if [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
                   echo "Error: openhands-cloud-api-key is required for 'cloud' mode."
                   exit 1
@@ -136,7 +136,7 @@ runs:
                 fi
               else
                 echo "OpenHands Cloud API URL: ${{ inputs.openhands-cloud-api-url }}"
-                echo "Note: LLM is configured in your OpenHands Cloud account"
+                echo "Note: LLM and GitHub credentials are configured in your OpenHands Cloud account"
               fi
 
         - name: Run PR review
