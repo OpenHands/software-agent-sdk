@@ -127,14 +127,14 @@ class TestGetPrDiffViaGithubApi:
 class TestRunCloudMode:
     """Tests for the run_cloud_mode function using OpenHandsCloudWorkspace."""
 
-    def test_cloud_mode_requires_llm_api_key(self):
-        """Test that cloud mode requires LLM_API_KEY."""
+    def test_cloud_mode_does_not_require_llm_api_key(self):
+        """Test that cloud mode does NOT require LLM_API_KEY (uses cloud's LLM)."""
         from agent_script import (  # type: ignore[import-not-found]
             _get_required_vars_for_mode,
         )
 
         vars = _get_required_vars_for_mode("cloud")
-        assert "LLM_API_KEY" in vars
+        assert "LLM_API_KEY" not in vars
         assert "OPENHANDS_CLOUD_API_KEY" in vars
 
 
@@ -175,17 +175,17 @@ class TestGetRequiredVarsForMode:
         assert "LLM_API_KEY" in vars
         assert "OPENHANDS_CLOUD_API_KEY" not in vars
 
-    def test_cloud_mode_requires_both_api_keys(self):
-        """Test that cloud mode requires OPENHANDS_CLOUD_API_KEY and LLM_API_KEY."""
+    def test_cloud_mode_requires_only_cloud_api_key(self):
+        """Test that cloud mode requires OPENHANDS_CLOUD_API_KEY but not LLM_API_KEY."""
         from agent_script import (  # type: ignore[import-not-found]
             _get_required_vars_for_mode,
         )
 
         vars = _get_required_vars_for_mode("cloud")
         assert "OPENHANDS_CLOUD_API_KEY" in vars
-        # Cloud mode now requires LLM_API_KEY because OpenHandsCloudWorkspace
-        # sends the LLM config to the cloud sandbox
-        assert "LLM_API_KEY" in vars
+        # Cloud mode uses the user's LLM config from OpenHands Cloud,
+        # so LLM_API_KEY is optional
+        assert "LLM_API_KEY" not in vars
 
     def test_both_modes_require_github_token(self):
         """Test that both modes require GITHUB_TOKEN."""
@@ -256,32 +256,9 @@ class TestMainValidation:
         """Test that cloud mode fails without OPENHANDS_CLOUD_API_KEY."""
         from agent_script import main  # type: ignore[import-not-found]
 
+        # Note: LLM_API_KEY is optional for cloud mode, so we don't include it
         env = {
             "MODE": "cloud",
-            "LLM_API_KEY": "test-llm-key",
-            "GITHUB_TOKEN": "test-token",
-            "PR_NUMBER": "123",
-            "PR_TITLE": "Test PR",
-            "PR_BASE_BRANCH": "main",
-            "PR_HEAD_BRANCH": "feature",
-            "REPO_NAME": "owner/repo",
-        }
-
-        with (
-            patch.dict("os.environ", env, clear=True),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            main()
-
-        assert exc_info.value.code == 1
-
-    def test_cloud_mode_fails_without_llm_api_key(self):
-        """Test that cloud mode fails without LLM_API_KEY."""
-        from agent_script import main  # type: ignore[import-not-found]
-
-        env = {
-            "MODE": "cloud",
-            "OPENHANDS_CLOUD_API_KEY": "test-cloud-key",
             "GITHUB_TOKEN": "test-token",
             "PR_NUMBER": "123",
             "PR_TITLE": "Test PR",
@@ -320,10 +297,10 @@ class TestMainValidation:
 
         assert exc_info.value.code == 1
 
+        # Note: LLM_API_KEY is optional for cloud mode
         cloud_env = {
             "MODE": "cloud",
             "OPENHANDS_CLOUD_API_KEY": "test-cloud-key",
-            "LLM_API_KEY": "test-llm-key",
             "PR_NUMBER": "123",
             "PR_TITLE": "Test PR",
             "PR_BASE_BRANCH": "main",

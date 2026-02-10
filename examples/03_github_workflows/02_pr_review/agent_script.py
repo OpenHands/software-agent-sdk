@@ -179,9 +179,12 @@ Replace `<your review summary here>` with a brief summary of your review finding
 def run_cloud_mode(pr_info: PRInfo, skill_trigger: str) -> None:
     """Run PR review in OpenHands Cloud using OpenHandsCloudWorkspace.
 
-    This creates a cloud sandbox and runs the review conversation there.
-    The sandbox is kept alive after the workflow exits so the review can
-    continue asynchronously.
+    This creates a cloud sandbox, starts the review conversation, posts a
+    tracking comment, and exits immediately. The sandbox continues running
+    asynchronously with keep_alive=True.
+
+    Cloud mode uses the LLM configured in the user's OpenHands Cloud account,
+    so LLM_API_KEY is optional. If provided, it will be passed to the agent.
     """
     prompt = CLOUD_MODE_PROMPT.format(
         skill_trigger=skill_trigger,
@@ -196,21 +199,19 @@ def run_cloud_mode(pr_info: PRInfo, skill_trigger: str) -> None:
     cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
     cloud_api_url = os.getenv("OPENHANDS_CLOUD_API_URL", "https://app.all-hands.dev")
 
-    # LLM configuration is required for OpenHandsCloudWorkspace
-    # The LLM config is sent to the cloud sandbox
-    llm_api_key = _get_required_env("LLM_API_KEY")
+    # LLM_API_KEY is optional for cloud mode - the cloud uses user's configured LLM
+    llm_api_key = os.getenv("LLM_API_KEY")
     llm_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
     llm_base_url = os.getenv("LLM_BASE_URL")
 
     logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
     logger.info(f"Using skill trigger: {skill_trigger}")
-    logger.info(f"Using LLM model: {llm_model}")
 
-    # Create LLM configuration
+    # Create LLM configuration - api_key is optional for cloud mode
     llm = LLM(
         usage_id="pr_review_agent",
         model=llm_model,
-        api_key=SecretStr(llm_api_key),
+        api_key=SecretStr(llm_api_key) if llm_api_key else None,
         base_url=llm_base_url or None,
     )
 
@@ -227,11 +228,16 @@ def run_cloud_mode(pr_info: PRInfo, skill_trigger: str) -> None:
         # Get GitHub token for the conversation secrets
         github_token = _get_required_env("GITHUB_TOKEN")
 
+        # Build secrets dict - only include LLM_API_KEY if provided
+        secrets: dict[str, str] = {"GITHUB_TOKEN": github_token}
+        if llm_api_key:
+            secrets["LLM_API_KEY"] = llm_api_key
+
         # Create conversation
         conversation = Conversation(
             agent=agent,
             workspace=workspace,
-            secrets={"LLM_API_KEY": llm_api_key, "GITHUB_TOKEN": github_token},
+            secrets=secrets,
         )
 
         # Send the initial message
@@ -252,29 +258,11 @@ def run_cloud_mode(pr_info: PRInfo, skill_trigger: str) -> None:
         )
         post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
 
-        # Run the conversation - this will execute the review
-        try:
-            conversation.run()
-            logger.info("Cloud review completed")
-        except Exception as e:
-            # Post failure comment so user knows the review failed
-            error_comment = (
-                f"❌ **OpenHands PR Review Failed**\n\n"
-                f"The code review encountered an error: `{e}`\n\n"
-                f"📍 **Check logs:** [{conversation_url}]({conversation_url})"
-            )
-            try:
-                post_github_comment(
-                    pr_info["repo_name"], pr_info["number"], error_comment
-                )
-            except Exception as comment_error:
-                logger.warning(f"Failed to post error comment: {comment_error}")
-            raise
-
-        # Print cost summary
-        _print_cost_summary(conversation)
-
-        logger.info(f"Cloud review URL: {conversation_url}")
+        # Trigger the run with blocking=False so we exit immediately.
+        # With keep_alive=True, the cloud sandbox continues running the review
+        # asynchronously while this workflow exits.
+        conversation.run(blocking=False)
+        logger.info(f"Cloud review started (non-blocking): {conversation_url}")
 
 
 def run_sdk_mode(pr_info: PRInfo, skill_trigger: str, review_style: str) -> None:
@@ -403,9 +391,10 @@ def _get_required_vars_for_mode(mode: str) -> list[str]:
         "REPO_NAME",
     ]
     if mode == "cloud":
-        # Cloud mode requires both OPENHANDS_CLOUD_API_KEY and LLM_API_KEY
-        # The LLM config is sent to the cloud sandbox
-        return ["OPENHANDS_CLOUD_API_KEY", "LLM_API_KEY"] + common_vars
+        # Cloud mode only requires OPENHANDS_CLOUD_API_KEY
+        # LLM is configured in the user's OpenHands Cloud account
+        return ["OPENHANDS_CLOUD_API_KEY"] + common_vars
+    # SDK mode requires LLM_API_KEY for local LLM execution
     return ["LLM_API_KEY"] + common_vars
 
 

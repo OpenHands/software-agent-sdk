@@ -61,11 +61,10 @@ Set the following secrets in your GitHub repository settings based on your chose
 **For Cloud Mode:**
 - **`OPENHANDS_CLOUD_API_KEY`** (required): Your OpenHands Cloud API key
   - Get one from your [OpenHands Cloud account settings](https://app.all-hands.dev/settings/api-keys)
-- **`LLM_API_KEY`** (required): Your LLM API key (sent to the cloud sandbox)
-  - Get one from the [OpenHands LLM Provider](https://docs.all-hands.dev/openhands/usage/llms/openhands-llms)
 - **`GITHUB_TOKEN`** (auto-available): Used to post initial comment with conversation URL
+- **`LLM_API_KEY`** (optional): Your LLM API key. If not provided, uses the LLM configured in your OpenHands Cloud account.
 
-**Note**: Cloud mode requires both `OPENHANDS_CLOUD_API_KEY` and `LLM_API_KEY`. The LLM configuration is sent to the cloud sandbox where the agent runs. The workflow uses `GITHUB_TOKEN` to post a comment linking to the conversation URL. The agent running in cloud has its own GitHub access for the actual review.
+**Note**: Cloud mode uses the LLM settings configured in your OpenHands Cloud account by default. You can optionally override this by providing `LLM_API_KEY`. The workflow uses `GITHUB_TOKEN` to post a comment linking to the conversation URL. The agent running in cloud uses your account's GitHub access for the actual review.
 
 ### 3. Customize the workflow (optional)
 
@@ -101,17 +100,16 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs.
   with:
       # Review mode: 'cloud' runs in OpenHands Cloud
       mode: cloud
-      # LLM configuration (sent to cloud sandbox)
-      llm-model: anthropic/claude-sonnet-4-5-20250929
-      llm-base-url: ''
       # Review style: roasted (other option: standard)
       review-style: roasted
       # SDK git ref to use
       sdk-version: main
       # Cloud mode secrets
       openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
-      llm-api-key: ${{ secrets.LLM_API_KEY }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      # Optional: Override the cloud's default LLM with your own
+      # llm-api-key: ${{ secrets.LLM_API_KEY }}
+      # llm-model: anthropic/claude-sonnet-4-5-20250929
       # Optional: custom cloud API URL
       # openhands-cloud-api-url: https://app.all-hands.dev
 ```
@@ -233,7 +231,7 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
-| `llm-api-key` | LLM API key (required for both modes) | Yes | - |
+| `llm-api-key` | LLM API key (required for SDK mode, optional for cloud mode) | SDK mode | - |
 | `github-token` | GitHub token for API access | Yes | - |
 | `openhands-cloud-api-key` | OpenHands Cloud API key (cloud mode only) | cloud mode | - |
 | `openhands-cloud-api-url` | OpenHands Cloud API URL | No | `https://app.all-hands.dev` |
