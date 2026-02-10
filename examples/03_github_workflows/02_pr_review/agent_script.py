@@ -28,6 +28,7 @@ Environment Variables:
     PR_HEAD_BRANCH: Head branch name (required)
     REPO_NAME: Repository name in format owner/repo (required)
     REVIEW_STYLE: Review style ('standard' or 'roasted', default: 'standard')
+    LMNR_PROJECT_API_KEY: Laminar API key for observability (optional)
 
 For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
@@ -144,6 +145,14 @@ def get_head_commit_sha(repo_dir: Path | None = None) -> str:
 def main():
     """Run the PR review agent."""
     logger.info("Starting PR review process...")
+
+    # Initialize Laminar for observability (if API key is provided)
+    lmnr_api_key = os.getenv("LMNR_PROJECT_API_KEY")
+    if lmnr_api_key:
+        Laminar.initialize(project_api_key=lmnr_api_key)
+        logger.info("Laminar observability initialized")
+    else:
+        logger.info("Laminar API key not provided - observability disabled")
 
     # Validate required environment variables
     required_vars = [
