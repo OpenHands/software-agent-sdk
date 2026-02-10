@@ -1,12 +1,16 @@
 """Browser tool executor implementation using browser-use MCP server wrapper."""
 
+from __future__ import annotations
+
+import functools
 import json
 import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 
 if TYPE_CHECKING:
@@ -19,6 +23,48 @@ from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.tools.browser_use.definition import BrowserAction, BrowserObservation
 from openhands.tools.browser_use.server import CustomBrowserUseServer
 from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
+
+
+F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
+
+
+def recording_aware(func: F) -> F:  # noqa: UP047
+    """Decorator that handles recording flush before/after navigation operations.
+
+    This decorator:
+    1. Flushes recording events before the operation (to preserve them)
+    2. Executes the operation
+    3. Restarts recording on the new page if recording was active
+
+    This keeps navigation methods focused on navigation, with recording
+    concerns handled separately.
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self: BrowserToolExecutor, *args: Any, **kwargs: Any) -> Any:
+        # Check if recording is active before the operation
+        is_recording = self._server._is_recording
+        if is_recording:
+            try:
+                await self._server._flush_recording_events()
+            except Exception as e:
+                logger.warning(f"Failed to flush recording before {func.__name__}: {e}")
+
+        # Execute the actual operation
+        result = await func(self, *args, **kwargs)
+
+        # Restart recording on new page if it was active
+        if is_recording:
+            try:
+                await self._server._restart_recording_on_new_page()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to restart recording after {func.__name__}: {e}"
+                )
+
+        return result
+
+    return wrapper  # type: ignore[return-value]
 
 
 # Suppress browser-use logging for cleaner integration
@@ -212,7 +258,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     def __call__(
         self,
         action: BrowserAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+        conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
         return self._async_executor.run_async(
@@ -299,64 +345,29 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         if not self._initialized:
             # Initialize browser session with our config
             await self._server._init_browser_session(**self._config)
-            # Inject any configured scripts after session is ready
+            # Inject any configured user scripts after session is ready
+            # Note: rrweb scripts are injected lazily when recording starts
             await self._server._inject_scripts_to_session()
             self._initialized = True
 
     # Navigation & Browser Control Methods
+    @recording_aware
     async def navigate(self, url: str, new_tab: bool = False) -> str:
-        """Navigate to a URL.
-
-        If recording is active, events from the current page are flushed
-        to Python storage before navigation to preserve cross-page recordings.
-        Recording is automatically restarted on the new page.
-        """
+        """Navigate to a URL."""
         await self._ensure_initialized()
-        # Flush recording events before navigation to preserve them
-        is_recording = self._server._is_recording
-        if is_recording:
-            await self._server._flush_recording_events()
+        return await self._server._navigate(url, new_tab)
 
-        result = await self._server._navigate(url, new_tab)
-
-        # Restart recording on new page if it was active
-        if is_recording:
-            await self._server._restart_recording_on_new_page()
-
-        return result
-
+    @recording_aware
     async def go_back(self) -> str:
-        """Go back in browser history.
-
-        If recording is active, events from the current page are flushed
-        to Python storage before navigation. Recording is automatically
-        restarted on the new page.
-        """
+        """Go back in browser history."""
         await self._ensure_initialized()
-        # Flush recording events before navigation to preserve them
-        is_recording = self._server._is_recording
-        if is_recording:
-            await self._server._flush_recording_events()
-
-        result = await self._server._go_back()
-
-        # Restart recording on new page if it was active
-        if is_recording:
-            await self._server._restart_recording_on_new_page()
-
-        return result
+        return await self._server._go_back()
 
     # Page Interaction
+    @recording_aware
     async def click(self, index: int, new_tab: bool = False) -> str:
-        """Click an element by index.
-
-        If recording is active, events are flushed before the click
-        in case it causes a navigation.
-        """
+        """Click an element by index."""
         await self._ensure_initialized()
-        # Flush recording events before click (might cause navigation)
-        if self._server._is_recording:
-            await self._server._flush_recording_events()
         return await self._server._click(index, new_tab)
 
     async def type_text(self, index: int, text: str) -> str:

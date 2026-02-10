@@ -1,166 +1,12 @@
-import asyncio
-
 from browser_use.dom.markdown_extractor import extract_clean_markdown
 
 from openhands.sdk import get_logger
 from openhands.tools.browser_use.logging_fix import LogSafeBrowserUseServer
+from openhands.tools.browser_use.recording import RecordingSession
 
 
 logger = get_logger(__name__)
 
-# =============================================================================
-# Configuration Constants
-# =============================================================================
-
-# Maximum retries for starting recording
-RRWEB_START_MAX_RETRIES = 10
-RRWEB_START_RETRY_DELAY_MS = 500
-
-# Recording flush configuration
-RECORDING_FLUSH_INTERVAL_SECONDS = 5  # Flush every 5 seconds
-RECORDING_FLUSH_SIZE_MB = 1  # Flush when events exceed 1 MB
-
-# rrweb CDN URL
-# NOTE: Using unpkg instead of jsdelivr because jsdelivr returns
-# Content-Type: application/node for .cjs files (browser won't execute)
-# and jsdelivr's .min.js is ES module format (no global window.rrweb).
-# unpkg returns Content-Type: text/javascript for .cjs files.
-RRWEB_CDN_URL = "https://unpkg.com/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
-
-# =============================================================================
-# Injected JavaScript Code
-# =============================================================================
-
-# rrweb loader script - injected into every page to make rrweb available
-# This script loads rrweb from CDN dynamically and sets up auto-recording
-RRWEB_LOADER_JS = (
-    """
-(function() {
-    if (window.__rrweb_loaded) return;
-    window.__rrweb_loaded = true;
-
-    // Initialize storage for events (per-page, will be flushed to backend)
-    window.__rrweb_events = window.__rrweb_events || [];
-    // Flag to indicate if recording should auto-start on new pages (cross-page)
-    // This is ONLY set after explicit start_recording call, not on initial load
-    window.__rrweb_should_record = window.__rrweb_should_record || false;
-    // Flag to track if rrweb failed to load
-    window.__rrweb_load_failed = false;
-
-    function loadRrweb() {
-        var s = document.createElement('script');
-        s.src = '"""
-    + RRWEB_CDN_URL
-    + """';
-        s.onload = function() {
-            window.__rrweb_ready = true;
-            console.log('[rrweb] Loaded successfully from CDN');
-            // Auto-start recording ONLY if flag is set (for cross-page continuity)
-            // This flag is only true after an explicit start_recording call
-            if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
-                window.startRecordingInternal();
-            }
-        };
-        s.onerror = function() {
-            console.error('[rrweb] Failed to load from CDN');
-            window.__rrweb_load_failed = true;
-        };
-        (document.head || document.documentElement).appendChild(s);
-    }
-
-    // Internal function to start recording (used for auto-start on navigation)
-    window.startRecordingInternal = function() {
-        var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
-                       (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
-        if (!recordFn || window.__rrweb_stopFn) return;
-
-        window.__rrweb_events = [];
-        window.__rrweb_stopFn = recordFn({
-            emit: function(event) {
-                window.__rrweb_events.push(event);
-            }
-        });
-        console.log('[rrweb] Auto-started recording on new page');
-    };
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', loadRrweb);
-    } else {
-        loadRrweb();
-    }
-})();
-"""
-)
-
-# JavaScript to flush recording events from browser to Python
-FLUSH_EVENTS_JS = """
-(function() {
-    var events = window.__rrweb_events || [];
-    // Clear browser-side events after flushing
-    window.__rrweb_events = [];
-    return JSON.stringify({events: events});
-})();
-"""
-
-# JavaScript to start recording on a page (used for restart after navigation)
-# Returns: {status: 'started'|'not_loaded'|'already_recording'}
-START_RECORDING_SIMPLE_JS = """
-(function() {
-    var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
-                   (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
-    if (!recordFn) return {status: 'not_loaded'};
-    if (window.__rrweb_stopFn) return {status: 'already_recording'};
-
-    window.__rrweb_events = [];
-    window.__rrweb_stopFn = recordFn({
-        emit: function(event) {
-            window.__rrweb_events.push(event);
-        }
-    });
-    return {status: 'started'};
-})();
-"""
-
-# JavaScript to start recording (full version with load failure check)
-# Returns: {status: 'started'|'not_loaded'|'already_recording'|'load_failed'}
-START_RECORDING_JS = """
-(function() {
-    if (window.__rrweb_stopFn) return {status: 'already_recording'};
-    // Check if rrweb failed to load from CDN
-    if (window.__rrweb_load_failed) return {status: 'load_failed'};
-    // rrweb UMD module exports to window.rrweb (not rrwebRecord)
-    var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
-                   (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
-    if (!recordFn) return {status: 'not_loaded'};
-    window.__rrweb_events = [];
-    window.__rrweb_should_record = true;
-    window.__rrweb_stopFn = recordFn({
-        emit: function(event) {
-            window.__rrweb_events.push(event);
-        }
-    });
-    return {status: 'started'};
-})();
-"""
-
-# JavaScript to stop recording and collect remaining events
-STOP_RECORDING_JS = """
-(function() {
-    var events = window.__rrweb_events || [];
-
-    // Stop the recording if active
-    if (window.__rrweb_stopFn) {
-        window.__rrweb_stopFn();
-        window.__rrweb_stopFn = null;
-    }
-
-    // Clear flags
-    window.__rrweb_should_record = false;
-    window.__rrweb_events = [];
-
-    return JSON.stringify({events: events});
-})();
-"""
 
 # =============================================================================
 # CustomBrowserUseServer Class
@@ -179,14 +25,13 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         self._inject_scripts: list[str] = []
         # Script identifiers returned by CDP (for cleanup if needed)
         self._injected_script_ids: list[str] = []
-        # Recording state stored on Python side to persist across page navigations
-        self._recording_events: list[dict] = []
-        self._is_recording: bool = False
-        # Recording flush state
-        self._recording_save_dir: str | None = None
-        self._recording_file_counter: int = 0
-        self._recording_flush_task: asyncio.Task | None = None
-        self._recording_total_events: int = 0  # Total events across all files
+        # Recording session - encapsulates all recording state and logic
+        self._recording_session: RecordingSession | None = None
+
+    @property
+    def _is_recording(self) -> bool:
+        """Check if recording is currently active."""
+        return self._recording_session is not None and self._recording_session.is_active
 
     def set_inject_scripts(self, scripts: list[str]) -> None:
         """Set scripts to be injected into every new document.
@@ -198,23 +43,20 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         self._inject_scripts = scripts
 
     async def _inject_scripts_to_session(self) -> None:
-        """Inject configured scripts into the browser session using CDP.
+        """Inject configured user scripts into the browser session using CDP.
 
         Uses Page.addScriptToEvaluateOnNewDocument to inject scripts that
         will run on every new document before the page's scripts execute.
-        Always injects rrweb loader, plus any additional configured scripts.
+        Note: rrweb scripts are injected lazily when recording starts.
         """
-        if not self.browser_session:
+        if not self.browser_session or not self._inject_scripts:
             return
-
-        # Always include rrweb loader, plus any user-configured scripts
-        scripts_to_inject = [RRWEB_LOADER_JS] + self._inject_scripts
 
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
             cdp_client = cdp_session.cdp_client
 
-            for script in scripts_to_inject:
+            for script in self._inject_scripts:
                 result = await cdp_client.send.Page.addScriptToEvaluateOnNewDocument(
                     params={"source": script, "runImmediately": True},
                     session_id=cdp_session.session_id,
@@ -224,184 +66,28 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     self._injected_script_ids.append(script_id)
                     logger.debug(f"Injected script with identifier: {script_id}")
 
-            logger.info(
-                f"Injected {len(scripts_to_inject)} script(s) into browser session"
-            )
+            num_scripts = len(self._inject_scripts)
+            logger.info(f"Injected {num_scripts} user script(s) into browser session")
         except Exception as e:
             logger.warning(f"Failed to inject scripts: {e}")
-
-    def _save_events_to_file(self, events: list[dict]) -> str | None:
-        """Save events to a numbered JSON file.
-
-        Finds the next available filename by incrementing the counter until
-        an unused filename is found. This handles cases where files already
-        exist from previous recordings.
-
-        Args:
-            events: List of rrweb events to save.
-
-        Returns:
-            Path to the saved file, or None if save_dir is not configured.
-        """
-        import json
-        import os
-
-        if not self._recording_save_dir or not events:
-            return None
-
-        os.makedirs(self._recording_save_dir, exist_ok=True)
-
-        # Find the next available filename
-        while True:
-            self._recording_file_counter += 1
-            filename = f"{self._recording_file_counter}.json"
-            filepath = os.path.join(self._recording_save_dir, filename)
-            if not os.path.exists(filepath):
-                break
-
-        with open(filepath, "w") as f:
-            json.dump(events, f)
-
-        self._recording_total_events += len(events)
-        logger.debug(
-            f"Saved {len(events)} events to {filename} "
-            f"(total: {self._recording_total_events} events in "
-            f"{self._recording_file_counter} files)"
-        )
-        return filepath
-
-    def _get_events_size_bytes(self) -> int:
-        """Estimate the size of current events in bytes."""
-        import json
-
-        if not self._recording_events:
-            return 0
-        # Quick estimation using JSON serialization
-        return len(json.dumps(self._recording_events))
 
     async def _flush_recording_events(self) -> int:
         """Flush recording events from browser to Python storage.
 
-        This collects events from the browser and adds them to Python-side storage.
-        If events exceed the size threshold, they are saved to disk.
         Returns the number of events flushed.
         """
-        if not self.browser_session or not self._is_recording:
+        if not self.browser_session or not self._recording_session:
             return 0
-
-        try:
-            cdp_session = await self.browser_session.get_or_create_cdp_session()
-            result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                params={"expression": FLUSH_EVENTS_JS, "returnByValue": True},
-                session_id=cdp_session.session_id,
-            )
-            import json
-
-            data = json.loads(result.get("result", {}).get("value", "{}"))
-            events = data.get("events", [])
-            if events:
-                self._recording_events.extend(events)
-                logger.debug(f"Flushed {len(events)} recording events from browser")
-
-                # Check if we should save to disk (size threshold)
-                size_bytes = self._get_events_size_bytes()
-                if size_bytes > RECORDING_FLUSH_SIZE_MB * 1024 * 1024:
-                    self._save_events_to_file(self._recording_events)
-                    self._recording_events = []
-
-            return len(events)
-        except Exception as e:
-            logger.warning(f"Failed to flush recording events: {e}")
-            return 0
-
-    async def _periodic_flush_task(self) -> None:
-        """Background task that periodically flushes recording events."""
-        import asyncio
-
-        while self._is_recording:
-            await asyncio.sleep(RECORDING_FLUSH_INTERVAL_SECONDS)
-            if not self._is_recording:
-                break
-
-            try:
-                # Flush events from browser to Python storage
-                await self._flush_recording_events()
-
-                # Save to disk if we have any events (periodic save)
-                if self._recording_events:
-                    self._save_events_to_file(self._recording_events)
-                    self._recording_events = []
-            except Exception as e:
-                logger.warning(f"Periodic flush failed: {e}")
-
-    async def _set_recording_flag(self, should_record: bool) -> None:
-        """Set the recording flag in the browser for auto-start on new pages."""
-        if not self.browser_session:
-            return
-
-        try:
-            cdp_session = await self.browser_session.get_or_create_cdp_session()
-            flag_value = str(should_record).lower()
-            await cdp_session.cdp_client.send.Runtime.evaluate(
-                params={
-                    "expression": f"window.__rrweb_should_record = {flag_value};",
-                    "returnByValue": True,
-                },
-                session_id=cdp_session.session_id,
-            )
-        except Exception as e:
-            logger.debug(f"Failed to set recording flag: {e}")
+        return await self._recording_session.flush_events(self.browser_session)
 
     async def _restart_recording_on_new_page(self) -> None:
-        """Restart recording on a new page after navigation.
-
-        This waits for rrweb to be ready and starts a new recording session.
-        Called automatically after navigation when recording is active.
-        """
-        import asyncio
-
-        if not self.browser_session or not self._is_recording:
+        """Restart recording on a new page after navigation."""
+        if not self.browser_session or not self._recording_session:
             return
-
-        try:
-            cdp_session = await self.browser_session.get_or_create_cdp_session()
-
-            # Retry a few times waiting for rrweb to load on new page
-            for attempt in range(RRWEB_START_MAX_RETRIES):
-                result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                    params={
-                        "expression": START_RECORDING_SIMPLE_JS,
-                        "returnByValue": True,
-                    },
-                    session_id=cdp_session.session_id,
-                )
-
-                value = result.get("result", {}).get("value", {})
-                status = value.get("status") if isinstance(value, dict) else value
-
-                if status == "started":
-                    logger.debug("Recording restarted on new page")
-                    return
-
-                elif status == "already_recording":
-                    logger.debug("Recording already active on new page")
-                    return
-
-                elif status == "not_loaded":
-                    if attempt < RRWEB_START_MAX_RETRIES - 1:
-                        await asyncio.sleep(RRWEB_START_RETRY_DELAY_MS / 1000)
-                    continue
-
-            logger.warning("Could not restart recording on new page (rrweb not loaded)")
-
-        except Exception as e:
-            logger.warning(f"Failed to restart recording on new page: {e}")
+        await self._recording_session.restart_on_new_page(self.browser_session)
 
     async def _start_recording(self, save_dir: str | None = None) -> str:
-        """Start rrweb session recording with automatic retry.
-
-        Will retry up to RRWEB_START_MAX_RETRIES times if rrweb is not loaded yet.
-        This handles the case where recording is started before the page fully loads.
+        """Start rrweb session recording.
 
         Recording persists across page navigations - events are periodically flushed
         to numbered JSON files (1.json, 2.json, etc.) in the save_dir.
@@ -410,101 +96,15 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             save_dir: Directory to save recording files. If provided, events will be
                 periodically saved to numbered JSON files in this directory.
         """
-        import asyncio
-
         if not self.browser_session:
             return "Error: No browser session active"
 
-        # Reset Python-side storage for new recording session
-        self._recording_events = []
-        self._is_recording = True
-        self._recording_save_dir = save_dir
-        self._recording_file_counter = 0
-        self._recording_total_events = 0
-
-        try:
-            cdp_session = await self.browser_session.get_or_create_cdp_session()
-
-            # Retry loop for starting recording
-            # NOTE: We do NOT set the recording flag before starting - that would
-            # cause a race condition where the rrweb loader's onload callback
-            # could auto-start recording before START_RECORDING_JS runs.
-            for attempt in range(RRWEB_START_MAX_RETRIES):
-                result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                    params={"expression": START_RECORDING_JS, "returnByValue": True},
-                    session_id=cdp_session.session_id,
-                )
-
-                value = result.get("result", {}).get("value", {})
-                status = value.get("status") if isinstance(value, dict) else value
-
-                if status == "started":
-                    # Set flag AFTER recording started so new pages auto-start
-                    await self._set_recording_flag(True)
-                    # Start periodic flush task
-                    self._recording_flush_task = asyncio.create_task(
-                        self._periodic_flush_task()
-                    )
-                    logger.info("Recording started successfully with rrweb")
-                    return "Recording started"
-
-                elif status == "already_recording":
-                    # Recording is already active on the page, but we still need
-                    # to start the periodic flush task if it's not running
-                    await self._set_recording_flag(True)
-                    if not self._recording_flush_task:
-                        self._recording_flush_task = asyncio.create_task(
-                            self._periodic_flush_task()
-                        )
-                        logger.info(
-                            "Recording already active, started periodic flush task"
-                        )
-                    return "Already recording"
-
-                elif status == "load_failed":
-                    # rrweb CDN load failed - inform agent and don't retry
-                    self._is_recording = False
-                    await self._set_recording_flag(False)
-                    logger.error(
-                        "Unable to start recording: rrweb failed to load from CDN"
-                    )
-                    return (
-                        "Error: Unable to start recording. The rrweb library "
-                        "failed to load from CDN. Please check network "
-                        "connectivity and try again."
-                    )
-
-                elif status == "not_loaded":
-                    if attempt < RRWEB_START_MAX_RETRIES - 1:
-                        logger.debug(
-                            f"rrweb not loaded yet, retrying... "
-                            f"(attempt {attempt + 1}/{RRWEB_START_MAX_RETRIES})"
-                        )
-                        await asyncio.sleep(RRWEB_START_RETRY_DELAY_MS / 1000)
-                    continue
-
-                else:
-                    self._is_recording = False
-                    return f"Unknown status: {status}"
-
-            # All retries exhausted
-            self._is_recording = False
-            await self._set_recording_flag(False)
-            return (
-                "Error: Unable to start recording. rrweb did not load after retries. "
-                "Please navigate to a page first and try again."
-            )
-
-        except Exception as e:
-            self._is_recording = False
-            logger.exception("Error starting recording", exc_info=e)
-            return f"Error starting recording: {str(e)}"
+        # Create a new recording session
+        self._recording_session = RecordingSession(save_dir=save_dir)
+        return await self._recording_session.start(self.browser_session)
 
     async def _stop_recording(self, save_dir: str | None = None) -> str:  # noqa: ARG002
         """Stop rrweb recording and save remaining events.
-
-        Stops the periodic flush task, collects any remaining events from the
-        browser, and saves them to a final numbered JSON file.
 
         Note: The save_dir parameter is ignored - the directory configured at
         start_recording time is used. This parameter is kept for API compatibility.
@@ -512,79 +112,16 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         Returns:
             A summary message with the save directory and file count.
         """
-        import json
-
         if not self.browser_session:
             return "Error: No browser session active"
 
-        if not self._is_recording:
+        if not self._recording_session or not self._recording_session.is_active:
             return "Error: Not recording. Call browser_start_recording first."
 
-        try:
-            # Stop the periodic flush task first
-            self._is_recording = False
-            if self._recording_flush_task:
-                self._recording_flush_task.cancel()
-                try:
-                    await self._recording_flush_task
-                except (asyncio.CancelledError, Exception):
-                    pass  # Task was cancelled, this is expected
-                self._recording_flush_task = None
-
-            cdp_session = await self.browser_session.get_or_create_cdp_session()
-
-            # Stop recording on current page and get remaining events
-            result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                params={"expression": STOP_RECORDING_JS, "returnByValue": True},
-                session_id=cdp_session.session_id,
-            )
-
-            current_page_data = json.loads(result.get("result", {}).get("value", "{}"))
-            current_page_events = current_page_data.get("events", [])
-
-            # Add current page events to in-memory storage
-            if current_page_events:
-                self._recording_events.extend(current_page_events)
-
-            # Save any remaining events to a final file
-            if self._recording_events:
-                self._save_events_to_file(self._recording_events)
-
-            await self._set_recording_flag(False)
-
-            # Calculate totals
-            total_events = self._recording_total_events
-            total_files = self._recording_file_counter
-            save_dir_used = self._recording_save_dir
-
-            # Clear Python-side storage
-            self._recording_events = []
-            self._recording_save_dir = None
-            self._recording_file_counter = 0
-            self._recording_total_events = 0
-
-            logger.info(
-                f"Recording stopped: {total_events} events saved to "
-                f"{total_files} file(s) in {save_dir_used}"
-            )
-
-            # Return a concise summary message
-            summary = (
-                f"Recording stopped. Captured {total_events} events "
-                f"in {total_files} file(s)."
-            )
-            if save_dir_used:
-                summary += f" Saved to: {save_dir_used}"
-
-            return summary
-
-        except Exception as e:
-            self._is_recording = False
-            if self._recording_flush_task:
-                self._recording_flush_task.cancel()
-                self._recording_flush_task = None
-            logger.exception("Error stopping recording", exc_info=e)
-            return f"Error stopping recording: {str(e)}"
+        result = await self._recording_session.stop(self.browser_session)
+        # Reset the session after stopping
+        self._recording_session.reset()
+        return result
 
     async def _get_storage(self) -> str:
         """Get browser storage (cookies, local storage, session storage)."""
