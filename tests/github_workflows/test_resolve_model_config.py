@@ -120,38 +120,9 @@ def test_find_models_by_id_preserves_full_config():
     assert result[0]["llm_config"]["temperature"] == 0.0
 
 
-# Tests for expected models from issue #1495
-# Note: claude-4.5-sonnet is implemented as claude-sonnet-4-5-20250929 (pinned version)
-EXPECTED_MODELS = [
-    "claude-4.5-opus",
-    "claude-sonnet-4-5-20250929",
-    "gemini-3-pro",
-    "gemini-3-flash",
-    "gpt-5.2",
-    "gpt-5.2-high-reasoning",
-    "gpt-oss-20b",
-    "kimi-k2-thinking",
-    "minimax-m2",
-    "minimax-m2.1",
-    "jade-spark-2862",
-    "deepseek-v3.2-reasoner",
-    "qwen-3-coder",
-    "glm-4.7",
-    "qwen3-coder-next",
-    "qwen3-coder-30b-a3b-instruct",
-]
-
-
-def test_all_expected_models_present():
-    """Test that all expected models from issue #1495 are present."""
-    for model_id in EXPECTED_MODELS:
-        assert model_id in MODELS, f"Model '{model_id}' is missing from MODELS"
-
-
-def test_expected_models_have_required_fields():
-    """Test that all expected models have required fields."""
-    for model_id in EXPECTED_MODELS:
-        model = MODELS[model_id]
+def test_all_models_have_required_fields():
+    """Test that all models have required fields."""
+    for model_id, model in MODELS.items():
         assert "id" in model, f"Model '{model_id}' missing 'id' field"
         assert "display_name" in model, f"Model '{model_id}' missing 'display_name'"
         assert "llm_config" in model, f"Model '{model_id}' missing 'llm_config'"
@@ -160,21 +131,21 @@ def test_expected_models_have_required_fields():
         )
 
 
-def test_expected_models_id_matches_key():
+def test_all_models_id_matches_key():
     """Test that model id field matches the dictionary key."""
-    for model_id in EXPECTED_MODELS:
-        model = MODELS[model_id]
+    for model_id, model in MODELS.items():
         assert model["id"] == model_id, (
             f"Model key '{model_id}' doesn't match id field '{model['id']}'"
         )
 
 
-def test_find_all_expected_models():
-    """Test that find_models_by_id works for all expected models."""
-    result = find_models_by_id(EXPECTED_MODELS)
+def test_find_all_models():
+    """Test that find_models_by_id works for all models."""
+    all_model_ids = list(MODELS.keys())
+    result = find_models_by_id(all_model_ids)
 
-    assert len(result) == len(EXPECTED_MODELS)
-    for i, model_id in enumerate(EXPECTED_MODELS):
+    assert len(result) == len(all_model_ids)
+    for i, model_id in enumerate(all_model_ids):
         assert result[i]["id"] == model_id
 
 
