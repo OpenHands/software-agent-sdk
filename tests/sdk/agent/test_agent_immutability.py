@@ -29,16 +29,16 @@ class TestAgentImmutability:
 
         # Verify the agent remains functional after failed modification attempts
         assert agent.llm == self.llm
-        assert isinstance(agent.system_message, str)
-        assert len(agent.system_message) > 0
+        assert isinstance(agent.static_system_message, str)
+        assert len(agent.static_system_message) > 0
 
     def test_system_message_is_computed_property(self):
         """Test that system_message is computed on-demand, not stored."""
         agent = Agent(llm=self.llm, tools=[])
 
         # Get system message multiple times - should be consistent
-        msg1 = agent.system_message
-        msg2 = agent.system_message
+        msg1 = agent.static_system_message
+        msg2 = agent.static_system_message
 
         # Should be the same content and valid
         assert msg1 == msg2
@@ -77,7 +77,7 @@ class TestAgentImmutability:
         assert isinstance(agent.prompt_dir, str)
 
         # Test Agent-specific properties
-        assert isinstance(agent.system_message, str)
+        assert isinstance(agent.static_system_message, str)
         assert agent.condenser is None
         assert agent.system_prompt_filename == "system_prompt.j2"
 
@@ -87,7 +87,7 @@ class TestAgentImmutability:
 
         # Access system_message multiple times
         for _ in range(3):
-            msg = agent.system_message
+            msg = agent.static_system_message
             assert isinstance(msg, str)
             assert len(msg) > 0
 
@@ -121,7 +121,7 @@ class TestAgentImmutability:
         assert agent1 is not agent2
 
         # And their system messages should be identical (same config)
-        assert agent1.system_message == agent2.system_message
+        assert agent1.static_system_message == agent2.static_system_message
 
     def test_agent_model_copy_creates_new_instance(self):
         """Test that model_copy creates a new Agent instance with modified fields."""
@@ -140,4 +140,6 @@ class TestAgentImmutability:
         assert modified_agent is not original_agent
 
         # Verify that system messages are different due to different configs
-        assert original_agent.system_message != modified_agent.system_message
+        assert (
+            original_agent.static_system_message != modified_agent.static_system_message
+        )

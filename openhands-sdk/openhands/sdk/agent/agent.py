@@ -184,14 +184,21 @@ class Agent(CriticMixin, AgentBase):
                 f"prefix_event_types={event_types}."
             )
 
-        # Prepare system message
+        # Prepare system message with separate static and dynamic content.
+        # The dynamic_context is included as a second content block in the
+        # system message (without a cache marker) to enable cross-conversation
+        # prompt caching of the static system prompt.
+        dynamic_context = self.dynamic_context
         event = SystemPromptEvent(
             source="agent",
-            system_prompt=TextContent(text=self.system_message),
+            system_prompt=TextContent(text=self.static_system_message),
             # Tools are stored as ToolDefinition objects and converted to
             # OpenAI format with security_risk parameter during LLM completion.
             # See make_llm_completion() in agent/utils.py for details.
             tools=list(self.tools_map.values()),
+            dynamic_context=TextContent(text=dynamic_context)
+            if dynamic_context
+            else None,
         )
         on_event(event)
 
