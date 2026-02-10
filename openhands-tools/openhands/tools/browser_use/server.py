@@ -1,3 +1,5 @@
+import asyncio
+
 from browser_use.dom.markdown_extractor import extract_clean_markdown
 
 from openhands.sdk import get_logger
@@ -19,10 +21,10 @@ RECORDING_FLUSH_INTERVAL_SECONDS = 5  # Flush every 5 seconds
 RECORDING_FLUSH_SIZE_MB = 1  # Flush when events exceed 1 MB
 
 # rrweb CDN URL
-# NOTE: Using unpkg instead of jsdelivr because:
-# - jsdelivr returns Content-Type: application/node for .cjs files (browser won't execute)
-# - jsdelivr's .min.js is ES module format (no global window.rrweb)
-# - unpkg returns Content-Type: text/javascript for .cjs files (browser executes it)
+# NOTE: Using unpkg instead of jsdelivr because jsdelivr returns
+# Content-Type: application/node for .cjs files (browser won't execute)
+# and jsdelivr's .min.js is ES module format (no global window.rrweb).
+# unpkg returns Content-Type: text/javascript for .cjs files.
 RRWEB_CDN_URL = "https://unpkg.com/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
 
 # =============================================================================
@@ -31,7 +33,8 @@ RRWEB_CDN_URL = "https://unpkg.com/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
 
 # rrweb loader script - injected into every page to make rrweb available
 # This script loads rrweb from CDN dynamically and sets up auto-recording
-RRWEB_LOADER_JS = """
+RRWEB_LOADER_JS = (
+    """
 (function() {
     if (window.__rrweb_loaded) return;
     window.__rrweb_loaded = true;
@@ -45,7 +48,9 @@ RRWEB_LOADER_JS = """
 
     function loadRrweb() {
         var s = document.createElement('script');
-        s.src = '""" + RRWEB_CDN_URL + """';
+        s.src = '"""
+    + RRWEB_CDN_URL
+    + """';
         s.onload = function() {
             window.__rrweb_ready = true;
             console.log('[rrweb] Loaded successfully from CDN');
@@ -66,7 +71,7 @@ RRWEB_LOADER_JS = """
         var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
                        (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
         if (!recordFn || window.__rrweb_stopFn) return;
-        
+
         window.__rrweb_events = [];
         window.__rrweb_stopFn = recordFn({
             emit: function(event) {
@@ -83,6 +88,7 @@ RRWEB_LOADER_JS = """
     }
 })();
 """
+)
 
 # JavaScript to flush recording events from browser to Python
 FLUSH_EVENTS_JS = """
@@ -165,20 +171,20 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
     page's content in markdown.
     """
 
-    # Scripts to inject into every new document (before page scripts run)
-    _inject_scripts: list[str] = []
-    # Script identifiers returned by CDP (for cleanup if needed)
-    _injected_script_ids: list[str] = []
-
-    # Recording state stored on Python side to persist across page navigations
-    _recording_events: list[dict] = []
-    _is_recording: bool = False
-    
-    # Recording flush state
-    _recording_save_dir: str | None = None
-    _recording_file_counter: int = 0
-    _recording_flush_task: "asyncio.Task | None" = None
-    _recording_total_events: int = 0  # Total events across all files
+    def __init__(self, session_timeout_minutes: int = 10):
+        super().__init__(session_timeout_minutes=session_timeout_minutes)
+        # Scripts to inject into every new document (before page scripts run)
+        self._inject_scripts: list[str] = []
+        # Script identifiers returned by CDP (for cleanup if needed)
+        self._injected_script_ids: list[str] = []
+        # Recording state stored on Python side to persist across page navigations
+        self._recording_events: list[dict] = []
+        self._is_recording: bool = False
+        # Recording flush state
+        self._recording_save_dir: str | None = None
+        self._recording_file_counter: int = 0
+        self._recording_flush_task: asyncio.Task | None = None
+        self._recording_total_events: int = 0  # Total events across all files
 
     def set_inject_scripts(self, scripts: list[str]) -> None:
         """Set scripts to be injected into every new document.
@@ -204,9 +210,10 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
 
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
+            cdp_client = cdp_session.cdp_client
 
             for script in scripts_to_inject:
-                result = await cdp_session.cdp_client.send.Page.addScriptToEvaluateOnNewDocument(
+                result = await cdp_client.send.Page.addScriptToEvaluateOnNewDocument(
                     params={"source": script, "runImmediately": True},
                     session_id=cdp_session.session_id,
                 )
@@ -223,14 +230,14 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
 
     def _save_events_to_file(self, events: list[dict]) -> str | None:
         """Save events to a numbered JSON file.
-        
+
         Finds the next available filename by incrementing the counter until
         an unused filename is found. This handles cases where files already
         exist from previous recordings.
-        
+
         Args:
             events: List of rrweb events to save.
-            
+
         Returns:
             Path to the saved file, or None if save_dir is not configured.
         """
@@ -241,7 +248,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             return None
 
         os.makedirs(self._recording_save_dir, exist_ok=True)
-        
+
         # Find the next available filename
         while True:
             self._recording_file_counter += 1
@@ -264,6 +271,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
     def _get_events_size_bytes(self) -> int:
         """Estimate the size of current events in bytes."""
         import json
+
         if not self._recording_events:
             return 0
         # Quick estimation using JSON serialization
@@ -286,18 +294,19 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 session_id=cdp_session.session_id,
             )
             import json
+
             data = json.loads(result.get("result", {}).get("value", "{}"))
             events = data.get("events", [])
             if events:
                 self._recording_events.extend(events)
                 logger.debug(f"Flushed {len(events)} recording events from browser")
-                
+
                 # Check if we should save to disk (size threshold)
                 size_bytes = self._get_events_size_bytes()
                 if size_bytes > RECORDING_FLUSH_SIZE_MB * 1024 * 1024:
                     self._save_events_to_file(self._recording_events)
                     self._recording_events = []
-                    
+
             return len(events)
         except Exception as e:
             logger.warning(f"Failed to flush recording events: {e}")
@@ -311,11 +320,11 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             await asyncio.sleep(RECORDING_FLUSH_INTERVAL_SECONDS)
             if not self._is_recording:
                 break
-                
+
             try:
                 # Flush events from browser to Python storage
                 await self._flush_recording_events()
-                
+
                 # Save to disk if we have any events (periodic save)
                 if self._recording_events:
                     self._save_events_to_file(self._recording_events)
@@ -330,9 +339,10 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
 
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
+            flag_value = str(should_record).lower()
             await cdp_session.cdp_client.send.Runtime.evaluate(
                 params={
-                    "expression": f"window.__rrweb_should_record = {str(should_record).lower()};",
+                    "expression": f"window.__rrweb_should_record = {flag_value};",
                     "returnByValue": True,
                 },
                 session_id=cdp_session.session_id,
@@ -393,7 +403,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
 
         Recording persists across page navigations - events are periodically flushed
         to numbered JSON files (1.json, 2.json, etc.) in the save_dir.
-        
+
         Args:
             save_dir: Directory to save recording files. If provided, events will be
                 periodically saved to numbered JSON files in this directory.
@@ -441,10 +451,13 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     # rrweb CDN load failed - inform agent and don't retry
                     self._is_recording = False
                     await self._set_recording_flag(False)
-                    logger.error("Unable to start recording: rrweb failed to load from CDN")
+                    logger.error(
+                        "Unable to start recording: rrweb failed to load from CDN"
+                    )
                     return (
-                        "Error: Unable to start recording. The rrweb library failed to load "
-                        "from CDN. Please check network connectivity and try again."
+                        "Error: Unable to start recording. The rrweb library "
+                        "failed to load from CDN. Please check network "
+                        "connectivity and try again."
                     )
 
                 elif status == "not_loaded":
@@ -473,12 +486,12 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             logger.exception("Error starting recording", exc_info=e)
             return f"Error starting recording: {str(e)}"
 
-    async def _stop_recording(self, save_dir: str | None = None) -> str:
+    async def _stop_recording(self, save_dir: str | None = None) -> str:  # noqa: ARG002
         """Stop rrweb recording and save remaining events.
 
         Stops the periodic flush task, collects any remaining events from the
         browser, and saves them to a final numbered JSON file.
-        
+
         Note: The save_dir parameter is ignored - the directory configured at
         start_recording time is used. This parameter is kept for API compatibility.
 
@@ -500,7 +513,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 self._recording_flush_task.cancel()
                 try:
                     await self._recording_flush_task
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     pass  # Task was cancelled, this is expected
                 self._recording_flush_task = None
 
@@ -542,7 +555,10 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             )
 
             # Return a concise summary message
-            summary = f"Recording stopped. Captured {total_events} events in {total_files} file(s)."
+            summary = (
+                f"Recording stopped. Captured {total_events} events "
+                f"in {total_files} file(s)."
+            )
             if save_dir_used:
                 summary += f" Saved to: {save_dir_used}"
 

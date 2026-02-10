@@ -692,8 +692,7 @@ class TestBrowserExecutorE2E:
 
         assert isinstance(result, BrowserObservation)
         # Should return error indicating not recording
-        data = json.loads(result.text)
-        assert "error" in data or data.get("count", -1) == 0
+        assert "Error" in result.text or "Not recording" in result.text
 
     def test_recording_captures_events(
         self, browser_executor: BrowserToolExecutor, test_server: str
@@ -716,36 +715,22 @@ class TestBrowserExecutorE2E:
         browser_executor(BrowserScrollAction(direction="up"))
         time.sleep(0.5)
 
-        # Stop recording and get events
+        # Stop recording - now returns a summary message instead of JSON
         stop_result = browser_executor(BrowserStopRecordingAction())
 
         assert isinstance(stop_result, BrowserObservation)
         assert not stop_result.is_error
 
-        # Parse the JSON response
-        data = json.loads(stop_result.text)
+        # Verify the summary message contains expected information
+        assert "Recording stopped" in stop_result.text
+        assert "events" in stop_result.text.lower()
+        assert "file" in stop_result.text.lower()
 
-        # Should have events captured
-        assert "events" in data
-        assert "count" in data
-        assert data["count"] > 0, "Expected at least some events to be recorded"
-        assert len(data["events"]) == data["count"]
-
-        # New: verify event_types summary is present
-        assert "event_types" in data, "Should include event_types summary"
-
-        # rrweb events should have required fields
-        # Event type 4 is meta, type 2 is full snapshot, etc.
-        event_types = [e.get("type") for e in data["events"]]
-        assert len(event_types) > 0, "Events should have type field"
-
-        # Print event summary for debugging
-        print(f"\n✓ Captured {data['count']} events")
-        print(f"✓ Event types: {data['event_types']}")
-        print(f"✓ Using stub: {data.get('using_stub', False)}")
+        # Print result for debugging
+        print(f"\n✓ Stop recording result: {stop_result.text}")
 
     def test_recording_save_to_file(self, test_server: str):
-        """Test that recording can be saved to a file."""
+        """Test that recording is automatically saved to files."""
         with tempfile.TemporaryDirectory() as temp_save_dir:
             executor = None
             try:
@@ -771,37 +756,36 @@ class TestBrowserExecutorE2E:
                 executor(BrowserScrollAction(direction="down"))
                 time.sleep(0.5)
 
-                # Stop recording
+                # Stop recording - events are automatically saved to files
                 stop_result = executor(BrowserStopRecordingAction())
                 assert not stop_result.is_error
 
-                # Parse and save the recording
-                data = json.loads(stop_result.text)
-                assert data["count"] > 0
+                # Verify the summary message
+                assert "Recording stopped" in stop_result.text
+                assert "events" in stop_result.text.lower()
 
-                # Verify event_types summary is present
-                assert "event_types" in data, "Should include event_types summary"
+                # Verify files were created in the save directory
+                files = os.listdir(temp_save_dir)
+                json_files = [f for f in files if f.endswith(".json")]
+                assert len(json_files) > 0, (
+                    "Expected at least one JSON file to be created"
+                )
 
-                # Save recording to file
-                recording_path = os.path.join(temp_save_dir, "recording.json")
-                with open(recording_path, "w") as f:
-                    json.dump(data, f, indent=2)
+                # Read and verify the saved file(s)
+                total_events = 0
+                for json_file in json_files:
+                    filepath = os.path.join(temp_save_dir, json_file)
+                    assert os.path.getsize(filepath) > 0
+                    with open(filepath) as f:
+                        events = json.load(f)
+                    assert isinstance(events, list)
+                    total_events += len(events)
 
-                # Verify file was saved and has content
-                assert os.path.exists(recording_path)
-                assert os.path.getsize(recording_path) > 0
+                assert total_events > 0, "Expected at least some events to be saved"
 
-                # Read back and verify
-                with open(recording_path) as f:
-                    saved_data = json.load(f)
-                assert saved_data["count"] == data["count"]
-                assert len(saved_data["events"]) == len(data["events"])
-
-                print(f"\n✓ Recording saved to {recording_path}")
-                print(f"✓ Captured {data['count']} events")
-                print(f"✓ Event types: {data['event_types']}")
-                print(f"✓ Using stub: {data.get('using_stub', False)}")
-                print(f"✓ File size: {os.path.getsize(recording_path)} bytes")
+                print(f"\n✓ Recording saved to {temp_save_dir}")
+                print(f"✓ Created {len(json_files)} file(s)")
+                print(f"✓ Total events: {total_events}")
 
             finally:
                 if executor:

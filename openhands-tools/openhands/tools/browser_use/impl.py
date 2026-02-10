@@ -121,7 +121,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 for chromium_dir in chromium_dirs:
                     # Check platform-specific paths
                     possible_paths = [
-                        chromium_dir / "chrome-linux" / "chrome",  # Linux
+                        chromium_dir / "chrome-linux" / "chrome",  # Linux (old)
+                        chromium_dir / "chrome-linux64" / "chrome",  # Linux (new)
                         chromium_dir
                         / "chrome-mac"
                         / "Chromium.app"
@@ -433,7 +434,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     # Session Recording
     async def start_recording(self) -> str:
         """Start recording the browser session using rrweb.
-        
+
         Recording events are periodically flushed to numbered JSON files
         (1.json, 2.json, etc.) in the full_output_save_dir if configured.
         Events are flushed every 5 seconds or when they exceed 1 MB.
