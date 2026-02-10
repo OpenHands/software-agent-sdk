@@ -36,7 +36,7 @@ class SystemPromptEvent(LLMConvertibleEvent):
         description=(
             "Optional dynamic per-conversation context (runtime info, repo context, "
             "secrets). When provided, this is included as a second content block in "
-            "the system message to enable cross-conversation prompt caching."
+            "the system message (not cached)."
         ),
     )
 
