@@ -4,10 +4,9 @@ import json
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Annotated, ClassVar
 
-from pydantic import ConfigDict
-from pydantic.json_schema import SkipJsonSchema
+from pydantic import ConfigDict, Field
 
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.llm import LLM, TextContent
@@ -121,9 +120,8 @@ class AgentReviewCritic(CriticBase):
     model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 
     llm: LLM
-    # Use SkipJsonSchema to exclude from JSON schema since Callable types
-    # can't be serialized
-    agent_factory: SkipJsonSchema[AgentFactory | None] = None
+    # Exclude agent_factory from serialization since Callable types can't be serialized
+    agent_factory: Annotated[AgentFactory | None, Field(exclude=True)] = None
 
     review_style: str = "roasted"
     max_diff_chars: int = 100_000

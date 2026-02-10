@@ -234,8 +234,8 @@ if __name__ == "__main__":
     task_prompt = AGENT_REVIEW_TASK
     mode_description = "Agent Review Critic (PR-style code review)"
 
-    # Use default agent preset for agent review mode
-    base_agent = get_default_agent(llm=llm)
+    # Use default agent preset for agent review mode (cli_mode=True disables browser)
+    base_agent = get_default_agent(llm=llm, cli_mode=True)
     agent = base_agent.model_copy(update={"critic": critic})
 
 else:  # API mode
