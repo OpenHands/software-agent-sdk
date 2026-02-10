@@ -9,20 +9,19 @@ branding:
 
 inputs:
     mode:
-        description: "Review mode: 'sdk' (run locally) or 'cloud' (run in OpenHands Cloud sandbox)"
+        description: "Review mode: 'sdk' (run locally) or 'cloud' (run in OpenHands Cloud)"
         required: false
         default: sdk
     llm-model:
-        description: LLM model to use for the review (used in both modes)
+        description: LLM model to use for the review (sdk mode only, cloud uses user's configured LLM)
         required: false
         default: anthropic/claude-sonnet-4-5-20250929
     llm-base-url:
-        description: LLM base URL (optional, for custom LLM endpoints)
+        description: LLM base URL (sdk mode only, optional for custom LLM endpoints)
         required: false
         default: ''
     review-style:
-        description: "Review style: 'standard' (balanced review covering style, readability, and security) or 'roasted' (Linus Torvalds-style brutally honest
-            feedback focusing on data structures, simplicity, and pragmatism)"
+        description: "Review style: 'standard' (balanced review) or 'roasted' (Linus Torvalds-style)"
         required: false
         default: roasted
     sdk-repo:
@@ -30,15 +29,15 @@ inputs:
         required: false
         default: OpenHands/software-agent-sdk
     sdk-version:
-        description: Git ref to use for the SDK (tag, branch, or commit SHA, e.g., v1.0.0, main, or abc1234)
+        description: Git ref to use for the SDK (tag, branch, or commit SHA)
         required: false
         default: main
     llm-api-key:
-        description: LLM API key (required for both modes)
+        description: LLM API key (required for 'sdk' mode only, cloud mode uses user's configured LLM)
         required: false
         default: ''
     github-token:
-        description: GitHub token for API access (required for both modes - passed to cloud sandbox in cloud mode)
+        description: GitHub token for API access (required for both modes)
         required: true
     openhands-cloud-api-key:
         description: OpenHands Cloud API key (required for 'cloud' mode), get it from https://app.all-hands.dev/settings/api-keys
@@ -49,7 +48,7 @@ inputs:
         required: false
         default: https://app.all-hands.dev
     lmnr-api-key:
-        description: Laminar API key for observability (optional)
+        description: Laminar API key for observability (optional, sdk mode only)
         required: false
         default: ''
 
@@ -109,15 +108,14 @@ runs:
                 exit 1
               fi
 
-              # LLM_API_KEY is required for both modes
-              if [ -z "$LLM_API_KEY" ]; then
-                echo "Error: llm-api-key is required for both modes."
-                exit 1
-              fi
-
               if [ "$MODE" = "sdk" ]; then
-                : # SDK mode only needs the base requirements
+                # SDK mode requires LLM_API_KEY
+                if [ -z "$LLM_API_KEY" ]; then
+                  echo "Error: llm-api-key is required for 'sdk' mode."
+                  exit 1
+                fi
               elif [ "$MODE" = "cloud" ]; then
+                # Cloud mode requires OPENHANDS_CLOUD_API_KEY (LLM is configured in cloud)
                 if [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
                   echo "Error: openhands-cloud-api-key is required for 'cloud' mode."
                   exit 1
@@ -131,12 +129,14 @@ runs:
               echo "PR Title: ${{ github.event.pull_request.title }}"
               echo "Repository: ${{ github.repository }}"
               echo "SDK Version: ${{ inputs.sdk-version }}"
-              echo "LLM model: ${{ inputs.llm-model }}"
-              if [ -n "${{ inputs.llm-base-url }}" ]; then
-                echo "LLM base URL: ${{ inputs.llm-base-url }}"
-              fi
-              if [ "$MODE" = "cloud" ]; then
+              if [ "$MODE" = "sdk" ]; then
+                echo "LLM model: ${{ inputs.llm-model }}"
+                if [ -n "${{ inputs.llm-base-url }}" ]; then
+                  echo "LLM base URL: ${{ inputs.llm-base-url }}"
+                fi
+              else
                 echo "OpenHands Cloud API URL: ${{ inputs.openhands-cloud-api-url }}"
+                echo "Note: LLM is configured in your OpenHands Cloud account"
               fi
 
         - name: Run PR review

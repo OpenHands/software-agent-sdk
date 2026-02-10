@@ -19,8 +19,8 @@ Designed for use with GitHub Actions workflows triggered by PR labels.
 Environment Variables:
     MODE: Review mode ('sdk' or 'cloud', default: 'sdk')
         - 'sdk': Run the agent locally using the SDK (default)
-        - 'cloud': Run the agent in OpenHands Cloud sandbox (non-blocking)
-    LLM_API_KEY: API key for the LLM (required)
+        - 'cloud': Run the agent in OpenHands Cloud (non-blocking)
+    LLM_API_KEY: API key for the LLM (required for 'sdk' mode only)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for API access (required)
@@ -35,11 +35,11 @@ Environment Variables:
     OPENHANDS_CLOUD_API_URL: OpenHands Cloud API URL (default: https://app.all-hands.dev)
 
 Note on 'cloud' mode:
-- Uses OpenHandsCloudWorkspace to provision a cloud sandbox
+- Creates a conversation directly via OpenHands Cloud API
+- No LLM credentials needed - uses the user's cloud-configured LLM
 - The agent runs asynchronously in the cloud (non-blocking)
-- Posts a comment on the PR with a link to track progress
+- Posts a comment on the PR with a link to track progress in the UI
 - Agent is instructed to post a review comment on the PR when done
-- See https://docs.openhands.dev/sdk/guides/agent-server/cloud-workspace
 
 For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
@@ -53,13 +53,11 @@ import urllib.request
 from pathlib import Path
 
 from lmnr import Laminar
-from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.git.utils import run_git_command
 from openhands.tools.preset.default import get_default_condenser, get_default_tools
-from openhands.workspace import OpenHandsCloudWorkspace
 
 
 # Add the script directory to Python path so we can import prompt.py
@@ -186,7 +184,18 @@ def post_github_comment(repo_name: str, pr_number: str, body: str) -> None:
 
 
 # Additional instruction for cloud mode to post review comment when done
+# Note: The GITHUB_TOKEN is provided directly in the instruction since cloud API
+# doesn't support passing secrets separately
 CLOUD_MODE_INSTRUCTION = """
+
+IMPORTANT CREDENTIALS:
+The following GitHub token has been provided for API access:
+GITHUB_TOKEN={github_token}
+
+You can use this token with curl or the GitHub API directly. For example:
+```bash
+export GITHUB_TOKEN="{github_token}"
+```
 
 IMPORTANT: When you have completed the code review, you MUST post a summary comment
 on the PR using the GitHub API. Use the following curl command:
@@ -205,6 +214,57 @@ This is required because the review is running asynchronously in the cloud.
 """
 
 
+def _start_cloud_conversation(
+    cloud_api_url: str,
+    cloud_api_key: str,
+    initial_message: str,
+) -> tuple[str, str]:
+    """Start a conversation via OpenHands Cloud API.
+
+    This creates a conversation directly through the Cloud API, which:
+    - Uses the user's cloud-configured LLM (no LLM credentials needed)
+    - Provisions a sandbox automatically
+    - Returns a conversation URL that works in the OpenHands Cloud UI
+
+    Args:
+        cloud_api_url: OpenHands Cloud API URL (e.g., https://app.all-hands.dev)
+        cloud_api_key: API key for OpenHands Cloud
+        initial_message: The initial prompt to send to the agent
+
+    Returns:
+        Tuple of (conversation_id, conversation_url)
+
+    Raises:
+        RuntimeError: If the API request fails
+    """
+    url = f"{cloud_api_url}/api/conversations"
+
+    payload = {"initial_user_msg": initial_message}
+
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, method="POST")
+    request.add_header("Authorization", f"Bearer {cloud_api_key}")
+    request.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        details = (e.read() or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"OpenHands Cloud API request failed: HTTP {e.code} {e.reason}. {details}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"OpenHands Cloud API request failed: {e.reason}") from e
+
+    conversation_id = result.get("conversation_id")
+    if not conversation_id:
+        raise RuntimeError(f"No conversation_id in response: {result}")
+
+    conversation_url = f"{cloud_api_url}/conversations/{conversation_id}"
+    return conversation_id, conversation_url
+
+
 def main():
     """Run the PR review agent."""
     logger.info("Starting PR review process...")
@@ -218,27 +278,36 @@ def main():
     logger.info(f"Mode: {mode}")
 
     # Validate required environment variables based on mode
-    required_vars = [
-        "LLM_API_KEY",
-        "GITHUB_TOKEN",
-        "PR_NUMBER",
-        "PR_TITLE",
-        "PR_BASE_BRANCH",
-        "PR_HEAD_BRANCH",
-        "REPO_NAME",
-    ]
-
+    # Cloud mode doesn't need LLM_API_KEY - uses user's cloud-configured LLM
     if mode == "cloud":
-        required_vars.append("OPENHANDS_CLOUD_API_KEY")
+        required_vars = [
+            "OPENHANDS_CLOUD_API_KEY",
+            "GITHUB_TOKEN",
+            "PR_NUMBER",
+            "PR_TITLE",
+            "PR_BASE_BRANCH",
+            "PR_HEAD_BRANCH",
+            "REPO_NAME",
+        ]
+    else:
+        required_vars = [
+            "LLM_API_KEY",
+            "GITHUB_TOKEN",
+            "PR_NUMBER",
+            "PR_TITLE",
+            "PR_BASE_BRANCH",
+            "PR_HEAD_BRANCH",
+            "REPO_NAME",
+        ]
 
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     if missing_vars:
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
-    # These are guaranteed to be set after validation above
+    # Get credentials based on mode
     github_token = _get_required_env("GITHUB_TOKEN")
-    api_key = _get_required_env("LLM_API_KEY")
+    api_key = os.getenv("LLM_API_KEY")  # May be None in cloud mode
 
     # Get PR information
     pr_info = {
@@ -283,91 +352,32 @@ def main():
             diff=pr_diff,
         )
 
-        # For cloud mode, add instruction to post review comment when done
+        # Handle cloud mode - uses OpenHands Cloud API directly
         if mode == "cloud":
+            # Add instruction with GitHub token for API access
             prompt += CLOUD_MODE_INSTRUCTION.format(
                 repo_name=pr_info["repo_name"],
                 pr_number=pr_info["number"],
+                github_token=github_token,
             )
 
-        # Configure LLM - shared between both modes
-        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-        base_url = os.getenv("LLM_BASE_URL")
-
-        # For cloud mode, use SecretStr for API key and don't use local proxy
-        if mode == "cloud":
-            llm = LLM(
-                usage_id="pr_review_agent",
-                model=model,
-                base_url=base_url or None,  # None for direct provider access
-                api_key=SecretStr(api_key),
-                drop_params=True,
-            )
-        else:
-            llm_config = {
-                "model": model,
-                "api_key": api_key,
-                "usage_id": "pr_review_agent",
-                "drop_params": True,
-            }
-            if base_url:
-                llm_config["base_url"] = base_url
-            llm = LLM(**llm_config)
-
-        # Create AgentContext with public skills enabled - shared between both modes
-        agent_context = AgentContext(load_public_skills=True)
-
-        # Create agent with default tools - shared between both modes
-        agent = Agent(
-            llm=llm,
-            tools=get_default_tools(enable_browser=False),
-            agent_context=agent_context,
-            system_prompt_kwargs={"cli_mode": True},
-            condenser=get_default_condenser(
-                llm=llm.model_copy(update={"usage_id": "condenser"})
-            ),
-        )
-
-        # Create secrets for masking - shared between both modes
-        secrets = {}
-        if api_key:
-            secrets["LLM_API_KEY"] = api_key
-        if github_token:
-            secrets["GITHUB_TOKEN"] = github_token
-
-        # Create workspace and conversation based on mode
-        if mode == "cloud":
             cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
             cloud_api_url = os.getenv(
                 "OPENHANDS_CLOUD_API_URL", "https://app.all-hands.dev"
             )
 
             logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
-
-            # Use OpenHandsCloudWorkspace with keep_alive=True so sandbox continues
-            # running after we exit
-            workspace = OpenHandsCloudWorkspace(
-                cloud_api_url=cloud_api_url,
-                cloud_api_key=cloud_api_key,
-                keep_alive=True,
-            )
-
-            conversation = Conversation(
-                agent=agent,
-                workspace=workspace,
-                secrets=secrets,
-            )
-
-            logger.info("Starting PR review analysis in cloud sandbox...")
             logger.info(f"Using skill trigger: {skill_trigger}")
 
-            # Send the prompt and start the agent (non-blocking)
-            conversation.send_message(prompt)
-            conversation.run(blocking=False)
+            # Create conversation via Cloud API
+            # This uses the user's cloud-configured LLM - no LLM credentials needed
+            conversation_id, conversation_url = _start_cloud_conversation(
+                cloud_api_url=cloud_api_url,
+                cloud_api_key=cloud_api_key,
+                initial_message=prompt,
+            )
 
-            # Get the conversation URL for tracking
-            conversation_id = str(conversation.state.id)
-            conversation_url = f"{cloud_api_url}/conversations/{conversation_id}"
+            logger.info(f"Cloud conversation started: {conversation_id}")
 
             # Post a comment on the PR with the conversation URL
             comment_body = (
@@ -378,11 +388,47 @@ def main():
             )
             post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
 
-            logger.info(f"Cloud review started: {conversation_url}")
+            logger.info(f"Cloud review URL: {conversation_url}")
             logger.info("Workflow complete - review continues in cloud")
 
         else:
             # SDK mode - run locally and wait for completion
+
+            # Configure LLM for SDK mode
+            model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+            base_url = os.getenv("LLM_BASE_URL")
+
+            llm_config = {
+                "model": model,
+                "api_key": api_key,
+                "usage_id": "pr_review_agent",
+                "drop_params": True,
+            }
+            if base_url:
+                llm_config["base_url"] = base_url
+            llm = LLM(**llm_config)
+
+            # Create AgentContext with public skills enabled
+            agent_context = AgentContext(load_public_skills=True)
+
+            # Create agent with default tools
+            agent = Agent(
+                llm=llm,
+                tools=get_default_tools(enable_browser=False),
+                agent_context=agent_context,
+                system_prompt_kwargs={"cli_mode": True},
+                condenser=get_default_condenser(
+                    llm=llm.model_copy(update={"usage_id": "condenser"})
+                ),
+            )
+
+            # Create secrets for masking
+            secrets = {}
+            if api_key:
+                secrets["LLM_API_KEY"] = api_key
+            if github_token:
+                secrets["GITHUB_TOKEN"] = github_token
+
             cwd = os.getcwd()
 
             conversation = Conversation(
