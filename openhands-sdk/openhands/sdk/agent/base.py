@@ -264,7 +264,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @property
     @deprecated(
         deprecated_in="1.11.0",
-        removed_in="1.13.0",
+        removed_in="1.16.0",
         details=(
             "Use static_system_message for the cacheable system prompt and "
             "dynamic_context for per-conversation content. Using system_message "
