@@ -297,3 +297,123 @@ class TestSizeThresholdFlush:
 
             assert len(json_files) == 3
             assert json_files == ["1.json", "2.json", "3.json"]
+
+
+class TestConcurrentFlushSafety:
+    """Tests for concurrent flush safety (lock protection)."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_flushes_do_not_corrupt_file_counter(
+        self, mock_browser_session, mock_cdp_session
+    ):
+        """Test that concurrent flushes don't cause file counter races."""
+        from openhands.tools.browser_use.recording import RecordingConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create recording session with small size threshold
+            config = RecordingConfig(flush_size_mb=0.001)  # 1 KB threshold
+            session = RecordingSession(save_dir=temp_dir, config=config)
+            session._is_active = True
+
+            async def mock_evaluate(*args, **kwargs):
+                expression = kwargs.get("params", {}).get("expression", "")
+                if (
+                    "window.__rrweb_events" in expression
+                    and "JSON.stringify" in expression
+                ):
+                    events = create_mock_events(20, size_per_event=100)
+                    return {"result": {"value": json.dumps({"events": events})}}
+                return {"result": {"value": None}}
+
+            mock_cdp_session.cdp_client.send.Runtime.evaluate = AsyncMock(
+                side_effect=mock_evaluate
+            )
+
+            # Trigger multiple concurrent flushes
+            tasks = [
+                asyncio.create_task(session.flush_events(mock_browser_session))
+                for _ in range(5)
+            ]
+            await asyncio.gather(*tasks)
+
+            # Verify: Files should be sequentially numbered without gaps/duplicates
+            files = sorted(os.listdir(temp_dir))
+            json_files = [f for f in files if f.endswith(".json")]
+
+            # All files should exist with sequential numbering
+            expected_files = [f"{i}.json" for i in range(1, len(json_files) + 1)]
+            assert json_files == expected_files, (
+                f"Expected sequential files {expected_files}, got {json_files}"
+            )
+
+            # Each file should contain valid JSON and not be corrupted
+            for json_file in json_files:
+                filepath = os.path.join(temp_dir, json_file)
+                with open(filepath) as f:
+                    events = json.load(f)
+                assert isinstance(events, list)
+                assert len(events) > 0
+
+    @pytest.mark.asyncio
+    async def test_periodic_and_navigation_flush_do_not_race(
+        self, mock_browser_session, mock_cdp_session
+    ):
+        """Test that periodic flush and navigation-triggered flush coordinate."""
+        from openhands.tools.browser_use.recording import RecordingConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Very fast flush interval to increase chance of race
+            config = RecordingConfig(flush_interval_seconds=0.05, flush_size_mb=0.001)
+            session = RecordingSession(save_dir=temp_dir, config=config)
+            session._is_active = True
+
+            async def mock_evaluate(*args, **kwargs):
+                expression = kwargs.get("params", {}).get("expression", "")
+                if (
+                    "window.__rrweb_events" in expression
+                    and "JSON.stringify" in expression
+                ):
+                    events = create_mock_events(20, size_per_event=100)
+                    return {"result": {"value": json.dumps({"events": events})}}
+                return {"result": {"value": None}}
+
+            mock_cdp_session.cdp_client.send.Runtime.evaluate = AsyncMock(
+                side_effect=mock_evaluate
+            )
+
+            # Start periodic flush
+            flush_task = asyncio.create_task(
+                session._periodic_flush_loop(mock_browser_session)
+            )
+
+            # Simulate navigation-triggered flushes concurrently
+            for _ in range(3):
+                await session.flush_events(mock_browser_session)
+                await asyncio.sleep(0.02)
+
+            # Stop and cleanup
+            session._is_active = False
+            await asyncio.sleep(0.1)
+            if not flush_task.done():
+                flush_task.cancel()
+                try:
+                    await flush_task
+                except asyncio.CancelledError:
+                    pass
+
+            # Verify: No file corruption or duplicate file numbers
+            files = sorted(os.listdir(temp_dir))
+            json_files = [f for f in files if f.endswith(".json")]
+
+            # Files should be sequentially numbered
+            expected_files = [f"{i}.json" for i in range(1, len(json_files) + 1)]
+            assert json_files == expected_files, (
+                f"Expected sequential files {expected_files}, got {json_files}"
+            )
+
+            # Verify file integrity
+            for json_file in json_files:
+                filepath = os.path.join(temp_dir, json_file)
+                with open(filepath) as f:
+                    events = json.load(f)
+                assert isinstance(events, list)

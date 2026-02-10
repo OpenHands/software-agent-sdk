@@ -189,6 +189,11 @@ class RecordingSession:
     - Periodic flushing of events to disk
     - Cross-page recording continuity
     - Event storage and file management
+
+    Thread Safety:
+    - Uses asyncio.Lock to protect flush operations from concurrent access
+    - The periodic flush loop and navigation-triggered flushes both acquire
+      the lock before modifying _events, _events_size_bytes, or _file_counter
     """
 
     save_dir: str | None = None
@@ -202,6 +207,7 @@ class RecordingSession:
     _flush_task: asyncio.Task | None = field(default=None, repr=False)
     _events_size_bytes: int = 0  # Running counter for event size
     _scripts_injected: bool = False
+    _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def is_active(self) -> bool:
@@ -336,6 +342,11 @@ class RecordingSession:
         This collects events from the browser and adds them to Python-side storage.
         If events exceed the size threshold, they are saved to disk.
 
+        Thread Safety:
+            This method acquires _flush_lock to protect concurrent access to
+            _events, _events_size_bytes, and _file_counter from the periodic
+            flush loop and navigation-triggered flushes.
+
         Returns:
             Number of events flushed.
         """
@@ -352,12 +363,13 @@ class RecordingSession:
             data = json.loads(result.get("result", {}).get("value", "{}"))
             events = data.get("events", [])
             if events:
-                self._add_events(events)
-                logger.debug(f"Flushed {len(events)} recording events from browser")
+                async with self._flush_lock:
+                    self._add_events(events)
+                    logger.debug(f"Flushed {len(events)} recording events from browser")
 
-                # Check if we should save to disk (size threshold)
-                if self._should_flush_to_disk():
-                    self.save_events_to_file()
+                    # Check if we should save to disk (size threshold)
+                    if self._should_flush_to_disk():
+                        self.save_events_to_file()
 
             return len(events)
         except Exception as e:
@@ -365,19 +377,26 @@ class RecordingSession:
             return 0
 
     async def _periodic_flush_loop(self, browser_session: BrowserSession) -> None:
-        """Background task that periodically flushes recording events."""
+        """Background task that periodically flushes recording events.
+
+        Thread Safety:
+            This method acquires _flush_lock when saving events to disk,
+            coordinating with navigation-triggered flushes to prevent race
+            conditions on _events, _events_size_bytes, and _file_counter.
+        """
         while self._is_active:
             await asyncio.sleep(self.config.flush_interval_seconds)
             if not self._is_active:
                 break
 
             try:
-                # Flush events from browser to Python storage
+                # Flush events from browser to Python storage (lock is acquired inside)
                 await self.flush_events(browser_session)
 
                 # Save to disk if we have any events (periodic save)
-                if self._events:
-                    self.save_events_to_file()
+                async with self._flush_lock:
+                    if self._events:
+                        self.save_events_to_file()
             except Exception as e:
                 logger.warning(f"Periodic flush failed: {e}")
 
@@ -503,19 +522,21 @@ class RecordingSession:
             current_page_data = json.loads(result.get("result", {}).get("value", "{}"))
             current_page_events = current_page_data.get("events", [])
 
-            # Add current page events to in-memory storage
-            if current_page_events:
-                self._add_events(current_page_events)
+            # Acquire lock for final event processing to ensure consistency
+            async with self._flush_lock:
+                # Add current page events to in-memory storage
+                if current_page_events:
+                    self._add_events(current_page_events)
 
-            # Save any remaining events to a final file
-            if self._events:
-                self.save_events_to_file()
+                # Save any remaining events to a final file
+                if self._events:
+                    self.save_events_to_file()
+
+                # Calculate totals while holding the lock
+                total_events = self._total_events
+                total_files = self._file_counter
 
             await self._set_recording_flag(browser_session, False)
-
-            # Calculate totals
-            total_events = self._total_events
-            total_files = self._file_counter
             save_dir_used = self.save_dir
 
             logger.info(
