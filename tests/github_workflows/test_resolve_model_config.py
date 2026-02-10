@@ -133,6 +133,7 @@ EXPECTED_MODELS = [
     "kimi-k2-thinking",
     "minimax-m2",
     "minimax-m2.1",
+    "jade-spark-2862",
     "deepseek-v3.2-reasoner",
     "qwen-3-coder",
     "glm-4.7",
