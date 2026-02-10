@@ -289,29 +289,15 @@ class RecordingSession:
         """Get the number of files saved."""
         return self._file_counter
 
-    # Backward compatibility properties for tests
     @property
-    def _events(self) -> list[dict]:
-        """Backward compatibility: access events from buffer."""
-        return self._event_buffer.events
+    def state(self) -> RecordingState:
+        """Get the current recording state."""
+        return self._state
 
     @property
-    def _is_active(self) -> bool:
-        """Backward compatibility: check if recording is active."""
-        return self._state == RecordingState.RECORDING
-
-    @_is_active.setter
-    def _is_active(self, value: bool) -> None:
-        """Backward compatibility: set recording state."""
-        if value:
-            self._state = RecordingState.RECORDING
-        else:
-            self._state = RecordingState.IDLE
-
-    @property
-    def _events_size_bytes(self) -> int:
-        """Backward compatibility: access size from buffer."""
-        return self._event_buffer.size_bytes
+    def event_buffer(self) -> EventBuffer:
+        """Get the event buffer."""
+        return self._event_buffer
 
     def save_events_to_file(self) -> str | None:
         """Save current events to a numbered JSON file.

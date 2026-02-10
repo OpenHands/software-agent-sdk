@@ -16,6 +16,7 @@ import pytest
 from openhands.tools.browser_use.recording import (
     DEFAULT_CONFIG,
     RecordingSession,
+    RecordingState,
 )
 from openhands.tools.browser_use.server import CustomBrowserUseServer
 
@@ -89,7 +90,7 @@ class TestPeriodicFlush:
             # Create recording session with fast flush interval
             config = RecordingConfig(flush_interval_seconds=0.1)  # 100ms
             session = RecordingSession(save_dir=temp_dir, config=config)
-            session._is_active = True
+            session._state = RecordingState.RECORDING
 
             # Mock the CDP evaluate to return events on each flush
             flush_call_count = 0
@@ -121,7 +122,7 @@ class TestPeriodicFlush:
             await asyncio.sleep(0.35)  # Should allow ~3 flush cycles
 
             # Stop recording to end the task
-            session._is_active = False
+            session._state = RecordingState.IDLE
             await asyncio.sleep(0.15)  # Allow task to exit
 
             # Cancel if still running
@@ -171,7 +172,7 @@ class TestSizeThresholdFlush:
             # Create recording session with small size threshold
             config = RecordingConfig(flush_size_mb=0.001)  # 1 KB threshold
             session = RecordingSession(save_dir=temp_dir, config=config)
-            session._is_active = True
+            session._state = RecordingState.RECORDING
 
             # Mock CDP to return large batch of events
             large_events = create_mock_events(50, size_per_event=100)  # ~5KB
@@ -207,7 +208,7 @@ class TestSizeThresholdFlush:
             assert len(saved_events) == 50
 
             # Verify internal state was cleared after save
-            assert len(session._events) == 0
+            assert len(session.event_buffer) == 0
 
     @pytest.mark.asyncio
     async def test_no_flush_when_below_size_threshold(
@@ -217,7 +218,7 @@ class TestSizeThresholdFlush:
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create recording session with default 1MB threshold
             session = RecordingSession(save_dir=temp_dir)
-            session._is_active = True
+            session._state = RecordingState.RECORDING
 
             # Create small batch of events (well below 1MB threshold)
             small_events = create_mock_events(5, size_per_event=100)  # ~500 bytes
@@ -247,7 +248,7 @@ class TestSizeThresholdFlush:
             )
 
             # Events should still be in memory
-            assert len(session._events) == 5
+            assert len(session.event_buffer) == 5
 
     @pytest.mark.asyncio
     async def test_size_threshold_is_configurable(self):
@@ -267,7 +268,7 @@ class TestSizeThresholdFlush:
             # Create recording session with small size threshold
             config = RecordingConfig(flush_size_mb=0.001)  # 1 KB threshold
             session = RecordingSession(save_dir=temp_dir, config=config)
-            session._is_active = True
+            session._state = RecordingState.RECORDING
 
             flush_count = 0
 
@@ -313,7 +314,7 @@ class TestConcurrentFlushSafety:
             # Create recording session with small size threshold
             config = RecordingConfig(flush_size_mb=0.001)  # 1 KB threshold
             session = RecordingSession(save_dir=temp_dir, config=config)
-            session._is_active = True
+            session._state = RecordingState.RECORDING
 
             async def mock_evaluate(*args, **kwargs):
                 expression = kwargs.get("params", {}).get("expression", "")
@@ -365,7 +366,7 @@ class TestConcurrentFlushSafety:
             # Very fast flush interval to increase chance of race
             config = RecordingConfig(flush_interval_seconds=0.05, flush_size_mb=0.001)
             session = RecordingSession(save_dir=temp_dir, config=config)
-            session._is_active = True
+            session._state = RecordingState.RECORDING
 
             async def mock_evaluate(*args, **kwargs):
                 expression = kwargs.get("params", {}).get("expression", "")
@@ -392,7 +393,7 @@ class TestConcurrentFlushSafety:
                 await asyncio.sleep(0.02)
 
             # Stop and cleanup
-            session._is_active = False
+            session._state = RecordingState.IDLE
             await asyncio.sleep(0.1)
             if not flush_task.done():
                 flush_task.cancel()
