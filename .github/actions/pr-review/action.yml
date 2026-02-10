@@ -102,14 +102,14 @@ runs:
           run: |
               echo "Mode: $MODE"
 
-              # GITHUB_TOKEN is required for both modes
+              # GITHUB_TOKEN is required for both modes (PR diff and posting comments)
               if [ -z "$GITHUB_TOKEN" ]; then
                 echo "Error: github-token is required for both modes."
                 exit 1
               fi
 
               if [ "$MODE" = "sdk" ]; then
-                # SDK mode requires LLM_API_KEY
+                # SDK mode also requires LLM_API_KEY
                 if [ -z "$LLM_API_KEY" ]; then
                   echo "Error: llm-api-key is required for 'sdk' mode."
                   exit 1

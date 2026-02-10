@@ -23,7 +23,7 @@ Environment Variables:
     LLM_API_KEY: API key for the LLM (required for 'sdk' mode only)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
-    GITHUB_TOKEN: GitHub token for API access (required)
+    GITHUB_TOKEN: GitHub token for API access (required for both modes)
     PR_NUMBER: Pull request number (required)
     PR_TITLE: Pull request title (required)
     PR_BODY: Pull request body (optional)
@@ -37,9 +37,10 @@ Environment Variables:
 Note on 'cloud' mode:
 - Creates a conversation directly via OpenHands Cloud API
 - No LLM credentials needed - uses the user's cloud-configured LLM
+- GITHUB_TOKEN needed for PR diff and posting "started" comment
+- Agent in cloud has GITHUB_TOKEN automatically available for posting reviews
 - The agent runs asynchronously in the cloud (non-blocking)
 - Posts a comment on the PR with a link to track progress in the UI
-- Agent is instructed to post a review comment on the PR when done
 
 For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
@@ -184,21 +185,12 @@ def post_github_comment(repo_name: str, pr_number: str, body: str) -> None:
 
 
 # Additional instruction for cloud mode to post review comment when done
-# Note: The GITHUB_TOKEN is provided directly in the instruction since cloud API
-# doesn't support passing secrets separately
+# Note: GITHUB_TOKEN is automatically available in OpenHands Cloud environments
 CLOUD_MODE_INSTRUCTION = """
 
-IMPORTANT CREDENTIALS:
-The following GitHub token has been provided for API access:
-GITHUB_TOKEN={github_token}
-
-You can use this token with curl or the GitHub API directly. For example:
-```bash
-export GITHUB_TOKEN="{github_token}"
-```
-
 IMPORTANT: When you have completed the code review, you MUST post a summary comment
-on the PR using the GitHub API. Use the following curl command:
+on the PR using the GitHub API. The GITHUB_TOKEN environment variable is already
+available in the cloud environment. Use the following curl command:
 
 ```bash
 curl -X POST \\
@@ -278,11 +270,13 @@ def main():
     logger.info(f"Mode: {mode}")
 
     # Validate required environment variables based on mode
+    # Both modes need GITHUB_TOKEN for fetching PR diff and posting comments
     # Cloud mode doesn't need LLM_API_KEY - uses user's cloud-configured LLM
+    # Note: The agent running in cloud mode has GITHUB_TOKEN auto-available
     if mode == "cloud":
         required_vars = [
             "OPENHANDS_CLOUD_API_KEY",
-            "GITHUB_TOKEN",
+            "GITHUB_TOKEN",  # Needed for PR diff and posting "started" comment
             "PR_NUMBER",
             "PR_TITLE",
             "PR_BASE_BRANCH",
@@ -305,7 +299,7 @@ def main():
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
-    # Get credentials based on mode
+    # Get credentials
     github_token = _get_required_env("GITHUB_TOKEN")
     api_key = os.getenv("LLM_API_KEY")  # May be None in cloud mode
 
@@ -354,11 +348,11 @@ def main():
 
         # Handle cloud mode - uses OpenHands Cloud API directly
         if mode == "cloud":
-            # Add instruction with GitHub token for API access
+            # Add instruction to post review comment when done
+            # Note: GITHUB_TOKEN is automatically available in cloud environments
             prompt += CLOUD_MODE_INSTRUCTION.format(
                 repo_name=pr_info["repo_name"],
                 pr_number=pr_info["number"],
-                github_token=github_token,
             )
 
             cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
