@@ -118,6 +118,53 @@ When reviewing code, provide constructive feedback:
 
 </DEV_SETUP>
 
+<PR_ARTIFACTS>
+# PR-Specific Documents
+
+When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
+
+## Usage
+
+```bash
+# Create the directory if it doesn't exist
+mkdir -p .pr
+
+# Add your PR-specific documents
+.pr/
+├── design.md       # Design decisions and architecture notes
+├── analysis.md     # Investigation or debugging notes
+└── notes.md        # Any other PR-specific content
+```
+
+## How It Works
+
+1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
+2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
+3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+
+## Important Notes
+
+- Do NOT put anything in `.pr/` that needs to be preserved
+- The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
+- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+
+## When to Use
+
+- Complex refactoring that benefits from written design rationale
+- Debugging sessions where you want to document your investigation
+- Feature implementations that need temporary planning docs
+- Temporary script that are intended to show reviewers that the feature works
+- Any analysis that helps reviewers understand the PR but isn't needed long-term
+</PR_ARTIFACTS>
+
+<REVIEW_HANDLING>
+- After addressing inline review comments, mark the corresponding review threads as resolved.
+- Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
+- Prefer resolving threads only once fixes are pushed or a clear decision is documented.
+- Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+</REVIEW_HANDLING>
+
+
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
 - Use existing packages/libraries instead of implementing yourselves whenever possible.
@@ -186,6 +233,22 @@ git push -u origin <feature-name>
 - Clean caches: `make clean`
 - Run an example: `uv run python examples/01_standalone_sdk/main.py`
 </QUICK_COMMANDS>
+
+<RUNNING_EXAMPLES>
+# Running SDK Examples
+
+When implementing or modifying examples in `examples/`, always verify they work before committing:
+
+```bash
+# Run examples using the All-Hands LLM proxy
+LLM_BASE_URL="https://llm-proxy.eval.all-hands.dev" LLM_API_KEY="$LLM_API_KEY" \
+  uv run python examples/01_standalone_sdk/<example_name>.py
+```
+
+The `LLM_API_KEY` environment variable may be available in the OpenHands development environment and works with the All-Hands LLM proxy (`llm-proxy.eval.all-hands.dev` OR `llm-proxy.app.all-hands.dev`). Please consult the human user for the LLM key if it is not found.
+
+For examples that use the critic model (e.g., `34_critic_example.py`), the critic is auto-configured when using the All-Hands LLM proxy - no additional setup needed.
+</RUNNING_EXAMPLES>
 
 <REPO_CONFIG_NOTES>
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).

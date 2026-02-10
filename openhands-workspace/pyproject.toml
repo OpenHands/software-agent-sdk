@@ -1,6 +1,6 @@
 [project]
 name = "openhands-workspace"
-version = "1.8.2"
+version = "1.11.2"
 description = "OpenHands Workspace - Docker and container-based workspace implementations"
 
 requires-python = ">=3.12"
@@ -9,6 +9,12 @@ dependencies = [
     "openhands-agent-server",
     "pydantic>=2.11.7",
 ]
+
+[project.urls]
+Source = "https://github.com/OpenHands/software-agent-sdk"
+Homepage = "https://github.com/OpenHands/software-agent-sdk"
+Documentation = "https://docs.openhands.dev/sdk"
+"Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

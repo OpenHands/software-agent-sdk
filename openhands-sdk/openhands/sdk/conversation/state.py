@@ -24,6 +24,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -44,6 +45,25 @@ class ConversationExecutionStatus(str, Enum):
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
     DELETING = "deleting"  # Conversation is in the process of being deleted
+
+    def is_terminal(self) -> bool:
+        """Check if this status represents a terminal state.
+
+        Terminal states indicate the run has completed and the agent is no longer
+        actively processing. These are: FINISHED, ERROR, STUCK.
+
+        Note: IDLE is NOT a terminal state - it's the initial state of a conversation
+        before any run has started. Including IDLE would cause false positives when
+        the WebSocket delivers the initial state update during connection.
+
+        Returns:
+            True if this is a terminal status, False otherwise.
+        """
+        return self in (
+            ConversationExecutionStatus.FINISHED,
+            ConversationExecutionStatus.ERROR,
+            ConversationExecutionStatus.STUCK,
+        )
 
 
 class ConversationState(OpenHandsModel):
@@ -122,6 +142,16 @@ class ConversationState(OpenHandsModel):
         description="Registry for handling secrets and sensitive data",
     )
 
+    # Agent-specific runtime state (simple dict for flexibility)
+    agent_state: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary for agent-specific runtime state that persists across "
+        "iterations. Agents can store feature-specific state using string keys. "
+        "To trigger autosave, always reassign: "
+        "state.agent_state = {**state.agent_state, key: value}. "
+        "See https://docs.openhands.dev/sdk/guides/convo-persistence#how-state-persistence-works",
+    )
+
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
@@ -138,9 +168,24 @@ class ConversationState(OpenHandsModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
-        """Handle legacy 'secrets_manager' field name for backward compatibility."""
-        if isinstance(data, dict) and "secrets_manager" in data:
+    def _handle_legacy_fields(cls, data: Any) -> Any:
+        """Handle legacy field names for backward compatibility."""
+        if not isinstance(data, dict):
+            return data
+
+        # Handle legacy 'secrets_manager' field name
+        if "secrets_manager" in data:
+            warn_deprecated(
+                "ConversationState.secrets_manager",
+                deprecated_in="1.12.0",
+                removed_in="1.15.0",
+                details=(
+                    "The 'secrets_manager' field has been renamed to "
+                    "'secret_registry'. Please update your code to use "
+                    "'secret_registry' instead."
+                ),
+                stacklevel=4,
+            )
             data["secret_registry"] = data.pop("secrets_manager")
         return data
 

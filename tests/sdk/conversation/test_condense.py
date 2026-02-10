@@ -314,8 +314,11 @@ def test_local_conversation_condense_force_condenser_bypasses_window(tmp_path, a
 # ---------------------------------------------------------------------------
 
 
-def test_remote_conversation_condense(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_condense(mock_ws_client, agent):
     """RemoteConversation.condense() calls the server condense endpoint."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
     mock_client = create_mock_http_client("12345678-1234-5678-9abc-123456789abc")
 
@@ -366,8 +369,13 @@ def test_remote_conversation_condense(agent):
         assert "json" not in kwargs or kwargs["json"] is None
 
 
-def test_remote_conversation_condense_with_agent_with_condenser(agent_with_condenser):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_condense_with_agent_with_condenser(
+    mock_ws_client, agent_with_condenser
+):
     """RemoteConversation.condense() works with agents that have condensers."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
     mock_client = create_mock_http_client("12345678-1234-5678-9abc-123456789abc")
 
@@ -468,8 +476,11 @@ def test_local_conversation_condense_handles_empty_response(tmp_path, agent):
         conv.condense()
 
 
-def test_remote_conversation_condense_raises_http_status_error(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_condense_raises_http_status_error(mock_ws_client, agent):
     """RemoteConversation condense properly propagates HTTPStatusError from server."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     import httpx
 
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
@@ -518,8 +529,11 @@ def test_remote_conversation_condense_raises_http_status_error(agent):
         assert "500 Internal Server Error" in str(exc_info.value)
 
 
-def test_remote_conversation_condense_raises_request_error(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_condense_raises_request_error(mock_ws_client, agent):
     """RemoteConversation condense properly propagates RequestError from network."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     import httpx
 
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")

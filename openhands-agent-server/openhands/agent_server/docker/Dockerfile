@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
+# NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+# with Python 3.13. See issue #1886 for details.
 ARG BASE_IMAGE=nikolaik/python-nodejs:python3.12-nodejs22
 ARG USERNAME=openhands
 ARG UID=10001

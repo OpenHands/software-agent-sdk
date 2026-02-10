@@ -128,10 +128,16 @@ EXPECTED_MODELS = [
     "gemini-3-pro",
     "gemini-3-flash",
     "gpt-5.2",
+    "gpt-5.2-high-reasoning",
+    "gpt-oss-20b",
     "kimi-k2-thinking",
     "minimax-m2",
+    "minimax-m2.1",
     "deepseek-v3.2-reasoner",
     "qwen-3-coder",
+    "glm-4.7",
+    "qwen3-coder-next",
+    "qwen3-coder-30b-a3b-instruct",
 ]
 
 
@@ -169,3 +175,22 @@ def test_find_all_expected_models():
     assert len(result) == len(EXPECTED_MODELS)
     for i, model_id in enumerate(EXPECTED_MODELS):
         assert result[i]["id"] == model_id
+
+
+def test_gpt_5_2_high_reasoning_config():
+    """Test that gpt-5.2-high-reasoning has correct configuration."""
+    model = MODELS["gpt-5.2-high-reasoning"]
+
+    assert model["id"] == "gpt-5.2-high-reasoning"
+    assert model["display_name"] == "GPT-5.2 High Reasoning"
+    assert model["llm_config"]["model"] == "litellm_proxy/openai/gpt-5.2-2025-12-11"
+    assert model["llm_config"]["reasoning_effort"] == "high"
+
+
+def test_gpt_oss_20b_config():
+    """Test that gpt-oss-20b has correct configuration."""
+    model = MODELS["gpt-oss-20b"]
+
+    assert model["id"] == "gpt-oss-20b"
+    assert model["display_name"] == "GPT OSS 20B"
+    assert model["llm_config"]["model"] == "litellm_proxy/gpt-oss-20b"

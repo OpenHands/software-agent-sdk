@@ -568,7 +568,6 @@ def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
 
     with pytest.raises(AssertionError, match="No events to condense"):
         condenser._generate_condensation(
-            summary_event_content="",
             forgotten_events=[],
             summary_offset=0,
         )
@@ -667,6 +666,7 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
     view = View.from_events(events)
 
     # Mock to return HARD requirement but no events to condense
+    # Also mock hard_context_reset to return None so the exception gets re-raised
     with (
         patch.object(
             LLMSummarizingCondenser,
@@ -674,6 +674,7 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
             return_value={Reason.REQUEST},
         ),
         patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
+        patch.object(LLMSummarizingCondenser, "hard_context_reset", return_value=None),
     ):
         with pytest.raises(NoCondensationAvailableException):
             condenser.condense(view)
