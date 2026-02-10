@@ -55,7 +55,7 @@ class ModelFeatures:
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
 
-@lru_cache
+@lru_cache(maxsize=256)
 def _supports_reasoning_effort(model: str | None) -> bool:
     """Return True if the model supports reasoning_effort via LiteLLM params."""
     if not model:
