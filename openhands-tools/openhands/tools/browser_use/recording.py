@@ -84,8 +84,7 @@ class RecordingConfig:
 
     flush_interval_seconds: float = 5.0
     flush_size_mb: float = 1.0
-    start_max_retries: int = 10
-    retry_delay_ms: int = 500
+    rrweb_load_timeout_ms: int = 10000  # Timeout for rrweb to load from CDN
     max_file_counter: int = 100000  # Safety limit for filename counter
     cdn_url: str = "https://unpkg.com/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
 
@@ -115,6 +114,12 @@ def get_rrweb_loader_js(cdn_url: str) -> str:
     // Flag to track if rrweb failed to load
     window.__rrweb_load_failed = false;
 
+    // Create a Promise that resolves when rrweb loads (event-driven waiting)
+    var resolveReady;
+    window.__rrweb_ready_promise = new Promise(function(resolve) {
+        resolveReady = resolve;
+    });
+
     function loadRrweb() {
         var s = document.createElement('script');
         s.src = '"""
@@ -123,6 +128,7 @@ def get_rrweb_loader_js(cdn_url: str) -> str:
         s.onload = function() {
             window.__rrweb_ready = true;
             console.log('[rrweb] Loaded successfully from CDN');
+            resolveReady({success: true});
             // Auto-start recording ONLY if flag is set (for cross-page continuity)
             // This flag is only true after an explicit start_recording call
             if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
@@ -132,6 +138,7 @@ def get_rrweb_loader_js(cdn_url: str) -> str:
         s.onerror = function() {
             console.error('[rrweb] Failed to load from CDN');
             window.__rrweb_load_failed = true;
+            resolveReady({success: false, error: 'load_failed'});
         };
         (document.head || document.documentElement).appendChild(s);
     }
@@ -226,6 +233,26 @@ STOP_RECORDING_JS = """
     window.__rrweb_events = [];
 
     return JSON.stringify({events: events});
+})();
+"""
+
+# JavaScript to wait for rrweb to load using Promise (event-driven)
+WAIT_FOR_RRWEB_JS = """
+(function() {
+    // If Promise doesn't exist, scripts weren't injected yet
+    if (!window.__rrweb_ready_promise) {
+        return Promise.resolve({success: false, error: 'not_injected'});
+    }
+    // If already loaded, return immediately
+    if (window.__rrweb_ready) {
+        return Promise.resolve({success: true});
+    }
+    // If already failed, return immediately
+    if (window.__rrweb_load_failed) {
+        return Promise.resolve({success: false, error: 'load_failed'});
+    }
+    // Wait for the Promise to resolve
+    return window.__rrweb_ready_promise;
 })();
 """
 
@@ -458,11 +485,49 @@ class RecordingSession:
             except Exception as e:
                 logger.warning(f"Periodic flush failed: {e}")
 
+    async def _wait_for_rrweb_load(self, browser_session: BrowserSession) -> dict:
+        """Wait for rrweb to load using event-driven Promise-based waiting.
+
+        Uses CDP's awaitPromise to wait for the rrweb loader Promise to resolve,
+        avoiding polling anti-patterns. This waits exactly as long as needed
+        and fails immediately if loading fails.
+
+        Returns:
+            Dict with 'success' (bool) and optionally 'error' (str) keys.
+        """
+        cdp_session = await browser_session.get_or_create_cdp_session()
+
+        try:
+            result = await asyncio.wait_for(
+                cdp_session.cdp_client.send.Runtime.evaluate(
+                    params={
+                        "expression": WAIT_FOR_RRWEB_JS,
+                        "awaitPromise": True,
+                        "returnByValue": True,
+                    },
+                    session_id=cdp_session.session_id,
+                ),
+                timeout=self.config.rrweb_load_timeout_ms / 1000,
+            )
+
+            value = result.get("result", {}).get("value", {})
+            if isinstance(value, dict):
+                return value
+            return {"success": False, "error": "unexpected_response"}
+
+        except TimeoutError:
+            logger.warning(
+                f"Timeout waiting for rrweb to load "
+                f"(timeout: {self.config.rrweb_load_timeout_ms}ms)"
+            )
+            return {"success": False, "error": "timeout"}
+
     async def start(self, browser_session: BrowserSession) -> str:
         """Start rrweb session recording.
 
-        Will retry up to config.start_max_retries times if rrweb is not loaded yet.
-        This handles the case where recording is started before the page fully loads.
+        Uses event-driven Promise-based waiting for rrweb to load, avoiding
+        polling anti-patterns. This waits exactly as long as needed and fails
+        immediately if loading fails.
 
         Returns:
             Status message indicating success or failure.
@@ -481,37 +546,15 @@ class RecordingSession:
         try:
             cdp_session = await browser_session.get_or_create_cdp_session()
 
-            for attempt in range(self.config.start_max_retries):
-                result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                    params={"expression": START_RECORDING_JS, "returnByValue": True},
-                    session_id=cdp_session.session_id,
-                )
+            # Wait for rrweb to load using event-driven Promise
+            load_result = await self._wait_for_rrweb_load(browser_session)
 
-                value = result.get("result", {}).get("value", {})
-                status = value.get("status") if isinstance(value, dict) else value
+            if not load_result.get("success"):
+                error = load_result.get("error", "unknown")
+                self._state = RecordingState.IDLE
+                await self._set_recording_flag(browser_session, False)
 
-                if status == "started":
-                    await self._set_recording_flag(browser_session, True)
-                    self._flush_task = asyncio.create_task(
-                        self._periodic_flush_loop(browser_session)
-                    )
-                    logger.info("Recording started successfully with rrweb")
-                    return "Recording started"
-
-                elif status == "already_recording":
-                    await self._set_recording_flag(browser_session, True)
-                    if not self._flush_task:
-                        self._flush_task = asyncio.create_task(
-                            self._periodic_flush_loop(browser_session)
-                        )
-                        logger.info(
-                            "Recording already active, started periodic flush task"
-                        )
-                    return "Already recording"
-
-                elif status == "load_failed":
-                    self._state = RecordingState.IDLE
-                    await self._set_recording_flag(browser_session, False)
+                if error == "load_failed":
                     logger.error(
                         "Unable to start recording: rrweb failed to load from CDN"
                     )
@@ -520,27 +563,63 @@ class RecordingSession:
                         "failed to load from CDN. Please check network "
                         "connectivity and try again."
                     )
-
-                elif status == "not_loaded":
-                    if attempt < self.config.start_max_retries - 1:
-                        logger.debug(
-                            f"rrweb not loaded yet, retrying... "
-                            f"(attempt {attempt + 1}/{self.config.start_max_retries})"
-                        )
-                        await asyncio.sleep(self.config.retry_delay_ms / 1000)
-                    continue
-
+                elif error == "timeout":
+                    logger.error(
+                        f"Unable to start recording: rrweb did not load within "
+                        f"{self.config.rrweb_load_timeout_ms}ms"
+                    )
+                    return (
+                        "Error: Unable to start recording. rrweb did not load in time. "
+                        "Please navigate to a page first and try again."
+                    )
+                elif error == "not_injected":
+                    logger.error("Unable to start recording: scripts not injected")
+                    return (
+                        "Error: Unable to start recording. Scripts not injected. "
+                        "Please navigate to a page first and try again."
+                    )
                 else:
-                    self._state = RecordingState.IDLE
-                    return f"Unknown status: {status}"
+                    return f"Error: Unable to start recording: {error}"
 
-            # All retries exhausted
-            self._state = RecordingState.IDLE
-            await self._set_recording_flag(browser_session, False)
-            return (
-                "Error: Unable to start recording. rrweb did not load after retries. "
-                "Please navigate to a page first and try again."
+            # rrweb is loaded, now start recording
+            result = await cdp_session.cdp_client.send.Runtime.evaluate(
+                params={"expression": START_RECORDING_JS, "returnByValue": True},
+                session_id=cdp_session.session_id,
             )
+
+            value = result.get("result", {}).get("value", {})
+            status = value.get("status") if isinstance(value, dict) else value
+
+            if status == "started":
+                await self._set_recording_flag(browser_session, True)
+                self._flush_task = asyncio.create_task(
+                    self._periodic_flush_loop(browser_session)
+                )
+                logger.info("Recording started successfully with rrweb")
+                return "Recording started"
+
+            elif status == "already_recording":
+                await self._set_recording_flag(browser_session, True)
+                if not self._flush_task:
+                    self._flush_task = asyncio.create_task(
+                        self._periodic_flush_loop(browser_session)
+                    )
+                    logger.info("Recording already active, started periodic flush task")
+                return "Already recording"
+
+            elif status == "load_failed":
+                self._state = RecordingState.IDLE
+                await self._set_recording_flag(browser_session, False)
+                logger.error("Unable to start recording: rrweb failed to load from CDN")
+                return (
+                    "Error: Unable to start recording. The rrweb library "
+                    "failed to load from CDN. Please check network "
+                    "connectivity and try again."
+                )
+
+            else:
+                self._state = RecordingState.IDLE
+                return f"Unknown status: {status}"
 
         except Exception as e:
             self._state = RecordingState.IDLE
@@ -624,41 +703,42 @@ class RecordingSession:
     async def restart_on_new_page(self, browser_session: BrowserSession) -> None:
         """Restart recording on a new page after navigation.
 
-        This waits for rrweb to be ready and starts a new recording session.
-        Called automatically after navigation when recording is active.
+        Uses event-driven Promise-based waiting for rrweb to be ready,
+        then starts a new recording session. Called automatically after
+        navigation when recording is active.
         """
         if self._state != RecordingState.RECORDING:
             return
 
         try:
-            cdp_session = await browser_session.get_or_create_cdp_session()
+            # Wait for rrweb to load using event-driven Promise
+            load_result = await self._wait_for_rrweb_load(browser_session)
 
-            for attempt in range(self.config.start_max_retries):
-                result = await cdp_session.cdp_client.send.Runtime.evaluate(
-                    params={
-                        "expression": START_RECORDING_SIMPLE_JS,
-                        "returnByValue": True,
-                    },
-                    session_id=cdp_session.session_id,
+            if not load_result.get("success"):
+                error = load_result.get("error", "unknown")
+                logger.warning(
+                    f"Could not restart recording on new page: rrweb {error}"
                 )
+                return
 
-                value = result.get("result", {}).get("value", {})
-                status = value.get("status") if isinstance(value, dict) else value
+            cdp_session = await browser_session.get_or_create_cdp_session()
+            result = await cdp_session.cdp_client.send.Runtime.evaluate(
+                params={
+                    "expression": START_RECORDING_SIMPLE_JS,
+                    "returnByValue": True,
+                },
+                session_id=cdp_session.session_id,
+            )
 
-                if status == "started":
-                    logger.debug("Recording restarted on new page")
-                    return
+            value = result.get("result", {}).get("value", {})
+            status = value.get("status") if isinstance(value, dict) else value
 
-                elif status == "already_recording":
-                    logger.debug("Recording already active on new page")
-                    return
-
-                elif status == "not_loaded":
-                    if attempt < self.config.start_max_retries - 1:
-                        await asyncio.sleep(self.config.retry_delay_ms / 1000)
-                    continue
-
-            logger.warning("Could not restart recording on new page (rrweb not loaded)")
+            if status == "started":
+                logger.debug("Recording restarted on new page")
+            elif status == "already_recording":
+                logger.debug("Recording already active on new page")
+            else:
+                logger.warning(f"Unexpected status restarting recording: {status}")
 
         except Exception as e:
             logger.warning(f"Failed to restart recording on new page: {e}")
