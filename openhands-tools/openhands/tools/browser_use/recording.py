@@ -262,7 +262,8 @@ class RecordingSession:
     _event_buffer: EventBuffer = field(default_factory=EventBuffer)
 
     # File management
-    _file_counter: int = 0
+    _next_file_index: int = 0  # Next index to probe for available filename
+    _files_written: int = 0  # Count of files actually written this session
     _total_events: int = 0
 
     # Background task
@@ -286,8 +287,8 @@ class RecordingSession:
 
     @property
     def file_count(self) -> int:
-        """Get the number of files saved."""
-        return self._file_counter
+        """Get the number of files saved this session."""
+        return self._files_written
 
     @property
     def state(self) -> RecordingState:
@@ -302,7 +303,7 @@ class RecordingSession:
     def save_events_to_file(self) -> str | None:
         """Save current events to a numbered JSON file.
 
-        Finds the next available filename by incrementing the counter until
+        Finds the next available filename by incrementing the index until
         an unused filename is found, with a safety limit to prevent infinite loops.
 
         Returns:
@@ -316,9 +317,9 @@ class RecordingSession:
         # Find the next available filename with safety limit
         attempts = 0
         while attempts < self.config.max_file_counter:
-            self._file_counter += 1
+            self._next_file_index += 1
             attempts += 1
-            filename = f"{self._file_counter}.json"
+            filename = f"{self._next_file_index}.json"
             filepath = os.path.join(self.save_dir, filename)
             if not os.path.exists(filepath):
                 break
@@ -332,10 +333,11 @@ class RecordingSession:
         with open(filepath, "w") as f:
             json.dump(events, f)
 
+        self._files_written += 1
         self._total_events += len(events)
         logger.debug(
             f"Saved {len(events)} events to {filename} "
-            f"(total: {self._total_events} events in {self._file_counter} files)"
+            f"(total: {self._total_events} events in {self._files_written} files)"
         )
 
         self._event_buffer.clear()
@@ -472,7 +474,8 @@ class RecordingSession:
         # Reset state for new recording session
         self._event_buffer.clear()
         self._state = RecordingState.RECORDING
-        self._file_counter = 0
+        self._next_file_index = 0
+        self._files_written = 0
         self._total_events = 0
 
         try:
@@ -590,7 +593,7 @@ class RecordingSession:
 
                 # Calculate totals while holding the lock
                 total_events = self._total_events
-                total_files = self._file_counter
+                total_files = self._files_written
 
             await self._set_recording_flag(browser_session, False)
             save_dir_used = self.save_dir
@@ -664,7 +667,8 @@ class RecordingSession:
         """Reset the recording session state for reuse."""
         self._event_buffer.clear()
         self._state = RecordingState.IDLE
-        self._file_counter = 0
+        self._next_file_index = 0
+        self._files_written = 0
         self._total_events = 0
         self._flush_task = None
         # Note: _scripts_injected is NOT reset - scripts persist in browser session

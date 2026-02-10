@@ -418,3 +418,100 @@ class TestConcurrentFlushSafety:
                 with open(filepath) as f:
                     events = json.load(f)
                 assert isinstance(events, list)
+
+
+class TestFileCountAccuracy:
+    """Tests for accurate file count reporting."""
+
+    @pytest.mark.asyncio
+    async def test_file_count_accurate_with_existing_files(
+        self, mock_browser_session, mock_cdp_session
+    ):
+        """Test that file count is accurate when save_dir has existing files."""
+        from openhands.tools.browser_use.recording import RecordingConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Pre-create some files to simulate existing recordings
+            for i in range(1, 4):  # Create 1.json, 2.json, 3.json
+                with open(os.path.join(temp_dir, f"{i}.json"), "w") as f:
+                    json.dump([{"type": "existing"}], f)
+
+            # Create recording session with small size threshold
+            config = RecordingConfig(flush_size_mb=0.001)  # 1 KB threshold
+            session = RecordingSession(save_dir=temp_dir, config=config)
+            session._state = RecordingState.RECORDING
+
+            async def mock_evaluate(*args, **kwargs):
+                expression = kwargs.get("params", {}).get("expression", "")
+                if (
+                    "window.__rrweb_events" in expression
+                    and "JSON.stringify" in expression
+                ):
+                    events = create_mock_events(20, size_per_event=100)
+                    return {"result": {"value": json.dumps({"events": events})}}
+                return {"result": {"value": None}}
+
+            mock_cdp_session.cdp_client.send.Runtime.evaluate = AsyncMock(
+                side_effect=mock_evaluate
+            )
+
+            # Trigger multiple flushes
+            for _ in range(2):
+                await session.flush_events(mock_browser_session)
+
+            # Verify: file_count should be 2 (files written), not 5 (last index)
+            assert session.file_count == 2, (
+                f"Expected file_count=2 (files written), got {session.file_count}"
+            )
+
+            # Verify the new files are 4.json and 5.json (skipping existing 1-3)
+            files = sorted(os.listdir(temp_dir))
+            json_files = [f for f in files if f.endswith(".json")]
+            assert "4.json" in json_files
+            assert "5.json" in json_files
+            assert len(json_files) == 5  # 3 existing + 2 new
+
+    @pytest.mark.asyncio
+    async def test_file_count_zero_when_no_events(self):
+        """Test that file count is 0 when no events are recorded."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            session = RecordingSession(save_dir=temp_dir)
+            session._state = RecordingState.RECORDING
+
+            # No flush calls, no events
+            assert session.file_count == 0
+
+    @pytest.mark.asyncio
+    async def test_file_count_matches_actual_files_written(
+        self, mock_browser_session, mock_cdp_session
+    ):
+        """Test that file_count exactly matches number of files written."""
+        from openhands.tools.browser_use.recording import RecordingConfig
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = RecordingConfig(flush_size_mb=0.001)  # 1 KB threshold
+            session = RecordingSession(save_dir=temp_dir, config=config)
+            session._state = RecordingState.RECORDING
+
+            async def mock_evaluate(*args, **kwargs):
+                expression = kwargs.get("params", {}).get("expression", "")
+                if (
+                    "window.__rrweb_events" in expression
+                    and "JSON.stringify" in expression
+                ):
+                    events = create_mock_events(20, size_per_event=100)
+                    return {"result": {"value": json.dumps({"events": events})}}
+                return {"result": {"value": None}}
+
+            mock_cdp_session.cdp_client.send.Runtime.evaluate = AsyncMock(
+                side_effect=mock_evaluate
+            )
+
+            # Trigger exactly 5 flushes
+            for _ in range(5):
+                await session.flush_events(mock_browser_session)
+
+            # Verify file_count matches actual files
+            files = os.listdir(temp_dir)
+            json_files = [f for f in files if f.endswith(".json")]
+            assert session.file_count == len(json_files) == 5
