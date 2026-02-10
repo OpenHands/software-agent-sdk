@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from openhands.sdk import get_logger
@@ -16,6 +17,60 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# State Management
+# =============================================================================
+
+
+class RecordingState(Enum):
+    """Explicit states for the recording session state machine."""
+
+    IDLE = "idle"
+    RECORDING = "recording"
+    STOPPED = "stopped"
+
+
+@dataclass
+class EventBuffer:
+    """Encapsulates event storage and size tracking.
+
+    This class manages the in-memory buffer of recording events,
+    tracking both the events themselves and their cumulative size.
+    """
+
+    events: list[dict] = field(default_factory=list)
+    size_bytes: int = 0
+
+    def add(self, event: dict) -> None:
+        """Add a single event to the buffer and update size."""
+        self.events.append(event)
+        self.size_bytes += len(json.dumps(event))
+
+    def add_batch(self, events: list[dict]) -> None:
+        """Add multiple events to the buffer."""
+        for event in events:
+            self.add(event)
+
+    def should_flush(self, threshold_mb: float) -> bool:
+        """Check if buffer size exceeds the threshold."""
+        return self.size_bytes > threshold_mb * 1024 * 1024
+
+    def clear(self) -> list[dict]:
+        """Clear the buffer and return the events."""
+        events = self.events
+        self.events = []
+        self.size_bytes = 0
+        return events
+
+    def __len__(self) -> int:
+        """Return the number of events in the buffer."""
+        return len(self.events)
+
+    def __bool__(self) -> bool:
+        """Return True if buffer has events."""
+        return len(self.events) > 0
 
 
 # =============================================================================
@@ -184,35 +239,45 @@ STOP_RECORDING_JS = """
 class RecordingSession:
     """Encapsulates all recording state and logic for a browser session.
 
-    This class manages the lifecycle of a recording session, including:
-    - Starting/stopping recording
-    - Periodic flushing of events to disk
-    - Cross-page recording continuity
-    - Event storage and file management
+    This class manages the lifecycle of a recording session using a state machine
+    pattern with explicit states (IDLE, RECORDING, STOPPED) and an EventBuffer
+    for event storage.
+
+    State Machine:
+    - IDLE: Initial state, no recording active
+    - RECORDING: Actively recording events
+    - STOPPED: Recording has been stopped
 
     Thread Safety:
     - Uses asyncio.Lock to protect flush operations from concurrent access
     - The periodic flush loop and navigation-triggered flushes both acquire
-      the lock before modifying _events, _events_size_bytes, or _file_counter
+      the lock before modifying the event buffer or file counter
     """
 
     save_dir: str | None = None
     config: RecordingConfig = field(default_factory=lambda: DEFAULT_CONFIG)
 
-    # Internal state
-    _events: list[dict] = field(default_factory=list)
-    _is_active: bool = False
+    # State machine
+    _state: RecordingState = RecordingState.IDLE
+    _event_buffer: EventBuffer = field(default_factory=EventBuffer)
+
+    # File management
     _file_counter: int = 0
     _total_events: int = 0
+
+    # Background task
     _flush_task: asyncio.Task | None = field(default=None, repr=False)
-    _events_size_bytes: int = 0  # Running counter for event size
+
+    # Browser state
     _scripts_injected: bool = False
+
+    # Concurrency control
     _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def is_active(self) -> bool:
         """Check if recording is currently active."""
-        return self._is_active
+        return self._state == RecordingState.RECORDING
 
     @property
     def total_events(self) -> int:
@@ -224,25 +289,29 @@ class RecordingSession:
         """Get the number of files saved."""
         return self._file_counter
 
-    def _estimate_event_size(self, event: dict) -> int:
-        """Estimate the size of a single event in bytes."""
-        # Quick estimation: JSON serialization of single event
-        return len(json.dumps(event))
+    # Backward compatibility properties for tests
+    @property
+    def _events(self) -> list[dict]:
+        """Backward compatibility: access events from buffer."""
+        return self._event_buffer.events
 
-    def _add_events(self, events: list[dict]) -> None:
-        """Add events to the buffer and update size counter."""
-        for event in events:
-            self._events.append(event)
-            self._events_size_bytes += self._estimate_event_size(event)
+    @property
+    def _is_active(self) -> bool:
+        """Backward compatibility: check if recording is active."""
+        return self._state == RecordingState.RECORDING
 
-    def _clear_events(self) -> None:
-        """Clear the event buffer and reset size counter."""
-        self._events = []
-        self._events_size_bytes = 0
+    @_is_active.setter
+    def _is_active(self, value: bool) -> None:
+        """Backward compatibility: set recording state."""
+        if value:
+            self._state = RecordingState.RECORDING
+        else:
+            self._state = RecordingState.IDLE
 
-    def _should_flush_to_disk(self) -> bool:
-        """Check if events should be flushed to disk based on size threshold."""
-        return self._events_size_bytes > self.config.flush_size_mb * 1024 * 1024
+    @property
+    def _events_size_bytes(self) -> int:
+        """Backward compatibility: access size from buffer."""
+        return self._event_buffer.size_bytes
 
     def save_events_to_file(self) -> str | None:
         """Save current events to a numbered JSON file.
@@ -253,7 +322,7 @@ class RecordingSession:
         Returns:
             Path to the saved file, or None if save_dir is not configured or no events.
         """
-        if not self.save_dir or not self._events:
+        if not self.save_dir or not self._event_buffer:
             return None
 
         os.makedirs(self.save_dir, exist_ok=True)
@@ -273,16 +342,17 @@ class RecordingSession:
                 f"Failed to find available filename after {max_attempts} attempts"
             )
 
+        events = self._event_buffer.events
         with open(filepath, "w") as f:
-            json.dump(self._events, f)
+            json.dump(events, f)
 
-        self._total_events += len(self._events)
+        self._total_events += len(events)
         logger.debug(
-            f"Saved {len(self._events)} events to {filename} "
+            f"Saved {len(events)} events to {filename} "
             f"(total: {self._total_events} events in {self._file_counter} files)"
         )
 
-        self._clear_events()
+        self._event_buffer.clear()
         return filepath
 
     async def _set_recording_flag(
@@ -339,18 +409,18 @@ class RecordingSession:
     async def flush_events(self, browser_session: BrowserSession) -> int:
         """Flush recording events from browser to Python storage.
 
-        This collects events from the browser and adds them to Python-side storage.
+        This collects events from the browser and adds them to the EventBuffer.
         If events exceed the size threshold, they are saved to disk.
 
         Thread Safety:
             This method acquires _flush_lock to protect concurrent access to
-            _events, _events_size_bytes, and _file_counter from the periodic
-            flush loop and navigation-triggered flushes.
+            the event buffer and file counter from the periodic flush loop
+            and navigation-triggered flushes.
 
         Returns:
             Number of events flushed.
         """
-        if not self._is_active:
+        if self._state != RecordingState.RECORDING:
             return 0
 
         try:
@@ -364,11 +434,11 @@ class RecordingSession:
             events = data.get("events", [])
             if events:
                 async with self._flush_lock:
-                    self._add_events(events)
+                    self._event_buffer.add_batch(events)
                     logger.debug(f"Flushed {len(events)} recording events from browser")
 
                     # Check if we should save to disk (size threshold)
-                    if self._should_flush_to_disk():
+                    if self._event_buffer.should_flush(self.config.flush_size_mb):
                         self.save_events_to_file()
 
             return len(events)
@@ -382,11 +452,11 @@ class RecordingSession:
         Thread Safety:
             This method acquires _flush_lock when saving events to disk,
             coordinating with navigation-triggered flushes to prevent race
-            conditions on _events, _events_size_bytes, and _file_counter.
+            conditions on the event buffer and file counter.
         """
-        while self._is_active:
+        while self._state == RecordingState.RECORDING:
             await asyncio.sleep(self.config.flush_interval_seconds)
-            if not self._is_active:
+            if self._state != RecordingState.RECORDING:
                 break
 
             try:
@@ -395,7 +465,7 @@ class RecordingSession:
 
                 # Save to disk if we have any events (periodic save)
                 async with self._flush_lock:
-                    if self._events:
+                    if self._event_buffer:
                         self.save_events_to_file()
             except Exception as e:
                 logger.warning(f"Periodic flush failed: {e}")
@@ -414,8 +484,8 @@ class RecordingSession:
             await self.inject_scripts(browser_session)
 
         # Reset state for new recording session
-        self._clear_events()
-        self._is_active = True
+        self._event_buffer.clear()
+        self._state = RecordingState.RECORDING
         self._file_counter = 0
         self._total_events = 0
 
@@ -451,7 +521,7 @@ class RecordingSession:
                     return "Already recording"
 
                 elif status == "load_failed":
-                    self._is_active = False
+                    self._state = RecordingState.IDLE
                     await self._set_recording_flag(browser_session, False)
                     logger.error(
                         "Unable to start recording: rrweb failed to load from CDN"
@@ -472,11 +542,11 @@ class RecordingSession:
                     continue
 
                 else:
-                    self._is_active = False
+                    self._state = RecordingState.IDLE
                     return f"Unknown status: {status}"
 
             # All retries exhausted
-            self._is_active = False
+            self._state = RecordingState.IDLE
             await self._set_recording_flag(browser_session, False)
             return (
                 "Error: Unable to start recording. rrweb did not load after retries. "
@@ -484,7 +554,7 @@ class RecordingSession:
             )
 
         except Exception as e:
-            self._is_active = False
+            self._state = RecordingState.IDLE
             logger.exception("Error starting recording", exc_info=e)
             return f"Error starting recording: {str(e)}"
 
@@ -497,12 +567,12 @@ class RecordingSession:
         Returns:
             A summary message with the save directory and file count.
         """
-        if not self._is_active:
+        if self._state != RecordingState.RECORDING:
             return "Error: Not recording. Call browser_start_recording first."
 
         try:
             # Stop the periodic flush task first
-            self._is_active = False
+            self._state = RecordingState.STOPPED
             if self._flush_task:
                 self._flush_task.cancel()
                 try:
@@ -524,12 +594,12 @@ class RecordingSession:
 
             # Acquire lock for final event processing to ensure consistency
             async with self._flush_lock:
-                # Add current page events to in-memory storage
+                # Add current page events to the buffer
                 if current_page_events:
-                    self._add_events(current_page_events)
+                    self._event_buffer.add_batch(current_page_events)
 
                 # Save any remaining events to a final file
-                if self._events:
+                if self._event_buffer:
                     self.save_events_to_file()
 
                 # Calculate totals while holding the lock
@@ -555,7 +625,7 @@ class RecordingSession:
             return summary
 
         except Exception as e:
-            self._is_active = False
+            self._state = RecordingState.STOPPED
             if self._flush_task:
                 self._flush_task.cancel()
                 self._flush_task = None
@@ -568,7 +638,7 @@ class RecordingSession:
         This waits for rrweb to be ready and starts a new recording session.
         Called automatically after navigation when recording is active.
         """
-        if not self._is_active:
+        if self._state != RecordingState.RECORDING:
             return
 
         try:
@@ -606,8 +676,8 @@ class RecordingSession:
 
     def reset(self) -> None:
         """Reset the recording session state for reuse."""
-        self._clear_events()
-        self._is_active = False
+        self._event_buffer.clear()
+        self._state = RecordingState.IDLE
         self._file_counter = 0
         self._total_events = 0
         self._flush_task = None
