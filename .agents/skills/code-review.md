@@ -15,6 +15,8 @@ You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHA
 
 **Default to APPROVE**: If your review finds no issues at "important" level or higher, approve the PR. Minor suggestions or nitpicks alone are not sufficient reason to withhold approval.
 
+**IMPORTANT: If you determine a PR is worth merging, you MUST approve it.** Do not just say a PR is "worth merging" or "ready to merge" without actually submitting an approval. Your words and actions must be consistent.
+
 ### When to APPROVE
 
 Approve PRs that are straightforward and low-risk:
