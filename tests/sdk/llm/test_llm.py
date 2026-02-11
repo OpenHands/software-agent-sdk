@@ -100,6 +100,19 @@ def test_kimi_k2_5_top_p_override(mock_get):
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_temperature_defaults_to_none_for_kimi(mock_get):
+    """Temperature should remain unset (None) unless explicitly provided."""
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    llm = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-kimi-temp-none",
+    )
+    assert llm.temperature is None
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider_with_custom_url(mock_get):
     """Test that openhands/ provider respects custom base_url when provided."""
     # Mock the model info fetch to avoid actual HTTP calls
