@@ -31,7 +31,7 @@ def _make_agent(
     return Agent(
         llm=llm,
         tools=[],
-        fallback_strategy=strategy,
+        llm_fallback_strategy=strategy,
     )
 
 

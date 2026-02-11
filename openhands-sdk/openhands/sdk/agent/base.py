@@ -65,12 +65,12 @@ class FallbackStrategy(BaseModel):
         default_factory=dict,
     )
 
-    profile_store_path: Path | str | None = None
+    profile_store_dir: Path | str | None = None
     """Path to a directory where profiles are stored."""
 
     @cached_property
     def profile_store(self) -> LLMProfileStore:
-        return LLMProfileStore(self.profile_store_path)
+        return LLMProfileStore(self.profile_store_dir)
 
     def resolve(self, error: Exception | None = None) -> list[str]:
         """
@@ -91,6 +91,19 @@ class FallbackStrategy(BaseModel):
         if error is None:
             return self.default_fallbacks
         return self.fallback_mapping.get(type(error), self.default_fallbacks)
+
+    def get_fallback_llms(
+        self, error: Exception
+    ) -> Generator[tuple[str, LLM], None, None]:
+        """Yield ``(profile_name, llm)`` pairs for fallbacks matching *error*.
+
+        Profiles that fail to load are logged and skipped.
+        """
+        for name in self.resolve(error):
+            try:
+                yield name, self.profile_store.load(name)
+            except Exception as exc:
+                logger.warning(f"Failed to load fallback profile '{name}': {exc}")
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -117,7 +130,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
-    fallback_strategy: FallbackStrategy = Field(
+    llm_fallback_strategy: FallbackStrategy = Field(
         default_factory=FallbackStrategy,
     )
     tools: list[Tool] = Field(
