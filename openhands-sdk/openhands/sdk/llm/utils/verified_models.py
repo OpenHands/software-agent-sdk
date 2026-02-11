@@ -49,7 +49,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-sonnet-4-5-20250929",
     "gpt-5.2",
     "gpt-5.2-codex",
-    "minimax-m2.5",
+    "MiniMax-M2.5",
     "gemini-3-pro-preview",
     "deepseek-chat",
     "kimi-k2-thinking",
