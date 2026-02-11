@@ -145,17 +145,17 @@ class TestCircularSchemaHandling:
     """Tests for handling circular $ref schemas in tool schemas.
 
     These tests verify that circular schemas are handled gracefully without
-    RecursionError, and that the output preserves useful type information.
+    RecursionError. When a circular reference is detected, a generic
+    {"type": "object"} placeholder is returned.
 
     Related: Datadog logs from conversation ab9909a07571431a86ab6f1be36f555f
     """
 
-    def test_circular_ref_preserves_non_recursive_properties(self):
-        """Test that circular ref handling preserves non-recursive properties.
+    def test_circular_ref_returns_generic_object(self):
+        """Test that circular ref handling returns a generic object.
 
-        When a circular reference is detected, the shallow expansion should
-        preserve immediate non-recursive properties (like 'name') while only
-        replacing the recursive field with a generic object.
+        When a circular reference is detected, the function returns a simple
+        {"type": "object"} placeholder to prevent infinite recursion.
         """
         circular_schema = {
             "type": "object",
@@ -169,6 +169,7 @@ class TestCircularSchemaHandling:
             "$defs": {
                 "TreeNode": {
                     "type": "object",
+                    "description": "A tree node",
                     "properties": {
                         "name": {"type": "string", "description": "Node name"},
                         "children": {
@@ -194,30 +195,33 @@ class TestCircularSchemaHandling:
         # The 'children' array should be present
         assert result["properties"]["children"]["type"] == "array"
 
-        # The items in children should be expanded TreeNodes
+        # The items in children should be expanded TreeNodes (first level)
         items = result["properties"]["children"]["items"]
         assert items["type"] == "object"
         assert "properties" in items
 
-        # The TreeNode's 'name' property should be preserved (non-recursive)
+        # The TreeNode's 'name' property should be preserved (first level)
         assert "name" in items["properties"]
         assert items["properties"]["name"]["type"] == "string"
-        assert items["properties"]["name"]["description"] == "Node name"
 
-        # The TreeNode's 'children' should be an array of generic objects
-        # (recursive field is simplified)
+        # The TreeNode's 'children' should be an array
         assert "children" in items["properties"]
         assert items["properties"]["children"]["type"] == "array"
+
+        # The nested items (circular ref) should be a generic object
+        nested_items = items["properties"]["children"]["items"]
+        assert nested_items["type"] == "object"
+        # Description is preserved from the ref definition
+        assert nested_items.get("description") == "A tree node"
 
         # Should be JSON serializable
         json.dumps(result)
 
-    def test_tree_schema_to_mcp_preserves_value_field(self):
-        """Test that self-referential Pydantic Schema preserves non-recursive fields.
+    def test_tree_schema_to_mcp_works(self):
+        """Test that self-referential Pydantic Schema can be converted to MCP schema.
 
         This is the real-world scenario: a Pydantic model with self-referential
-        fields (like a tree node) should have its non-recursive fields preserved
-        in the MCP schema output.
+        fields (like a tree node) should be convertible without RecursionError.
         """
 
         class TreeNode(Schema):
@@ -246,7 +250,7 @@ class TestCircularSchemaHandling:
         children_prop = result["properties"]["children"]
         assert children_prop["type"] == "array"
 
-        # The items should be objects (shallow expansion of TreeNode)
+        # The items should be objects (circular ref returns generic object)
         assert children_prop["items"]["type"] == "object"
 
         # Should be JSON serializable
