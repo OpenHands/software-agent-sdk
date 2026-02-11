@@ -37,6 +37,8 @@ from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 if TYPE_CHECKING:
     from openhands.sdk.tool.tool import ToolDefinition
 
+from collections import deque
+
 
 __all__ = ["TestLLM", "TestLLMExhaustedError"]
 
@@ -91,7 +93,7 @@ class TestLLM(LLM):
     __test__ = False
 
     model: str = Field(default="test-model")
-    _scripted_responses: list[Message] = PrivateAttr(default_factory=list)
+    _scripted_responses: deque[Message] = PrivateAttr(default_factory=deque)
     _call_count: int = PrivateAttr(default=0)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -102,7 +104,7 @@ class TestLLM(LLM):
         # Extract scripted_responses before calling super().__init__
         scripted_responses = data.pop("scripted_responses", [])
         super().__init__(**data)
-        self._scripted_responses = list(scripted_responses)
+        self._scripted_responses = deque(list(scripted_responses))
         self._call_count = 0
 
     @classmethod
@@ -171,7 +173,7 @@ class TestLLM(LLM):
                 f"(exhausted after {self._call_count} calls)"
             )
 
-        message = self._scripted_responses.pop(0)
+        message = self._scripted_responses.popleft()
         self._call_count += 1
 
         # Create a minimal ModelResponse for raw_response
