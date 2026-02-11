@@ -6,6 +6,8 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import (
@@ -20,6 +22,7 @@ from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
@@ -41,6 +44,57 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+
+
+class FallbackStrategy(BaseModel):
+    """
+    Manages recovery logic for LLM failures by mapping errors to fallback models.
+
+    This strategy allows for granular control over how the SDK responds to different
+    failure modes. It can provide a generic list of fallback models or specific
+    models tailored for particular exception (e.g., switching to a model
+    with a larger context window when a ContextLengthError occurs).
+    """
+
+    default_fallbacks: list[str] = Field(
+        description="List of default fallbacks to try when the primary LLM fails.",
+        default_factory=list,
+    )
+    fallback_mapping: dict[type[Exception], list[str]] = Field(
+        description="Mapping from exception types to fallback profile names.",
+        default_factory=dict,
+    )
+
+    profile_store_path: Path | str | None = None
+    """Path to a directory where profiles are stored."""
+
+    @cached_property
+    def profile_store(self) -> LLMProfileStore:
+        return LLMProfileStore(self.profile_store_path)
+
+    def resolve(self, error: Exception | None = None) -> list[str]:
+        """
+        Retrieves the appropriate list of fallback models based on the provided error.
+
+        The method first checks if the error matches any type defined in the
+        `fallback_mapping`. If no specific error is provided, it returns the
+        `default_fallbacks`.
+
+        Args:
+            error (Exception | None): The exception raised during the LLM call.
+                Defaults to None.
+
+        Returns:
+            list[str]: A list of model identifiers to attempt. Returns an empty
+                list if the error type is not mapped and no defaults exist.
+        """
+        if error is None:
+            return self.default_fallbacks
+
+        fallback = self.fallback_mapping.get(type(error), None)
+        if fallback is None:
+            return self.default_fallbacks
+        return fallback
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -66,6 +120,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "api_key": "your_api_key_here",
             }
         ],
+    )
+    fallback_strategy: FallbackStrategy = Field(
+        default_factory=FallbackStrategy,
     )
     tools: list[Tool] = Field(
         default_factory=list,

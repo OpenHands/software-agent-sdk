@@ -252,8 +252,7 @@ class Agent(CriticMixin, AgentBase):
         )
 
         try:
-            llm_response = make_llm_completion(
-                self.llm,
+            llm_response = self._make_llm_completion_with_fallback(
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
@@ -370,6 +369,52 @@ class Agent(CriticMixin, AgentBase):
             logger.debug("LLM produced a message response - awaits user input")
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
+
+    def _make_llm_completion_with_fallback(
+        self,
+        messages: list[Message],
+        tools: list,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> LLMResponse:
+        """Try the primary LLM, then each fallback LLM on transient failure."""
+        try:
+            return make_llm_completion(
+                self.llm, messages, tools=tools, on_token=on_token
+            )
+        except Exception as exc:
+            fallback_profiles = self.fallback_strategy.resolve(exc)
+            if not fallback_profiles:
+                # in this case we raise the exception as we don't have
+                # fallback LLM for this case
+                raise
+
+            logger.warning(
+                f"Primary LLM failed with {type(exc).__name__}: {exc}.\n"
+                f"Trying with fallback(s) {', '.join(fallback_profiles)}.",
+            )
+            last_exc: Exception = exc
+
+        llm_store = self.fallback_strategy.profile_store
+        for i, fallback in enumerate(fallback_profiles):
+            try:
+                fallback_llm = llm_store.load(fallback)
+                return make_llm_completion(
+                    fallback_llm, messages, tools=tools, on_token=on_token
+                )
+            except Exception as exc:
+                last_exc = exc
+                remaining = len(fallback_profiles) - i - 1
+                remaining_msg = (
+                    f"{remaining} fallback(s) remaining."
+                    if remaining
+                    else "No more fallbacks."
+                )
+                logger.warning(
+                    f"Fallback LLM {fallback} failed with "
+                    f"{type(exc).__name__}: {exc}. {remaining_msg}",
+                )
+
+        raise last_exc
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
