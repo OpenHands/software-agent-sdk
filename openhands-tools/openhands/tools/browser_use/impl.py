@@ -20,7 +20,11 @@ from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
-from openhands.tools.browser_use.definition import BrowserAction, BrowserObservation
+from openhands.tools.browser_use.definition import (
+    BROWSER_RECORDING_OUTPUT_DIR,
+    BrowserAction,
+    BrowserObservation,
+)
 from openhands.tools.browser_use.server import CustomBrowserUseServer
 from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
 
@@ -450,13 +454,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         """Start recording the browser session using rrweb.
 
         Recording events are periodically flushed to timestamped JSON files
-        in a session subfolder under .agent_tmp/observations.
+        in a session subfolder under BROWSER_RECORDING_OUTPUT_DIR.
         Events are flushed every 5 seconds.
         """
         await self._ensure_initialized()
-        # Save recordings to .agent_tmp/observations for agent conventions
-        recording_output_dir = os.path.join(".agent_tmp", "observations")
-        return await self._server._start_recording(output_dir=recording_output_dir)
+        return await self._server._start_recording(
+            output_dir=BROWSER_RECORDING_OUTPUT_DIR
+        )
 
     async def stop_recording(self) -> str:
         """Stop recording and save remaining events to file.

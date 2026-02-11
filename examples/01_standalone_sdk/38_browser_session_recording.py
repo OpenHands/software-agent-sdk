@@ -27,6 +27,7 @@ from openhands.sdk import (
 )
 from openhands.sdk.tool import Tool
 from openhands.tools.browser_use import BrowserToolSet
+from openhands.tools.browser_use.definition import BROWSER_RECORDING_OUTPUT_DIR
 
 
 logger = get_logger(__name__)
@@ -104,23 +105,22 @@ print("Conversation finished!")
 print("=" * 80)
 
 # Check if the recording files were created
-# Recordings are saved in .agent_tmp/observations/recording-{timestamp}/
-observations_dir = os.path.join(".agent_tmp", "observations")
-if os.path.exists(observations_dir):
+# Recordings are saved in BROWSER_RECORDING_OUTPUT_DIR/recording-{timestamp}/
+if os.path.exists(BROWSER_RECORDING_OUTPUT_DIR):
     # Find recording subdirectories (they start with "recording-")
     recording_dirs = sorted(
         [
             d
-            for d in os.listdir(observations_dir)
+            for d in os.listdir(BROWSER_RECORDING_OUTPUT_DIR)
             if d.startswith("recording-")
-            and os.path.isdir(os.path.join(observations_dir, d))
+            and os.path.isdir(os.path.join(BROWSER_RECORDING_OUTPUT_DIR, d))
         ]
     )
 
     if recording_dirs:
         # Process the most recent recording directory
         latest_recording = recording_dirs[-1]
-        recording_path = os.path.join(observations_dir, latest_recording)
+        recording_path = os.path.join(BROWSER_RECORDING_OUTPUT_DIR, latest_recording)
         json_files = sorted(
             [f for f in os.listdir(recording_path) if f.endswith(".json")]
         )
@@ -161,10 +161,10 @@ if os.path.exists(observations_dir):
             "https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player"
         )
     else:
-        print(f"\n✗ No recording directories found in: {observations_dir}")
+        print(f"\n✗ No recording directories found in: {BROWSER_RECORDING_OUTPUT_DIR}")
         print("  The agent may not have completed the recording task.")
 else:
-    print(f"\n✗ Observations directory not found: {observations_dir}")
+    print(f"\n✗ Observations directory not found: {BROWSER_RECORDING_OUTPUT_DIR}")
     print("  The agent may not have completed the recording task.")
 
 print("\n" + "=" * 100)

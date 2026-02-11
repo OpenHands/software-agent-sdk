@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
@@ -24,6 +25,9 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.browser_use.impl import BrowserToolExecutor
 
+
+# Directory where browser session recordings are saved
+BROWSER_RECORDING_OUTPUT_DIR = os.path.join(".agent_tmp", "browser_observations")
 
 # Mapping of base64 prefixes to MIME types for image detection
 BASE64_IMAGE_PREFIXES = {
@@ -677,14 +681,15 @@ class BrowserStartRecordingAction(BrowserAction):
     pass
 
 
-BROWSER_START_RECORDING_DESCRIPTION = """Start recording the browser session.
+BROWSER_START_RECORDING_DESCRIPTION = f"""Start recording the browser session.
 
 This tool starts recording all browser interactions using rrweb. The recording
 captures DOM mutations, mouse movements, clicks, scrolls, and other user interactions.
 
-Recording events are periodically flushed to numbered JSON files (1.json, 2.json, etc.)
-in the configured save directory. Events are flushed every 5 seconds or when they
-exceed 1 MB.
+Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
+Format: Recording events are saved as numbered JSON files (1.json, 2.json, etc.)
+containing rrweb event arrays. Events are flushed every 5 seconds or when they
+exceed 1 MB. These files can be replayed using rrweb-player.
 
 Call browser_stop_recording to stop recording and save any remaining events.
 
@@ -726,12 +731,14 @@ class BrowserStopRecordingAction(BrowserAction):
     pass
 
 
-BROWSER_STOP_RECORDING_DESCRIPTION = """Stop recording the browser session.
+BROWSER_STOP_RECORDING_DESCRIPTION = f"""Stop recording the browser session.
 
 This tool stops the current recording session and saves any remaining events to disk.
-Events are saved as numbered JSON files (1.json, 2.json, etc.) in the configured
-save directory. These files can be replayed using rrweb-player to visualize the
-recorded session.
+
+Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
+Format: Events are saved as numbered JSON files (1.json, 2.json, etc.) containing
+rrweb event arrays. These files can be replayed using rrweb-player to visualize
+the recorded session.
 
 Returns a summary message with the total event count, file count, and save directory.
 """
