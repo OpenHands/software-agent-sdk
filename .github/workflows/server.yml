@@ -210,9 +210,10 @@ jobs:
             ARCH: ${{ matrix.arch }}
             TARGET: binary
             PLATFORM: ${{ matrix.platform }}
-            # Use PR head SHA for pull requests to match the image tag expected by run-examples.yml
-            GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-            GITHUB_REF: ${{ github.ref }}
+            # Use SDK_SHA to pass PR head SHA since GITHUB_SHA is a reserved GitHub variable
+            # that cannot be overridden at job level
+            SDK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+            SDK_REF: ${{ github.ref }}
             CI: 'true'
 
         steps:
@@ -238,10 +239,15 @@ jobs:
             - name: Prepare build context and metadata
               id: prep
               run: |
+                  # Debug: verify SDK_SHA is set correctly
+                  echo "DEBUG: SDK_SHA env var = $SDK_SHA"
+                  echo "DEBUG: Expected PR head SHA for pull requests"
+
                   uv sync --frozen
 
                   # Generate build context and tags with arch suffix
                   # build.py now handles architecture tagging internally via --arch flag
+                  # build.py reads SDK_SHA from environment to get the correct SHA
                   # Add --versioned-tag when triggered by a git tag (e.g., v1.0.0)
                   BUILD_CMD="uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only --arch ${{ matrix.arch }}"
                   if [[ "${{ github.ref }}" == refs/tags/* ]]; then
@@ -253,9 +259,9 @@ jobs:
                   TAGS=$(grep '^tags_csv=' $GITHUB_OUTPUT | cut -d= -f2-)
                   echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
-                  # Extract short SHA for consolidation (use GITHUB_SHA env var, not github.sha)
-                  # GITHUB_SHA is set to PR head SHA for pull_request events
-                  SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
+                  # Extract short SHA for consolidation (use SDK_SHA env var)
+                  # SDK_SHA is set to PR head SHA for pull_request events
+                  SHORT_SHA=$(echo $SDK_SHA | cut -c1-7)
                   echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
                   # Extract versioned tags CSV for consolidation
