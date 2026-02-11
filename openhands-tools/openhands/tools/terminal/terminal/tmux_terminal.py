@@ -59,6 +59,34 @@ class TmuxTerminal(TerminalInterface):
             x=1000,
             y=1000,
         )
+
+        # Workaround for libtmux race condition: if session_id is None after
+        # new_session(), retry fetching it. This can happen when libtmux's
+        # parse_output() fails to extract all fields from tmux output.
+        # See: https://github.com/tmux-python/libtmux/issues/624
+        if self.session.session_id is None:
+            for attempt in range(3):
+                time.sleep(0.1 * (attempt + 1))
+                try:
+                    # Try to refresh session data from tmux
+                    sessions = self.server.sessions.filter(session_name=session_name)
+                    if sessions:
+                        self.session = sessions[0]
+                        if self.session.session_id is not None:
+                            logger.debug(
+                                f"Session ID resolved after {attempt + 1} attempts"
+                            )
+                            break
+                except Exception as e:
+                    logger.debug(f"Retry {attempt + 1} failed: {e}")
+
+            if self.session.session_id is None:
+                raise RuntimeError(
+                    f"Failed to get session_id for session '{session_name}'. "
+                    "This may be a libtmux race condition. "
+                    "See https://github.com/tmux-python/libtmux/issues/624"
+                )
+
         for k, v in env.items():
             self.session.set_environment(k, v)
 
