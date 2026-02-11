@@ -298,7 +298,15 @@ def main():
         # Note: Laminar methods gracefully handle the uninitialized case by
         # returning None or early-returning, so no try/except needed.
         trace_id = Laminar.get_trace_id()
-        span_context = Laminar.get_laminar_span_context_dict()
+        # Use model_dump(mode='json') to ensure UUIDs are serialized as strings
+        # for JSON compatibility. get_laminar_span_context_dict() returns UUID
+        # objects which are not JSON serializable.
+        laminar_span_context = Laminar.get_laminar_span_context()
+        span_context = (
+            laminar_span_context.model_dump(mode="json")
+            if laminar_span_context
+            else None
+        )
 
         if trace_id:
             # Set trace metadata for later retrieval and filtering
