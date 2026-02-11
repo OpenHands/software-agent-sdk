@@ -91,7 +91,7 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
+from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -464,9 +464,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Capabilities + model info
         self._init_model_info_and_caps()
-
-        if self.temperature is None:
-            self.temperature = get_default_temperature(self.model)
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "

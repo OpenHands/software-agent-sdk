@@ -178,12 +178,3 @@ def get_features(model: str) -> ModelFeatures:
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
     )
-
-
-def get_default_temperature(model: str) -> float | None:
-    """Return the default temperature for a given model pattern.
-
-    Always returns None to use provider defaults.
-    """
-    _ = model
-    return None
