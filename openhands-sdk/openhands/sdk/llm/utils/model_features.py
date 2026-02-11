@@ -1,7 +1,6 @@
 from dataclasses import dataclass
-from functools import lru_cache
 
-from litellm import get_supported_openai_params
+from litellm.utils import supports_reasoning
 
 
 def model_matches(model: str, patterns: list[str]) -> bool:
@@ -55,15 +54,8 @@ class ModelFeatures:
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
 
-@lru_cache(maxsize=256)
-def _supports_reasoning_effort(model: str | None) -> bool:
-    """Return True if the model supports reasoning_effort via LiteLLM params."""
-    if not model:
-        return False
-
+def _normalize_litellm_model(model: str) -> tuple[str | None, str]:
     normalized = model.strip().lower()
-    if not normalized:
-        return False
 
     if normalized.startswith(LITELLM_PROXY_PREFIX):
         normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
@@ -73,14 +65,22 @@ def _supports_reasoning_effort(model: str | None) -> bool:
     if "/" in normalized:
         custom_provider, model_id = normalized.split("/", 1)
 
+    return custom_provider, model_id
+
+
+def _supports_reasoning_effort(model: str | None) -> bool:
+    """Return True if the model supports reasoning_effort via LiteLLM."""
+    if not model:
+        return False
+
+    custom_provider, model_id = _normalize_litellm_model(model)
+
     try:
-        params = get_supported_openai_params(
-            model=model_id, custom_llm_provider=custom_provider
+        return bool(
+            supports_reasoning(model=model_id, custom_llm_provider=custom_provider)
         )
     except Exception:
         return False
-
-    return bool(params and "reasoning_effort" in params)
 
 
 # Model lists capturing current behavior. Keep entries lowercase.
