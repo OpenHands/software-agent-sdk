@@ -158,10 +158,14 @@ class RecordingSession:
     - RECORDING: Actively recording events
     - STOPPED: Recording has been stopped
 
-    Thread Safety:
-    - Uses asyncio.Lock to protect flush operations from concurrent access
+    Concurrency (asyncio tasks):
+    - Uses asyncio.Lock (_event_buffer_lock) to protect the event buffer and
+      file operations from concurrent task access
+    - The lock specifically protects: _event_buffer, _files_written, _total_events
     - The periodic flush loop and navigation-triggered flushes both acquire
-      the lock before modifying the event buffer or file counter
+      the lock before modifying the event buffer or saving to disk
+    - Other state (_state, _flush_task, _scripts_injected) is not protected
+      by this lock as these are only modified during start/stop transitions
 
     Directory Structure:
     - output_dir: Root directory where all recording sessions are stored
@@ -191,8 +195,8 @@ class RecordingSession:
     # Browser state
     _scripts_injected: bool = False
 
-    # Concurrency control
-    _flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # Concurrency control - protects _event_buffer, _files_written, _total_events
+    _event_buffer_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def session_dir(self) -> str | None:
@@ -328,10 +332,9 @@ class RecordingSession:
         This collects events from the browser and adds them to the EventBuffer.
         Events are saved to disk by the periodic flush loop or when recording stops.
 
-        Thread Safety:
-            This method acquires _flush_lock to protect concurrent access to
-            the event buffer from the periodic flush loop and navigation-triggered
-            flushes.
+        Concurrency:
+            Acquires _event_buffer_lock to protect the event buffer from
+            concurrent task access (periodic flush loop vs navigation flushes).
 
         Returns:
             Number of events flushed.
@@ -349,7 +352,7 @@ class RecordingSession:
             data = json.loads(result.get("result", {}).get("value", "{}"))
             events = data.get("events", [])
             if events:
-                async with self._flush_lock:
+                async with self._event_buffer_lock:
                     self._event_buffer.add_batch(events)
                     logger.debug(f"Flushed {len(events)} recording events from browser")
 
@@ -361,10 +364,10 @@ class RecordingSession:
     async def _periodic_flush_loop(self, browser_session: BrowserSession) -> None:
         """Background task that periodically flushes recording events.
 
-        Thread Safety:
-            This method acquires _flush_lock when saving events to disk,
-            coordinating with navigation-triggered flushes to prevent race
-            conditions on the event buffer and file counter.
+        Concurrency:
+            Acquires _event_buffer_lock when saving events to disk, coordinating
+            with navigation-triggered flushes to prevent concurrent modifications
+            to _event_buffer, _files_written, and _total_events.
         """
         while self._state == RecordingState.RECORDING:
             await asyncio.sleep(self.config.flush_interval_seconds)
@@ -376,7 +379,7 @@ class RecordingSession:
                 await self.flush_events(browser_session)
 
                 # Save to disk if we have any events (periodic save)
-                async with self._flush_lock:
+                async with self._event_buffer_lock:
                     if self._event_buffer:
                         self.save_events_to_file()
             except Exception as e:
@@ -563,7 +566,7 @@ class RecordingSession:
             current_page_events = current_page_data.get("events", [])
 
             # Acquire lock for final event processing to ensure consistency
-            async with self._flush_lock:
+            async with self._event_buffer_lock:
                 # Add current page events to the buffer
                 if current_page_events:
                     self._event_buffer.add_batch(current_page_events)
