@@ -816,38 +816,82 @@ class TestGetPrReviews:
     @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
     @patch("urllib.request.urlopen")
     def test_fetches_reviews_successfully(self, mock_urlopen):
-        """Test successful fetch of PR reviews."""
-        reviews_data = [
-            {"id": 1, "user": {"login": "reviewer1"}, "state": "APPROVED"},
-            {"id": 2, "user": {"login": "reviewer2"}, "state": "CHANGES_REQUESTED"},
-        ]
+        """Test successful fetch of PR reviews via GraphQL."""
+        # GraphQL with `last` returns newest first, so we put the newer review first
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {"hasPreviousPage": False, "startCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "2",
+                                    "author": {"login": "reviewer2"},
+                                    "body": "Please fix",
+                                    "state": "CHANGES_REQUESTED",
+                                    "submittedAt": "2024-01-02T00:00:00Z",
+                                },
+                                {
+                                    "id": "1",
+                                    "author": {"login": "reviewer1"},
+                                    "body": "LGTM",
+                                    "state": "APPROVED",
+                                    "submittedAt": "2024-01-01T00:00:00Z",
+                                },
+                            ],
+                        }
+                    }
+                }
+            }
+        }
         mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps(reviews_data).encode()
+        mock_response.read.return_value = json.dumps(graphql_response).encode()
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_response
 
         result = get_pr_reviews("123")
 
+        # Results are reversed to chronological order (oldest first)
         assert len(result) == 2
-        assert result[0]["state"] == "APPROVED"
-        assert result[1]["state"] == "CHANGES_REQUESTED"
+        assert result[0]["state"] == "APPROVED"  # Older review first
+        assert result[1]["state"] == "CHANGES_REQUESTED"  # Newer review second
 
     @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
     @patch("urllib.request.urlopen")
-    def test_constructs_correct_url(self, mock_urlopen):
-        """Test that correct URL is constructed for reviews endpoint."""
+    def test_uses_graphql_with_last_for_latest_reviews(self, mock_urlopen):
+        """Test that GraphQL query uses 'last' to fetch latest reviews, not oldest."""
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {"hasPreviousPage": False, "startCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        }
         mock_response = MagicMock()
-        mock_response.read.return_value = b"[]"
+        mock_response.read.return_value = json.dumps(graphql_response).encode()
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_response
 
         get_pr_reviews("456")
 
+        # Verify the GraphQL query uses 'last' (not 'first') to get latest reviews
         call_args = mock_urlopen.call_args
         request = call_args[0][0]
-        assert "/repos/owner/repo/pulls/456/reviews" in request.full_url
+        request_body = request.data.decode("utf-8")
+        assert "reviews(last:" in request_body
+        assert "before: $cursor" in request_body
+        assert "hasPreviousPage" in request_body
+        assert "startCursor" in request_body
+        # Ensure we're NOT using 'first' which would get oldest reviews
+        assert "reviews(first:" not in request_body
 
 
 class TestGetReviewThreadsGraphql:
@@ -862,7 +906,10 @@ class TestGetReviewThreadsGraphql:
                 "repository": {
                     "pullRequest": {
                         "reviewThreads": {
-                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
                             "nodes": [
                                 {
                                     "id": "thread1",
@@ -892,29 +939,73 @@ class TestGetReviewThreadsGraphql:
 
     @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
     @patch("urllib.request.urlopen")
-    def test_handles_pagination(self, mock_urlopen):
-        """Test that pagination is handled correctly."""
-        # First page response
-        page1_response = {
+    def test_uses_last_for_latest_threads(self, mock_urlopen):
+        """Test that GraphQL query uses 'last' to fetch latest threads, not oldest."""
+        graphql_response = {
             "data": {
                 "repository": {
                     "pullRequest": {
                         "reviewThreads": {
-                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor1"},
-                            "nodes": [{"id": "thread1", "isResolved": False}],
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
+                            "nodes": [],
                         }
                     }
                 }
             }
         }
-        # Second page response
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(graphql_response).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        get_review_threads_graphql("123")
+
+        # Verify the GraphQL query uses 'last' (not 'first') to get latest threads
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        request_body = request.data.decode("utf-8")
+        assert "reviewThreads(last:" in request_body
+        assert "before: $cursor" in request_body
+        assert "hasPreviousPage" in request_body
+        assert "startCursor" in request_body
+        # Ensure we're NOT using 'first' which would get oldest threads
+        assert "reviewThreads(first:" not in request_body
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_handles_pagination(self, mock_urlopen):
+        """Test that pagination is handled correctly with hasPreviousPage."""
+        # First page response (most recent threads)
+        page1_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {
+                                "hasPreviousPage": True,
+                                "startCursor": "cursor1",
+                            },
+                            "nodes": [{"id": "thread2", "isResolved": True}],
+                        }
+                    }
+                }
+            }
+        }
+        # Second page response (older threads)
         page2_response = {
             "data": {
                 "repository": {
                     "pullRequest": {
                         "reviewThreads": {
-                            "pageInfo": {"hasNextPage": False, "endCursor": None},
-                            "nodes": [{"id": "thread2", "isResolved": True}],
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
+                            "nodes": [{"id": "thread1", "isResolved": False}],
                         }
                     }
                 }
@@ -935,9 +1026,10 @@ class TestGetReviewThreadsGraphql:
 
         result = get_review_threads_graphql("123")
 
+        # Results are reversed to chronological order (oldest first)
         assert len(result) == 2
-        assert result[0]["id"] == "thread1"
-        assert result[1]["id"] == "thread2"
+        assert result[0]["id"] == "thread1"  # Older thread first
+        assert result[1]["id"] == "thread2"  # Newer thread second
         assert mock_urlopen.call_count == 2
 
     @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
@@ -987,7 +1079,10 @@ class TestGetReviewThreadsGraphql:
                 "repository": {
                     "pullRequest": {
                         "reviewThreads": {
-                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor1"},
+                            "pageInfo": {
+                                "hasPreviousPage": True,
+                                "startCursor": "cursor1",
+                            },
                             "nodes": [{"id": "thread1"}],
                         }
                     }
@@ -1006,6 +1101,38 @@ class TestGetReviewThreadsGraphql:
         assert len(result) == 1
         assert mock_urlopen.call_count == 1
 
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_no_warning_when_all_threads_fetched(self, mock_urlopen):
+        """Test no warning when all threads fetched (hasPreviousPage=False)."""
+        # Response with exactly 100 threads but hasPreviousPage=False
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
+                            "nodes": [{"id": f"thread{i}"} for i in range(100)],
+                        }
+                    }
+                }
+            }
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(graphql_response).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = get_review_threads_graphql("123")
+
+        # Should return all 100 threads without warning
+        # (warning only occurs if hasPreviousPage is True after we stop fetching)
+        assert len(result) == 100
+
 
 class TestGetPrReviewContext:
     """Tests for get_pr_review_context function."""
@@ -1014,17 +1141,40 @@ class TestGetPrReviewContext:
     @patch("urllib.request.urlopen")
     def test_combines_reviews_and_threads(self, mock_urlopen):
         """Test that reviews and threads are combined into context."""
-        # Mock reviews response
-        reviews_response = [
-            {"user": {"login": "reviewer1"}, "state": "APPROVED", "body": "LGTM"}
-        ]
+        # Mock GraphQL reviews response
+        reviews_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
+                            "nodes": [
+                                {
+                                    "id": "r1",
+                                    "author": {"login": "reviewer1"},
+                                    "body": "LGTM",
+                                    "state": "APPROVED",
+                                    "submittedAt": "2024-01-01T00:00:00Z",
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
         # Mock GraphQL threads response
         threads_response = {
             "data": {
                 "repository": {
                     "pullRequest": {
                         "reviewThreads": {
-                            "pageInfo": {"hasNextPage": False},
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
                             "nodes": [
                                 {
                                     "id": "t1",
@@ -1089,9 +1239,24 @@ class TestGetPrReviewContext:
     @patch("urllib.request.urlopen")
     def test_returns_empty_when_no_reviews_or_threads(self, mock_urlopen):
         """Test returns empty string when no reviews or threads exist."""
-        # Empty reviews
+        # Empty reviews (GraphQL format)
+        reviews_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        }
         mock_response1 = MagicMock()
-        mock_response1.read.return_value = b"[]"
+        mock_response1.read.return_value = json.dumps(reviews_response).encode()
         mock_response1.__enter__ = MagicMock(return_value=mock_response1)
         mock_response1.__exit__ = MagicMock(return_value=False)
 
@@ -1101,7 +1266,10 @@ class TestGetPrReviewContext:
                 "repository": {
                     "pullRequest": {
                         "reviewThreads": {
-                            "pageInfo": {"hasNextPage": False},
+                            "pageInfo": {
+                                "hasPreviousPage": False,
+                                "startCursor": None,
+                            },
                             "nodes": [],
                         }
                     }

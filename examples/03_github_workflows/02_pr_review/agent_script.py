@@ -135,11 +135,10 @@ def _call_github_api(
 
 
 def get_pr_reviews(pr_number: str, max_reviews: int = 100) -> list[dict[str, Any]]:
-    """Fetch the latest reviews for a PR.
+    """Fetch the latest reviews for a PR using GraphQL.
 
-    Paginates through all reviews and returns the most recent ones (up to max_reviews).
-    GitHub API returns reviews in chronological order (oldest first), so we fetch
-    all pages and return the last max_reviews entries.
+    Uses GraphQL with `last` to fetch the most recent reviews directly,
+    avoiding the need to paginate through all reviews from oldest to newest.
 
     Args:
         pr_number: The PR number
@@ -153,47 +152,122 @@ def get_pr_reviews(pr_number: str, max_reviews: int = 100) -> list[dict[str, Any
     - submitted_at: When the review was submitted
     """
     repo = _get_required_env("REPO_NAME")
-    all_reviews: list[dict[str, Any]] = []
-    page = 1
-    per_page = 100  # Maximum allowed by GitHub API
-    start_time = time.time()
+    owner, repo_name = repo.split("/")
 
-    while True:
+    # Use GraphQL to fetch the latest reviews directly
+    # `last: N` fetches the N most recent items
+    query = """
+    query(
+      $owner: String!
+      $repo: String!
+      $pr_number: Int!
+      $count: Int!
+      $cursor: String
+    ) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr_number) {
+          reviews(last: $count, before: $cursor) {
+            pageInfo {
+              hasPreviousPage
+              startCursor
+            }
+            nodes {
+              id
+              author {
+                login
+              }
+              body
+              state
+              submittedAt
+            }
+          }
+        }
+      }
+    }
+    """
+
+    all_reviews: list[dict[str, Any]] = []
+    cursor = None
+    start_time = time.time()
+    page_count = 0
+
+    while len(all_reviews) < max_reviews:
         # Check for pagination timeout
         elapsed = time.time() - start_time
         if elapsed > MAX_PAGINATION_TIME:
             logger.warning(
                 f"Reviews pagination timeout after {elapsed:.1f}s, "
-                f"fetched {len(all_reviews)} reviews across {page - 1} pages"
+                f"fetched {len(all_reviews)} reviews across {page_count} pages"
             )
             break
 
-        url = f"/repos/{repo}/pulls/{pr_number}/reviews?per_page={per_page}&page={page}"
-        reviews = _call_github_api(url)
+        # Fetch up to remaining needed reviews
+        remaining = max_reviews - len(all_reviews)
+        fetch_count = min(remaining, 100)  # GraphQL max is 100 per request
 
-        if not reviews:
+        variables = {
+            "owner": owner,
+            "repo": repo_name,
+            "pr_number": int(pr_number),
+            "count": fetch_count,
+            "cursor": cursor,
+        }
+
+        result = _call_github_api(
+            "https://api.github.com/graphql",
+            method="POST",
+            data={"query": query, "variables": variables},
+        )
+
+        if "errors" in result:
+            logger.warning(f"GraphQL errors fetching reviews: {result['errors']}")
             break
 
-        all_reviews.extend(reviews)
+        pr_data = result.get("data", {}).get("repository", {}).get("pullRequest")
+        if not pr_data:
+            break
+
+        reviews_data = pr_data.get("reviews", {})
+        nodes = reviews_data.get("nodes", [])
+        page_count += 1
+
+        if not nodes:
+            break
+
+        # Convert GraphQL format to REST-like format for compatibility
+        for node in nodes:
+            author = node.get("author") or {}
+            all_reviews.append(
+                {
+                    "id": node.get("id"),
+                    "user": {"login": author.get("login", "unknown")},
+                    "body": node.get("body", ""),
+                    "state": node.get("state", "UNKNOWN"),
+                    "submitted_at": node.get("submittedAt"),
+                }
+            )
+
         logger.debug(
-            f"Fetched page {page} with {len(reviews)} reviews "
+            f"Fetched page {page_count} with {len(nodes)} reviews "
             f"(total: {len(all_reviews)})"
         )
 
-        # If we got fewer than per_page, we've reached the last page
-        if len(reviews) < per_page:
+        page_info = reviews_data.get("pageInfo", {})
+        if not page_info.get("hasPreviousPage"):
             break
+        cursor = page_info.get("startCursor")
 
-        page += 1
-
-    # Return the latest max_reviews (reviews are in chronological order, oldest first)
-    return all_reviews[-max_reviews:] if len(all_reviews) > max_reviews else all_reviews
+    # Reviews are fetched newest-first with `last`, reverse to get chronological order
+    # (oldest first) for consistent display
+    return list(reversed(all_reviews))
 
 
 def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
-    """Fetch review threads with resolution status using GraphQL API.
+    """Fetch the latest review threads with resolution status using GraphQL API.
 
     The REST API doesn't expose thread resolution status, so we use GraphQL.
+    Uses `last` to fetch the most recent threads first, ensuring we get the
+    latest discussions rather than the oldest ones.
 
     Note: This query fetches up to 100 review threads per page, each with up to
     50 comments. For PRs exceeding these limits, older threads/comments may be
@@ -210,14 +284,16 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
     repo = _get_required_env("REPO_NAME")
     owner, repo_name = repo.split("/")
 
+    # Use `last` to fetch the most recent threads first
+    # `before: $cursor` paginates backwards through older threads
     query = """
     query($owner: String!, $repo: String!, $pr_number: Int!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $pr_number) {
-          reviewThreads(first: 100, after: $cursor) {
+          reviewThreads(last: 100, before: $cursor) {
             pageInfo {
-              hasNextPage
-              endCursor
+              hasPreviousPage
+              startCursor
             }
             nodes {
               id
@@ -246,6 +322,7 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
     cursor = None
     start_time = time.time()
     page_count = 0
+    has_more_pages = False
 
     while True:
         # Check for overall pagination timeout
@@ -289,18 +366,20 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
         )
 
         page_info = review_threads.get("pageInfo", {})
-        if not page_info.get("hasNextPage"):
+        has_more_pages = page_info.get("hasPreviousPage", False)
+        if not has_more_pages:
             break
-        cursor = page_info.get("endCursor")
+        cursor = page_info.get("startCursor")
 
-    # Warn if we hit pagination limits
-    if len(threads) >= 100 and page_count == 1:
+    # Warn only if there are actually more pages we didn't fetch
+    if has_more_pages:
         logger.warning(
-            f"Fetched {len(threads)} review threads (at page limit). "
+            f"Review threads limited to {len(threads)} threads. "
             "Some threads may be omitted for PRs with extensive review history."
         )
 
-    return threads
+    # Threads are fetched newest-first with `last`, reverse to get chronological order
+    return list(reversed(threads))
 
 
 def format_review_context(
