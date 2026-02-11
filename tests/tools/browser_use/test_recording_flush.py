@@ -15,7 +15,6 @@ import pytest
 from openhands.tools.browser_use.recording import (
     DEFAULT_CONFIG,
     RecordingSession,
-    RecordingState,
 )
 from openhands.tools.browser_use.server import CustomBrowserUseServer
 
@@ -90,7 +89,7 @@ class TestPeriodicFlush:
             config = RecordingConfig(flush_interval_seconds=0.1)  # 100ms
             session = RecordingSession(config=config)
             session._session_dir = temp_dir  # Set session dir directly for testing
-            session._state = RecordingState.RECORDING
+            session._is_recording = True
 
             # Mock the CDP evaluate to return events on each flush
             flush_call_count = 0
@@ -122,7 +121,7 @@ class TestPeriodicFlush:
             await asyncio.sleep(0.35)  # Should allow ~3 flush cycles
 
             # Stop recording to end the task
-            session._state = RecordingState.IDLE
+            session._is_recording = False
             await asyncio.sleep(0.15)  # Allow task to exit
 
             # Cancel if still running
@@ -169,7 +168,7 @@ class TestConcurrentFlushSafety:
             # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
             session._session_dir = temp_dir
-            session._state = RecordingState.RECORDING
+            session._is_recording = True
 
             async def mock_evaluate(*args, **kwargs):
                 expression = kwargs.get("params", {}).get("expression", "")
@@ -208,7 +207,7 @@ class TestConcurrentFlushSafety:
             config = RecordingConfig(flush_interval_seconds=0.05)
             session = RecordingSession(config=config)
             session._session_dir = temp_dir
-            session._state = RecordingState.RECORDING
+            session._is_recording = True
 
             async def mock_evaluate(*args, **kwargs):
                 expression = kwargs.get("params", {}).get("expression", "")
@@ -233,7 +232,7 @@ class TestConcurrentFlushSafety:
             await asyncio.sleep(0.2)
 
             # Stop and cleanup
-            session._state = RecordingState.IDLE
+            session._is_recording = False
             await asyncio.sleep(0.1)
             if not flush_task.done():
                 flush_task.cancel()
@@ -362,7 +361,7 @@ class TestFileCountAccuracy:
             # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
             session._session_dir = temp_dir
-            session._state = RecordingState.RECORDING
+            session._is_recording = True
 
             # Add events to buffer and save twice
             for _ in range(2):
@@ -386,7 +385,7 @@ class TestFileCountAccuracy:
             # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
             session._session_dir = temp_dir
-            session._state = RecordingState.RECORDING
+            session._is_recording = True
 
             # No flush calls, no events
             assert session.file_count == 0
@@ -398,7 +397,7 @@ class TestFileCountAccuracy:
             # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
             session._session_dir = temp_dir
-            session._state = RecordingState.RECORDING
+            session._is_recording = True
 
             # Add events to buffer and save 5 times
             for _ in range(5):

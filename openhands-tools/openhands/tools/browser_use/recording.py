@@ -7,7 +7,6 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,16 +25,8 @@ _JS_DIR = Path(__file__).parent / "js"
 
 
 # =============================================================================
-# State Management
+# Event Buffer
 # =============================================================================
-
-
-class RecordingState(Enum):
-    """Explicit states for the recording session state machine."""
-
-    IDLE = "idle"
-    RECORDING = "recording"
-    STOPPED = "stopped"
 
 
 @dataclass
@@ -149,14 +140,8 @@ def _get_wait_for_rrweb_js() -> str:
 class RecordingSession:
     """Encapsulates all recording state and logic for a browser session.
 
-    This class manages the lifecycle of a recording session using a state machine
-    pattern with explicit states (IDLE, RECORDING, STOPPED) and an EventBuffer
+    This class manages the lifecycle of a recording session with an EventBuffer
     for event storage.
-
-    State Machine:
-    - IDLE: Initial state, no recording active
-    - RECORDING: Actively recording events
-    - STOPPED: Recording has been stopped
 
     Concurrency (asyncio tasks):
     - Uses asyncio.Lock (_event_buffer_lock) to protect the event buffer and
@@ -164,7 +149,7 @@ class RecordingSession:
     - The lock specifically protects: _event_buffer, _files_written, _total_events
     - The periodic flush loop and navigation-triggered flushes both acquire
       the lock before modifying the event buffer or saving to disk
-    - Other state (_state, _flush_task, _scripts_injected) is not protected
+    - Other state (_is_recording, _flush_task, _scripts_injected) is not protected
       by this lock as these are only modified during start/stop transitions
 
     Directory Structure:
@@ -181,8 +166,8 @@ class RecordingSession:
     # Directory for current recording session (timestamped subfolder under output_dir)
     _session_dir: str | None = field(default=None, repr=False)
 
-    # State machine
-    _state: RecordingState = RecordingState.IDLE
+    # Recording state
+    _is_recording: bool = False
     _event_buffer: EventBuffer = field(default_factory=EventBuffer)
 
     # File management
@@ -221,7 +206,7 @@ class RecordingSession:
     @property
     def is_active(self) -> bool:
         """Check if recording is currently active."""
-        return self._state == RecordingState.RECORDING
+        return self._is_recording
 
     @property
     def total_events(self) -> int:
@@ -232,11 +217,6 @@ class RecordingSession:
     def file_count(self) -> int:
         """Get the number of files saved this session."""
         return self._files_written
-
-    @property
-    def state(self) -> RecordingState:
-        """Get the current recording state."""
-        return self._state
 
     @property
     def event_buffer(self) -> EventBuffer:
@@ -339,7 +319,7 @@ class RecordingSession:
         Returns:
             Number of events flushed.
         """
-        if self._state != RecordingState.RECORDING:
+        if not self._is_recording:
             return 0
 
         try:
@@ -369,9 +349,9 @@ class RecordingSession:
             with navigation-triggered flushes to prevent concurrent modifications
             to _event_buffer, _files_written, and _total_events.
         """
-        while self._state == RecordingState.RECORDING:
+        while self._is_recording:
             await asyncio.sleep(self.config.flush_interval_seconds)
-            if self._state != RecordingState.RECORDING:
+            if not self._is_recording:
                 break
 
             try:
@@ -441,7 +421,7 @@ class RecordingSession:
 
         # Reset state for new recording session
         self._event_buffer.clear()
-        self._state = RecordingState.RECORDING
+        self._is_recording = True
         self._files_written = 0
         self._total_events = 0
 
@@ -456,7 +436,7 @@ class RecordingSession:
 
             if not load_result.get("success"):
                 error = load_result.get("error", "unknown")
-                self._state = RecordingState.IDLE
+                self._is_recording = False
                 await self._set_recording_flag(browser_session, False)
 
                 if error == "load_failed":
@@ -513,7 +493,7 @@ class RecordingSession:
                 return "Already recording"
 
             elif status == "load_failed":
-                self._state = RecordingState.IDLE
+                self._is_recording = False
                 await self._set_recording_flag(browser_session, False)
                 logger.error("Unable to start recording: rrweb failed to load from CDN")
                 return (
@@ -523,11 +503,11 @@ class RecordingSession:
                 )
 
             else:
-                self._state = RecordingState.IDLE
+                self._is_recording = False
                 return f"Unknown status: {status}"
 
         except Exception as e:
-            self._state = RecordingState.IDLE
+            self._is_recording = False
             logger.exception("Error starting recording", exc_info=e)
             return f"Error starting recording: {str(e)}"
 
@@ -540,12 +520,12 @@ class RecordingSession:
         Returns:
             A summary message with the save directory and file count.
         """
-        if self._state != RecordingState.RECORDING:
+        if not self._is_recording:
             return "Error: Not recording. Call browser_start_recording first."
 
         try:
             # Stop the periodic flush task first
-            self._state = RecordingState.STOPPED
+            self._is_recording = False
             if self._flush_task:
                 self._flush_task.cancel()
                 try:
@@ -598,7 +578,7 @@ class RecordingSession:
             return summary
 
         except Exception as e:
-            self._state = RecordingState.STOPPED
+            self._is_recording = False
             if self._flush_task:
                 self._flush_task.cancel()
                 self._flush_task = None
@@ -612,7 +592,7 @@ class RecordingSession:
         then starts a new recording session. Called automatically after
         navigation when recording is active.
         """
-        if self._state != RecordingState.RECORDING:
+        if not self._is_recording:
             return
 
         try:
@@ -651,7 +631,7 @@ class RecordingSession:
     def reset(self) -> None:
         """Reset the recording session state for reuse."""
         self._event_buffer.clear()
-        self._state = RecordingState.IDLE
+        self._is_recording = False
         self._session_dir = None  # Clear the current session's directory
         self._files_written = 0
         self._total_events = 0
