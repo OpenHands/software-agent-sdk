@@ -219,6 +219,23 @@ jobs:
                   # The --lock flag updates both pyproject.toml AND poetry.lock
                   # Note: enterprise/pyproject.toml gets these dependencies transitively via openhands-ai
                   echo "📝 Updating root pyproject.toml and poetry.lock..."
+
+                  # Verify enterprise/pyproject.toml does NOT have SDK packages explicitly listed
+                  # If they exist there, they will become stale since we only update root pyproject.toml
+                  if [ -f "enterprise/pyproject.toml" ]; then
+                    echo "🔍 Verifying enterprise/pyproject.toml doesn't have explicit SDK packages..."
+                    SDK_PACKAGES=("openhands-sdk" "openhands-tools" "openhands-agent-server")
+                    for pkg in "${SDK_PACKAGES[@]}"; do
+                      if grep -q "^${pkg}\s*=" enterprise/pyproject.toml || grep -q "\"${pkg}\"" enterprise/pyproject.toml || grep -q "'${pkg}'" enterprise/pyproject.toml; then
+                        echo "❌ ERROR: enterprise/pyproject.toml contains explicit reference to '$pkg'"
+                        echo "   These packages should come transitively via openhands-ai dependency."
+                        echo "   Please remove '$pkg' from enterprise/pyproject.toml to avoid version drift."
+                        exit 1
+                      fi
+                    done
+                    echo "✅ enterprise/pyproject.toml does not have explicit SDK packages"
+                  fi
+
                   poetry add --lock "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION"
 
                   # 2. Update the hash in sandbox_spec_service.py
