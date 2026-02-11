@@ -166,7 +166,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 # Only applied when the caller leaves top_p at the OpenAI default (1.0).
 DEFAULT_TOP_P_MODELS: list[tuple[str, float]] = [
     ("huggingface", 0.9),
-    # Moonshot Kimi-K2.5 rejects top_p=1.0; use 0.95 instead.
+    # Moonshot Kimi-K2.5 rejects top_p=1.0 (API error); use 0.95 instead.
     ("kimi-k2.5", 0.95),
 ]
 
