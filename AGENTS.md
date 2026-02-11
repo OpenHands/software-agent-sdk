@@ -158,7 +158,12 @@ mkdir -p .pr
 </PR_ARTIFACTS>
 
 <REVIEW_HANDLING>
-- After addressing inline review comments, mark the corresponding review threads as resolved.
+- Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
+  - Does it fix a real bug or improve clarity significantly?
+  - Does it align with the project's engineering principles (simplicity, maintainability)?
+  - Is the suggested change proportional to the benefit, or does it add unnecessary complexity?
+- It's acceptable to respectfully decline suggestions that add verbosity without clear benefit, over-engineer for hypothetical edge cases, or contradict the project's pragmatic approach.
+- After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
 - Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
 - Prefer resolving threads only once fixes are pushed or a clear decision is documented.
 - Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
