@@ -82,13 +82,13 @@ class AgentContext(BaseModel):
         ),
     )
     current_datetime: datetime | str | None = Field(
-        default=None,
+        default_factory=datetime.now,
         description=(
             "Current date and time information to provide to the agent. "
             "Can be a datetime object (which will be formatted as ISO 8601) "
             "or a pre-formatted string. When provided, this information is "
             "included in the system prompt to give the agent awareness of "
-            "the current time context."
+            "the current time context. Defaults to the current datetime."
         ),
     )
 

@@ -168,7 +168,7 @@ class TestAgentContext:
             trigger=None,
         )
 
-        context = AgentContext(skills=[repo_agent1, repo_agent2])
+        context = AgentContext(skills=[repo_agent1, repo_agent2], current_datetime=None)
         result = context.get_system_message_suffix()
 
         expected_output = (
@@ -509,7 +509,7 @@ templates.",
             trigger=None,
         )
 
-        context = AgentContext(skills=[repo_agent])
+        context = AgentContext(skills=[repo_agent], current_datetime=None)
         result = context.get_system_message_suffix()
 
         expected_output = (
@@ -535,7 +535,7 @@ templates.\n"
             name="empty_content", content="", source="test.md", trigger=None
         )
 
-        context = AgentContext(skills=[repo_agent])
+        context = AgentContext(skills=[repo_agent], current_datetime=None)
         result = context.get_system_message_suffix()
 
         expected_output = (
@@ -882,10 +882,24 @@ defined in user's repository.\n"
         assert result == "2024-03-15T14:30:00"
 
     def test_get_formatted_datetime_with_none(self):
-        """Test get_formatted_datetime returns None when current_datetime is not set."""
-        context = AgentContext()
+        """Test get_formatted_datetime returns None when current_datetime is None."""
+        context = AgentContext(current_datetime=None)
         result = context.get_formatted_datetime()
         assert result is None
+
+    def test_agent_context_default_datetime(self):
+        """Test that AgentContext defaults to current datetime."""
+        from datetime import datetime, timedelta
+
+        before = datetime.now()
+        context = AgentContext()
+        after = datetime.now()
+
+        # Verify current_datetime is set and is a datetime object
+        assert context.current_datetime is not None
+        assert isinstance(context.current_datetime, datetime)
+        # Verify it's approximately the current time (within 1 second)
+        assert before <= context.current_datetime <= after + timedelta(seconds=1)
 
     def test_get_system_message_suffix_with_datetime_only(self):
         """Test system message suffix with datetime but no other content."""

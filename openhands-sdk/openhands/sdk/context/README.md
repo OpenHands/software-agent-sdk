@@ -18,7 +18,6 @@ Context provides skills and knowledge the agent can rely on during a conversatio
 ## Quick Example
 
 ```python
-from datetime import datetime
 from openhands.sdk.context import AgentContext, KeywordTrigger, Skill
 
 agent_context = AgentContext(
@@ -36,6 +35,6 @@ agent_context = AgentContext(
             trigger=KeywordTrigger(keywords=["flarglebargle"]),
         ),
     ],
-    current_datetime=datetime.now(),  # Provides time awareness to the agent
+    # current_datetime defaults to datetime.now() for time awareness
 )
 ```
