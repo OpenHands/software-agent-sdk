@@ -25,6 +25,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
 )
 from openhands.sdk.tool import Tool
+from openhands.tools.preset.default import get_default_tools
 from tests.integration.early_stopper import EarlyStopperBase, EarlyStopResult
 
 
@@ -204,10 +205,25 @@ class BaseIntegrationTest(ABC):
         return Message(role="user", content=[TextContent(text=self.instruction)])
 
     @property
-    @abstractmethod
+    def enable_browser(self) -> bool:
+        """Whether to enable browser tools. Override in subclasses that need browsing.
+
+        Returns:
+            False by default. Override to True for tests that require browser access.
+        """
+        return False
+
+    @property
     def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        pass
+        """List of tools available to the agent.
+
+        By default, uses the default preset tools from openhands.tools.preset.default.
+        This ensures integration tests validate the same agent configuration shipped
+        to production (GUI/CLI).
+
+        Override this property in subclasses that need custom tool configurations.
+        """
+        return get_default_tools(enable_browser=self.enable_browser)
 
     @property
     def condenser(self) -> CondenserBase | None:
