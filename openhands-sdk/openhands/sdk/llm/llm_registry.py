@@ -94,20 +94,6 @@ class LLMRegistry:
             f"[LLM registry {self.registry_id}]: Added LLM for usage {usage_id}"
         )
 
-    def has(self, usage_id: str) -> bool:
-        """Check if a usage_id exists in the registry.
-
-        This is useful for checking before add() to avoid ValueError,
-        or for conditional logic based on registry state.
-
-        Args:
-            usage_id: Unique identifier to check.
-
-        Returns:
-            True if usage_id exists in registry, False otherwise.
-        """
-        return usage_id in self._usage_to_llm
-
     def get(self, usage_id: str) -> LLM:
         """Get an LLM instance from the registry.
 
@@ -130,19 +116,6 @@ class LLMRegistry:
             f"[LLM registry {self.registry_id}]: Retrieved LLM for usage {usage_id}"
         )
         return self._usage_to_llm[usage_id]
-
-    def get_or_none(self, usage_id: str) -> LLM | None:
-        """Get an LLM instance from the registry, or None if not found.
-
-        This is a convenience method that avoids KeyError exceptions.
-
-        Args:
-            usage_id: Unique identifier for the LLM usage slot.
-
-        Returns:
-            The LLM instance if found, None otherwise.
-        """
-        return self._usage_to_llm.get(usage_id)
 
     def list_usage_ids(self) -> list[str]:
         """List all registered usage IDs."""
