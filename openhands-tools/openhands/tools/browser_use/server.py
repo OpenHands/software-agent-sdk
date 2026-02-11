@@ -33,6 +33,44 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         """Check if recording is currently active."""
         return self._recording_session is not None and self._recording_session.is_active
 
+    async def _cleanup_recording(self) -> None:
+        """Cleanup recording session resources.
+
+        Stops any active recording, saves remaining events, and releases resources.
+        Should be called when the browser session is being closed.
+        """
+        if self._recording_session is None:
+            return
+
+        try:
+            # Stop recording if active to save any remaining events
+            if self._recording_session.is_active and self.browser_session:
+                await self._recording_session.stop(self.browser_session)
+            else:
+                # Just reset if not active or no browser session
+                self._recording_session.reset()
+        except Exception as e:
+            logger.debug(f"Recording cleanup error (non-fatal): {e}")
+        finally:
+            self._recording_session = None
+
+    async def _close_browser(self) -> str:
+        """Close the browser session and cleanup recording resources."""
+        await self._cleanup_recording()
+        return await super()._close_browser()
+
+    async def _close_session(self, session_id: str) -> str:
+        """Close a specific browser session and cleanup recording if needed."""
+        # Cleanup recording if closing the current session
+        if self.browser_session and self.browser_session.id == session_id:
+            await self._cleanup_recording()
+        return await super()._close_session(session_id)
+
+    async def _close_all_sessions(self) -> str:
+        """Close all active browser sessions and cleanup recording resources."""
+        await self._cleanup_recording()
+        return await super()._close_all_sessions()
+
     def set_inject_scripts(self, scripts: list[str]) -> None:
         """Set scripts to be injected into every new document.
 
