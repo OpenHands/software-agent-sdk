@@ -79,6 +79,27 @@ def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_kimi_k2_5_top_p_override(mock_get):
+    """Test that kimi-k2.5 defaults to top_p=0.95 unless explicitly set."""
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    llm = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-kimi-llm",
+    )
+    assert llm.top_p == 0.95
+
+    llm_explicit = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-kimi-llm-explicit",
+        top_p=0.8,
+    )
+    assert llm_explicit.top_p == 0.8
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider_with_custom_url(mock_get):
     """Test that openhands/ provider respects custom base_url when provided."""
     # Mock the model info fetch to avoid actual HTTP calls

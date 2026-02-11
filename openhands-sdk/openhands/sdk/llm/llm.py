@@ -91,7 +91,7 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.model_features import get_features, model_matches
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -421,8 +421,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if d.get("top_p", 1.0) == 1.0:
                 d["top_p"] = 0.9
 
-        # Moonshot kimi-k2.5 requires top_p=0.95
-        if "kimi-k2.5" in model_val:
+        if model_matches(model_val, ["kimi-k2.5"]):
+            # Moonshot kimi-k2.5 defaults to top_p=0.95 if not explicitly set
             if d.get("top_p", 1.0) == 1.0:
                 d["top_p"] = 0.95
 
