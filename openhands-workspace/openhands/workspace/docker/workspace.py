@@ -264,7 +264,7 @@ class DockerWorkspace(RemoteWorkspace):
         # The container exposes port 8000, mapped to self.host_port
         # Override parent's host initialization
         if not self.host:
-            object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
+            object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
         object.__setattr__(self, "api_key", None)
 
         # Wait for container to be healthy
