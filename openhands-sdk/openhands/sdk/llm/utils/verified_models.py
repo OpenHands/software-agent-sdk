@@ -57,6 +57,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "deepseek-chat",
     "kimi-k2-thinking",
     "kimi-k2.5",
+    "MiniMax-M2.5",
     "devstral-medium-2512",
     "devstral-2512",
 ]

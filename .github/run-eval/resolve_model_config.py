@@ -97,6 +97,11 @@ MODELS = {
         "display_name": "MiniMax M2",
         "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
     },
+    "minimax-m2.5": {
+        "id": "minimax-m2.5",
+        "display_name": "MiniMax M2.5",
+        "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.5"},
+    },
     "minimax-m2.1": {
         "id": "minimax-m2.1",
         "display_name": "MiniMax M2.1",
