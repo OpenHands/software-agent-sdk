@@ -377,7 +377,7 @@ class Agent(CriticMixin, AgentBase):
         tools: list,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> LLMResponse:
-        """Try the primary LLM, then each fallback LLM on transient failure."""
+        """Try the primary LLM; if it fails, it calls the fallback LLMs."""
         try:
             return make_llm_completion(
                 self.llm, messages, tools=tools, on_token=on_token
@@ -385,7 +385,18 @@ class Agent(CriticMixin, AgentBase):
         except Exception as exc:
             return self._try_fallbacks(exc, messages, tools, on_token)
 
-    def _try_fallbacks(self, primary_exc, messages, tools, on_token) -> LLMResponse:
+    def _try_fallbacks(
+        self,
+        primary_exc: Exception,
+        messages: list[Message],
+        tools: list,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> LLMResponse:
+        """Attempt fallback LLMs when primary fails.
+
+        Raises LLMError with aggregated failure details if all fallbacks fail,
+        preserving the original exception in the chain.
+        """
         fallback_profiles = self.llm_fallback_strategy.resolve(primary_exc)
         if not fallback_profiles:
             raise primary_exc
@@ -415,9 +426,9 @@ class Agent(CriticMixin, AgentBase):
         ]
         load_failures = len(fallback_profiles) - len(failed)
         if load_failures:
-            summary_lines.append(f"  {load_failures} profile(s) failed to load")
+            summary_lines.append(f"- {load_failures} profile(s) failed to load")
         for name, exc in failed:
-            summary_lines.append(f"  - {name}: {type(exc).__name__}: {exc}")
+            summary_lines.append(f"- {name}: {type(exc).__name__}: {exc}")
         raise LLMError("\n".join(summary_lines)) from primary_exc
 
     def _requires_user_confirmation(

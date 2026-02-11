@@ -66,7 +66,10 @@ class FallbackStrategy(BaseModel):
     )
 
     profile_store_dir: Path | str | None = None
-    """Path to a directory where profiles are stored."""
+    """
+    Path to the directory where profiles are stored.
+    If None, the default profile directory is used.
+    """
 
     @cached_property
     def profile_store(self) -> LLMProfileStore:
