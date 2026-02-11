@@ -162,6 +162,45 @@ mkdir -p .pr
 - Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
 - Prefer resolving threads only once fixes are pushed or a clear decision is documented.
 - Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+
+## Resolving Review Threads via GraphQL
+
+The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
+
+1. First, get the thread IDs:
+```bash
+gh api graphql -f query='
+{
+  repository(owner: "OpenHands", name: "software-agent-sdk") {
+    pullRequest(number: <PR_NUMBER>) {
+      reviewThreads(first: 20) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+2. Then resolve each thread:
+```bash
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+    thread { isResolved }
+  }
+}'
+```
+
+3. After resolving threads, rerun the failed check:
+```bash
+gh run rerun <RUN_ID> --repo OpenHands/software-agent-sdk --failed
+```
 </REVIEW_HANDLING>
 
 
