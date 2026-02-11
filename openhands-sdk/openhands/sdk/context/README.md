@@ -9,7 +9,7 @@ Context provides skills and knowledge the agent can rely on during a conversatio
 
 ## Key Components
 
-- **AgentContext**: Composes skills; pass to Agent to condition behavior
+- **AgentContext**: Composes skills and runtime context; pass to Agent to condition behavior
 - **Skill**: Embeds structured knowledge with different trigger types:
   - **trigger=None**: Activates for all conversations (repository-wide context)
   - **KeywordTrigger**: Activates when specific keywords appear in user messages
@@ -18,6 +18,7 @@ Context provides skills and knowledge the agent can rely on during a conversatio
 ## Quick Example
 
 ```python
+from datetime import datetime
 from openhands.sdk.context import AgentContext, KeywordTrigger, Skill
 
 agent_context = AgentContext(
@@ -34,6 +35,7 @@ agent_context = AgentContext(
             source="flarglebargle.md",
             trigger=KeywordTrigger(keywords=["flarglebargle"]),
         ),
-    ]
+    ],
+    current_datetime=datetime.now(),  # Provides time awareness to the agent
 )
 ```
