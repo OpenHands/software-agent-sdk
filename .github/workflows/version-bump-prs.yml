@@ -3,10 +3,10 @@ name: Create Version Bump PRs
 
 on:
     # Triggered by pypi-release workflow after successful publish
+    # Note: No branches filter - releases run on tags (e.g., v1.11.4), not branches
     workflow_run:
         workflows: [Publish all OpenHands packages (uv)]
         types: [completed]
-        branches: [main, rel-*]
     # Allow manual trigger with version input
     workflow_dispatch:
         inputs:
@@ -217,16 +217,30 @@ jobs:
 
                   # 1. Update versions in pyproject.toml and poetry.lock using poetry (root)
                   # The --lock flag updates both pyproject.toml AND poetry.lock
+                  # Note: enterprise/pyproject.toml gets these dependencies transitively via openhands-ai
                   echo "📝 Updating root pyproject.toml and poetry.lock..."
+
+                  # Verify enterprise/pyproject.toml does NOT have SDK packages explicitly listed
+                  # If they exist there, they will become stale since we only update root pyproject.toml
+                  if [ -f "enterprise/pyproject.toml" ]; then
+                    echo "🔍 Verifying enterprise/pyproject.toml doesn't have explicit SDK packages..."
+                    SDK_PACKAGES=("openhands-sdk" "openhands-tools" "openhands-agent-server")
+                    for pkg in "${SDK_PACKAGES[@]}"; do
+                      # Match package name as a TOML key (with optional leading whitespace) followed by =
+                      # This catches both 'openhands-sdk = "1.2.3"' and 'openhands-sdk="1.2.3"'
+                      if grep -qE "^[[:space:]]*${pkg}[[:space:]]*=" enterprise/pyproject.toml; then
+                        echo "❌ ERROR: enterprise/pyproject.toml contains explicit reference to '$pkg'"
+                        echo "   These packages should come transitively via openhands-ai dependency."
+                        echo "   Please remove '$pkg' from enterprise/pyproject.toml to avoid version drift."
+                        exit 1
+                      fi
+                    done
+                    echo "✅ enterprise/pyproject.toml does not have explicit SDK packages"
+                  fi
+
                   poetry add --lock "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION"
 
-                  # 2. Update versions in enterprise/pyproject.toml and poetry.lock using poetry
-                  echo "📝 Updating enterprise/pyproject.toml and poetry.lock..."
-                  cd enterprise
-                  poetry add --lock "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION"
-                  cd ..
-
-                  # 3. Update the hash in sandbox_spec_service.py
+                  # 2. Update the hash in sandbox_spec_service.py
                   echo "🔧 Updating AGENT_SERVER_IMAGE hash..."
                   SANDBOX_SPEC_FILE="openhands/app_server/sandbox/sandbox_spec_service.py"
                   if [ -f "$SANDBOX_SPEC_FILE" ]; then
@@ -238,10 +252,10 @@ jobs:
                     exit 1
                   fi
 
-                  # 4. Run pre-commit to fix formatting (pyproject-fmt removes parentheses from version specs)
+                  # 3. Run pre-commit to fix formatting (pyproject-fmt removes parentheses from version specs)
                   echo "🔧 Running pre-commit to fix formatting..."
                   pip install pre-commit
-                  pre-commit run --files pyproject.toml enterprise/pyproject.toml --config ./dev_config/python/.pre-commit-config.yaml || true
+                  pre-commit run --files pyproject.toml --config ./dev_config/python/.pre-commit-config.yaml || true
 
                   # Check if there are changes
                   if git diff --quiet; then
@@ -256,9 +270,7 @@ jobs:
                     -m "" \
                     -m "Changes:" \
                     -m "- Updated SDK packages to v$VERSION in pyproject.toml" \
-                    -m "- Updated SDK packages to v$VERSION in enterprise/pyproject.toml" \
                     -m "- Regenerated poetry.lock" \
-                    -m "- Regenerated enterprise/poetry.lock" \
                     -m "- Updated AGENT_SERVER_IMAGE hash to ${SDK_COMMIT_HASH}" \
                     -m "" \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
@@ -282,9 +294,7 @@ jobs:
 
                   ### Changes
                   - Updated SDK packages in \`pyproject.toml\`
-                  - Updated SDK packages in \`enterprise/pyproject.toml\`
                   - Regenerated \`poetry.lock\`
-                  - Regenerated \`enterprise/poetry.lock\`
                   - Updated \`AGENT_SERVER_IMAGE\` hash to \`${SDK_COMMIT_HASH}\` in \`sandbox_spec_service.py\`
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
