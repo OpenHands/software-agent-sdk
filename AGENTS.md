@@ -166,7 +166,7 @@ mkdir -p .pr
 - After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
 - Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
 - Prefer resolving threads only once fixes are pushed or a clear decision is documented.
-- Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+- Use the GitHub GraphQL API to reply to and resolve review threads (see below).
 
 ## Resolving Review Threads via GraphQL
 
