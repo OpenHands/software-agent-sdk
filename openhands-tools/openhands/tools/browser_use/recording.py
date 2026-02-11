@@ -77,7 +77,16 @@ class EventBuffer:
 
 @dataclass
 class RecordingConfig:
-    """Configuration for recording sessions."""
+    """Configuration for recording sessions.
+
+    CDN Dependency Note:
+        The cdn_url points to unpkg.com which serves npm packages. If this CDN
+        is unavailable (down, blocked by firewall, or slow), recording will fail
+        to start. For production deployments in restricted environments, consider:
+        - Self-hosting the rrweb library
+        - Using a different CDN (jsdelivr, cdnjs)
+        - Bundling rrweb with your application
+    """
 
     flush_interval_seconds: float = 5.0
     rrweb_load_timeout_ms: int = 10000  # Timeout for rrweb to load from CDN
