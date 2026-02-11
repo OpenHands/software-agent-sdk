@@ -4,7 +4,7 @@ import copy
 import json
 import os
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -540,6 +540,45 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> LLM:
+        """Create a copy of this LLM with optional field updates.
+
+        This override ensures that copied LLMs get their own fresh Metrics instance,
+        preventing metrics from being shared between the original and copied LLM.
+        This is important for scenarios like creating a condenser LLM from an agent LLM,
+        where each should track its own usage independently.
+
+        Args:
+            update: Dictionary of field values to update in the copy.
+            deep: Whether to perform a deep copy of all fields.
+
+        Returns:
+            A new LLM instance with the specified updates and fresh metrics.
+        """
+        # Create the copy using Pydantic's default implementation
+        copied = super().model_copy(update=update, deep=deep)
+
+        # Always create a fresh Metrics instance for the copied LLM
+        # This prevents metrics from being shared between original and copy
+        copied._metrics = Metrics(model_name=copied.model)
+
+        # Also create a fresh Telemetry instance that uses the new metrics
+        copied._telemetry = Telemetry(
+            model_name=copied.model,
+            log_enabled=copied.log_completions,
+            log_dir=copied.log_completions_folder if copied.log_completions else None,
+            input_cost_per_token=copied.input_cost_per_token,
+            output_cost_per_token=copied.output_cost_per_token,
+            metrics=copied._metrics,
+        )
+
+        return copied
 
     def completion(
         self,
