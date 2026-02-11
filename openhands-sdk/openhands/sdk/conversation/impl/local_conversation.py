@@ -179,15 +179,8 @@ class LocalConversation(BaseConversation):
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
-                # Track the latest user message ID for hook-blocked checks.
-                # Keep the most recent real user prompt; feedback from stop hooks
-                # should not be re-checked by UserPromptSubmit hooks.
-                if e.llm_message.content:
-                    first = e.llm_message.content[0]
-                    if isinstance(first, TextContent) and first.text.startswith(
-                        "[Stop hook feedback] "
-                    ):
-                        return
+                # Track the latest real user message ID for hook-blocked checks.
+                # Stop-hook feedback is emitted with source="environment".
                 self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
@@ -545,7 +538,7 @@ class LocalConversation(BaseConversation):
                                 if feedback:
                                     prefixed = f"[Stop hook feedback] {feedback}"
                                     feedback_msg = MessageEvent(
-                                        source="user",
+                                        source="environment",
                                         llm_message=Message(
                                             role="user",
                                             content=[TextContent(text=prefixed)],
