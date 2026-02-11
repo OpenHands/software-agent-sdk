@@ -134,8 +134,16 @@ def _call_github_api(
         raise RuntimeError(f"GitHub API returned invalid JSON: {e}") from e
 
 
-def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
-    """Fetch all reviews for a PR.
+def get_pr_reviews(pr_number: str, max_reviews: int = 100) -> list[dict[str, Any]]:
+    """Fetch the latest reviews for a PR.
+
+    Paginates through all reviews and returns the most recent ones (up to max_reviews).
+    GitHub API returns reviews in chronological order (oldest first), so we fetch
+    all pages and return the last max_reviews entries.
+
+    Args:
+        pr_number: The PR number
+        max_reviews: Maximum number of reviews to return (default: 100)
 
     Returns a list of review objects containing:
     - id: Review ID
@@ -145,8 +153,41 @@ def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
     - submitted_at: When the review was submitted
     """
     repo = _get_required_env("REPO_NAME")
-    url = f"/repos/{repo}/pulls/{pr_number}/reviews"
-    return _call_github_api(url)
+    all_reviews: list[dict[str, Any]] = []
+    page = 1
+    per_page = 100  # Maximum allowed by GitHub API
+    start_time = time.time()
+
+    while True:
+        # Check for pagination timeout
+        elapsed = time.time() - start_time
+        if elapsed > MAX_PAGINATION_TIME:
+            logger.warning(
+                f"Reviews pagination timeout after {elapsed:.1f}s, "
+                f"fetched {len(all_reviews)} reviews across {page - 1} pages"
+            )
+            break
+
+        url = f"/repos/{repo}/pulls/{pr_number}/reviews?per_page={per_page}&page={page}"
+        reviews = _call_github_api(url)
+
+        if not reviews:
+            break
+
+        all_reviews.extend(reviews)
+        logger.debug(
+            f"Fetched page {page} with {len(reviews)} reviews "
+            f"(total: {len(all_reviews)})"
+        )
+
+        # If we got fewer than per_page, we've reached the last page
+        if len(reviews) < per_page:
+            break
+
+        page += 1
+
+    # Return the latest max_reviews (reviews are in chronological order, oldest first)
+    return all_reviews[-max_reviews:] if len(all_reviews) > max_reviews else all_reviews
 
 
 def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
