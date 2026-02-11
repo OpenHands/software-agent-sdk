@@ -52,40 +52,60 @@ class TmuxTerminal(TerminalInterface):
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
-        self.session = self.server.new_session(
-            session_name=session_name,
-            start_directory=self.work_dir,
-            kill_session=True,
-            x=1000,
-            y=1000,
-        )
 
-        # Workaround for libtmux race condition: if session_id is None after
-        # new_session(), retry fetching it. This can happen when libtmux's
-        # parse_output() fails to extract all fields from tmux output.
-        # See: https://github.com/tmux-python/libtmux/issues/624
-        if self.session.session_id is None:
-            for attempt in range(3):
-                time.sleep(0.1 * (attempt + 1))
-                try:
-                    # Try to refresh session data from tmux
-                    sessions = self.server.sessions.filter(session_name=session_name)
-                    if sessions:
-                        self.session = sessions[0]
-                        if self.session.session_id is not None:
-                            logger.debug(
-                                f"Session ID resolved after {attempt + 1} attempts"
-                            )
-                            break
-                except Exception as e:
-                    logger.debug(f"Retry {attempt + 1} failed: {e}")
+        # Workaround for libtmux race condition (https://github.com/tmux-python/libtmux/issues/624):
+        # The fix in neubig's PR #625 tries to parse 125+ fields from tmux output,
+        # but tmux may not output all fields, causing session_id to be missing.
+        # We create the session and retry getting session data if session_id is None.
+        max_retries = 5
+        last_error = None
 
-            if self.session.session_id is None:
-                raise RuntimeError(
-                    f"Failed to get session_id for session '{session_name}'. "
-                    "This may be a libtmux race condition. "
-                    "See https://github.com/tmux-python/libtmux/issues/624"
+        for attempt in range(max_retries):
+            try:
+                self.session = self.server.new_session(
+                    session_name=session_name,
+                    start_directory=self.work_dir,
+                    kill_session=True,
+                    x=1000,
+                    y=1000,
                 )
+
+                if self.session.session_id is not None:
+                    break
+
+                # session_id is None - try to get it from server.sessions
+                # Add a small delay to let tmux register the session
+                time.sleep(0.1 * (attempt + 1))
+                sessions = self.server.sessions.filter(session_name=session_name)
+                if sessions and sessions[0].session_id is not None:
+                    self.session = sessions[0]
+                    logger.debug(
+                        f"Session ID resolved via list-sessions after "
+                        f"{attempt + 1} attempts"
+                    )
+                    break
+
+            except Exception as e:
+                last_error = e
+                # If session was created but we couldn't get session_id,
+                # try to kill it before retrying
+                try:
+                    for s in self.server.sessions.filter(session_name=session_name):
+                        s.kill()
+                except Exception:
+                    pass
+                time.sleep(0.2 * (attempt + 1))
+                continue
+
+        if self.session.session_id is None:
+            error_msg = (
+                f"Failed to get session_id for session '{session_name}' "
+                f"after {max_retries} attempts. "
+            )
+            if last_error:
+                error_msg += f"Last error: {last_error}. "
+            error_msg += "See https://github.com/tmux-python/libtmux/issues/624"
+            raise RuntimeError(error_msg)
 
         for k, v in env.items():
             self.session.set_environment(k, v)
