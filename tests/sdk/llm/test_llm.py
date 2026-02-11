@@ -996,61 +996,6 @@ def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
 # LLM model_copy Tests
 
 
-def test_llm_model_copy_creates_independent_metrics():
-    """Test that model_copy creates a new LLM with independent metrics.
-
-    This is important for scenarios like creating a condenser LLM from an agent LLM,
-    where each should track its own usage independently. Without this fix, the
-    metrics would be shared between the original and copied LLM, causing metrics
-    to be double-counted when both LLMs are used.
-
-    See: https://github.com/OpenHands/software-agent-sdk/issues/418
-    """
-    # Create original LLM
-    original = LLM(
-        model="gpt-4o",
-        api_key=SecretStr("test-key"),
-        usage_id="original-llm",
-    )
-
-    # Copy with updated usage_id
-    copied = original.model_copy(update={"usage_id": "copied-llm"})
-
-    # Verify they have different metrics objects
-    assert original.metrics is not copied.metrics
-    assert id(original.metrics) != id(copied.metrics)
-
-    # Verify metrics are independent - changes to one don't affect the other
-    original.metrics.add_cost(1.0)
-    assert original.metrics.accumulated_cost == 1.0
-    assert copied.metrics.accumulated_cost == 0.0
-
-    copied.metrics.add_cost(2.0)
-    assert original.metrics.accumulated_cost == 1.0
-    assert copied.metrics.accumulated_cost == 2.0
-
-
-def test_llm_model_copy_creates_independent_telemetry():
-    """Test that model_copy creates a new LLM with independent telemetry.
-
-    The telemetry object references the metrics object, so it must also be
-    recreated to use the new metrics instance.
-    """
-    # Create original LLM
-    original = LLM(
-        model="gpt-4o",
-        api_key=SecretStr("test-key"),
-        usage_id="original-llm",
-    )
-
-    # Copy with updated usage_id
-    copied = original.model_copy(update={"usage_id": "copied-llm"})
-
-    # Verify they have different telemetry objects
-    assert original.telemetry is not copied.telemetry
-    assert id(original.telemetry) != id(copied.telemetry)
-
-
 def test_llm_model_copy_preserves_configuration():
     """Test that model_copy preserves the LLM configuration."""
     # Create original LLM with custom configuration
@@ -1075,6 +1020,28 @@ def test_llm_model_copy_preserves_configuration():
     # Verify usage_id was updated
     assert copied.usage_id == "copied-llm"
     assert original.usage_id == "original-llm"
+
+
+def test_llm_reset_metrics():
+    """Test that reset_metrics creates fresh metrics and telemetry instances."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Access metrics to trigger lazy initialization
+    original_metrics = llm.metrics
+    original_telemetry = llm.telemetry
+    original_metrics.add_cost(1.0)
+
+    # Reset metrics
+    llm.reset_metrics()
+
+    # Verify new metrics are created
+    assert llm.metrics is not original_metrics
+    assert llm.telemetry is not original_telemetry
+    assert llm.metrics.accumulated_cost == 0.0
 
 
 # LLM Registry Tests

@@ -546,29 +546,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
 
-    def __copy__(self) -> LLM:
-        """Create a shallow copy with independent metrics and telemetry.
+    def reset_metrics(self) -> None:
+        """Reset metrics and telemetry to fresh instances.
 
-        This ensures that copied LLMs get their own fresh Metrics and Telemetry
-        instances, preventing metrics from being shared between the original and
-        copied LLM. This is important for scenarios like creating a condenser LLM
-        from an agent LLM, where each should track its own usage independently.
+        This is used by the LLMRegistry to ensure each registered LLM has
+        independent metrics, preventing metrics from being shared between
+        LLMs that were created via model_copy().
 
-        Pydantic's model_copy() uses __copy__ internally, so this hook is called
-        automatically when model_copy() is used.
-
-        Returns:
-            A new LLM instance with fresh metrics and telemetry.
+        When an LLM is copied (e.g., to create a condenser LLM from an agent LLM),
+        Pydantic's model_copy() does a shallow copy of private attributes by default,
+        causing the original and copied LLM to share the same Metrics object.
+        This method allows the registry to fix this by resetting metrics to None,
+        which will be lazily recreated when accessed.
         """
-        # Get the default shallow copy from Pydantic
-        copied = super().__copy__()
-
-        # Reset metrics and telemetry to None to force lazy recreation
-        # when the properties are accessed
-        copied._metrics = None
-        copied._telemetry = None
-
-        return copied
+        self._metrics = None
+        self._telemetry = None
 
     def completion(
         self,
