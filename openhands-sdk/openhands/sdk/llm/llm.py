@@ -4,7 +4,7 @@ import copy
 import json
 import os
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -504,9 +504,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> cost = llm.metrics.accumulated_cost
             >>> print(f"Total cost: ${cost}")
         """
-        assert self._metrics is not None, (
-            "Metrics should be initialized after model validation"
-        )
+        if self._metrics is None:
+            self._metrics = Metrics(model_name=self.model)
         return self._metrics
 
     @property
@@ -519,9 +518,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Example:
             >>> llm.telemetry.set_log_completions_callback(my_callback)
         """
-        assert self._telemetry is not None, (
-            "Telemetry should be initialized after model validation"
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self.metrics,
+            )
         return self._telemetry
 
     @property
@@ -541,42 +546,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
 
-    def model_copy(
-        self,
-        *,
-        update: Mapping[str, Any] | None = None,
-        deep: bool = False,
-    ) -> LLM:
-        """Create a copy of this LLM with optional field updates.
+    def __copy__(self) -> LLM:
+        """Create a shallow copy with independent metrics and telemetry.
 
-        This override ensures that copied LLMs get their own fresh Metrics instance,
-        preventing metrics from being shared between the original and copied LLM.
-        This is important for scenarios like creating a condenser LLM from an agent LLM,
-        where each should track its own usage independently.
+        This ensures that copied LLMs get their own fresh Metrics and Telemetry
+        instances, preventing metrics from being shared between the original and
+        copied LLM. This is important for scenarios like creating a condenser LLM
+        from an agent LLM, where each should track its own usage independently.
 
-        Args:
-            update: Dictionary of field values to update in the copy.
-            deep: Whether to perform a deep copy of all fields.
+        Pydantic's model_copy() uses __copy__ internally, so this hook is called
+        automatically when model_copy() is used.
 
         Returns:
-            A new LLM instance with the specified updates and fresh metrics.
+            A new LLM instance with fresh metrics and telemetry.
         """
-        # Create the copy using Pydantic's default implementation
-        copied = super().model_copy(update=update, deep=deep)
+        # Get the default shallow copy from Pydantic
+        copied = super().__copy__()
 
-        # Always create a fresh Metrics instance for the copied LLM
-        # This prevents metrics from being shared between original and copy
-        copied._metrics = Metrics(model_name=copied.model)
-
-        # Also create a fresh Telemetry instance that uses the new metrics
-        copied._telemetry = Telemetry(
-            model_name=copied.model,
-            log_enabled=copied.log_completions,
-            log_dir=copied.log_completions_folder if copied.log_completions else None,
-            input_cost_per_token=copied.input_cost_per_token,
-            output_cost_per_token=copied.output_cost_per_token,
-            metrics=copied._metrics,
-        )
+        # Reset metrics and telemetry to None to force lazy recreation
+        # when the properties are accessed
+        copied._metrics = None
+        copied._telemetry = None
 
         return copied
 
