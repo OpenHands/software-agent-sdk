@@ -90,11 +90,7 @@ class FallbackStrategy(BaseModel):
         """
         if error is None:
             return self.default_fallbacks
-
-        fallback = self.fallback_mapping.get(type(error), None)
-        if fallback is None:
-            return self.default_fallbacks
-        return fallback
+        return self.fallback_mapping.get(type(error), self.default_fallbacks)
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):

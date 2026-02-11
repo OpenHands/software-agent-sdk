@@ -382,39 +382,56 @@ class Agent(CriticMixin, AgentBase):
                 self.llm, messages, tools=tools, on_token=on_token
             )
         except Exception as exc:
-            fallback_profiles = self.fallback_strategy.resolve(exc)
-            if not fallback_profiles:
-                # in this case we raise the exception as we don't have
-                # fallback LLM for this case
-                raise
+            return self._try_fallbacks(exc, messages, tools, on_token)
 
-            logger.warning(
-                f"Primary LLM failed with {type(exc).__name__}: {exc}.\n"
-                f"Trying with fallback(s) {', '.join(fallback_profiles)}.",
-            )
-            last_exc: Exception = exc
+    def _try_fallbacks(self, primary_exc, messages, tools, on_token) -> LLMResponse:
+        fallback_profiles = self.fallback_strategy.resolve(primary_exc)
+        if not fallback_profiles:
+            # we raise the exception as we don't have
+            # fallback LLM for this case
+            raise primary_exc
 
+        logger.warning(
+            f"Primary LLM failed with {type(primary_exc).__name__}: {primary_exc}.\n"
+            f"Trying with fallback(s) {', '.join(fallback_profiles)}.",
+        )
+
+        exceptions: list[Exception] = []
         llm_store = self.fallback_strategy.profile_store
-        for i, fallback in enumerate(fallback_profiles):
+        for j in range(len(fallback_profiles)):
+            # catch load profile failures
             try:
-                fallback_llm = llm_store.load(fallback)
+                fallback_llm = llm_store.load(fallback_profiles[j])
+            except Exception as load_exc:
+                exceptions.append(load_exc)
+                logger.error(
+                    f"Failed to load profile {fallback_profiles[j]}: {load_exc}"
+                )
+                continue
+
+            # catch LLM completion failures
+            try:
                 return make_llm_completion(
                     fallback_llm, messages, tools=tools, on_token=on_token
                 )
             except Exception as exc:
-                last_exc = exc
-                remaining = len(fallback_profiles) - i - 1
+                exceptions.append(exc)
+                remaining = len(fallback_profiles) - j - 1
                 remaining_msg = (
                     f"{remaining} fallback(s) remaining."
                     if remaining
                     else "No more fallbacks."
                 )
                 logger.warning(
-                    f"Fallback LLM {fallback} failed with "
+                    f"Fallback LLM {fallback_profiles[j]} failed with "
                     f"{type(exc).__name__}: {exc}. {remaining_msg}",
                 )
 
-        raise last_exc
+        pretty_exc = [f"{type(exc).__name__}: {exc}." for exc in exceptions]
+        raise Exception(
+            f"{len(fallback_profiles)} fallback(s) failed with exception(s):"
+            f" {'\n- '.join(pretty_exc)}"
+        )
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
