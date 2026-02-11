@@ -300,9 +300,9 @@ class RecordingSession:
                 logger.debug(f"Injected rrweb script with identifier: {script_id}")
 
             self._scripts_injected = True
-            logger.info("Injected rrweb loader script into browser session")
+            logger.debug("Injected rrweb loader script")
         except Exception as e:
-            logger.warning(f"Failed to inject rrweb scripts: {e}")
+            logger.debug(f"Script injection skipped: {e}")
 
         return script_ids
 
@@ -338,7 +338,7 @@ class RecordingSession:
 
             return len(events)
         except Exception as e:
-            logger.warning(f"Failed to flush recording events: {e}")
+            logger.debug(f"Event flush skipped: {e}")
             return 0
 
     async def _periodic_flush_loop(self, browser_session: BrowserSession) -> None:
@@ -355,15 +355,13 @@ class RecordingSession:
                 break
 
             try:
-                # Flush events from browser to Python storage (lock is acquired inside)
                 await self.flush_events(browser_session)
 
-                # Save to disk if we have any events (periodic save)
                 async with self._event_buffer_lock:
                     if self._event_buffer:
                         self.save_events_to_file()
             except Exception as e:
-                logger.warning(f"Periodic flush failed: {e}")
+                logger.debug(f"Periodic flush skipped: {e}")
 
     async def _wait_for_rrweb_load(self, browser_session: BrowserSession) -> dict:
         """Wait for rrweb to load using event-driven Promise-based waiting.
@@ -396,10 +394,7 @@ class RecordingSession:
             return {"success": False, "error": "unexpected_response"}
 
         except TimeoutError:
-            logger.warning(
-                f"Timeout waiting for rrweb to load "
-                f"(timeout: {self.config.rrweb_load_timeout_ms}ms)"
-            )
+            logger.debug(f"rrweb load timeout ({self.config.rrweb_load_timeout_ms}ms)")
             return {"success": False, "error": "timeout"}
 
     async def start(self, browser_session: BrowserSession) -> str:
@@ -440,30 +435,29 @@ class RecordingSession:
                 await self._set_recording_flag(browser_session, False)
 
                 if error == "load_failed":
-                    logger.error(
-                        "Unable to start recording: rrweb failed to load from CDN"
-                    )
+                    logger.info("Recording start failed: rrweb CDN load failed")
                     return (
                         "Error: Unable to start recording. The rrweb library "
                         "failed to load from CDN. Please check network "
                         "connectivity and try again."
                     )
                 elif error == "timeout":
-                    logger.error(
-                        f"Unable to start recording: rrweb did not load within "
-                        f"{self.config.rrweb_load_timeout_ms}ms"
+                    logger.info(
+                        f"Recording start failed: rrweb load timeout "
+                        f"({self.config.rrweb_load_timeout_ms}ms)"
                     )
                     return (
                         "Error: Unable to start recording. rrweb did not load in time. "
                         "Please navigate to a page first and try again."
                     )
                 elif error == "not_injected":
-                    logger.error("Unable to start recording: scripts not injected")
+                    logger.info("Recording start failed: scripts not injected")
                     return (
                         "Error: Unable to start recording. Scripts not injected. "
                         "Please navigate to a page first and try again."
                     )
                 else:
+                    logger.info(f"Recording start failed: {error}")
                     return f"Error: Unable to start recording: {error}"
 
             # rrweb is loaded, now start recording
@@ -480,7 +474,7 @@ class RecordingSession:
                 self._flush_task = asyncio.create_task(
                     self._periodic_flush_loop(browser_session)
                 )
-                logger.info("Recording started successfully with rrweb")
+                logger.info("Recording started")
                 return "Recording started"
 
             elif status == "already_recording":
@@ -489,13 +483,13 @@ class RecordingSession:
                     self._flush_task = asyncio.create_task(
                         self._periodic_flush_loop(browser_session)
                     )
-                    logger.info("Recording already active, started periodic flush task")
+                    logger.debug("Recording already active, started flush task")
                 return "Already recording"
 
             elif status == "load_failed":
                 self._is_recording = False
                 await self._set_recording_flag(browser_session, False)
-                logger.error("Unable to start recording: rrweb failed to load from CDN")
+                logger.info("Recording start failed: rrweb CDN load failed")
                 return (
                     "Error: Unable to start recording. The rrweb library "
                     "failed to load from CDN. Please check network "
@@ -504,11 +498,12 @@ class RecordingSession:
 
             else:
                 self._is_recording = False
+                logger.info(f"Recording start failed: unknown status '{status}'")
                 return f"Unknown status: {status}"
 
         except Exception as e:
             self._is_recording = False
-            logger.exception("Error starting recording", exc_info=e)
+            logger.warning(f"Recording start failed: {e}")
             return f"Error starting recording: {str(e)}"
 
     async def stop(self, browser_session: BrowserSession) -> str:
@@ -582,7 +577,7 @@ class RecordingSession:
             if self._flush_task:
                 self._flush_task.cancel()
                 self._flush_task = None
-            logger.exception("Error stopping recording", exc_info=e)
+            logger.warning(f"Recording stop failed: {e}")
             return f"Error stopping recording: {str(e)}"
 
     async def restart_on_new_page(self, browser_session: BrowserSession) -> None:
@@ -596,14 +591,11 @@ class RecordingSession:
             return
 
         try:
-            # Wait for rrweb to load using event-driven Promise
             load_result = await self._wait_for_rrweb_load(browser_session)
 
             if not load_result.get("success"):
                 error = load_result.get("error", "unknown")
-                logger.warning(
-                    f"Could not restart recording on new page: rrweb {error}"
-                )
+                logger.debug(f"Recording restart skipped: rrweb {error}")
                 return
 
             cdp_session = await browser_session.get_or_create_cdp_session()
@@ -623,10 +615,10 @@ class RecordingSession:
             elif status == "already_recording":
                 logger.debug("Recording already active on new page")
             else:
-                logger.warning(f"Unexpected status restarting recording: {status}")
+                logger.debug(f"Recording restart: unexpected status '{status}'")
 
         except Exception as e:
-            logger.warning(f"Failed to restart recording on new page: {e}")
+            logger.debug(f"Recording restart skipped: {e}")
 
     def reset(self) -> None:
         """Reset the recording session state for reuse."""

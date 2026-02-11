@@ -28,12 +28,6 @@ from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
 
 
-class RecordingFlushError(Exception):
-    """Raised when recording flush fails due to a real error."""
-
-    pass
-
-
 def recording_aware(
     func: Callable[..., Coroutine[Any, Any, Any]],
 ) -> Callable[..., Coroutine[Any, Any, Any]]:
@@ -44,47 +38,30 @@ def recording_aware(
     2. Executes the operation
     3. Restarts recording on the new page if recording was active
 
-    This keeps navigation methods focused on navigation, with recording
-    concerns handled separately.
-
-    Exception Handling:
-    - AttributeError: Silently ignored (recording not initialized)
-    - RecordingFlushError: Re-raised (real flush failure, data may be lost)
-    - Other exceptions: Logged as warnings (non-critical recording issues)
+    Recording is a secondary feature that should never block browser operations.
+    All recording errors are logged but do not interrupt navigation.
     """
 
     @functools.wraps(func)
     async def wrapper(self: BrowserToolExecutor, *args: Any, **kwargs: Any) -> Any:
-        # Check if recording is active before the operation
         is_recording = self._server._is_recording
         if is_recording:
             try:
                 await self._server._flush_recording_events()
             except AttributeError:
-                # Recording not initialized - this is expected, silently ignore
-                pass
-            except RecordingFlushError:
-                # Real flush failure - re-raise to avoid silent data loss
-                raise
+                pass  # Recording not initialized
             except Exception as e:
-                # Non-critical recording issues - log but don't block navigation
-                logger.warning(f"Failed to flush recording before {func.__name__}: {e}")
+                logger.debug(f"Recording flush before {func.__name__} skipped: {e}")
 
-        # Execute the actual operation
         result = await func(self, *args, **kwargs)
 
-        # Restart recording on new page if it was active
         if is_recording:
             try:
                 await self._server._restart_recording_on_new_page()
             except AttributeError:
-                # Recording not initialized - silently ignore
-                pass
+                pass  # Recording not initialized
             except Exception as e:
-                # Non-critical - log but don't fail the navigation
-                logger.warning(
-                    f"Failed to restart recording after {func.__name__}: {e}"
-                )
+                logger.debug(f"Recording restart after {func.__name__} skipped: {e}")
 
         return result
 
