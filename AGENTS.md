@@ -158,10 +158,71 @@ mkdir -p .pr
 </PR_ARTIFACTS>
 
 <REVIEW_HANDLING>
-- After addressing inline review comments, mark the corresponding review threads as resolved.
+- Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
+  - Does it fix a real bug or improve clarity significantly?
+  - Does it align with the project's engineering principles (simplicity, maintainability)?
+  - Is the suggested change proportional to the benefit, or does it add unnecessary complexity?
+- It's acceptable to respectfully decline suggestions that add verbosity without clear benefit, over-engineer for hypothetical edge cases, or contradict the project's pragmatic approach.
+- After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
 - Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
 - Prefer resolving threads only once fixes are pushed or a clear decision is documented.
-- Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+- Use the GitHub GraphQL API to reply to and resolve review threads (see below).
+
+## Resolving Review Threads via GraphQL
+
+The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
+
+1. Get the thread IDs (replace `<OWNER>`, `<REPO>`, `<PR_NUMBER>`):
+```bash
+gh api graphql -f query='
+{
+  repository(owner: "<OWNER>", name: "<REPO>") {
+    pullRequest(number: <PR_NUMBER>) {
+      reviewThreads(first: 20) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+2. Reply to the thread explaining how the feedback was addressed:
+```bash
+gh api graphql -f query='
+mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: "<THREAD_ID>"
+    body: "Fixed in <COMMIT_SHA>"
+  }) {
+    comment { id }
+  }
+}'
+```
+
+3. Resolve the thread:
+```bash
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+    thread { isResolved }
+  }
+}'
+```
+
+4. Get the failed workflow run ID and rerun it:
+```bash
+# Find the run ID from the failed check URL, or use:
+gh run list --repo <OWNER>/<REPO> --branch <BRANCH> --limit 5
+
+# Rerun failed jobs
+gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
+```
 </REVIEW_HANDLING>
 
 
@@ -218,6 +279,21 @@ Co-authored-by: openhands <openhands@all-hands.dev>"
 git push -u origin <feature-name>
 ```
 </DOCUMENTATION_WORKFLOW>
+
+<AGENT_TMP_DIRECTORY>
+# Agent Temporary Directory Convention
+
+When tools need to store observation files (e.g., browser session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
+
+The browser session recording tool saves recordings to `.agent_tmp/observations/recording-{timestamp}/`.
+
+This convention ensures tool-generated observation files are stored in a predictable location that can be easily:
+- Added to `.gitignore`
+- Cleaned up after agent sessions
+- Identified as agent-generated artifacts
+
+Note: This is separate from `persistence_dir` which is used for conversation state persistence.
+</AGENT_TMP_DIRECTORY>
 
 <REPO>
 <PROJECT_STRUCTURE>
