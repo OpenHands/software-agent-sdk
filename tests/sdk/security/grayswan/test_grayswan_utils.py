@@ -15,14 +15,14 @@ from openhands.sdk.security.grayswan.utils import convert_events_to_openai_messa
 from openhands.sdk.tool import Action, Observation
 
 
-class MockAction(Action):
-    """Mock action for testing."""
+class GraySwanUtilsTestAction(Action):
+    """Mock action for GraySwan utils testing."""
 
     command: str = "test_command"
 
 
-class MockObservation(Observation):
-    """Mock observation for testing."""
+class GraySwanUtilsTestObservation(Observation):
+    """Mock observation for GraySwan utils testing."""
 
     output: str = "test_output"
 
@@ -59,7 +59,7 @@ def create_action_event(
     """Create an ActionEvent for testing."""
     return ActionEvent(
         thought=[TextContent(text=thought)],
-        action=MockAction(command=command),
+        action=GraySwanUtilsTestAction(command=command),
         tool_name=tool_name,
         tool_call_id=tool_call_id,
         tool_call=MessageToolCall(
@@ -82,7 +82,7 @@ def create_observation_event(
     return ObservationEvent(
         tool_name=tool_name,
         tool_call_id=tool_call_id,
-        observation=MockObservation(output=output),
+        observation=GraySwanUtilsTestObservation(output=output),
         action_id=action_id,
     )
 
@@ -174,7 +174,7 @@ class TestConvertEventsToOpenAIMessages:
         """Test that security_risk is removed from tool call arguments."""
         action = ActionEvent(
             thought=[TextContent(text="thinking")],
-            action=MockAction(command="test"),
+            action=GraySwanUtilsTestAction(command="test"),
             tool_name="test_tool",
             tool_call_id="call_123",
             tool_call=MessageToolCall(

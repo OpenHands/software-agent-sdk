@@ -14,8 +14,8 @@ from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.tool import Action
 
 
-class MockAction(Action):
-    """Mock action for testing."""
+class GraySwanTestAction(Action):
+    """Mock action for GraySwan analyzer testing."""
 
     command: str = "test_command"
 
@@ -28,7 +28,7 @@ def create_mock_action_event(
     """Helper to create ActionEvent for testing."""
     return ActionEvent(
         thought=[TextContent(text="test thought")],
-        action=MockAction(command=command),
+        action=GraySwanTestAction(command=command),
         tool_name=tool_name,
         tool_call_id="test_call_id",
         tool_call=MessageToolCall(
