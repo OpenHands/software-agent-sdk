@@ -1,7 +1,7 @@
 import pytest
 
 from openhands.sdk.llm.utils.model_features import (
-    get_default_temperature,
+    get_default_top_p,
     get_features,
     model_matches,
 )
@@ -315,28 +315,20 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
 
 
 @pytest.mark.parametrize(
-    "model,expected_temperature",
+    "model,expected_top_p",
     [
-        # kimi-k2-thinking models should default to 1.0
-        ("kimi-k2-thinking", 1.0),
-        ("kimi-k2-thinking-0905", 1.0),
-        ("Kimi-K2-Thinking", 1.0),  # Case insensitive
-        ("moonshot/kimi-k2-thinking", 1.0),  # With provider prefix
-        ("litellm_proxy/kimi-k2-thinking", 1.0),  # With litellm proxy prefix
-        # kimi-k2.5 models should also default to 1.0
-        ("kimi-k2.5", 1.0),
-        ("Kimi-K2.5", 1.0),  # Case insensitive
-        # All other models should default to None (use provider default)
-        ("kimi-k2-instruct", None),  # Different kimi variant
-        ("gpt-4", None),
+        # Positive matches
+        ("huggingface/model", 0.9),
+        ("moonshot/kimi-k2.5", 0.95),
+        ("kimi-k2.5", 0.95),
+        ("Kimi-K2.5", 0.95),  # Case insensitive
+        # Negative matches
         ("gpt-4o", None),
         ("gpt-4o-mini", None),
         ("claude-3-5-sonnet", None),
         ("claude-3-7-sonnet", None),
-        ("gemini-1.5-pro", None),
         ("gemini-2.5-pro-experimental", None),
         ("o1", None),
-        ("o1-mini", None),
         ("o3", None),
         ("deepseek-chat", None),
         ("llama-3.1-70b", None),
@@ -344,22 +336,8 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
         ("openai/gpt-4o", None),
         ("anthropic/claude-3-5-sonnet", None),
         ("unknown-model", None),
+        ("completely-unknown-model-12345", None),
     ],
 )
-def test_get_default_temperature(model, expected_temperature):
-    """Test that get_default_temperature returns correct values for different models."""
-    assert get_default_temperature(model) == expected_temperature
-
-
-def test_get_default_temperature_fallback():
-    """Test that get_default_temperature returns None for unknown models."""
-    assert get_default_temperature("completely-unknown-model-12345") is None
-    assert get_default_temperature("some-random-model") is None
-
-
-def test_get_default_temperature_case_insensitive():
-    """Test that get_default_temperature is case insensitive."""
-    assert get_default_temperature("kimi-k2-thinking") == 1.0
-    assert get_default_temperature("KIMI-K2-THINKING") == 1.0
-    assert get_default_temperature("Kimi-K2-Thinking") == 1.0
-    assert get_default_temperature("KiMi-k2-ThInKiNg") == 1.0
+def test_get_default_top_p(model, expected_top_p):
+    assert get_default_top_p(model) == expected_top_p

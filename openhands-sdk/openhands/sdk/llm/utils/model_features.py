@@ -162,6 +162,21 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-reasoner",
 ]
 
+# Model-specific defaults for top_p.
+# Only applied when the caller leaves top_p at the OpenAI default (1.0).
+DEFAULT_TOP_P_MODELS: list[tuple[str, float]] = [
+    ("huggingface", 0.9),
+    # Moonshot Kimi-K2.5 rejects top_p=1.0 (API error); use 0.95 instead.
+    ("kimi-k2.5", 0.95),
+]
+
+
+def get_default_top_p(model: str) -> float | None:
+    for pattern, value in DEFAULT_TOP_P_MODELS:
+        if model_matches(model, [pattern]):
+            return value
+    return None
+
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
@@ -178,23 +193,3 @@ def get_features(model: str) -> ModelFeatures:
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
     )
-
-
-# Default temperature mapping.
-# Each entry: (pattern, default_temperature)
-DEFAULT_TEMPERATURE_MODELS: list[tuple[str, float]] = [
-    ("kimi-k2-thinking", 1.0),
-    ("kimi-k2.5", 1.0),
-]
-
-
-def get_default_temperature(model: str) -> float | None:
-    """Return the default temperature for a given model pattern.
-
-    Uses case-insensitive substring matching via model_matches.
-    Returns None for most models to use provider defaults.
-    """
-    for pattern, value in DEFAULT_TEMPERATURE_MODELS:
-        if model_matches(model, [pattern]):
-            return value
-    return None
