@@ -253,8 +253,9 @@ jobs:
                   TAGS=$(grep '^tags_csv=' $GITHUB_OUTPUT | cut -d= -f2-)
                   echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
-                  # Extract short SHA for consolidation
-                  SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+                  # Extract short SHA for consolidation (use GITHUB_SHA env var, not github.sha)
+                  # GITHUB_SHA is set to PR head SHA for pull_request events
+                  SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
                   echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
                   # Extract versioned tags CSV for consolidation
