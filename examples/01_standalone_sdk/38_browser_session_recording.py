@@ -107,22 +107,37 @@ persistence_dir = conversation.state.persistence_dir
 assert persistence_dir
 
 # Check if the recording files were created
+# Recordings are saved in timestamped subdirs: observations/recording-{timestamp}/
 observations_dir = os.path.join(persistence_dir, "observations")
 if os.path.exists(observations_dir):
-    files = sorted(os.listdir(observations_dir))
-    json_files = [f for f in files if f.endswith(".json")]
+    # Find recording subdirectories (they start with "recording-")
+    recording_dirs = sorted(
+        [
+            d
+            for d in os.listdir(observations_dir)
+            if d.startswith("recording-")
+            and os.path.isdir(os.path.join(observations_dir, d))
+        ]
+    )
 
-    if json_files:
-        print(f"\n✓ Recording saved to: {observations_dir}")
+    if recording_dirs:
+        # Process the most recent recording directory
+        latest_recording = recording_dirs[-1]
+        recording_path = os.path.join(observations_dir, latest_recording)
+        json_files = sorted(
+            [f for f in os.listdir(recording_path) if f.endswith(".json")]
+        )
+
+        print(f"\n✓ Recording saved to: {recording_path}")
         print(f"✓ Number of files: {len(json_files)}")
 
         # Count total events across all files
         total_events = 0
-        all_event_types = {}
+        all_event_types: dict[int | str, int] = {}
         total_size = 0
 
         for json_file in json_files:
-            filepath = os.path.join(observations_dir, json_file)
+            filepath = os.path.join(recording_path, json_file)
             file_size = os.path.getsize(filepath)
             total_size += file_size
 
@@ -145,10 +160,11 @@ if os.path.exists(observations_dir):
 
         print("\nTo replay this recording, you can use:")
         print(
-            "  - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player"
+            "  - rrweb-player: "
+            "https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player"
         )
     else:
-        print(f"\n✗ No recording files found in: {observations_dir}")
+        print(f"\n✗ No recording directories found in: {observations_dir}")
         print("  The agent may not have completed the recording task.")
 else:
     print(f"\n✗ Observations directory not found: {observations_dir}")
