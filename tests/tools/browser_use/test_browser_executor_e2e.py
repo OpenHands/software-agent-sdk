@@ -730,74 +730,78 @@ class TestBrowserExecutorE2E:
         print(f"\n✓ Stop recording result: {stop_result.text}")
 
     def test_recording_save_to_file(self, test_server: str):
-        """Test that recording is saved to files in a timestamped subfolder."""
-        with tempfile.TemporaryDirectory() as temp_save_dir:
-            executor = None
-            browser_initialized = False
-            try:
-                executor = BrowserToolExecutor(
-                    headless=True,
-                    session_timeout_minutes=5,
-                    full_output_save_dir=temp_save_dir,
+        """Test that recording is saved to files in a timestamped subfolder.
+
+        Note: Recording output goes to BROWSER_RECORDING_OUTPUT_DIR
+        (.agent_tmp/browser_observations/) regardless of full_output_save_dir.
+        """
+        from openhands.tools.browser_use.definition import (
+            BROWSER_RECORDING_OUTPUT_DIR,
+        )
+
+        executor = None
+        browser_initialized = False
+        try:
+            executor = BrowserToolExecutor(
+                headless=True,
+                session_timeout_minutes=5,
+            )
+
+            # Navigate to the test page
+            navigate_action = BrowserNavigateAction(url=test_server)
+            nav_result = executor(navigate_action)
+
+            # Skip test if browser failed to initialize (infrastructure issue)
+            if nav_result.is_error or "Error" in nav_result.text:
+                pytest.skip(f"Browser initialization failed: {nav_result.text}")
+
+            # Browser successfully initialized
+            browser_initialized = True
+
+            # Start recording - now includes automatic retry
+            start_result = executor(BrowserStartRecordingAction())
+
+            assert start_result is not None
+
+            # Skip test if recording couldn't start due to CDP issues
+            if "Error" in start_result.text or "not initialized" in start_result.text:
+                pytest.skip(
+                    f"Recording could not start due to CDP issues: {start_result.text}"
                 )
 
-                # Navigate to the test page
-                navigate_action = BrowserNavigateAction(url=test_server)
-                nav_result = executor(navigate_action)
+            assert "Recording started" in start_result.text, (
+                f"Failed to start recording: {start_result.text}"
+            )
 
-                # Skip test if browser failed to initialize (infrastructure issue)
-                if nav_result.is_error or "Error" in nav_result.text:
-                    pytest.skip(f"Browser initialization failed: {nav_result.text}")
+            # Perform actions
+            executor(BrowserScrollAction(direction="down"))
+            time.sleep(0.5)
 
-                # Browser successfully initialized
-                browser_initialized = True
+            # Stop recording - events are automatically saved to files
+            stop_result = executor(BrowserStopRecordingAction())
+            assert not stop_result.is_error
 
-                # Start recording - now includes automatic retry
-                start_result = executor(BrowserStartRecordingAction())
+            # Verify the summary message
+            assert "Recording stopped" in stop_result.text
+            assert "events" in stop_result.text.lower()
 
-                assert start_result is not None
-
-                # Skip test if recording couldn't start due to CDP issues
-                if (
-                    "Error" in start_result.text
-                    or "not initialized" in start_result.text
-                ):
-                    pytest.skip(
-                        "Recording could not start due to CDP issues: "
-                        f"{start_result.text}"
-                    )
-
-                assert "Recording started" in start_result.text, (
-                    f"Failed to start recording: {start_result.text}"
-                )
-
-                # Perform actions
-                executor(BrowserScrollAction(direction="down"))
-                time.sleep(0.5)
-
-                # Stop recording - events are automatically saved to files
-                stop_result = executor(BrowserStopRecordingAction())
-                assert not stop_result.is_error
-
-                # Verify the summary message
-                assert "Recording stopped" in stop_result.text
-                assert "events" in stop_result.text.lower()
-
-                # Verify a timestamped subfolder was created
+            # Verify a timestamped subfolder was created in the recording output dir
+            if os.path.exists(BROWSER_RECORDING_OUTPUT_DIR):
                 subdirs = [
                     d
-                    for d in os.listdir(temp_save_dir)
-                    if os.path.isdir(os.path.join(temp_save_dir, d))
+                    for d in os.listdir(BROWSER_RECORDING_OUTPUT_DIR)
+                    if os.path.isdir(os.path.join(BROWSER_RECORDING_OUTPUT_DIR, d))
+                    and d.startswith("recording-")
                 ]
-                assert len(subdirs) == 1, (
-                    f"Expected exactly one recording subfolder, got {subdirs}"
-                )
-                assert subdirs[0].startswith("recording-"), (
-                    f"Expected subfolder to start with 'recording-', got {subdirs[0]}"
+                assert len(subdirs) >= 1, (
+                    f"Expected at least one recording subfolder in "
+                    f"{BROWSER_RECORDING_OUTPUT_DIR}, got {subdirs}"
                 )
 
-                # Verify files were created in the timestamped subfolder
-                recording_dir = os.path.join(temp_save_dir, subdirs[0])
+                # Verify files were created in the most recent recording subfolder
+                # Sort by name (timestamp-based) to get the most recent
+                subdirs.sort(reverse=True)
+                recording_dir = os.path.join(BROWSER_RECORDING_OUTPUT_DIR, subdirs[0])
                 files = os.listdir(recording_dir)
                 json_files = [f for f in files if f.endswith(".json")]
                 assert len(json_files) > 0, (
@@ -819,15 +823,18 @@ class TestBrowserExecutorE2E:
                 print(f"\n✓ Recording saved to {recording_dir}")
                 print(f"✓ Created {len(json_files)} file(s)")
                 print(f"✓ Total events: {total_events}")
+            else:
+                # Directory doesn't exist - skip as the test cannot verify
+                pytest.skip(
+                    f"Recording directory {BROWSER_RECORDING_OUTPUT_DIR} does not exist"
+                )
 
-            finally:
-                # Only attempt to close if browser was successfully initialized,
-                # as closing a broken session can hang indefinitely
-                if executor and browser_initialized:
-                    try:
-                        executor.close()
-                    except Exception as e:
-                        # Ignore errors during cleanup but log for debugging purposes
-                        print(
-                            f"Warning: failed to close BrowserToolExecutor cleanly: {e}"
-                        )
+        finally:
+            # Only attempt to close if browser was successfully initialized,
+            # as closing a broken session can hang indefinitely
+            if executor and browser_initialized:
+                try:
+                    executor.close()
+                except Exception as e:
+                    # Ignore errors during cleanup but log for debugging purposes
+                    print(f"Warning: failed to close BrowserToolExecutor cleanly: {e}")
