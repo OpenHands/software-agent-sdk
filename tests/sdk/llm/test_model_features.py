@@ -317,17 +317,7 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
 @pytest.mark.parametrize(
     "model,expected_temperature",
     [
-        # kimi-k2-thinking models should default to 1.0
-        ("kimi-k2-thinking", 1.0),
-        ("kimi-k2-thinking-0905", 1.0),
-        ("Kimi-K2-Thinking", 1.0),  # Case insensitive
-        ("moonshot/kimi-k2-thinking", 1.0),  # With provider prefix
-        ("litellm_proxy/kimi-k2-thinking", 1.0),  # With litellm proxy prefix
-        # kimi-k2.5 models should also default to 1.0
-        ("kimi-k2.5", 1.0),
-        ("Kimi-K2.5", 1.0),  # Case insensitive
-        # All other models should default to None (use provider default)
-        ("kimi-k2-instruct", None),  # Different kimi variant
+        # All models now default to None (use provider default)
         ("gpt-4", None),
         ("gpt-4o", None),
         ("gpt-4o-mini", None),
@@ -358,8 +348,8 @@ def test_get_default_temperature_fallback():
 
 
 def test_get_default_temperature_case_insensitive():
-    """Test that get_default_temperature is case insensitive."""
-    assert get_default_temperature("kimi-k2-thinking") == 1.0
-    assert get_default_temperature("KIMI-K2-THINKING") == 1.0
-    assert get_default_temperature("Kimi-K2-Thinking") == 1.0
-    assert get_default_temperature("KiMi-k2-ThInKiNg") == 1.0
+    """Test that get_default_temperature returns None regardless of case."""
+    # All models now return None, so case doesn't matter
+    assert get_default_temperature("gpt-4o") is None
+    assert get_default_temperature("GPT-4O") is None
+    assert get_default_temperature("Gpt-4o") is None
