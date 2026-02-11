@@ -753,7 +753,6 @@ def main():
 
         # Load project-specific skills from the repository being reviewed
         # This includes AGENTS.md, .cursorrules, and skills from .agents/skills/
-        # or .openhands/skills/ directories
         project_skills = load_project_skills(cwd)
         logger.info(
             f"Loaded {len(project_skills)} project skills: "
