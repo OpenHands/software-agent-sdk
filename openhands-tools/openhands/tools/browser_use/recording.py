@@ -215,6 +215,30 @@ class RecordingSession:
         os.makedirs(subfolder, exist_ok=True)
         return subfolder
 
+    def _scan_existing_files(self) -> int:
+        """Scan save directory to find the highest existing file number.
+
+        This avoids linear search when saving files by scanning once on
+        initialization.
+
+        Returns:
+            The highest file number found, or 0 if no files exist.
+        """
+        if not self._save_dir or not os.path.exists(self._save_dir):
+            return 0
+
+        max_index = 0
+        for filename in os.listdir(self._save_dir):
+            if filename.endswith(".json"):
+                try:
+                    # Extract number from filename (e.g., "123.json" -> 123)
+                    index = int(filename[:-5])
+                    max_index = max(max_index, index)
+                except ValueError:
+                    # Skip files that don't match the expected pattern
+                    pass
+        return max_index
+
     @property
     def is_active(self) -> bool:
         """Check if recording is currently active."""
@@ -243,8 +267,8 @@ class RecordingSession:
     def save_events_to_file(self) -> str | None:
         """Save current events to a numbered JSON file.
 
-        Finds the next available filename by incrementing the index until
-        an unused filename is found, with a safety limit to prevent infinite loops.
+        Uses the pre-scanned file index to avoid linear search. The index is
+        initialized by scanning existing files once when recording starts.
 
         Returns:
             Path to the saved file, or None if save_dir is not configured or no events.
@@ -254,20 +278,15 @@ class RecordingSession:
 
         os.makedirs(self._save_dir, exist_ok=True)
 
-        # Find the next available filename with safety limit
-        attempts = 0
-        while attempts < self.config.max_file_counter:
-            self._next_file_index += 1
-            attempts += 1
-            filename = f"{self._next_file_index}.json"
-            filepath = os.path.join(self._save_dir, filename)
-            if not os.path.exists(filepath):
-                break
-        else:
-            max_attempts = self.config.max_file_counter
+        # Use pre-scanned index - just increment and use
+        self._next_file_index += 1
+        if self._next_file_index > self.config.max_file_counter:
             raise RuntimeError(
-                f"Failed to find available filename after {max_attempts} attempts"
+                f"File counter exceeded maximum ({self.config.max_file_counter})"
             )
+
+        filename = f"{self._next_file_index}.json"
+        filepath = os.path.join(self._save_dir, filename)
 
         events = self._event_buffer.events
         with open(filepath, "w") as f:
@@ -451,12 +470,14 @@ class RecordingSession:
         # Reset state for new recording session
         self._event_buffer.clear()
         self._state = RecordingState.RECORDING
-        self._next_file_index = 0
         self._files_written = 0
         self._total_events = 0
 
         # Create a new timestamped subfolder for this recording session
         self._save_dir = self._create_recording_subfolder()
+
+        # Scan existing files to find the highest index (avoids linear search)
+        self._next_file_index = self._scan_existing_files()
 
         try:
             cdp_session = await browser_session.get_or_create_cdp_session()
