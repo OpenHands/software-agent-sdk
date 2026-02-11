@@ -43,14 +43,6 @@ class EventBuffer:
     """Encapsulates event storage.
 
     This class manages the in-memory buffer of recording events.
-
-    Note on Size-Based Flushing:
-        The original design included size-based flushing (flush when events
-        exceed N megabytes). This was removed in favor of simpler time-based
-        flushing for the following reasons:
-        - JSON serialization for size estimation is expensive
-        - Time-based flushing is predictable and sufficient for most use cases
-        - Events are also flushed on page navigation, preventing unbounded growth
     """
 
     events: list[dict] = field(default_factory=list)
