@@ -12,6 +12,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
     ObservationBaseEvent,
     ObservationEvent,
+    RejectionSource,
     SystemPromptEvent,
     UserRejectObservation,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "MessageEvent",
     "AgentErrorEvent",
     "UserRejectObservation",
+    "RejectionSource",
     "PauseEvent",
     "Condensation",
     "CondensationRequest",
