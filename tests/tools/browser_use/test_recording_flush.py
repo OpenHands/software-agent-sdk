@@ -86,10 +86,10 @@ class TestPeriodicFlush:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create recording session with fast flush interval
-            # Set _save_dir directly to bypass start() (creates timestamped subfolder)
+            # Set _session_dir directly to bypass start() (creates subfolder)
             config = RecordingConfig(flush_interval_seconds=0.1)  # 100ms
             session = RecordingSession(config=config)
-            session._save_dir = temp_dir  # Set save dir directly for testing
+            session._session_dir = temp_dir  # Set session dir directly for testing
             session._state = RecordingState.RECORDING
 
             # Mock the CDP evaluate to return events on each flush
@@ -166,9 +166,9 @@ class TestConcurrentFlushSafety:
     ):
         """Test that concurrent flushes don't corrupt the event buffer."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Set _save_dir directly to bypass start() (creates timestamped subfolder)
+            # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
-            session._save_dir = temp_dir
+            session._session_dir = temp_dir
             session._state = RecordingState.RECORDING
 
             async def mock_evaluate(*args, **kwargs):
@@ -204,10 +204,10 @@ class TestConcurrentFlushSafety:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             # Very fast flush interval
-            # Set _save_dir directly to bypass start() (creates timestamped subfolder)
+            # Set _session_dir directly to bypass start() (creates subfolder)
             config = RecordingConfig(flush_interval_seconds=0.05)
             session = RecordingSession(config=config)
-            session._save_dir = temp_dir
+            session._session_dir = temp_dir
             session._state = RecordingState.RECORDING
 
             async def mock_evaluate(*args, **kwargs):
@@ -302,18 +302,18 @@ class TestRecordingIsolation:
             )
 
             # First recording session
-            session1 = RecordingSession(base_save_dir=temp_dir)
+            session1 = RecordingSession(output_dir=temp_dir)
             await session1.start(mock_browser_session)
-            save_dir_1 = session1.save_dir
+            session_dir_1 = session1.session_dir
             await session1.stop(mock_browser_session)
 
             # Small delay to ensure different timestamps
             time.sleep(0.01)
 
             # Second recording session
-            session2 = RecordingSession(base_save_dir=temp_dir)
+            session2 = RecordingSession(output_dir=temp_dir)
             await session2.start(mock_browser_session)
-            save_dir_2 = session2.save_dir
+            session_dir_2 = session2.session_dir
             await session2.stop(mock_browser_session)
 
             # Verify: Two separate subfolders were created
@@ -332,9 +332,9 @@ class TestRecordingIsolation:
                     f"Expected subfolder to start with 'recording-', got {subdir}"
                 )
 
-            # Verify the save_dirs are different
-            assert save_dir_1 != save_dir_2, (
-                "Expected different save directories for each recording"
+            # Verify the session_dirs are different
+            assert session_dir_1 != session_dir_2, (
+                "Expected different session directories for each recording"
             )
 
             # Verify each subfolder has its own files
@@ -352,16 +352,16 @@ class TestFileCountAccuracy:
 
     @pytest.mark.asyncio
     async def test_file_count_accurate_with_existing_files(self):
-        """Test that file count is accurate when save_dir has existing files."""
+        """Test that file count is accurate when session_dir has existing files."""
         with tempfile.TemporaryDirectory() as temp_dir:
             # Pre-create some files to simulate existing recordings
             for i in range(1, 4):  # Create 1.json, 2.json, 3.json
                 with open(os.path.join(temp_dir, f"{i}.json"), "w") as f:
                     json.dump([{"type": "existing"}], f)
 
-            # Set _save_dir directly to bypass start() (creates timestamped subfolder)
+            # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
-            session._save_dir = temp_dir
+            session._session_dir = temp_dir
             session._state = RecordingState.RECORDING
 
             # Add events to buffer and save twice
@@ -369,25 +369,23 @@ class TestFileCountAccuracy:
                 session._event_buffer.add_batch(create_mock_events(20))
                 session.save_events_to_file()
 
-            # Verify: file_count should be 2 (files written), not 5 (last index)
+            # Verify: file_count should be 2 (files written this session)
             assert session.file_count == 2, (
                 f"Expected file_count=2 (files written), got {session.file_count}"
             )
 
-            # Verify the new files are 4.json and 5.json (skipping existing 1-3)
+            # Verify new files were created (timestamps, not numbered)
             files = sorted(os.listdir(temp_dir))
             json_files = [f for f in files if f.endswith(".json")]
-            assert "4.json" in json_files
-            assert "5.json" in json_files
             assert len(json_files) == 5  # 3 existing + 2 new
 
     @pytest.mark.asyncio
     async def test_file_count_zero_when_no_events(self):
         """Test that file count is 0 when no events are recorded."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Set _save_dir directly to bypass start() (creates timestamped subfolder)
+            # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
-            session._save_dir = temp_dir
+            session._session_dir = temp_dir
             session._state = RecordingState.RECORDING
 
             # No flush calls, no events
@@ -397,9 +395,9 @@ class TestFileCountAccuracy:
     async def test_file_count_matches_actual_files_written(self):
         """Test that file_count exactly matches number of files written."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Set _save_dir directly to bypass start() (creates timestamped subfolder)
+            # Set _session_dir directly to bypass start() (creates subfolder)
             session = RecordingSession()
-            session._save_dir = temp_dir
+            session._session_dir = temp_dir
             session._state = RecordingState.RECORDING
 
             # Add events to buffer and save 5 times

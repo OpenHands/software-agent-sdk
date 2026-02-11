@@ -86,24 +86,24 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             return
         await self._recording_session.restart_on_new_page(self.browser_session)
 
-    async def _start_recording(self, save_dir: str | None = None) -> str:
+    async def _start_recording(self, output_dir: str | None = None) -> str:
         """Start rrweb session recording.
 
         Recording persists across page navigations - events are periodically flushed
-        to numbered JSON files (1.json, 2.json, etc.) in a timestamped subfolder.
+        to timestamped JSON files in a session subfolder.
 
-        Each recording session creates a new subfolder under save_dir with format:
-        {save_dir}/recording-{timestamp}/
+        Each recording session creates a new subfolder under output_dir with format:
+        {output_dir}/recording-{timestamp}/
 
         Args:
-            save_dir: Base directory for recording files. If provided, a timestamped
+            output_dir: Root directory for recording files. If provided, a timestamped
                 subfolder will be created for this recording session.
         """
         if not self.browser_session:
             return "Error: No browser session active"
 
-        # Create a new recording session with base_save_dir
-        self._recording_session = RecordingSession(base_save_dir=save_dir)
+        # Create a new recording session with output_dir
+        self._recording_session = RecordingSession(output_dir=output_dir)
         return await self._recording_session.start(self.browser_session)
 
     async def _stop_recording(self) -> str:

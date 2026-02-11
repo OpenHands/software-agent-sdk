@@ -472,12 +472,12 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     async def start_recording(self) -> str:
         """Start recording the browser session using rrweb.
 
-        Recording events are periodically flushed to numbered JSON files
-        (1.json, 2.json, etc.) in the full_output_save_dir if configured.
-        Events are flushed every 5 seconds or when they exceed 1 MB.
+        Recording events are periodically flushed to timestamped JSON files
+        in a session subfolder under full_output_save_dir if configured.
+        Events are flushed every 5 seconds.
         """
         await self._ensure_initialized()
-        return await self._server._start_recording(save_dir=self.full_output_save_dir)
+        return await self._server._start_recording(output_dir=self.full_output_save_dir)
 
     async def stop_recording(self) -> str:
         """Stop recording and save remaining events to file.
