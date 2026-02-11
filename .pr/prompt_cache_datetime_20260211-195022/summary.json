@@ -1,0 +1,47 @@
+[
+  {
+    "turn_id": "c1_t1",
+    "request_datetime": "2026-02-11T19:50:23.420683",
+    "cache_read_tokens_delta": 0,
+    "cache_write_tokens_delta": 0,
+    "prompt_tokens_delta": 0,
+    "completion_tokens_delta": 0,
+    "accumulated_cost_delta": 0.00055824
+  },
+  {
+    "turn_id": "c1_t2",
+    "request_datetime": "2026-02-11T19:50:23.420683",
+    "cache_read_tokens_delta": 0,
+    "cache_write_tokens_delta": 0,
+    "prompt_tokens_delta": 0,
+    "completion_tokens_delta": 0,
+    "accumulated_cost_delta": 0.00041148
+  },
+  {
+    "turn_id": "c1_t3",
+    "request_datetime": "2026-02-11T19:50:23.420683",
+    "cache_read_tokens_delta": 0,
+    "cache_write_tokens_delta": 0,
+    "prompt_tokens_delta": 0,
+    "completion_tokens_delta": 0,
+    "accumulated_cost_delta": 0.00041352
+  },
+  {
+    "turn_id": "c2_t1",
+    "request_datetime": "2026-02-11T19:50:26.327239",
+    "cache_read_tokens_delta": 0,
+    "cache_write_tokens_delta": 0,
+    "prompt_tokens_delta": 0,
+    "completion_tokens_delta": 0,
+    "accumulated_cost_delta": 0.0008192399999999997
+  },
+  {
+    "turn_id": "c2_t2",
+    "request_datetime": "2026-02-11T19:50:26.327239",
+    "cache_read_tokens_delta": 0,
+    "cache_write_tokens_delta": 0,
+    "prompt_tokens_delta": 0,
+    "completion_tokens_delta": 0,
+    "accumulated_cost_delta": 0.00075756
+  }
+]

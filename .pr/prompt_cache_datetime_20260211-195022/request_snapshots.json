@@ -1,0 +1,769 @@
+[
+  {
+    "turn_id": "c1_t1",
+    "user": "Reply with exactly: OK",
+    "request_datetime": "2026-02-11T19:50:23.420683",
+    "metrics_before": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.0,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "context_window": 0,
+        "per_turn_token": 0,
+        "response_id": ""
+      },
+      "costs": [],
+      "response_latencies": [],
+      "token_usages": []
+    },
+    "metrics_after": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.00055824,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 4704,
+        "completion_tokens": 4,
+        "cache_read_tokens": 4523,
+        "cache_write_tokens": 178,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4708,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        }
+      ]
+    }
+  },
+  {
+    "turn_id": "c1_t2",
+    "user": "Reply with exactly: OK2",
+    "request_datetime": "2026-02-11T19:50:23.420683",
+    "metrics_before": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.00055824,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 4704,
+        "completion_tokens": 4,
+        "cache_read_tokens": 4523,
+        "cache_write_tokens": 178,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4708,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        }
+      ]
+    },
+    "metrics_after": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.00096972,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 9421,
+        "completion_tokens": 9,
+        "cache_read_tokens": 9224,
+        "cache_write_tokens": 191,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4722,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041148,
+          "timestamp": 1770839425.6581237
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.7286181449890137,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4717,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4701,
+          "cache_write_tokens": 13,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4722,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        }
+      ]
+    }
+  },
+  {
+    "turn_id": "c1_t3",
+    "user": "Reply with exactly: OK3",
+    "request_datetime": "2026-02-11T19:50:23.420683",
+    "metrics_before": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.00096972,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 9421,
+        "completion_tokens": 9,
+        "cache_read_tokens": 9224,
+        "cache_write_tokens": 191,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4722,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041148,
+          "timestamp": 1770839425.6581237
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.7286181449890137,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4717,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4701,
+          "cache_write_tokens": 13,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4722,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        }
+      ]
+    },
+    "metrics_after": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.00138324,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 14152,
+        "completion_tokens": 14,
+        "cache_read_tokens": 13938,
+        "cache_write_tokens": 205,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4736,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041148,
+          "timestamp": 1770839425.6581237
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041352,
+          "timestamp": 1770839426.324431
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.7286181449890137,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.6566736698150635,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4717,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4701,
+          "cache_write_tokens": 13,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4722,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4731,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4714,
+          "cache_write_tokens": 14,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4736,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        }
+      ]
+    }
+  },
+  {
+    "turn_id": "c2_t1",
+    "user": "Reply with exactly: HELLO",
+    "request_datetime": "2026-02-11T19:50:26.327239",
+    "metrics_before": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.00138324,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 14152,
+        "completion_tokens": 14,
+        "cache_read_tokens": 13938,
+        "cache_write_tokens": 205,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4736,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041148,
+          "timestamp": 1770839425.6581237
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041352,
+          "timestamp": 1770839426.324431
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.7286181449890137,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.6566736698150635,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4717,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4701,
+          "cache_write_tokens": 13,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4722,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4731,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4714,
+          "cache_write_tokens": 14,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4736,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        }
+      ]
+    },
+    "metrics_after": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.0022024799999999997,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 18857,
+        "completion_tokens": 83,
+        "cache_read_tokens": 18461,
+        "cache_write_tokens": 384,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4774,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041148,
+          "timestamp": 1770839425.6581237
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041352,
+          "timestamp": 1770839426.324431
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.0008192399999999999,
+          "timestamp": 1770839428.673579
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.7286181449890137,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.6566736698150635,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 1.699256181716919,
+          "response_id": "chatcmpl-a9fcc3fe-5f66-44ee-b1dd-14d02c13d952"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4717,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4701,
+          "cache_write_tokens": 13,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4722,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4731,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4714,
+          "cache_write_tokens": 14,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4736,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4705,
+          "completion_tokens": 69,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 179,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4774,
+          "response_id": "chatcmpl-a9fcc3fe-5f66-44ee-b1dd-14d02c13d952"
+        }
+      ]
+    }
+  },
+  {
+    "turn_id": "c2_t2",
+    "user": "Reply with exactly: HELLO2",
+    "request_datetime": "2026-02-11T19:50:26.327239",
+    "metrics_before": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.0022024799999999997,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 18857,
+        "completion_tokens": 83,
+        "cache_read_tokens": 18461,
+        "cache_write_tokens": 384,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4774,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041148,
+          "timestamp": 1770839425.6581237
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041352,
+          "timestamp": 1770839426.324431
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.0008192399999999999,
+          "timestamp": 1770839428.673579
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.7286181449890137,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.6566736698150635,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 1.699256181716919,
+          "response_id": "chatcmpl-a9fcc3fe-5f66-44ee-b1dd-14d02c13d952"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4717,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4701,
+          "cache_write_tokens": 13,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4722,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4731,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4714,
+          "cache_write_tokens": 14,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4736,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4705,
+          "completion_tokens": 69,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 179,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4774,
+          "response_id": "chatcmpl-a9fcc3fe-5f66-44ee-b1dd-14d02c13d952"
+        }
+      ]
+    },
+    "metrics_after": {
+      "model_name": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+      "accumulated_cost": 0.0029600399999999997,
+      "max_budget_per_task": null,
+      "accumulated_token_usage": {
+        "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+        "prompt_tokens": 23657,
+        "completion_tokens": 154,
+        "cache_read_tokens": 23163,
+        "cache_write_tokens": 479,
+        "reasoning_tokens": 0,
+        "context_window": 200000,
+        "per_turn_token": 4871,
+        "response_id": ""
+      },
+      "costs": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00055824,
+          "timestamp": 1770839424.9202075
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041148,
+          "timestamp": 1770839425.6581237
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00041352,
+          "timestamp": 1770839426.324431
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.0008192399999999999,
+          "timestamp": 1770839428.673579
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "cost": 0.00075756,
+          "timestamp": 1770839430.0846777
+        }
+      ],
+      "response_latencies": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.8573729991912842,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.7286181449890137,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 0.6566736698150635,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 1.699256181716919,
+          "response_id": "chatcmpl-a9fcc3fe-5f66-44ee-b1dd-14d02c13d952"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "latency": 1.3990399837493896,
+          "response_id": "chatcmpl-cadf2c2c-d2e6-4063-be4d-3fccbd117b17"
+        }
+      ],
+      "token_usages": [
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4704,
+          "completion_tokens": 4,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 178,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4708,
+          "response_id": "chatcmpl-064c04f5-47f2-48d0-a3b6-e85958c28b2c"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4717,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4701,
+          "cache_write_tokens": 13,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4722,
+          "response_id": "chatcmpl-bf2523b7-f12c-4bf8-910e-6e3239a7c7e7"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4731,
+          "completion_tokens": 5,
+          "cache_read_tokens": 4714,
+          "cache_write_tokens": 14,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4736,
+          "response_id": "chatcmpl-7e0fc140-67fa-4a36-bcba-e201e158414a"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4705,
+          "completion_tokens": 69,
+          "cache_read_tokens": 4523,
+          "cache_write_tokens": 179,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4774,
+          "response_id": "chatcmpl-a9fcc3fe-5f66-44ee-b1dd-14d02c13d952"
+        },
+        {
+          "model": "litellm_proxy/anthropic/claude-3-5-haiku-20241022",
+          "prompt_tokens": 4800,
+          "completion_tokens": 71,
+          "cache_read_tokens": 4702,
+          "cache_write_tokens": 95,
+          "reasoning_tokens": 0,
+          "context_window": 200000,
+          "per_turn_token": 4871,
+          "response_id": "chatcmpl-cadf2c2c-d2e6-4063-be4d-3fccbd117b17"
+        }
+      ]
+    }
+  }
+]
