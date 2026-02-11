@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk import get_logger
+from openhands.tools.browser_use.event_storage import EventStorage
 
 
 if TYPE_CHECKING:
@@ -22,43 +21,6 @@ logger = get_logger(__name__)
 
 # Directory containing JavaScript files
 _JS_DIR = Path(__file__).parent / "js"
-
-
-# =============================================================================
-# Event Buffer
-# =============================================================================
-
-
-@dataclass
-class EventBuffer:
-    """Encapsulates event storage.
-
-    This class manages the in-memory buffer of recording events.
-    """
-
-    events: list[dict] = field(default_factory=list)
-
-    def add(self, event: dict) -> None:
-        """Add a single event to the buffer."""
-        self.events.append(event)
-
-    def add_batch(self, events: list[dict]) -> None:
-        """Add multiple events to the buffer."""
-        self.events.extend(events)
-
-    def clear(self) -> list[dict]:
-        """Clear the buffer and return the events."""
-        events = self.events
-        self.events = []
-        return events
-
-    def __len__(self) -> int:
-        """Return the number of events in the buffer."""
-        return len(self.events)
-
-    def __bool__(self) -> bool:
-        """Return True if buffer has events."""
-        return len(self.events) > 0
 
 
 # =============================================================================
@@ -138,121 +100,53 @@ def _get_wait_for_rrweb_js() -> str:
 
 @dataclass
 class RecordingSession:
-    """Encapsulates all recording state and logic for a browser session.
+    """Manages browser session recording using rrweb.
 
-    This class manages the lifecycle of a recording session with an EventBuffer
-    for event storage.
-
-    Concurrency (asyncio tasks):
-    - Uses asyncio.Lock (_event_buffer_lock) to protect the event buffer and
-      file operations from concurrent task access
-    - The lock specifically protects: _event_buffer, _files_written, _total_events
-    - The periodic flush loop and navigation-triggered flushes both acquire
-      the lock before modifying the event buffer or saving to disk
-    - Other state (_is_recording, _flush_task, _scripts_injected) is not protected
-      by this lock as these are only modified during start/stop transitions
-
-    Directory Structure:
-    - output_dir: Root directory where all recording sessions are stored
-    - session_dir: Timestamped subfolder for the current recording session
-    - Format: {output_dir}/recording-{timestamp}/
-    - This ensures multiple start/stop cycles create separate folders
+    Concurrency: Uses asyncio.Lock to protect _events buffer from concurrent
+    access by the periodic flush loop and navigation flushes.
     """
 
-    # Root directory for all recordings - each session creates a subfolder
     output_dir: str | None = None
     config: RecordingConfig = field(default_factory=lambda: DEFAULT_CONFIG)
 
-    # Directory for current recording session (timestamped subfolder under output_dir)
-    _session_dir: str | None = field(default=None, repr=False)
-
-    # Recording state
+    _storage: EventStorage = field(default_factory=EventStorage, repr=False)
     _is_recording: bool = False
-    _event_buffer: EventBuffer = field(default_factory=EventBuffer)
-
-    # File management
-    _files_written: int = 0  # Count of files actually written this session
-    _total_events: int = 0
-
-    # Background task
+    _events: list[dict] = field(default_factory=list)
     _flush_task: asyncio.Task | None = field(default=None, repr=False)
-
-    # Browser state
     _scripts_injected: bool = False
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
-    # Concurrency control - protects _event_buffer, _files_written, _total_events
-    _event_buffer_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    def __post_init__(self) -> None:
+        # Sync output_dir to storage
+        self._storage.output_dir = self.output_dir
 
     @property
     def session_dir(self) -> str | None:
-        """Get the directory for the current recording session."""
-        return self._session_dir
-
-    def _create_session_subfolder(self) -> str | None:
-        """Create a timestamped subfolder for this recording session.
-
-        Returns:
-            Path to the created subfolder, or None if output_dir is not set.
-        """
-        if not self.output_dir:
-            return None
-
-        # Generate timestamp in ISO format (safe for filenames)
-        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
-        subfolder = os.path.join(self.output_dir, f"recording-{timestamp}")
-        os.makedirs(subfolder, exist_ok=True)
-        return subfolder
+        return self._storage.session_dir
 
     @property
     def is_active(self) -> bool:
-        """Check if recording is currently active."""
         return self._is_recording
 
     @property
     def total_events(self) -> int:
-        """Get total number of events recorded across all files."""
-        return self._total_events
+        return self._storage.total_events
 
     @property
     def file_count(self) -> int:
-        """Get the number of files saved this session."""
-        return self._files_written
+        return self._storage.file_count
 
     @property
-    def event_buffer(self) -> EventBuffer:
-        """Get the event buffer."""
-        return self._event_buffer
+    def events(self) -> list[dict]:
+        return self._events
 
-    def save_events_to_file(self) -> str | None:
-        """Save current events to a timestamped JSON file.
-
-        Uses timestamps for filenames to avoid any file scanning or counter management.
-
-        Returns:
-            Path to the saved file, or None if session_dir is not set or no events.
-        """
-        if not self._session_dir or not self._event_buffer:
+    def _save_and_clear_events(self) -> str | None:
+        """Save current events to storage and clear the buffer."""
+        if not self._events:
             return None
-
-        os.makedirs(self._session_dir, exist_ok=True)
-
-        # Use timestamp for filename - naturally unique and sortable
-        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
-        filename = f"{timestamp}.json"
-        filepath = os.path.join(self._session_dir, filename)
-
-        events = self._event_buffer.events
-        with open(filepath, "w") as f:
-            json.dump(events, f)
-
-        self._files_written += 1
-        self._total_events += len(events)
-        logger.debug(
-            f"Saved {len(events)} events to {filename} "
-            f"(total: {self._total_events} events in {self._files_written} files)"
-        )
-
-        self._event_buffer.clear()
+        filepath = self._storage.save_events(self._events)
+        if filepath:
+            self._events = []
         return filepath
 
     async def _set_recording_flag(
@@ -307,18 +201,7 @@ class RecordingSession:
         return script_ids
 
     async def flush_events(self, browser_session: BrowserSession) -> int:
-        """Flush recording events from browser to Python storage.
-
-        This collects events from the browser and adds them to the EventBuffer.
-        Events are saved to disk by the periodic flush loop or when recording stops.
-
-        Concurrency:
-            Acquires _event_buffer_lock to protect the event buffer from
-            concurrent task access (periodic flush loop vs navigation flushes).
-
-        Returns:
-            Number of events flushed.
-        """
+        """Flush recording events from browser to Python storage."""
         if not self._is_recording:
             return 0
 
@@ -332,9 +215,9 @@ class RecordingSession:
             data = json.loads(result.get("result", {}).get("value", "{}"))
             events = data.get("events", [])
             if events:
-                async with self._event_buffer_lock:
-                    self._event_buffer.add_batch(events)
-                    logger.debug(f"Flushed {len(events)} recording events from browser")
+                async with self._lock:
+                    self._events.extend(events)
+                    logger.debug(f"Flushed {len(events)} events from browser")
 
             return len(events)
         except Exception as e:
@@ -342,13 +225,7 @@ class RecordingSession:
             return 0
 
     async def _periodic_flush_loop(self, browser_session: BrowserSession) -> None:
-        """Background task that periodically flushes recording events.
-
-        Concurrency:
-            Acquires _event_buffer_lock when saving events to disk, coordinating
-            with navigation-triggered flushes to prevent concurrent modifications
-            to _event_buffer, _files_written, and _total_events.
-        """
+        """Background task that periodically flushes recording events."""
         while self._is_recording:
             await asyncio.sleep(self.config.flush_interval_seconds)
             if not self._is_recording:
@@ -356,10 +233,9 @@ class RecordingSession:
 
             try:
                 await self.flush_events(browser_session)
-
-                async with self._event_buffer_lock:
-                    if self._event_buffer:
-                        self.save_events_to_file()
+                async with self._lock:
+                    if self._events:
+                        self._save_and_clear_events()
             except Exception as e:
                 logger.debug(f"Periodic flush skipped: {e}")
 
@@ -415,13 +291,11 @@ class RecordingSession:
             await self.inject_scripts(browser_session)
 
         # Reset state for new recording session
-        self._event_buffer.clear()
+        self._events = []
         self._is_recording = True
-        self._files_written = 0
-        self._total_events = 0
-
-        # Create a new timestamped subfolder for this recording session
-        self._session_dir = self._create_session_subfolder()
+        self._storage.reset()
+        self._storage.output_dir = self.output_dir
+        self._storage.create_session_subfolder()
 
         try:
             cdp_session = await browser_session.get_or_create_cdp_session()
@@ -540,29 +414,22 @@ class RecordingSession:
             current_page_data = json.loads(result.get("result", {}).get("value", "{}"))
             current_page_events = current_page_data.get("events", [])
 
-            # Acquire lock for final event processing to ensure consistency
-            async with self._event_buffer_lock:
-                # Add current page events to the buffer
+            async with self._lock:
                 if current_page_events:
-                    self._event_buffer.add_batch(current_page_events)
-
-                # Save any remaining events to a final file
-                if self._event_buffer:
-                    self.save_events_to_file()
-
-                # Calculate totals while holding the lock
-                total_events = self._total_events
-                total_files = self._files_written
+                    self._events.extend(current_page_events)
+                if self._events:
+                    self._save_and_clear_events()
+                total_events = self._storage.total_events
+                total_files = self._storage.file_count
 
             await self._set_recording_flag(browser_session, False)
-            session_dir_used = self.session_dir
+            session_dir_used = self._storage.session_dir
 
             logger.info(
                 f"Recording stopped: {total_events} events saved to "
                 f"{total_files} file(s) in {session_dir_used}"
             )
 
-            # Return a concise summary message
             summary = (
                 f"Recording stopped. Captured {total_events} events "
                 f"in {total_files} file(s)."
@@ -622,11 +489,7 @@ class RecordingSession:
 
     def reset(self) -> None:
         """Reset the recording session state for reuse."""
-        self._event_buffer.clear()
+        self._events = []
         self._is_recording = False
-        self._session_dir = None  # Clear the current session's directory
-        self._files_written = 0
-        self._total_events = 0
+        self._storage.reset()
         self._flush_task = None
-        # Note: _scripts_injected is NOT reset - scripts persist in browser session
-        # Note: output_dir is NOT reset - it's the root dir for all recordings

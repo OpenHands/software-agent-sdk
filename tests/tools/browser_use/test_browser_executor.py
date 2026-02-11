@@ -196,15 +196,14 @@ async def test_stop_recording_returns_summary_with_event_counts():
 
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a recording session in RECORDING state with some events
-        # Set _session_dir directly to bypass start() (creates timestamped subfolder)
         session = RecordingSession()
-        session._session_dir = temp_dir
+        session._storage._session_dir = temp_dir
         session._is_recording = True
         session._scripts_injected = True
 
         # Pre-populate the event buffer with some events
         test_events = [{"type": 3, "timestamp": i, "data": {}} for i in range(25)]
-        session._event_buffer.add_batch(test_events)
+        session._events.extend(test_events)
 
         # Set up mock CDP session for stop
         mock_cdp_session = AsyncMock()
