@@ -28,7 +28,15 @@ from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
 
 
-def recording_aware(func: F) -> F:  # noqa: UP047
+class RecordingFlushError(Exception):
+    """Raised when recording flush fails due to a real error."""
+
+    pass
+
+
+def recording_aware(
+    func: Callable[..., Coroutine[Any, Any, Any]],
+) -> Callable[..., Coroutine[Any, Any, Any]]:
     """Decorator that handles recording flush before/after navigation operations.
 
     This decorator:
@@ -38,6 +46,11 @@ def recording_aware(func: F) -> F:  # noqa: UP047
 
     This keeps navigation methods focused on navigation, with recording
     concerns handled separately.
+
+    Exception Handling:
+    - AttributeError: Silently ignored (recording not initialized)
+    - RecordingFlushError: Re-raised (real flush failure, data may be lost)
+    - Other exceptions: Logged as warnings (non-critical recording issues)
     """
 
     @functools.wraps(func)
@@ -47,7 +60,14 @@ def recording_aware(func: F) -> F:  # noqa: UP047
         if is_recording:
             try:
                 await self._server._flush_recording_events()
+            except AttributeError:
+                # Recording not initialized - this is expected, silently ignore
+                pass
+            except RecordingFlushError:
+                # Real flush failure - re-raise to avoid silent data loss
+                raise
             except Exception as e:
+                # Non-critical recording issues - log but don't block navigation
                 logger.warning(f"Failed to flush recording before {func.__name__}: {e}")
 
         # Execute the actual operation
@@ -57,14 +77,18 @@ def recording_aware(func: F) -> F:  # noqa: UP047
         if is_recording:
             try:
                 await self._server._restart_recording_on_new_page()
+            except AttributeError:
+                # Recording not initialized - silently ignore
+                pass
             except Exception as e:
+                # Non-critical - log but don't fail the navigation
                 logger.warning(
                     f"Failed to restart recording after {func.__name__}: {e}"
                 )
 
         return result
 
-    return wrapper  # type: ignore[return-value]
+    return wrapper
 
 
 # Suppress browser-use logging for cleaner integration
