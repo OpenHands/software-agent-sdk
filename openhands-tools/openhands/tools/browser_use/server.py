@@ -106,11 +106,10 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         self._recording_session = RecordingSession(base_save_dir=save_dir)
         return await self._recording_session.start(self.browser_session)
 
-    async def _stop_recording(self, save_dir: str | None = None) -> str:  # noqa: ARG002
+    async def _stop_recording(self) -> str:
         """Stop rrweb recording and save remaining events.
 
-        Note: The save_dir parameter is ignored - the directory configured at
-        start_recording time is used. This parameter is kept for API compatibility.
+        Events are saved to the directory configured at start_recording time.
 
         Returns:
             A summary message with the save directory and file count.
