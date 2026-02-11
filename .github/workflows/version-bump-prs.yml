@@ -238,6 +238,11 @@ jobs:
                     exit 1
                   fi
 
+                  # 4. Run pre-commit to fix formatting (pyproject-fmt removes parentheses from version specs)
+                  echo "🔧 Running pre-commit to fix formatting..."
+                  pip install pre-commit
+                  pre-commit run --files pyproject.toml enterprise/pyproject.toml --config ./dev_config/python/.pre-commit-config.yaml || true
+
                   # Check if there are changes
                   if git diff --quiet; then
                     echo "⚠️ No changes detected in $REPO - versions may already be up to date"
