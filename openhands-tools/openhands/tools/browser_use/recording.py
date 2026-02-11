@@ -138,6 +138,7 @@ class RecordingSession:
     _flush_task: asyncio.Task | None = field(default=None, repr=False)
     _scripts_injected: bool = False
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _consecutive_flush_failures: int = 0
 
     def __post_init__(self) -> None:
         # Sync output_dir to storage
@@ -261,10 +262,23 @@ class RecordingSession:
                 await self.flush_events(browser_session)
                 async with self._lock:
                     if self._events:
-                        self._save_and_clear_events()
+                        filepath = self._save_and_clear_events()
+                        if filepath:
+                            self._consecutive_flush_failures = 0
+                        else:
+                            self._consecutive_flush_failures += 1
             except Exception as e:
                 # Internal op: log at DEBUG, don't interrupt (see Error Handling Policy)
+                self._consecutive_flush_failures += 1
                 logger.debug(f"Periodic flush skipped: {e}")
+
+            # Warn after 3 consecutive failures for visibility into persistent issues
+            if self._consecutive_flush_failures >= 3:
+                logger.warning(
+                    f"Recording flush has failed {self._consecutive_flush_failures} "
+                    f"times. Events may be accumulating in memory. "
+                    f"Check disk space and permissions."
+                )
 
     async def _wait_for_rrweb_load(self, browser_session: BrowserSession) -> dict:
         """Wait for rrweb to load using event-driven Promise-based waiting.
@@ -304,6 +318,7 @@ class RecordingSession:
         """Reset state and create session subfolder for a new recording session."""
         self._events = []
         self._is_recording = True
+        self._consecutive_flush_failures = 0
         self._storage.reset()
         self._storage.output_dir = self.output_dir
         self._storage.create_session_subfolder()
