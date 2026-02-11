@@ -42,8 +42,10 @@ def recording_aware(
     2. Executes the operation
     3. Restarts recording on the new page if recording was active
 
-    Recording is a secondary feature that should never block browser operations.
-    All recording errors are logged but do not interrupt navigation.
+    Error Handling Policy (see recording.py module docstring for full details):
+    - Recording is a secondary feature that should never block browser operations
+    - AttributeError: silent pass (recording not initialized - expected)
+    - Other exceptions: log at DEBUG, don't interrupt navigation
     """
 
     @functools.wraps(func)
@@ -53,8 +55,10 @@ def recording_aware(
             try:
                 await self._server._flush_recording_events()
             except AttributeError:
-                pass  # Recording not initialized
+                # Recording not initialized - expected, silent pass
+                pass
             except Exception as e:
+                # Internal operation: log at DEBUG, don't interrupt navigation
                 logger.debug(f"Recording flush before {func.__name__} skipped: {e}")
 
         result = await func(self, *args, **kwargs)
@@ -63,8 +67,10 @@ def recording_aware(
             try:
                 await self._server._restart_recording_on_new_page()
             except AttributeError:
-                pass  # Recording not initialized
+                # Recording not initialized - expected, silent pass
+                pass
             except Exception as e:
+                # Internal operation: log at DEBUG, don't interrupt navigation
                 logger.debug(f"Recording restart after {func.__name__} skipped: {e}")
 
         return result

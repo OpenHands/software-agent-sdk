@@ -1,4 +1,27 @@
-"""Recording session management for browser session recording using rrweb."""
+"""Recording session management for browser session recording using rrweb.
+
+Error Handling Policy
+=====================
+Recording is a secondary feature that should never block primary browser operations.
+This module follows a consistent error handling strategy based on operation type:
+
+1. **User-facing operations** (start, stop):
+   - Return descriptive error strings to the user (prefixed with "Error:")
+   - Log at WARNING level for unexpected errors
+   - Log at INFO level for expected failures (e.g., rrweb load failures)
+
+2. **Internal/background operations** (flush_events, periodic flush, restart):
+   - Log at DEBUG level and continue silently
+   - Never raise exceptions that would interrupt browser operations
+   - Return neutral values (0, None) on failure
+
+3. **AttributeError for "not initialized"**:
+   - Silent pass - this is expected when recording hasn't been set up
+   - Used in the recording_aware decorator in impl.py
+
+This policy ensures that recording failures are observable through logs but never
+disrupt the user's primary browser workflow.
+"""
 
 from __future__ import annotations
 
@@ -164,6 +187,7 @@ class RecordingSession:
                 session_id=cdp_session.session_id,
             )
         except Exception as e:
+            # Internal op: log at DEBUG, don't interrupt (see Error Handling Policy)
             logger.debug(f"Failed to set recording flag: {e}")
 
     async def inject_scripts(self, browser_session: BrowserSession) -> list[str]:
@@ -196,6 +220,7 @@ class RecordingSession:
             self._scripts_injected = True
             logger.debug("Injected rrweb loader script")
         except Exception as e:
+            # Internal op: log at DEBUG, don't interrupt (see Error Handling Policy)
             logger.debug(f"Script injection skipped: {e}")
 
         return script_ids
@@ -221,6 +246,7 @@ class RecordingSession:
 
             return len(events)
         except Exception as e:
+            # Internal op: log at DEBUG, return 0 (see Error Handling Policy)
             logger.debug(f"Event flush skipped: {e}")
             return 0
 
@@ -237,6 +263,7 @@ class RecordingSession:
                     if self._events:
                         self._save_and_clear_events()
             except Exception as e:
+                # Internal op: log at DEBUG, don't interrupt (see Error Handling Policy)
                 logger.debug(f"Periodic flush skipped: {e}")
 
     async def _wait_for_rrweb_load(self, browser_session: BrowserSession) -> dict:
@@ -284,7 +311,10 @@ class RecordingSession:
     async def _handle_rrweb_load_failure(
         self, browser_session: BrowserSession, error: str
     ) -> str:
-        """Handle rrweb load failure and return appropriate error message."""
+        """Handle rrweb load failure and return appropriate error message.
+
+        Expected failure: log at INFO, return error string (see Error Handling Policy)
+        """
         self._is_recording = False
         await self._set_recording_flag(browser_session, False)
 
@@ -377,6 +407,10 @@ class RecordingSession:
 
         Returns:
             Status message indicating success or failure.
+
+        Note:
+            User-facing operation: returns error strings, logs at WARNING for
+            unexpected errors (see Error Handling Policy in module docstring).
         """
         if not self._scripts_injected:
             await self.inject_scripts(browser_session)
@@ -391,6 +425,7 @@ class RecordingSession:
             return await self._execute_start_recording(browser_session)
 
         except Exception as e:
+            # User-facing operation: log at WARNING, return error string
             self._is_recording = False
             logger.warning(f"Recording start failed: {e}")
             return f"Error starting recording: {str(e)}"
@@ -403,6 +438,10 @@ class RecordingSession:
 
         Returns:
             A summary message with the save directory and file count.
+
+        Note:
+            User-facing operation: returns error strings, logs at WARNING for
+            unexpected errors (see Error Handling Policy in module docstring).
         """
         if not self._is_recording:
             return "Error: Not recording. Call browser_start_recording first."
@@ -455,6 +494,7 @@ class RecordingSession:
             return summary
 
         except Exception as e:
+            # User-facing operation: log at WARNING, return error string
             self._is_recording = False
             if self._flush_task:
                 self._flush_task.cancel()
@@ -468,6 +508,10 @@ class RecordingSession:
         Uses event-driven Promise-based waiting for rrweb to be ready,
         then starts a new recording session. Called automatically after
         navigation when recording is active.
+
+        Note:
+            Internal operation: logs at DEBUG, never raises
+            (see Error Handling Policy in module docstring).
         """
         if not self._is_recording:
             return
@@ -500,6 +544,7 @@ class RecordingSession:
                 logger.debug(f"Recording restart: unexpected status '{status}'")
 
         except Exception as e:
+            # Internal op: log at DEBUG, don't interrupt (see Error Handling Policy)
             logger.debug(f"Recording restart skipped: {e}")
 
     def reset(self) -> None:
