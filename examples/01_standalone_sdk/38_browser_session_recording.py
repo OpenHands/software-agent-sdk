@@ -65,7 +65,7 @@ conversation = Conversation(
     agent=agent,
     callbacks=[conversation_callback],
     workspace=cwd,
-    persistence_dir="./.agent_tmp",
+    persistence_dir="./.conversations",
 )
 
 # The prompt instructs the agent to:
@@ -103,12 +103,9 @@ print("\n" + "=" * 80)
 print("Conversation finished!")
 print("=" * 80)
 
-persistence_dir = conversation.state.persistence_dir
-assert persistence_dir
-
 # Check if the recording files were created
-# Recordings are saved in timestamped subdirs: observations/recording-{timestamp}/
-observations_dir = os.path.join(persistence_dir, "observations")
+# Recordings are saved in .agent_tmp/observations/recording-{timestamp}/
+observations_dir = os.path.join(".agent_tmp", "observations")
 if os.path.exists(observations_dir):
     # Find recording subdirectories (they start with "recording-")
     recording_dirs = sorted(

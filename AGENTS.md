@@ -222,20 +222,16 @@ git push -u origin <feature-name>
 <AGENT_TMP_DIRECTORY>
 # Agent Temporary Directory Convention
 
-When agents need to store temporary files (e.g., conversation persistence, session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
+When tools need to store observation files (e.g., browser session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
 
-```python
-# Example: Setting persistence_dir for conversations
-conversation = Conversation(
-    agent=agent,
-    persistence_dir="./.agent_tmp",
-)
-```
+The browser session recording tool saves recordings to `.agent_tmp/observations/recording-{timestamp}/`.
 
-This convention ensures all agent-generated temporary files are stored in a predictable location that can be easily:
+This convention ensures tool-generated observation files are stored in a predictable location that can be easily:
 - Added to `.gitignore`
 - Cleaned up after agent sessions
 - Identified as agent-generated artifacts
+
+Note: This is separate from `persistence_dir` which is used for conversation state persistence.
 </AGENT_TMP_DIRECTORY>
 
 <REPO>

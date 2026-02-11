@@ -450,11 +450,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         """Start recording the browser session using rrweb.
 
         Recording events are periodically flushed to timestamped JSON files
-        in a session subfolder under full_output_save_dir if configured.
+        in a session subfolder under .agent_tmp/observations.
         Events are flushed every 5 seconds.
         """
         await self._ensure_initialized()
-        return await self._server._start_recording(output_dir=self.full_output_save_dir)
+        # Save recordings to .agent_tmp/observations for agent conventions
+        recording_output_dir = os.path.join(".agent_tmp", "observations")
+        return await self._server._start_recording(output_dir=recording_output_dir)
 
     async def stop_recording(self) -> str:
         """Stop recording and save remaining events to file.
