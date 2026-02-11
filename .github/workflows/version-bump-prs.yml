@@ -226,7 +226,9 @@ jobs:
                     echo "🔍 Verifying enterprise/pyproject.toml doesn't have explicit SDK packages..."
                     SDK_PACKAGES=("openhands-sdk" "openhands-tools" "openhands-agent-server")
                     for pkg in "${SDK_PACKAGES[@]}"; do
-                      if grep -q "^${pkg}\s*=" enterprise/pyproject.toml || grep -q "\"${pkg}\"" enterprise/pyproject.toml || grep -q "'${pkg}'" enterprise/pyproject.toml; then
+                      # Match package name as a TOML key (with optional leading whitespace) followed by =
+                      # This catches both 'openhands-sdk = "1.2.3"' and 'openhands-sdk="1.2.3"'
+                      if grep -qE "^[[:space:]]*${pkg}[[:space:]]*=" enterprise/pyproject.toml; then
                         echo "❌ ERROR: enterprise/pyproject.toml contains explicit reference to '$pkg'"
                         echo "   These packages should come transitively via openhands-ai dependency."
                         echo "   Please remove '$pkg' from enterprise/pyproject.toml to avoid version drift."
