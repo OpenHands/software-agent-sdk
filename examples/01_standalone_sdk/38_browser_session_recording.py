@@ -65,7 +65,7 @@ conversation = Conversation(
     agent=agent,
     callbacks=[conversation_callback],
     workspace=cwd,
-    persistence_dir="./.conversations",
+    persistence_dir="./.agent_tmp",
 )
 
 # The prompt instructs the agent to:
