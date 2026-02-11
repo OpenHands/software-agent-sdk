@@ -91,7 +91,10 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_features, model_matches
+from openhands.sdk.llm.utils.model_features import (
+    get_default_top_p,
+    get_features,
+)
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -416,15 +419,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
-        # HF doesn't support the OpenAI default value for top_p (1)
-        if model_val.startswith("huggingface"):
-            if d.get("top_p", 1.0) == 1.0:
-                d["top_p"] = 0.9
-
-        if model_matches(model_val, ["kimi-k2.5"]):
-            # Moonshot kimi-k2.5 defaults to top_p=0.95 if not explicitly set
-            if d.get("top_p", 1.0) == 1.0:
-                d["top_p"] = 0.95
+        if d.get("top_p", 1.0) == 1.0:
+            default_top_p = get_default_top_p(model_val)
+            if default_top_p is not None:
+                d["top_p"] = default_top_p
 
         return d
 

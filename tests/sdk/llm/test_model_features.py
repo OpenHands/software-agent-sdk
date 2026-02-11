@@ -1,6 +1,10 @@
 import pytest
 
-from openhands.sdk.llm.utils.model_features import get_features, model_matches
+from openhands.sdk.llm.utils.model_features import (
+    get_default_top_p,
+    get_features,
+    model_matches,
+)
 
 
 @pytest.mark.parametrize(
@@ -308,3 +312,16 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
     """Test that models like kimi-k2-thinking require send_reasoning_content."""
     features = get_features(model)
     assert features.send_reasoning_content is expected_send_reasoning
+
+
+@pytest.mark.parametrize(
+    "model,expected_top_p",
+    [
+        ("huggingface/model", 0.9),
+        ("moonshot/kimi-k2.5", 0.95),
+        ("kimi-k2.5", 0.95),
+        ("gpt-4o", None),
+    ],
+)
+def test_get_default_top_p(model, expected_top_p):
+    assert get_default_top_p(model) == expected_top_p

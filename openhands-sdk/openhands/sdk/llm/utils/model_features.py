@@ -162,6 +162,21 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-reasoner",
 ]
 
+# Model-specific defaults for top_p.
+# Only applied when the caller leaves top_p at the OpenAI default (1.0).
+DEFAULT_TOP_P_MODELS: list[tuple[str, float]] = [
+    ("huggingface", 0.9),
+    # Moonshot Kimi-K2.5 rejects top_p=1.0; use 0.95 instead.
+    ("kimi-k2.5", 0.95),
+]
+
+
+def get_default_top_p(model: str) -> float | None:
+    for pattern, value in DEFAULT_TOP_P_MODELS:
+        if model_matches(model, [pattern]):
+            return value
+    return None
+
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
