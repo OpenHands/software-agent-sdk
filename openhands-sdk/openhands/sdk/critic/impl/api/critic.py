@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
@@ -11,6 +11,18 @@ from openhands.sdk.critic.impl.api.taxonomy import categorize_features
 
 if TYPE_CHECKING:
     from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
+
+
+def _format_feature_list(features: list[dict[str, Any]]) -> str:
+    """Format a list of features with their probabilities."""
+    if not features:
+        return "None detected"
+    items = []
+    for f in features:
+        name = f.get("display_name", f.get("name", "Unknown"))
+        prob = f.get("probability", 0)
+        items.append(f"{name} ({prob:.0%})")
+    return ", ".join(items)
 
 
 class APIBasedCritic(CriticBase, CriticClient):
@@ -91,3 +103,65 @@ class APIBasedCritic(CriticBase, CriticClient):
                 "categorized_features": categorized,
             },
         )
+
+    def get_followup_prompt(self, critic_result: CriticResult, iteration: int) -> str:
+        """Generate a detailed follow-up prompt with rubrics predictions.
+
+        This override provides more detailed feedback than the base class,
+        including all categorized features (agent behavioral issues,
+        user follow-up patterns, infrastructure issues) with their probabilities.
+
+        Args:
+            critic_result: The critic result from the previous iteration.
+            iteration: The current iteration number (1-indexed).
+
+        Returns:
+            A detailed follow-up prompt string with rubrics predictions.
+        """
+        score_percent = critic_result.score * 100
+        lines = [
+            f"The task appears incomplete (iteration {iteration}, "
+            f"predicted success likelihood: {score_percent:.1f}%).",
+            "",
+        ]
+
+        # Extract detailed rubrics from categorized features
+        if critic_result.metadata and "categorized_features" in critic_result.metadata:
+            categorized = critic_result.metadata["categorized_features"]
+
+            # Agent behavioral issues
+            agent_issues = categorized.get("agent_behavioral_issues", [])
+            if agent_issues:
+                lines.append(
+                    f"Potential agent issues: {_format_feature_list(agent_issues)}"
+                )
+
+            # User follow-up patterns (predicted)
+            user_patterns = categorized.get("user_followup_patterns", [])
+            if user_patterns:
+                formatted = _format_feature_list(user_patterns)
+                lines.append(f"Predicted user follow-up needs: {formatted}")
+
+            # Infrastructure issues
+            infra_issues = categorized.get("infrastructure_issues", [])
+            if infra_issues:
+                lines.append(
+                    f"Infrastructure issues: {_format_feature_list(infra_issues)}"
+                )
+
+            # Other metrics
+            other = categorized.get("other", [])
+            if other:
+                lines.append(f"Other observations: {_format_feature_list(other)}")
+
+            if agent_issues or user_patterns or infra_issues or other:
+                lines.append("")
+
+        lines.extend(
+            [
+                "Please review what you've done and verify each requirement is met.",
+                "List what's working and what needs fixing, then complete the task.",
+            ]
+        )
+
+        return "\n".join(lines)

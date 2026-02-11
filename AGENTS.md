@@ -157,6 +157,75 @@ mkdir -p .pr
 - Any analysis that helps reviewers understand the PR but isn't needed long-term
 </PR_ARTIFACTS>
 
+<REVIEW_HANDLING>
+- Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
+  - Does it fix a real bug or improve clarity significantly?
+  - Does it align with the project's engineering principles (simplicity, maintainability)?
+  - Is the suggested change proportional to the benefit, or does it add unnecessary complexity?
+- It's acceptable to respectfully decline suggestions that add verbosity without clear benefit, over-engineer for hypothetical edge cases, or contradict the project's pragmatic approach.
+- After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
+- Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
+- Prefer resolving threads only once fixes are pushed or a clear decision is documented.
+- Use the GitHub GraphQL API to reply to and resolve review threads (see below).
+
+## Resolving Review Threads via GraphQL
+
+The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
+
+1. Get the thread IDs (replace `<OWNER>`, `<REPO>`, `<PR_NUMBER>`):
+```bash
+gh api graphql -f query='
+{
+  repository(owner: "<OWNER>", name: "<REPO>") {
+    pullRequest(number: <PR_NUMBER>) {
+      reviewThreads(first: 20) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+2. Reply to the thread explaining how the feedback was addressed:
+```bash
+gh api graphql -f query='
+mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: "<THREAD_ID>"
+    body: "Fixed in <COMMIT_SHA>"
+  }) {
+    comment { id }
+  }
+}'
+```
+
+3. Resolve the thread:
+```bash
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+    thread { isResolved }
+  }
+}'
+```
+
+4. Get the failed workflow run ID and rerun it:
+```bash
+# Find the run ID from the failed check URL, or use:
+gh run list --repo <OWNER>/<REPO> --branch <BRANCH> --limit 5
+
+# Rerun failed jobs
+gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
+```
+</REVIEW_HANDLING>
+
+
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
 - Use existing packages/libraries instead of implementing yourselves whenever possible.
@@ -225,6 +294,22 @@ git push -u origin <feature-name>
 - Clean caches: `make clean`
 - Run an example: `uv run python examples/01_standalone_sdk/main.py`
 </QUICK_COMMANDS>
+
+<RUNNING_EXAMPLES>
+# Running SDK Examples
+
+When implementing or modifying examples in `examples/`, always verify they work before committing:
+
+```bash
+# Run examples using the All-Hands LLM proxy
+LLM_BASE_URL="https://llm-proxy.eval.all-hands.dev" LLM_API_KEY="$LLM_API_KEY" \
+  uv run python examples/01_standalone_sdk/<example_name>.py
+```
+
+The `LLM_API_KEY` environment variable may be available in the OpenHands development environment and works with the All-Hands LLM proxy (`llm-proxy.eval.all-hands.dev` OR `llm-proxy.app.all-hands.dev`). Please consult the human user for the LLM key if it is not found.
+
+For examples that use the critic model (e.g., `34_critic_example.py`), the critic is auto-configured when using the All-Hands LLM proxy - no additional setup needed.
+</RUNNING_EXAMPLES>
 
 <REPO_CONFIG_NOTES>
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).

@@ -23,9 +23,11 @@ from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
+from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.middleware import LocalhostCORSMiddleware
 from openhands.agent_server.server_details_router import (
     get_server_info,
+    mark_initialization_complete,
     server_details_router,
 )
 from openhands.agent_server.skills_router import skills_router
@@ -83,12 +85,30 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             logger.info("Tool preload service is disabled")
 
     # Start all services concurrently
-    await asyncio.gather(
+    results = await asyncio.gather(
         start_vscode_service(),
         start_desktop_service(),
         start_tool_preload_service(),
         return_exceptions=True,
     )
+
+    # Check for any exceptions during initialization
+    exceptions = [r for r in results if isinstance(r, Exception)]
+    if exceptions:
+        logger.error(
+            "Service initialization failed with %d exception(s): %s",
+            len(exceptions),
+            exceptions,
+        )
+        # Re-raise the first exception to prevent server from starting
+        raise RuntimeError(
+            f"Server initialization failed with {len(exceptions)} exception(s)"
+        ) from exceptions[0]
+
+    # Mark initialization as complete - now the /ready endpoint will return 200
+    # and Kubernetes readiness probes will pass
+    mark_initialization_complete()
+    logger.info("Server initialization complete - ready to serve requests")
 
     async with service:
         # Store the initialized service in app state for dependency injection
@@ -175,6 +195,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(vscode_router)
     api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
+    api_router.include_router(hooks_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 
