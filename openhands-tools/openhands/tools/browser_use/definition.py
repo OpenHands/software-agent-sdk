@@ -751,7 +751,8 @@ class BrowserStopRecordingTool(
                 observation_type=BrowserObservation,
                 annotations=ToolAnnotations(
                     title="browser_stop_recording",
-                    readOnlyHint=True,
+                    # Modifies state: stops recording, flushes events to disk
+                    readOnlyHint=False,
                     destructiveHint=False,
                     idempotentHint=False,
                     openWorldHint=False,
