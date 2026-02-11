@@ -167,11 +167,11 @@ mkdir -p .pr
 
 The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
 
-1. First, get the thread IDs:
+1. Get the thread IDs (replace `<OWNER>`, `<REPO>`, `<PR_NUMBER>`):
 ```bash
 gh api graphql -f query='
 {
-  repository(owner: "OpenHands", name: "software-agent-sdk") {
+  repository(owner: "<OWNER>", name: "<REPO>") {
     pullRequest(number: <PR_NUMBER>) {
       reviewThreads(first: 20) {
         nodes {
@@ -187,7 +187,20 @@ gh api graphql -f query='
 }'
 ```
 
-2. Then resolve each thread:
+2. Reply to the thread explaining how the feedback was addressed:
+```bash
+gh api graphql -f query='
+mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: "<THREAD_ID>"
+    body: "Fixed in <COMMIT_SHA>"
+  }) {
+    comment { id }
+  }
+}'
+```
+
+3. Resolve the thread:
 ```bash
 gh api graphql -f query='
 mutation {
@@ -197,9 +210,13 @@ mutation {
 }'
 ```
 
-3. After resolving threads, rerun the failed check:
+4. Get the failed workflow run ID and rerun it:
 ```bash
-gh run rerun <RUN_ID> --repo OpenHands/software-agent-sdk --failed
+# Find the run ID from the failed check URL, or use:
+gh run list --repo <OWNER>/<REPO> --branch <BRANCH> --limit 5
+
+# Rerun failed jobs
+gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 ```
 </REVIEW_HANDLING>
 
