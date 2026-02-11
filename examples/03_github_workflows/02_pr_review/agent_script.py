@@ -45,6 +45,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,7 @@ logger = get_logger(__name__)
 # Maximum total diff size
 MAX_TOTAL_DIFF = 100000
 # Maximum size for review context to avoid overwhelming the prompt
+# Keeps context under ~7500 tokens (assuming ~4 chars/token average)
 MAX_REVIEW_CONTEXT = 30000
 
 
@@ -122,6 +124,8 @@ def _github_api_request(
         ) from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"GitHub API request failed: {e.reason}") from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"GitHub API returned invalid JSON: {e}") from e
 
 
 def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
@@ -137,40 +141,6 @@ def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
     repo = _get_required_env("REPO_NAME")
     url = f"/repos/{repo}/pulls/{pr_number}/reviews"
     return _github_api_request(url)
-
-
-def get_pr_review_comments(pr_number: str) -> list[dict[str, Any]]:
-    """Fetch all review comments (inline comments) for a PR.
-
-    Returns a list of comment objects containing:
-    - id: Comment ID
-    - user: Author information
-    - body: Comment text
-    - path: File path
-    - line: Line number (may be None for outdated comments)
-    - original_line: Original line number
-    - diff_hunk: The diff context
-    - in_reply_to_id: Parent comment ID if this is a reply
-    - created_at: When the comment was created
-    """
-    repo = _get_required_env("REPO_NAME")
-    comments: list[dict[str, Any]] = []
-    page = 1
-    per_page = 100
-
-    while True:
-        url = (
-            f"/repos/{repo}/pulls/{pr_number}/comments?per_page={per_page}&page={page}"
-        )
-        page_comments = _github_api_request(url)
-        if not page_comments:
-            break
-        comments.extend(page_comments)
-        if len(page_comments) < per_page:
-            break
-        page += 1
-
-    return comments
 
 
 def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
@@ -282,9 +252,10 @@ def format_review_context(
     if reviews:
         lines.append("### Previous Reviews\n")
         for review in reviews:
-            user = review.get("user", {}).get("login", "unknown")
-            state = review.get("state", "UNKNOWN")
-            body = review.get("body", "").strip()
+            user_data = review.get("user") or {}
+            user = user_data.get("login", "unknown")
+            state = review.get("state") or "UNKNOWN"
+            body = (review.get("body") or "").strip()
 
             # Map state to emoji for visual clarity
             state_emoji = {
@@ -359,10 +330,12 @@ def _format_thread(thread: dict[str, Any]) -> list[str]:
     lines.append(f"**{location}**{outdated} - {status}")
 
     # Thread comments
-    comments = thread.get("comments", {}).get("nodes", [])
+    comments_data = thread.get("comments") or {}
+    comments = comments_data.get("nodes") or []
     for comment in comments:
-        author = comment.get("author", {}).get("login", "unknown")
-        body = comment.get("body", "").strip()
+        author_data = comment.get("author") or {}
+        author = author_data.get("login", "unknown")
+        body = (comment.get("body") or "").strip()
         if body:
             # Truncate individual comments if too long
             body_preview = body[:300] + "..." if len(body) > 300 else body
@@ -372,6 +345,27 @@ def _format_thread(thread: dict[str, Any]) -> list[str]:
 
     lines.append("")
     return lines
+
+
+def _fetch_with_fallback(
+    name: str, fetch_fn: Callable[[], list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Fetch data with error handling and logging.
+
+    Args:
+        name: Name of the data being fetched (for logging)
+        fetch_fn: Function to call to fetch the data
+
+    Returns:
+        Fetched data or empty list on error
+    """
+    try:
+        data = fetch_fn()
+        logger.info(f"Fetched {len(data)} {name}")
+        return data
+    except Exception as e:
+        logger.warning(f"Failed to fetch {name}: {e}")
+        return []
 
 
 def get_pr_review_context(pr_number: str) -> str:
@@ -385,19 +379,10 @@ def get_pr_review_context(pr_number: str) -> str:
     Returns:
         Formatted review context string, or empty string if no context
     """
-    try:
-        reviews = get_pr_reviews(pr_number)
-        logger.info(f"Fetched {len(reviews)} reviews")
-    except Exception as e:
-        logger.warning(f"Failed to fetch reviews: {e}")
-        reviews = []
-
-    try:
-        threads = get_review_threads_graphql(pr_number)
-        logger.info(f"Fetched {len(threads)} review threads")
-    except Exception as e:
-        logger.warning(f"Failed to fetch review threads: {e}")
-        threads = []
+    reviews = _fetch_with_fallback("reviews", lambda: get_pr_reviews(pr_number))
+    threads = _fetch_with_fallback(
+        "review threads", lambda: get_review_threads_graphql(pr_number)
+    )
 
     return format_review_context(reviews, threads)
 
