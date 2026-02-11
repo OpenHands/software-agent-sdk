@@ -3,17 +3,17 @@
 import json
 import uuid
 
+import pytest
 from lmnr.sdk.types import LaminarSpanContext
 
 
-def test_trace_data_with_span_context_is_json_serializable():
-    """Ensure span_context uses model_dump(mode='json') for JSON compatibility.
+def test_span_context_requires_json_mode_for_serialization():
+    """Verify model_dump(mode='json') is required for JSON serialization.
 
-    Laminar's get_laminar_span_context_dict() returns uuid.UUID objects which
-    are not JSON serializable. The fix uses model_dump(mode='json') instead.
+    model_dump() returns uuid.UUID objects which are not JSON serializable.
+    model_dump(mode='json') converts them to strings.
     """
-    # Simulate Laminar.get_laminar_span_context() return value
-    laminar_span_context = LaminarSpanContext(
+    ctx = LaminarSpanContext(
         trace_id=uuid.uuid4(),
         span_id=uuid.uuid4(),
         is_remote=False,
@@ -21,19 +21,10 @@ def test_trace_data_with_span_context_is_json_serializable():
         span_ids_path=["span_123"],
     )
 
-    # This is the pattern used in agent_script.py
-    span_context = laminar_span_context.model_dump(mode="json")
+    # Without mode='json': UUIDs are not serializable
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        json.dumps({"span_context": ctx.model_dump()})
 
-    trace_data = {
-        "trace_id": str(uuid.uuid4()),
-        "span_context": span_context,
-        "pr_number": "1234",
-        "repo_name": "OpenHands/software-agent-sdk",
-        "commit_id": "abc123",
-        "review_style": "roasted",
-    }
-
-    # Must be JSON serializable for artifact storage
-    result = json.dumps(trace_data)
-    parsed = json.loads(result)
-    assert isinstance(parsed["span_context"]["trace_id"], str)
+    # With mode='json': UUIDs become strings, serialization works
+    result = json.dumps({"span_context": ctx.model_dump(mode="json")})
+    assert isinstance(json.loads(result)["span_context"]["trace_id"], str)
