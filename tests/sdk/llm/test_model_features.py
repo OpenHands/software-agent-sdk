@@ -317,10 +317,26 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
 @pytest.mark.parametrize(
     "model,expected_top_p",
     [
+        # Positive matches
         ("huggingface/model", 0.9),
         ("moonshot/kimi-k2.5", 0.95),
         ("kimi-k2.5", 0.95),
+        ("Kimi-K2.5", 0.95),  # Case insensitive
+        # Negative matches
         ("gpt-4o", None),
+        ("gpt-4o-mini", None),
+        ("claude-3-5-sonnet", None),
+        ("claude-3-7-sonnet", None),
+        ("gemini-2.5-pro-experimental", None),
+        ("o1", None),
+        ("o3", None),
+        ("deepseek-chat", None),
+        ("llama-3.1-70b", None),
+        ("azure/gpt-4o-mini", None),
+        ("openai/gpt-4o", None),
+        ("anthropic/claude-3-5-sonnet", None),
+        ("unknown-model", None),
+        ("completely-unknown-model-12345", None),
     ],
 )
 def test_get_default_top_p(model, expected_top_p):
