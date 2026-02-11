@@ -3,10 +3,10 @@ name: Create Version Bump PRs
 
 on:
     # Triggered by pypi-release workflow after successful publish
+    # Note: No branches filter - releases run on tags (e.g., v1.11.4), not branches
     workflow_run:
         workflows: [Publish all OpenHands packages (uv)]
         types: [completed]
-        branches: [main, rel-*]
     # Allow manual trigger with version input
     workflow_dispatch:
         inputs:
