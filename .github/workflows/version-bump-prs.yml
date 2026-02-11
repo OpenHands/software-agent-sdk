@@ -6,7 +6,7 @@ on:
     workflow_run:
         workflows: [Publish all OpenHands packages (uv)]
         types: [completed]
-        branches: [main]
+        branches: [main, rel-*]
     # Allow manual trigger with version input
     workflow_dispatch:
         inputs:
