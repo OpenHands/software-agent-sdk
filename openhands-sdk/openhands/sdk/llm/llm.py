@@ -421,6 +421,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if d.get("top_p", 1.0) == 1.0:
                 d["top_p"] = 0.9
 
+        # Moonshot kimi-k2.5 requires top_p=0.95
+        if "kimi-k2.5" in model_val:
+            if d.get("top_p", 1.0) == 1.0:
+                d["top_p"] = 0.95
+
         return d
 
     @model_validator(mode="after")
