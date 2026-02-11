@@ -1,7 +1,12 @@
 """Tests for PR review context functions in the PR review agent."""
 
+import json
+import os
 import sys
+import urllib.error
+from io import BytesIO
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 
 # Import the PR review functions
@@ -14,9 +19,13 @@ pr_review_path = (
 sys.path.insert(0, str(pr_review_path))
 from agent_script import (  # noqa: E402  # type: ignore[import-not-found]
     MAX_REVIEW_CONTEXT,
+    _call_github_api,
     _fetch_with_fallback,
     _format_thread,
     format_review_context,
+    get_pr_review_context,
+    get_pr_reviews,
+    get_review_threads_graphql,
 )
 
 
@@ -651,3 +660,461 @@ class TestEdgeCases:
         result = format_review_context(reviews, [])
         assert "🎉" in result
         assert "日本語テスト" in result
+
+
+class TestCallGithubApi:
+    """Tests for _call_github_api function."""
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_successful_get_request(self, mock_urlopen):
+        """Test successful GET request returns parsed JSON."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"id": 123, "name": "test"}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = _call_github_api("/repos/owner/repo")
+
+        assert result == {"id": 123, "name": "test"}
+        mock_urlopen.assert_called_once()
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_successful_post_request_with_data(self, mock_urlopen):
+        """Test successful POST request with JSON data."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"success": true}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = _call_github_api(
+            "https://api.github.com/graphql",
+            method="POST",
+            data={"query": "test query"},
+        )
+
+        assert result == {"success": True}
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_diff_request_returns_raw_text(self, mock_urlopen):
+        """Test diff request returns raw text instead of JSON."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"diff --git a/file.py b/file.py\n+new line"
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = _call_github_api(
+            "/repos/owner/repo/pulls/1",
+            accept="application/vnd.github.v3.diff",
+        )
+
+        assert "diff --git" in result
+        assert "+new line" in result
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_http_error_raises_runtime_error(self, mock_urlopen):
+        """Test HTTP error is converted to RuntimeError with details."""
+        error_body = BytesIO(b"Not Found")
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://api.github.com/test",
+            code=404,
+            msg="Not Found",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=error_body,
+        )
+
+        try:
+            _call_github_api("/repos/owner/repo")
+            assert False, "Expected RuntimeError"
+        except RuntimeError as e:
+            assert "HTTP 404" in str(e)
+            assert "Not Found" in str(e)
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_url_error_raises_runtime_error(self, mock_urlopen):
+        """Test URL error (network issue) is converted to RuntimeError."""
+        mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
+
+        try:
+            _call_github_api("/repos/owner/repo")
+            assert False, "Expected RuntimeError"
+        except RuntimeError as e:
+            assert "Connection refused" in str(e)
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_invalid_json_raises_runtime_error(self, mock_urlopen):
+        """Test invalid JSON response raises RuntimeError."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"not valid json {"
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        try:
+            _call_github_api("/repos/owner/repo")
+            assert False, "Expected RuntimeError"
+        except RuntimeError as e:
+            assert "invalid JSON" in str(e)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_missing_token_raises_value_error(self):
+        """Test missing GITHUB_TOKEN raises ValueError."""
+        # Remove GITHUB_TOKEN if it exists
+        os.environ.pop("GITHUB_TOKEN", None)
+
+        try:
+            _call_github_api("/repos/owner/repo")
+            assert False, "Expected ValueError"
+        except ValueError as e:
+            assert "GITHUB_TOKEN" in str(e)
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_url_prefix_added_for_relative_path(self, mock_urlopen):
+        """Test that relative paths get api.github.com prefix."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"{}"
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        _call_github_api("/repos/owner/repo")
+
+        # Check that the URL was prefixed
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert request.full_url == "https://api.github.com/repos/owner/repo"
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_full_url_not_modified(self, mock_urlopen):
+        """Test that full URLs are not modified."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"{}"
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        _call_github_api("https://api.github.com/graphql")
+
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert request.full_url == "https://api.github.com/graphql"
+
+
+class TestGetPrReviews:
+    """Tests for get_pr_reviews function."""
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_fetches_reviews_successfully(self, mock_urlopen):
+        """Test successful fetch of PR reviews."""
+        reviews_data = [
+            {"id": 1, "user": {"login": "reviewer1"}, "state": "APPROVED"},
+            {"id": 2, "user": {"login": "reviewer2"}, "state": "CHANGES_REQUESTED"},
+        ]
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(reviews_data).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = get_pr_reviews("123")
+
+        assert len(result) == 2
+        assert result[0]["state"] == "APPROVED"
+        assert result[1]["state"] == "CHANGES_REQUESTED"
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_constructs_correct_url(self, mock_urlopen):
+        """Test that correct URL is constructed for reviews endpoint."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"[]"
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        get_pr_reviews("456")
+
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert "/repos/owner/repo/pulls/456/reviews" in request.full_url
+
+
+class TestGetReviewThreadsGraphql:
+    """Tests for get_review_threads_graphql function."""
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_fetches_threads_successfully(self, mock_urlopen):
+        """Test successful fetch of review threads via GraphQL."""
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "thread1",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "path": "file.py",
+                                    "line": 10,
+                                    "comments": {"nodes": []},
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(graphql_response).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = get_review_threads_graphql("123")
+
+        assert len(result) == 1
+        assert result[0]["id"] == "thread1"
+        assert result[0]["isResolved"] is False
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_handles_pagination(self, mock_urlopen):
+        """Test that pagination is handled correctly."""
+        # First page response
+        page1_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor1"},
+                            "nodes": [{"id": "thread1", "isResolved": False}],
+                        }
+                    }
+                }
+            }
+        }
+        # Second page response
+        page2_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"id": "thread2", "isResolved": True}],
+                        }
+                    }
+                }
+            }
+        }
+
+        mock_response1 = MagicMock()
+        mock_response1.read.return_value = json.dumps(page1_response).encode()
+        mock_response1.__enter__ = MagicMock(return_value=mock_response1)
+        mock_response1.__exit__ = MagicMock(return_value=False)
+
+        mock_response2 = MagicMock()
+        mock_response2.read.return_value = json.dumps(page2_response).encode()
+        mock_response2.__enter__ = MagicMock(return_value=mock_response2)
+        mock_response2.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [mock_response1, mock_response2]
+
+        result = get_review_threads_graphql("123")
+
+        assert len(result) == 2
+        assert result[0]["id"] == "thread1"
+        assert result[1]["id"] == "thread2"
+        assert mock_urlopen.call_count == 2
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_handles_graphql_errors(self, mock_urlopen):
+        """Test that GraphQL errors are handled gracefully."""
+        error_response = {
+            "errors": [{"message": "Something went wrong"}],
+            "data": None,
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(error_response).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = get_review_threads_graphql("123")
+
+        # Should return empty list on GraphQL error
+        assert result == []
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_handles_missing_pr_data(self, mock_urlopen):
+        """Test handling when PR data is missing from response."""
+        response = {"data": {"repository": {"pullRequest": None}}}
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(response).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = get_review_threads_graphql("123")
+
+        assert result == []
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    @patch("time.time")
+    def test_pagination_timeout(self, mock_time, mock_urlopen):
+        """Test that pagination times out after MAX_PAGINATION_TIME."""
+        # Simulate time passing beyond timeout
+        mock_time.side_effect = [0, 0, 150]  # start, first check, second check (>120s)
+
+        page_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor1"},
+                            "nodes": [{"id": "thread1"}],
+                        }
+                    }
+                }
+            }
+        }
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps(page_response).encode()
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        result = get_review_threads_graphql("123")
+
+        # Should have fetched one page before timeout
+        assert len(result) == 1
+        assert mock_urlopen.call_count == 1
+
+
+class TestGetPrReviewContext:
+    """Tests for get_pr_review_context function."""
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_combines_reviews_and_threads(self, mock_urlopen):
+        """Test that reviews and threads are combined into context."""
+        # Mock reviews response
+        reviews_response = [
+            {"user": {"login": "reviewer1"}, "state": "APPROVED", "body": "LGTM"}
+        ]
+        # Mock GraphQL threads response
+        threads_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [
+                                {
+                                    "id": "t1",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "path": "file.py",
+                                    "line": 10,
+                                    "comments": {
+                                        "nodes": [
+                                            {
+                                                "author": {"login": "r1"},
+                                                "body": "Fix this",
+                                            }
+                                        ]
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+
+        mock_response1 = MagicMock()
+        mock_response1.read.return_value = json.dumps(reviews_response).encode()
+        mock_response1.__enter__ = MagicMock(return_value=mock_response1)
+        mock_response1.__exit__ = MagicMock(return_value=False)
+
+        mock_response2 = MagicMock()
+        mock_response2.read.return_value = json.dumps(threads_response).encode()
+        mock_response2.__enter__ = MagicMock(return_value=mock_response2)
+        mock_response2.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [mock_response1, mock_response2]
+
+        result = get_pr_review_context("123")
+
+        assert "reviewer1" in result
+        assert "APPROVED" in result
+        assert "file.py" in result
+        assert "Fix this" in result
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_handles_api_failure_gracefully(self, mock_urlopen):
+        """Test that API failures are handled gracefully."""
+        error_body = BytesIO(b"Internal Server Error")
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            url="https://api.github.com/test",
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=error_body,
+        )
+
+        result = get_pr_review_context("123")
+
+        # Should return empty string on failure
+        assert result == ""
+
+    @patch.dict(os.environ, {"GITHUB_TOKEN": "test-token", "REPO_NAME": "owner/repo"})
+    @patch("urllib.request.urlopen")
+    def test_returns_empty_when_no_reviews_or_threads(self, mock_urlopen):
+        """Test returns empty string when no reviews or threads exist."""
+        # Empty reviews
+        mock_response1 = MagicMock()
+        mock_response1.read.return_value = b"[]"
+        mock_response1.__enter__ = MagicMock(return_value=mock_response1)
+        mock_response1.__exit__ = MagicMock(return_value=False)
+
+        # Empty threads
+        threads_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        }
+        mock_response2 = MagicMock()
+        mock_response2.read.return_value = json.dumps(threads_response).encode()
+        mock_response2.__enter__ = MagicMock(return_value=mock_response2)
+        mock_response2.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [mock_response1, mock_response2]
+
+        result = get_pr_review_context("123")
+
+        assert result == ""

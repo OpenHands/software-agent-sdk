@@ -25,6 +25,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - **Review threads**: Fetches all review threads including their resolution status
   - **Smart commenting**: Avoids repeating issues that have already been raised and addressed
   - **Unresolved focus**: Prioritizes unresolved threads that may still need attention
+  - **Pagination limits**: Fetches up to 100 threads per page (with pagination) and up to 50 comments per thread. For PRs with extensive review history exceeding these limits, older threads/comments may be omitted.
 - **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures

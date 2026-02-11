@@ -81,7 +81,8 @@ def format_prompt(
         pr_number: PR number
         commit_id: HEAD commit SHA
         diff: Git diff content
-        review_context: Formatted previous review context (optional)
+        review_context: Formatted previous review context. If empty or whitespace-only,
+            the review context section is omitted from the prompt.
 
     Returns:
         Formatted prompt string

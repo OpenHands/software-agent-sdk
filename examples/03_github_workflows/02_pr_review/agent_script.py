@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -71,6 +72,8 @@ MAX_TOTAL_DIFF = 100000
 # Maximum size for review context to avoid overwhelming the prompt
 # Keeps context under ~7500 tokens (assuming ~4 chars/token average)
 MAX_REVIEW_CONTEXT = 30000
+# Maximum time (seconds) for GraphQL pagination to prevent hanging on slow APIs
+MAX_PAGINATION_TIME = 120
 
 
 def _get_required_env(name: str) -> str:
@@ -80,18 +83,21 @@ def _get_required_env(name: str) -> str:
     return value
 
 
-def _github_api_request(
+def _call_github_api(
     url: str,
     method: str = "GET",
     data: dict[str, Any] | None = None,
     accept: str = "application/vnd.github+json",
 ) -> Any:
-    """Make a GitHub API request.
+    """Make a GitHub API request (REST or GraphQL).
+
+    This function handles both REST API calls and GraphQL queries (via the /graphql
+    endpoint). The function name reflects this dual purpose.
 
     Args:
         url: Full API URL or path (will be prefixed with api.github.com if needed)
         method: HTTP method (GET, POST, etc.)
-        data: JSON data to send (for POST/PUT requests)
+        data: JSON data to send (for POST/PUT requests, including GraphQL queries)
         accept: Accept header value
 
     Returns:
@@ -140,7 +146,7 @@ def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
     """
     repo = _get_required_env("REPO_NAME")
     url = f"/repos/{repo}/pulls/{pr_number}/reviews"
-    return _github_api_request(url)
+    return _call_github_api(url)
 
 
 def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
@@ -148,13 +154,17 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
 
     The REST API doesn't expose thread resolution status, so we use GraphQL.
 
+    Note: This query fetches up to 100 review threads per page, each with up to
+    50 comments. For PRs exceeding these limits, older threads/comments may be
+    omitted. We paginate through threads but not through comments within threads.
+
     Returns a list of thread objects containing:
     - id: Thread ID
     - isResolved: Whether the thread is resolved
     - isOutdated: Whether the thread is outdated (code changed)
     - path: File path
     - line: Line number
-    - comments: List of comments in the thread
+    - comments: List of comments in the thread (up to 50 per thread)
     """
     repo = _get_required_env("REPO_NAME")
     owner, repo_name = repo.split("/")
@@ -193,8 +203,19 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
 
     threads: list[dict[str, Any]] = []
     cursor = None
+    start_time = time.time()
+    page_count = 0
 
     while True:
+        # Check for overall pagination timeout
+        elapsed = time.time() - start_time
+        if elapsed > MAX_PAGINATION_TIME:
+            logger.warning(
+                f"GraphQL pagination timeout after {elapsed:.1f}s, "
+                f"fetched {len(threads)} threads across {page_count} pages"
+            )
+            break
+
         variables = {
             "owner": owner,
             "repo": repo_name,
@@ -202,7 +223,7 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
             "cursor": cursor,
         }
 
-        result = _github_api_request(
+        result = _call_github_api(
             "https://api.github.com/graphql",
             method="POST",
             data={"query": query, "variables": variables},
@@ -219,11 +240,24 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
         review_threads = pr_data.get("reviewThreads", {})
         nodes = review_threads.get("nodes", [])
         threads.extend(nodes)
+        page_count += 1
+
+        logger.debug(
+            f"Fetched page {page_count} with {len(nodes)} threads "
+            f"(total: {len(threads)})"
+        )
 
         page_info = review_threads.get("pageInfo", {})
         if not page_info.get("hasNextPage"):
             break
         cursor = page_info.get("endCursor")
+
+    # Warn if we hit pagination limits
+    if len(threads) >= 100 and page_count == 1:
+        logger.warning(
+            f"Fetched {len(threads)} review threads (at page limit). "
+            "Some threads may be omitted for PRs with extensive review history."
+        )
 
     return threads
 
@@ -246,11 +280,22 @@ def format_review_context(
     if not reviews and not threads:
         return ""
 
-    lines: list[str] = []
+    sections: list[str] = []
+    current_size = 0
+
+    def _add_section(section: str) -> bool:
+        """Add a section if it fits within max_size. Returns True if added."""
+        nonlocal current_size
+        section_size = len(section) + 1  # +1 for newline separator
+        if current_size + section_size > max_size:
+            return False
+        sections.append(section)
+        current_size += section_size
+        return True
 
     # Format reviews (high-level review decisions)
     if reviews:
-        lines.append("### Previous Reviews\n")
+        review_lines: list[str] = ["### Previous Reviews\n"]
         for review in reviews:
             user_data = review.get("user") or {}
             user = user_data.get("login", "unknown")
@@ -266,43 +311,73 @@ def format_review_context(
                 "PENDING": "⏳",
             }.get(state, "❓")
 
-            lines.append(f"- {state_emoji} **{user}** ({state})")
+            review_lines.append(f"- {state_emoji} **{user}** ({state})")
             if body:
                 # Indent the body and truncate if too long
                 body_preview = body[:500] + "..." if len(body) > 500 else body
                 indented = "\n".join(f"  > {line}" for line in body_preview.split("\n"))
-                lines.append(indented)
-            lines.append("")
+                review_lines.append(indented)
+            review_lines.append("")
+
+        review_section = "\n".join(review_lines)
+        if not _add_section(review_section):
+            # Even reviews section doesn't fit, return truncation message
+            return (
+                f"... [review context truncated, "
+                f"content exceeds {max_size:,} chars] ..."
+            )
 
     # Format review threads with resolution status
     if threads:
         resolved_threads = [t for t in threads if t.get("isResolved")]
         unresolved_threads = [t for t in threads if not t.get("isResolved")]
 
+        # Unresolved threads (higher priority)
         if unresolved_threads:
-            lines.append("### Unresolved Review Threads\n")
-            lines.append(
+            header = (
+                "### Unresolved Review Threads\n\n"
                 "*These threads have not been resolved and may need attention:*\n"
             )
-            for thread in unresolved_threads:
-                lines.extend(_format_thread(thread))
+            if not _add_section(header):
+                count = len(unresolved_threads)
+                sections.append(
+                    f"\n... [truncated, {count} unresolved threads omitted] ..."
+                )
+            else:
+                threads_added = 0
+                for thread in unresolved_threads:
+                    thread_lines = _format_thread(thread)
+                    thread_section = "\n".join(thread_lines)
+                    if not _add_section(thread_section):
+                        remaining = len(unresolved_threads) - threads_added
+                        sections.append(
+                            f"\n... [truncated, {remaining} unresolved "
+                            "threads omitted] ..."
+                        )
+                        break
+                    threads_added += 1
 
-        if resolved_threads:
-            lines.append("### Resolved Review Threads\n")
-            lines.append("*These threads have been resolved but provide context:*\n")
-            for thread in resolved_threads:
-                lines.extend(_format_thread(thread))
+        # Resolved threads (lower priority, add if space remains)
+        if resolved_threads and current_size < max_size:
+            header = (
+                "### Resolved Review Threads\n\n"
+                "*These threads have been resolved but provide context:*\n"
+            )
+            if _add_section(header):
+                threads_added = 0
+                for thread in resolved_threads:
+                    thread_lines = _format_thread(thread)
+                    thread_section = "\n".join(thread_lines)
+                    if not _add_section(thread_section):
+                        remaining = len(resolved_threads) - threads_added
+                        sections.append(
+                            f"\n... [truncated, {remaining} resolved "
+                            "threads omitted] ..."
+                        )
+                        break
+                    threads_added += 1
 
-    result = "\n".join(lines)
-
-    # Truncate if too long
-    if len(result) > max_size:
-        result = (
-            result[:max_size]
-            + f"\n\n... [review context truncated, {len(result):,} chars total] ..."
-        )
-
-    return result
+    return "\n".join(sections)
 
 
 def _format_thread(thread: dict[str, Any]) -> list[str]:
