@@ -49,3 +49,4 @@ jobs:
                   sdk-version: ${{ github.event.pull_request.head.sha }}
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  lmnr-api-key: ${{ secrets.LMNR_SKILLS_API_KEY }}

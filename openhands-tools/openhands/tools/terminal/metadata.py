@@ -64,17 +64,18 @@ class CmdOutputMetadata(BaseModel):
 
     @classmethod
     def matches_ps1_metadata(cls, string: str) -> list[re.Match[str]]:
-        matches = []
+        """Find all valid PS1 metadata blocks in the string."""
+        matches: list[re.Match[str]] = []
         for match in CMD_OUTPUT_METADATA_PS1_REGEX.finditer(string):
+            content = match.group(1).strip()
             try:
-                json.loads(match.group(1).strip())  # Try to parse as JSON
+                json.loads(content)
                 matches.append(match)
             except json.JSONDecodeError:
                 logger.debug(
-                    f"Failed to parse PS1 metadata -  Skipping: [{match.group(1)}]"
-                    + traceback.format_exc()
+                    f"Failed to parse PS1 metadata - Skipping: [{content[:200]}"
+                    f"{'...' if len(content) > 200 else ''}]" + traceback.format_exc()
                 )
-                continue  # Skip if not valid JSON
         return matches
 
     @classmethod

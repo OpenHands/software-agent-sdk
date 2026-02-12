@@ -2,9 +2,11 @@
 
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel, field_validator, model_validator
 
 
 # Import the functions from resolve_model_config.py
@@ -14,6 +16,85 @@ from resolve_model_config import (  # noqa: E402  # type: ignore[import-not-foun
     MODELS,
     find_models_by_id,
 )
+
+
+class LLMConfig(BaseModel):
+    """Pydantic model for LLM configuration validation."""
+
+    model: str
+    temperature: float | None = None
+    top_p: float | None = None
+    reasoning_effort: str | None = None
+    disable_vision: bool | None = None
+    litellm_extra_body: dict[str, Any] | None = None
+
+    @field_validator("model")
+    @classmethod
+    def model_must_start_with_litellm_proxy(cls, v: str) -> str:
+        if not v.startswith("litellm_proxy/"):
+            raise ValueError(f"model must start with 'litellm_proxy/', got '{v}'")
+        return v
+
+    @field_validator("temperature")
+    @classmethod
+    def temperature_in_range(cls, v: float | None) -> float | None:
+        if v is not None and not (0.0 <= v <= 2.0):
+            raise ValueError(f"temperature must be between 0.0 and 2.0, got {v}")
+        return v
+
+    @field_validator("top_p")
+    @classmethod
+    def top_p_in_range(cls, v: float | None) -> float | None:
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError(f"top_p must be between 0.0 and 1.0, got {v}")
+        return v
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def reasoning_effort_valid(cls, v: str | None) -> str | None:
+        valid_values = {"low", "medium", "high"}
+        if v is not None and v not in valid_values:
+            raise ValueError(
+                f"reasoning_effort must be one of {valid_values}, got '{v}'"
+            )
+        return v
+
+
+class EvalModelConfig(BaseModel):
+    """Pydantic model for evaluation model configuration validation."""
+
+    id: str
+    display_name: str
+    llm_config: LLMConfig
+
+    @field_validator("id")
+    @classmethod
+    def id_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("id cannot be empty")
+        return v
+
+    @field_validator("display_name")
+    @classmethod
+    def display_name_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("display_name cannot be empty")
+        return v
+
+
+class EvalModelsRegistry(BaseModel):
+    """Pydantic model for the entire MODELS registry validation."""
+
+    models: dict[str, EvalModelConfig]
+
+    @model_validator(mode="after")
+    def id_matches_key(self) -> "EvalModelsRegistry":
+        for key, config in self.models.items():
+            if config.id != key:
+                raise ValueError(
+                    f"Model key '{key}' doesn't match id field '{config.id}'"
+                )
+        return self
 
 
 def test_find_models_by_id_single_model():
@@ -120,60 +201,29 @@ def test_find_models_by_id_preserves_full_config():
     assert result[0]["llm_config"]["temperature"] == 0.0
 
 
-# Tests for expected models from issue #1495
-# Note: claude-4.5-sonnet is implemented as claude-sonnet-4-5-20250929 (pinned version)
-EXPECTED_MODELS = [
-    "claude-4.5-opus",
-    "claude-sonnet-4-5-20250929",
-    "gemini-3-pro",
-    "gemini-3-flash",
-    "gpt-5.2",
-    "gpt-5.2-high-reasoning",
-    "gpt-oss-20b",
-    "kimi-k2-thinking",
-    "minimax-m2",
-    "minimax-m2.1",
-    "deepseek-v3.2-reasoner",
-    "qwen-3-coder",
-    "glm-4.7",
-    "qwen3-coder-next",
-    "qwen3-coder-30b-a3b-instruct",
-]
+def test_all_models_valid_with_pydantic():
+    """Test that all models pass Pydantic validation.
+
+    This single test validates:
+    - All required fields are present (id, display_name, llm_config, llm_config.model)
+    - Model id field matches dictionary key
+    - model starts with 'litellm_proxy/'
+    - temperature is between 0.0 and 2.0 (if present)
+    - top_p is between 0.0 and 1.0 (if present)
+    - reasoning_effort is one of 'low', 'medium', 'high' (if present)
+    """
+    # This will raise ValidationError if any model is invalid
+    registry = EvalModelsRegistry(models=MODELS)
+    assert len(registry.models) == len(MODELS)
 
 
-def test_all_expected_models_present():
-    """Test that all expected models from issue #1495 are present."""
-    for model_id in EXPECTED_MODELS:
-        assert model_id in MODELS, f"Model '{model_id}' is missing from MODELS"
+def test_find_all_models():
+    """Test that find_models_by_id works for all models."""
+    all_model_ids = list(MODELS.keys())
+    result = find_models_by_id(all_model_ids)
 
-
-def test_expected_models_have_required_fields():
-    """Test that all expected models have required fields."""
-    for model_id in EXPECTED_MODELS:
-        model = MODELS[model_id]
-        assert "id" in model, f"Model '{model_id}' missing 'id' field"
-        assert "display_name" in model, f"Model '{model_id}' missing 'display_name'"
-        assert "llm_config" in model, f"Model '{model_id}' missing 'llm_config'"
-        assert "model" in model["llm_config"], (
-            f"Model '{model_id}' missing 'model' in llm_config"
-        )
-
-
-def test_expected_models_id_matches_key():
-    """Test that model id field matches the dictionary key."""
-    for model_id in EXPECTED_MODELS:
-        model = MODELS[model_id]
-        assert model["id"] == model_id, (
-            f"Model key '{model_id}' doesn't match id field '{model['id']}'"
-        )
-
-
-def test_find_all_expected_models():
-    """Test that find_models_by_id works for all expected models."""
-    result = find_models_by_id(EXPECTED_MODELS)
-
-    assert len(result) == len(EXPECTED_MODELS)
-    for i, model_id in enumerate(EXPECTED_MODELS):
+    assert len(result) == len(all_model_ids)
+    for i, model_id in enumerate(all_model_ids):
         assert result[i]["id"] == model_id
 
 
