@@ -8,7 +8,8 @@ on:
     #   2. A draft PR is marked as ready for review, OR
     #   3. A maintainer adds the 'review-this' label, OR
     #   4. A maintainer requests openhands-agent or all-hands-bot as a reviewer
-    # Only users with write access can add labels or request reviews, ensuring security.
+    # Adding labels and requesting new reviewers requires write access. GitHub may also allow PR authors
+    # to re-request review from a previous reviewer.
     # The PR code is explicitly checked out for review, but secrets are only accessible
     # because the workflow runs in the base repository context
     pull_request_target:
