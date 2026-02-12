@@ -115,11 +115,9 @@ def test_get_features_with_provider_prefix():
     )
     assert get_features("litellm_proxy/gpt-4o").supports_reasoning_effort is False
 
-    # Nested provider paths should be passed through for LiteLLM to interpret.
-    assert (
-        get_features("openrouter/anthropic/sonnet-4-5").supports_reasoning_effort
-        is False
-    )
+    # Known reasoning-capable model IDs should be recognized.
+    assert get_features("claude-sonnet-4-5").supports_reasoning_effort is True
+    assert get_features("anthropic/claude-sonnet-4-5").supports_reasoning_effort is True
 
 
 def test_get_features_case_insensitive():
