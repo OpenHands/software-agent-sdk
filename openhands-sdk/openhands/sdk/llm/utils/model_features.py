@@ -54,31 +54,25 @@ class ModelFeatures:
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
 
-def _normalize_litellm_model(model: str) -> tuple[str | None, str]:
-    normalized = model.strip().lower()
-
-    if normalized.startswith(LITELLM_PROXY_PREFIX):
-        normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
-
-    custom_provider = None
-    model_id = normalized
-    if "/" in normalized:
-        custom_provider, model_id = normalized.split("/", 1)
-
-    return custom_provider, model_id
-
-
 def _supports_reasoning_effort(model: str | None) -> bool:
-    """Return True if the model supports reasoning_effort via LiteLLM."""
+    """Return True if the model supports reasoning_effort via LiteLLM.
+
+    We pass the full model string to LiteLLM so it can run its own provider
+    parsing logic (including nested provider paths like `openrouter/anthropic/...`
+    and other special cases).
+
+    We only strip our `litellm_proxy/` wrapper prefix, since it is not a real
+    LiteLLM provider.
+    """
     if not model:
         return False
 
-    custom_provider, model_id = _normalize_litellm_model(model)
+    normalized = model.strip().lower()
+    if normalized.startswith(LITELLM_PROXY_PREFIX):
+        normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
 
     try:
-        return bool(
-            supports_reasoning(model=model_id, custom_llm_provider=custom_provider)
-        )
+        return bool(supports_reasoning(model=normalized, custom_llm_provider=None))
     except Exception:
         return False
 
