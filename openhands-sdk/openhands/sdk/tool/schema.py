@@ -52,14 +52,11 @@ def py_type(spec: dict[str, Any]) -> Any:
     return Any
 
 
-def _shallow_expand_circular_ref(
-    ref_def: dict[str, Any], _ref_name: str
-) -> dict[str, Any]:
+def _shallow_expand_circular_ref(ref_def: dict[str, Any]) -> dict[str, Any]:
     """Return a simple fallback for circular references.
 
     Args:
         ref_def: The definition of the referenced type.
-        _ref_name: The name of the reference (unused, kept for API compatibility).
 
     Returns:
         A generic object schema with description preserved if available.
@@ -119,9 +116,8 @@ def _process_schema_node(
                         "Circular reference detected for '%s', using shallow expansion",
                         ref_name,
                     )
-                    # Shallow expansion: include immediate properties but mark
-                    # recursive fields as generic objects
-                    return _shallow_expand_circular_ref(defs[ref_name], ref_name)
+                    # Return generic object to prevent infinite recursion
+                    return _shallow_expand_circular_ref(defs[ref_name])
 
                 # Add this ref to the visiting set for this recursion path
                 new_visiting = _visiting | {ref_name}
