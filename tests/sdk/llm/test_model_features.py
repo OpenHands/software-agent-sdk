@@ -104,13 +104,22 @@ def test_stop_words_support(model, expected_stop_words):
 
 
 def test_get_features_with_provider_prefix():
-    """Test that get_features works with provider prefixes."""
-    # Test with various provider prefixes
+    """Test that get_features works with provider prefixes.
+
+    Reasoning-effort detection delegates provider parsing to LiteLLM (we only
+    strip the `litellm_proxy/` wrapper).
+    """
     assert get_features("openai/gpt-4o").supports_reasoning_effort is False
     assert (
         get_features("anthropic/claude-3-5-sonnet").supports_reasoning_effort is False
     )
     assert get_features("litellm_proxy/gpt-4o").supports_reasoning_effort is False
+
+    # Nested provider paths should be passed through for LiteLLM to interpret.
+    assert (
+        get_features("openrouter/anthropic/sonnet-4-5").supports_reasoning_effort
+        is False
+    )
 
 
 def test_get_features_case_insensitive():
