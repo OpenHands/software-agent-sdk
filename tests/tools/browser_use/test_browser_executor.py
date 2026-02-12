@@ -140,3 +140,123 @@ async def test_browser_executor_initialization_idempotent(mock_browser_executor)
 
     # Should only be called once
     assert mock_browser_executor._server._init_browser_session.call_count == 1
+
+
+async def test_start_recording_initializes_session(mock_browser_executor):
+    """Test that start_recording initializes a recording session with correct state."""
+    import tempfile
+    from unittest.mock import AsyncMock
+
+    from openhands.tools.browser_use.recording import RecordingSession
+
+    # Set up mock CDP session that simulates successful rrweb loading
+    mock_cdp_session = AsyncMock()
+    mock_cdp_session.session_id = "test-session"
+    mock_cdp_session.cdp_client.send.Runtime.evaluate = AsyncMock(
+        side_effect=[
+            # First call: wait for rrweb load (returns success)
+            {"result": {"value": {"success": True}}},
+            # Second call: start recording (returns started)
+            {"result": {"value": {"status": "started"}}},
+        ]
+    )
+    mock_cdp_session.cdp_client.send.Page.addScriptToEvaluateOnNewDocument = AsyncMock(
+        return_value={"identifier": "script-1"}
+    )
+
+    mock_browser_session = AsyncMock()
+    mock_browser_session.get_or_create_cdp_session = AsyncMock(
+        return_value=mock_cdp_session
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a real RecordingSession and test its behavior
+        # Use output_dir - start() will create a timestamped subfolder
+        session = RecordingSession(output_dir=temp_dir)
+        result = await session.start(mock_browser_session)
+
+        # Verify the session state was properly initialized
+        assert session.is_active is True
+        assert result == "Recording started"
+        assert session._scripts_injected is True
+        # Verify a timestamped subfolder was created
+        assert session.session_dir is not None
+        assert session.session_dir.startswith(temp_dir)
+        assert "recording-" in session.session_dir
+
+
+async def test_stop_recording_returns_summary_with_event_counts():
+    """Test that stop_recording returns accurate summary with event counts."""
+    import json
+    import os
+    import tempfile
+    from unittest.mock import AsyncMock
+
+    from openhands.tools.browser_use.recording import RecordingSession
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a recording session in RECORDING state with some events
+        session = RecordingSession()
+        session._storage._session_dir = temp_dir
+        session._is_recording = True
+        session._scripts_injected = True
+
+        # Pre-populate the event buffer with some events
+        test_events = [{"type": 3, "timestamp": i, "data": {}} for i in range(25)]
+        session._events.extend(test_events)
+
+        # Set up mock CDP session for stop
+        mock_cdp_session = AsyncMock()
+        mock_cdp_session.session_id = "test-session"
+        # Return additional events from the browser when stopping
+        mock_cdp_session.cdp_client.send.Runtime.evaluate = AsyncMock(
+            return_value={
+                "result": {
+                    "value": json.dumps(
+                        {"events": [{"type": 3, "timestamp": 100, "data": {}}] * 17}
+                    )
+                }
+            }
+        )
+
+        mock_browser_session = AsyncMock()
+        mock_browser_session.get_or_create_cdp_session = AsyncMock(
+            return_value=mock_cdp_session
+        )
+
+        # Stop recording
+        result = await session.stop(mock_browser_session)
+
+        # Verify the summary contains accurate counts
+        assert "Recording stopped" in result
+        assert "42 events" in result  # 25 buffered + 17 from browser
+        assert "1 file(s)" in result
+        assert temp_dir in result
+
+        # Verify state transition
+        assert session.is_active is False
+
+        # Verify file was actually created with correct content
+        files = os.listdir(temp_dir)
+        assert len(files) == 1
+        with open(os.path.join(temp_dir, files[0])) as f:
+            saved_events = json.load(f)
+        assert len(saved_events) == 42
+
+
+async def test_stop_recording_without_active_session_returns_error():
+    """Test that stop_recording returns error when not recording."""
+    from unittest.mock import AsyncMock
+
+    from openhands.tools.browser_use.recording import RecordingSession
+
+    # Create a session that's not recording
+    session = RecordingSession()
+    assert session.is_active is False
+
+    mock_browser_session = AsyncMock()
+
+    result = await session.stop(mock_browser_session)
+
+    assert "Error" in result
+    assert "Not recording" in result
