@@ -42,6 +42,10 @@ def test_model_matches(name, pattern, expected):
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),
+        # OpenRouter docs list these as reasoning models, but LiteLLM capability
+        # metadata does not currently mark them as reasoning-capable.
+        ("openrouter/moonshotai/kimi-k2.5", False),
+        ("openrouter/moonshotai/kimi-k2-thinking", False),
         ("unknown-model", False),
     ],
 )
