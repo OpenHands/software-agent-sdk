@@ -115,7 +115,7 @@ There are two ways to trigger an automated review of a pull request:
 4. The workflow will automatically start and analyze the changes
 5. Review comments will be posted to the PR when complete
 
-**Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
+**Note**: Adding labels or requesting a *new* reviewer requires write access. GitHub may still allow PR authors to use "Re-request review" for a reviewer who has already reviewed.
 
 ## Customizing the Code Review
 
