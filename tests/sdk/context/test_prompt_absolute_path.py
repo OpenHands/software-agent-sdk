@@ -77,7 +77,7 @@ def test_agent_with_absolute_system_prompt_path():
         )
 
         # Get system message
-        system_message = agent.system_message
+        system_message = agent.static_system_message
 
         # Verify the message was rendered correctly
         assert "You are a test assistant" in system_message
@@ -99,7 +99,7 @@ def test_agent_with_relative_system_prompt_path():
     )
 
     # Get system message
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify the message was rendered correctly
     assert isinstance(system_message, str)

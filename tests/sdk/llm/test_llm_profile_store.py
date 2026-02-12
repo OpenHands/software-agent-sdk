@@ -21,7 +21,7 @@ def sample_llm() -> LLM:
     """Create a sample LLM instance for testing."""
     return LLM(
         usage_id="test-llm",
-        model="gpt-4",
+        model="gpt-4-turbo",
         temperature=0.7,
         max_output_tokens=2000,
     )
@@ -32,7 +32,7 @@ def sample_llm_with_secrets() -> LLM:
     """Create a sample LLM instance with secrets for testing."""
     return LLM(
         usage_id="test-llm-secrets",
-        model="gpt-4",
+        model="gpt-4-turbo",
         temperature=0.5,
         api_key=SecretStr("secret-api-key-12345"),
     )
@@ -138,7 +138,7 @@ def test_save_writes_valid_json(
     content = profile_path.read_text()
     data = json.loads(content)
 
-    assert data["model"] == "gpt-4"
+    assert data["model"] == "gpt-4-turbo"
     assert data["temperature"] == 0.7
 
 
@@ -162,14 +162,14 @@ def test_save_overwrites_existing(
     # Modify and save again
     modified_llm = LLM(
         usage_id="modified",
-        model="gpt-3.5-turbo",
+        model="gpt-3.5-turbo-16k",
         temperature=0.3,
     )
     profile_store.save("my_profile", modified_llm)
 
     # Load and verify
     loaded = profile_store.load("my_profile")
-    assert loaded.model == "gpt-3.5-turbo"
+    assert loaded.model == "gpt-3.5-turbo-16k"
     assert loaded.temperature == 0.3
 
 
@@ -380,8 +380,8 @@ def test_full_workflow(profile_store: LLMProfileStore) -> None:
 def test_multiple_profiles(profile_store: LLMProfileStore) -> None:
     """Test managing multiple profiles."""
     profiles_data = [
-        ("gpt4", "gpt-4", 0.7),
-        ("gpt35", "gpt-3.5-turbo", 0.5),
+        ("gpt4", "gpt-4-turbo", 0.7),
+        ("gpt35", "gpt-3.5-turbo-16k", 0.5),
         ("claude", "claude-3-opus", 0.9),
     ]
 
@@ -401,6 +401,6 @@ def test_multiple_profiles(profile_store: LLMProfileStore) -> None:
         assert loaded.temperature == expected_temp
 
     # Delete one
-    profile_store.delete("gpt35")
+    profile_store.delete("gpt4")
     assert len(profile_store.list()) == 2
-    assert "gpt35.json" not in profile_store.list()
+    assert "gpt4.json" not in profile_store.list()

@@ -1114,11 +1114,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _apply_prompt_caching(self, messages: list[Message]) -> None:
         """Applies caching breakpoints to the messages.
 
-        For new Anthropic API, we only need to mark the last user or
-          tool message as cacheable.
+        For Anthropic's prefix caching, we mark specific content blocks:
+        1. System message: Mark the first block (static prompt) for caching.
+           If there are two blocks (static + dynamic), only the first is marked
+           to enable cross-conversation cache sharing.
+        2. Last user/tool message: Mark for caching to extend the cache prefix.
         """
         if len(messages) > 0 and messages[0].role == "system":
-            messages[0].content[-1].cache_prompt = True
+            sys_content = messages[0].content
+            if len(sys_content) >= 2:
+                # Two-block structure: static (index 0) + dynamic (index 1)
+                # Mark only the static block; ensure dynamic is unmarked
+                sys_content[0].cache_prompt = True
+                sys_content[1].cache_prompt = False
+            elif len(sys_content) == 1:
+                # Single block: mark it for caching
+                sys_content[0].cache_prompt = True
+
         # NOTE: this is only needed for anthropic
         for message in reversed(messages):
             if message.role in ("user", "tool"):
