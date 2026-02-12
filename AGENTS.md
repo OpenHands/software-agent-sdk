@@ -240,6 +240,54 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+
+## Event Type Deprecation Policy
+
+When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic model used in event serialization), follow these guidelines to ensure backward compatibility:
+
+### Critical Requirement: Old Events Must Always Load
+
+**Old events should ALWAYS load without error.** Production systems may resume conversations that contain events serialized with older SDK versions. Breaking changes to event schemas will cause production failures.
+
+### When Removing a Field from an Event Type
+
+1. **Never use `extra="forbid"` without a deprecation handler** - This will reject old events that contain removed fields.
+
+2. **Add a model validator to handle deprecated fields**:
+   ```python
+   # Deprecated fields that are accepted for backward compatibility when loading
+   # old events. These fields are ignored but emit a warning.
+   # REMOVE_AT: X.X.X - Remove this list and the _handle_deprecated_fields validator
+   _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("old_field_name",)
+
+   @model_validator(mode="before")
+   @classmethod
+   def _handle_deprecated_fields(cls, data: Any) -> Any:
+       """Handle deprecated fields by emitting warnings and removing them."""
+       if not isinstance(data, dict):
+           return data
+       deprecated_found = [f for f in cls._DEPRECATED_FIELDS if f in data]
+       for field in deprecated_found:
+           warn_deprecated(
+               f"ClassName.{field}",
+               deprecated_in="X.X.X",
+               removed_in="Y.Y.Y",
+               details=f"The '{field}' field has been removed. It has no effect.",
+               stacklevel=4,
+           )
+           del data[field]
+       return data
+   ```
+
+3. **Write tests that verify both old and new event formats load correctly**:
+   - Test that old format (with deprecated field) loads successfully
+   - Test that new format (without deprecated field) works
+   - Test that loading a sequence of mixed old/new events works
+   - Test that a deprecation warning is emitted for old format
+
+### Example: See `TextContent` and `Message` in `openhands/sdk/llm/message.py`
+
+These classes demonstrate the proper pattern for handling deprecated fields while maintaining backward compatibility with persisted events.
 </CODE>
 
 <TESTING>

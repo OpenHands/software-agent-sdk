@@ -171,6 +171,42 @@ class TextContent(BaseContent):
         extra="forbid", populate_by_name=True
     )
 
+    # Deprecated fields that are accepted for backward compatibility when loading
+    # old events. These fields are ignored but emit a warning.
+    # REMOVE_AT: 1.12.0 - Remove this list and the _handle_deprecated_fields validator
+    _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("enable_truncation",)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_fields(cls, data: Any) -> Any:
+        """Handle deprecated fields by emitting warnings and removing them.
+
+        This ensures old events with deprecated fields can still be loaded without
+        errors. The fields are removed so Pydantic's extra="forbid" doesn't reject
+        them.
+
+        REMOVE_AT: 1.12.0 - Remove this validator along with _DEPRECATED_FIELDS
+        """
+        if not isinstance(data, dict):
+            return data
+
+        deprecated_found = [f for f in cls._DEPRECATED_FIELDS if f in data]
+        for field in deprecated_found:
+            warn_deprecated(
+                f"TextContent.{field}",
+                deprecated_in="1.9.0",
+                removed_in="1.12.0",
+                details=(
+                    f"The '{field}' field has been removed from TextContent. "
+                    "It has no effect and will be ignored."
+                ),
+                stacklevel=4,  # Adjust for validator call depth
+            )
+            # Remove the deprecated field so Pydantic doesn't complain
+            del data[field]
+
+        return data
+
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""
         data: dict[str, str | dict[str, str]] = {

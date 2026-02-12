@@ -516,3 +516,128 @@ def test_message_deprecated_fields_are_ignored():
     assert not hasattr(message, "function_calling_enabled")
     assert not hasattr(message, "force_string_serializer")
     assert not hasattr(message, "send_reasoning_content")
+
+
+def test_text_content_deprecated_enable_truncation_emits_warning():
+    """Test deprecated enable_truncation field emits warning but loads.
+
+    This ensures backward compatibility when loading old events that contain
+    the deprecated enable_truncation field.
+    """
+    import warnings
+
+    from deprecation import DeprecatedWarning
+
+    from openhands.sdk.llm.message import TextContent
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        content = TextContent.model_validate(
+            {"type": "text", "text": "Hello world", "enable_truncation": True}
+        )
+
+        # Should have received a deprecation warning
+        deprecation_warnings = [
+            x for x in w if issubclass(x.category, DeprecatedWarning)
+        ]
+        assert len(deprecation_warnings) == 1
+        assert "enable_truncation" in str(deprecation_warnings[0].message)
+
+    # The content should be created successfully
+    assert content.text == "Hello world"
+    assert content.type == "text"
+    # The deprecated field should not exist on the model
+    assert not hasattr(content, "enable_truncation")
+
+
+def test_text_content_old_format_with_enable_truncation_loads_successfully():
+    """Test that old event format with enable_truncation loads without error.
+
+    This simulates loading an old event that was persisted before the field
+    was deprecated. The event should load successfully and the deprecated
+    field should be ignored.
+    """
+    import warnings
+
+    from openhands.sdk.llm.message import TextContent
+
+    # Simulate the JSON structure of an old event
+    old_event_text_content = {
+        "type": "text",
+        "text": "Tool execution result",
+        "cache_prompt": False,
+        "enable_truncation": True,  # Old deprecated field
+    }
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # Suppress warnings for this test
+        content = TextContent.model_validate(old_event_text_content)
+
+    # Should load successfully
+    assert content.text == "Tool execution result"
+    assert content.type == "text"
+    assert content.cache_prompt is False
+
+
+def test_text_content_new_format_without_enable_truncation_works():
+    """Test that new event format without enable_truncation works correctly.
+
+    This verifies that the new format (without the deprecated field) continues
+    to work as expected.
+    """
+    from openhands.sdk.llm.message import TextContent
+
+    # New event format (without deprecated field)
+    new_event_text_content = {
+        "type": "text",
+        "text": "New format content",
+        "cache_prompt": True,
+    }
+
+    content = TextContent.model_validate(new_event_text_content)
+
+    assert content.text == "New format content"
+    assert content.type == "text"
+    assert content.cache_prompt is True
+
+
+def test_text_content_both_old_and_new_format_in_sequence():
+    """Test that both old and new format TextContent can be loaded in sequence.
+
+    This simulates a scenario where we're loading a conversation that contains
+    events from different SDK versions - some with deprecated fields and some
+    without.
+    """
+    import warnings
+
+    from openhands.sdk.llm.message import TextContent
+
+    # Simulate loading multiple events from different SDK versions
+    event_contents = [
+        # Old format (with deprecated field)
+        {"type": "text", "text": "Old event 1", "enable_truncation": True},
+        # New format
+        {"type": "text", "text": "New event 1"},
+        # Old format (with deprecated field and cache_prompt)
+        {
+            "type": "text",
+            "text": "Old event 2",
+            "enable_truncation": False,
+            "cache_prompt": True,
+        },
+        # New format with cache_prompt
+        {"type": "text", "text": "New event 2", "cache_prompt": True},
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # Suppress warnings for this test
+        loaded_contents = [TextContent.model_validate(ec) for ec in event_contents]
+
+    # All should load successfully
+    assert len(loaded_contents) == 4
+    assert loaded_contents[0].text == "Old event 1"
+    assert loaded_contents[1].text == "New event 1"
+    assert loaded_contents[2].text == "Old event 2"
+    assert loaded_contents[2].cache_prompt is True
+    assert loaded_contents[3].text == "New event 2"
+    assert loaded_contents[3].cache_prompt is True
