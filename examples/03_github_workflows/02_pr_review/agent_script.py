@@ -844,12 +844,14 @@ def main():
 
         if trace_id:
             # Set trace metadata for later retrieval and filtering
+            # Include model for A/B testing analysis
             Laminar.set_trace_metadata(
                 {
                     "pr_number": pr_info["number"],
                     "repo_name": pr_info["repo_name"],
                     "workflow_phase": "review",
                     "review_style": review_style,
+                    "model": model,
                 }
             )
 
@@ -864,10 +866,12 @@ def main():
                 "repo_name": pr_info["repo_name"],
                 "commit_id": commit_id,
                 "review_style": review_style,
+                "model": model,
             }
             with open("laminar_trace_info.json", "w") as f:
                 json.dump(trace_data, f, indent=2)
             logger.info(f"Laminar trace ID: {trace_id}")
+            logger.info(f"Model used: {model}")
             if span_context:
                 logger.info("Laminar span context captured for trace continuation")
             print("\n=== Laminar Trace ===")
