@@ -50,6 +50,12 @@ def test_model_matches(name, pattern, expected):
         ("openrouter/moonshotai/kimi-k2-thinking", False),
         # OpenRouter reasoning-capable models per LiteLLM metadata
         ("openrouter/deepseek/deepseek-r1", True),
+        ("openrouter/anthropic/claude-opus-4.5", True),
+        ("openrouter/openai/gpt-5", True),
+        # Eval LiteLLM proxy wrapper should not affect capability detection.
+        ("litellm_proxy/gpt-5", True),
+        ("litellm_proxy/claude-opus-4-5", True),
+        ("litellm_proxy/gemini-3-flash-preview", True),
         ("unknown-model", False),
     ],
 )
