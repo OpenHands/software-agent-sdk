@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +24,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -106,6 +108,102 @@ def mock_conversation_with_timestamped_events():
     conversation._state = state
 
     return conversation
+
+
+@pytest.mark.asyncio
+async def test_start_merges_request_and_file_hooks(tmp_path):
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir()
+    hooks_file = hooks_dir / "hooks.json"
+    hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "echo file"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    request_hooks = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[HookDefinition(command="echo request")],
+            )
+        ]
+    )
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        hook_config=request_hooks,
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        pending = conversation._pending_hook_config
+        assert pending is not None
+        hook_commands = [matcher.hooks[0].command for matcher in pending.pre_tool_use]
+        assert hook_commands == ["echo request", "echo file"]
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_start_uses_file_hooks_when_no_request_hooks(tmp_path):
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir()
+    hooks_file = hooks_dir / "hooks.json"
+    hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "echo file"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        pending = conversation._pending_hook_config
+        assert pending is not None
+        hook_commands = [matcher.hooks[0].command for matcher in pending.pre_tool_use]
+        assert hook_commands == ["echo file"]
+    finally:
+        await service.close()
 
 
 class TestEventServiceSearchEvents:

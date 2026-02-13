@@ -22,6 +22,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import AgentErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -441,6 +442,22 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
+        request_hook_config = self.stored.hook_config
+        if request_hook_config is not None and request_hook_config.is_empty():
+            request_hook_config = None
+
+        file_hook_config = HookConfig.load(working_dir=workspace.working_dir)
+        if file_hook_config.is_empty():
+            file_hook_config = None
+
+        hook_configs: list[HookConfig] = []
+        if request_hook_config is not None:
+            hook_configs.append(request_hook_config)
+        if file_hook_config is not None:
+            hook_configs.append(file_hook_config)
+
+        merged_hook_config = HookConfig.merge(hook_configs) if hook_configs else None
+
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -453,7 +470,7 @@ class EventService:
             visualizer=None,
             secrets=self.stored.secrets,
             cipher=self.cipher,
-            hook_config=self.stored.hook_config,
+            hook_config=merged_hook_config,
         )
 
         # Set confirmation mode if enabled
