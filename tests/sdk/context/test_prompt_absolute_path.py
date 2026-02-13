@@ -64,7 +64,9 @@ def test_agent_with_absolute_system_prompt_path():
         tmp_path = tmp_file.name
 
     try:
-        llm = LLM(model="gpt-4", api_key=SecretStr("test-key"), usage_id="test-llm")
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
 
         # Create agent with absolute path to system prompt
         agent = Agent(
@@ -75,7 +77,7 @@ def test_agent_with_absolute_system_prompt_path():
         )
 
         # Get system message
-        system_message = agent.system_message
+        system_message = agent.static_system_message
 
         # Verify the message was rendered correctly
         assert "You are a test assistant" in system_message
@@ -87,7 +89,7 @@ def test_agent_with_absolute_system_prompt_path():
 
 def test_agent_with_relative_system_prompt_path():
     """Test that Agent still works with relative paths (backward compatibility)."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("test-key"), usage_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
 
     # Create agent with default relative path
     agent = Agent(
@@ -97,7 +99,7 @@ def test_agent_with_relative_system_prompt_path():
     )
 
     # Get system message
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify the message was rendered correctly
     assert isinstance(system_message, str)

@@ -709,10 +709,16 @@ def load_user_skills() -> list[Skill]:
 def load_project_skills(work_dir: str | Path) -> list[Skill]:
     """Load skills from project-specific directories.
 
-    Searches for skills in {work_dir}/.openhands/skills/ and
-    {work_dir}/.openhands/microagents/ (legacy). Skills from both
-    directories are merged, with skills/ taking precedence for
-    duplicate names.
+    Searches for skills in {work_dir}/.agents/skills/,
+    {work_dir}/.openhands/skills/, and {work_dir}/.openhands/microagents/
+    (legacy). Skills are merged in priority order, with earlier directories
+    taking precedence for duplicate names.
+
+    Use .agents/skills for new skills. .openhands/skills is the legacy
+    OpenHands location, and .openhands/microagents is deprecated.
+
+    Example: If "my-skill" exists in both .agents/skills/ and
+    .openhands/skills/, the version from .agents/skills/ is used.
 
     Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
     directly from the work directory.
@@ -745,8 +751,10 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
         except (SkillError, OSError) as e:
             logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
-    # Load project-specific skills from .openhands/skills and legacy microagents
+    # Load project-specific skills from .agents/skills, .openhands/skills,
+    # and legacy microagents (priority order; first wins for duplicates)
     project_skills_dirs = [
+        work_dir / ".agents" / "skills",
         work_dir / ".openhands" / "skills",
         work_dir / ".openhands" / "microagents",  # Legacy support
     ]
@@ -804,6 +812,10 @@ def load_public_skills(
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
 
+    Note: When a skill directory contains a SKILL.md file (AgentSkills format),
+    any other markdown files in that directory or its subdirectories are treated
+    as reference materials for that skill, NOT as separate skills.
+
     Args:
         repo_url: URL of the skills repository. Defaults to the official
             OpenHands skills repository.
@@ -840,13 +852,21 @@ def load_public_skills(
             logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        # Find all .md files in the skills directory
-        md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
+        # Find SKILL.md directories (AgentSkills format) and regular .md files
+        # This ensures that markdown files in SKILL.md directories are NOT loaded
+        # as separate skills - they are reference materials for the parent skill.
+        skill_md_files = find_skill_md_directories(skills_dir)
+        skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
+        regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
 
-        logger.info(f"Found {len(md_files)} skill files in public skills repository")
+        # Combine all skill files to load
+        all_skill_files = list(skill_md_files) + list(regular_md_files)
+        logger.info(
+            f"Found {len(all_skill_files)} skill files in public skills repository"
+        )
 
         # Load each skill file
-        for skill_file in md_files:
+        for skill_file in all_skill_files:
             try:
                 skill = Skill.load(
                     path=skill_file,

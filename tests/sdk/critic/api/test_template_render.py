@@ -13,6 +13,7 @@ the ground truth values using the --generate-ground-truth flag.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -388,9 +389,11 @@ TEST_CASES: list[dict[str, Any]] = [
 
 
 @pytest.fixture
-def renderer():
+def renderer(qwen3_tokenizer_config_path):
     """Create a ChatTemplateRenderer for testing."""
-    return ChatTemplateRenderer(tokenizer_name="Qwen/Qwen3-4B-Instruct-2507")
+    with qwen3_tokenizer_config_path.open(encoding="utf-8") as handle:
+        tokenizer_config = json.load(handle)
+    return ChatTemplateRenderer(chat_template=tokenizer_config["chat_template"])
 
 
 @pytest.mark.parametrize("test_case", TEST_CASES, ids=[tc["name"] for tc in TEST_CASES])
