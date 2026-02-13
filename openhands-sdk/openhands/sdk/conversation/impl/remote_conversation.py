@@ -90,7 +90,7 @@ def _send_request(
         )
         raise e
     except httpx.RequestError as e:
-        logger.error(f"Request failed: {e}", exc_info=DEBUG)
+        logger.error("Request failed: %s", e, exc_info=DEBUG)
         raise e
 
 
@@ -283,7 +283,7 @@ class RemoteEventsList(EventsListBase):
 
     def _do_full_sync(self) -> None:
         """Perform a full sync with the remote API."""
-        logger.debug(f"Performing full sync for conversation {self._conversation_id}")
+        logger.debug("Performing full sync for conversation %s", self._conversation_id)
 
         events, had_errors = self._fetch_events_pages()
 
@@ -304,10 +304,9 @@ class RemoteEventsList(EventsListBase):
         subscription.
 
         Args:
-            page_id: Optional pagination cursor to fetch events after a known ID.
-                If the server uses inclusive pagination, the event matching
-                page_id is filtered out. Exclusive pagination simply results in
-                no match for that ID.
+            page_id: Optional pagination cursor to fetch events starting from
+                a known ID. The API uses inclusive pagination (the page_id event
+                is included in results), so we filter it out to avoid duplicates.
 
         Returns:
             Number of new events added during reconciliation.
@@ -323,9 +322,8 @@ class RemoteEventsList(EventsListBase):
         )
 
         if page_id:
-            # The API may return the page_id event again depending on whether
-            # pagination is inclusive. Drop it to avoid duplicates regardless
-            # of position in the page.
+            # The API uses inclusive pagination: when page_id is provided, results
+            # start from that event (not after it). Filter it out to avoid duplicates.
             events = [event for event in events if event.id != page_id]
 
         # Merge events into cache, acquiring lock once for all events
@@ -360,7 +358,9 @@ class RemoteEventsList(EventsListBase):
         )
         self._cached_events.insert(insert_pos, event)
         self._cached_event_ids.add(event.id)
-        logger.debug(f"Added event {event.id} to local cache at position {insert_pos}")
+        logger.debug(
+            "Added event %s to local cache at position %d", event.id, insert_pos
+        )
 
     def add_event(self, event: Event) -> None:
         """Add a new event to the local cache (called by WebSocket callback).
@@ -667,7 +667,7 @@ class RemoteConversation(BaseConversation):
             from openhands.sdk.tool.registry import get_tool_module_qualnames
 
             tool_qualnames = get_tool_module_qualnames()
-            logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
+            logger.debug("Sending tool_module_qualnames to server: %s", tool_qualnames)
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -788,11 +788,10 @@ class RemoteConversation(BaseConversation):
         # Reconcile events after WebSocket is ready to catch any events that
         # were emitted between the initial REST sync and WebSocket subscription.
         # This is the "reconciliation" part of the subscription handshake.
+        # If no events exist yet, skip reconciliation since we just did a full sync.
         last_event_id = self._state.events.get_last_event_id()
         if last_event_id:
             self._state.events.reconcile(page_id=last_event_id)
-        else:
-            self._state.events.reconcile()
 
         # Initialize secrets if provided
         if secrets:
@@ -849,9 +848,9 @@ class RemoteConversation(BaseConversation):
                 log_path = os.path.join(log_dir, event.filename)
                 with open(log_path, "w") as f:
                     f.write(event.log_data)
-                logger.debug(f"Wrote LLM completion log to {log_path}")
+                logger.debug("Wrote LLM completion log to %s", log_path)
             except Exception as e:
-                logger.warning(f"Failed to write LLM completion log: {e}")
+                logger.warning("Failed to write LLM completion log: %s", e)
 
         return callback
 
@@ -940,7 +939,7 @@ class RemoteConversation(BaseConversation):
         if resp.status_code == 409:
             logger.info("Conversation is already running; skipping run trigger")
         else:
-            logger.info(f"run() triggered successfully: {resp}")
+            logger.info("run() triggered successfully: %s", resp)
 
         if blocking:
             self._wait_for_run_completion(poll_interval, timeout)
@@ -952,7 +951,14 @@ class RemoteConversation(BaseConversation):
         settle_interval: float = RECONCILE_SETTLE_INTERVAL,
         max_cycles: int = RECONCILE_MAX_CYCLES,
     ) -> None:
-        """Ensure REST-backed events are fully synced after run completion."""
+        """Ensure REST-backed events are fully synced after run completion.
+
+        Args:
+            timeout: Maximum time to spend reconciling. If <= 0, no reconciliation
+                is performed.
+            settle_interval: Time to wait between reconciliation cycles.
+            max_cycles: Maximum number of reconciliation cycles to attempt.
+        """
         if timeout <= 0:
             return
 
@@ -964,8 +970,6 @@ class RemoteConversation(BaseConversation):
             return
 
         cycles = 0
-        deadline_reached = False
-        cycles_exhausted = False
         while time.monotonic() < deadline and cycles < max_cycles:
             time.sleep(settle_interval)
             added = self._state.events.reconcile(page_id=last_event_id)
@@ -974,15 +978,13 @@ class RemoteConversation(BaseConversation):
             last_event_id = self._state.events.get_last_event_id() or last_event_id
             cycles += 1
 
-        deadline_reached = time.monotonic() >= deadline
-        cycles_exhausted = cycles >= max_cycles
-        if deadline_reached:
+        if time.monotonic() >= deadline:
             logger.warning(
                 "Event reconciliation reached deadline (timeout=%.1fs); "
                 "results may be incomplete",
                 timeout,
             )
-        if cycles_exhausted:
+        if cycles >= max_cycles:
             logger.warning(
                 "Event reconciliation hit max cycles (%d); results may be incomplete",
                 max_cycles,
@@ -1140,7 +1142,7 @@ class RemoteConversation(BaseConversation):
             )
             return
         if isinstance(exc, httpx.RequestError):
-            logger.warning(f"Error polling status (will retry): {exc}")
+            logger.warning("Error polling status (will retry): %s", exc)
             return
         raise ConversationRunError(self._id, exc) from exc
 
