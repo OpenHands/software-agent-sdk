@@ -559,28 +559,6 @@ def test_text_content_old_format_with_enable_truncation_loads_successfully():
     assert content.cache_prompt is False
 
 
-def test_text_content_new_format_without_enable_truncation_works():
-    """Test that new event format without enable_truncation works correctly.
-
-    This verifies that the new format (without the deprecated field) continues
-    to work as expected.
-    """
-    from openhands.sdk.llm.message import TextContent
-
-    # New event format (without deprecated field)
-    new_event_text_content = {
-        "type": "text",
-        "text": "New format content",
-        "cache_prompt": True,
-    }
-
-    content = TextContent.model_validate(new_event_text_content)
-
-    assert content.text == "New format content"
-    assert content.type == "text"
-    assert content.cache_prompt is True
-
-
 def test_text_content_both_old_and_new_format_in_sequence():
     """Test that both old and new format TextContent can be loaded in sequence.
 
