@@ -19,10 +19,6 @@ import tarfile
 import tempfile
 import time
 
-import logging
-
-logging.disable(logging.WARNING)
-
 from openhands.sdk.io import LocalFileStore
 
 EVENTS_DIR_NAME = "events"
@@ -97,6 +93,10 @@ def measure_persist_latencies(event_files: list[dict]) -> list[dict]:
 
 
 def main():
+    import logging
+
+    logging.getLogger("openhands").setLevel(logging.ERROR)
+
     parser = argparse.ArgumentParser(description="Benchmark persist latency per event/action cycle")
     parser.add_argument("--eval-dir", required=True, help="Path to evaluation run directory (contains conversations/ and output.jsonl)")
     parser.add_argument("--output", default="bench_persist_latency_results.json", help="Output JSON file path")
