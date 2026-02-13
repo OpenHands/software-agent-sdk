@@ -46,14 +46,14 @@ jobs:
                 ) ||
                 github.event_name == 'workflow_dispatch'
             )
-        runs-on: blacksmith-4vcpu-ubuntu-2204
+        runs-on: ubuntu-22.04
         permissions:
             contents: read
             id-token: write
             pull-requests: write
         strategy:
             matrix:
-                python-version: ['3.12']
+                python-version: ['3.13']
                 job-config:
                     # Only run against 2 LLMs for condenser tests:
                     # - Claude Opus 4.5 (primary - supports thinking blocks)
@@ -163,7 +163,7 @@ jobs:
                 ) ||
                 github.event_name == 'workflow_dispatch'
             )
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             pull-requests: write
@@ -179,7 +179,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-                  python-version: '3.12'
+                  python-version: '3.13'
 
             - name: Install Python dependencies using uv
               run: |

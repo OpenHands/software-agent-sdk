@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from litellm.exceptions import BadRequestError, ContextWindowExceededError, OpenAIError
+from litellm.exceptions import (
+    APIConnectionError,
+    BadRequestError,
+    ContextWindowExceededError,
+    OpenAIError,
+)
 
 from .types import LLMContextWindowExceedError
 
@@ -14,6 +19,7 @@ LONG_PROMPT_PATTERNS: list[str] = [
     "the request exceeds the available context size",
     "context length exceeded",
     "input exceeds the context window",
+    "context window exceeds limit",  # Minimax provider
 ]
 
 
@@ -21,7 +27,10 @@ def is_context_window_exceeded(exception: Exception) -> bool:
     if isinstance(exception, (ContextWindowExceededError, LLMContextWindowExceedError)):
         return True
 
-    if not isinstance(exception, (BadRequestError, OpenAIError)):
+    # Check for litellm/openai exception types that may contain context window errors.
+    # APIConnectionError can wrap provider-specific errors (e.g., Minimax) that include
+    # context window messages in their error text.
+    if not isinstance(exception, (BadRequestError, OpenAIError, APIConnectionError)):
         return False
 
     s = str(exception).lower()

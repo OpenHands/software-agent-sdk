@@ -2,6 +2,7 @@ import os
 import subprocess
 import time
 
+from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.utils.constants import (
     CONTENT_TRUNCATED_NOTICE,
@@ -32,7 +33,12 @@ def run_shell_cmd(
     process: subprocess.Popen[str] | None = None
     try:
         process = subprocess.Popen(
-            cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=sanitized_env(),
         )
 
         stdout, stderr = process.communicate(timeout=timeout)
@@ -65,6 +71,7 @@ def check_tool_installed(tool_name: str) -> bool:
             check=True,
             cwd=os.getcwd(),
             capture_output=True,
+            env=sanitized_env(),
         )
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):

@@ -44,7 +44,7 @@ permissions:
 
 jobs:
     scan-todos:
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
     # Only run if triggered manually or if 'automatic-todo' label was added
         if: >
             github.event_name == 'workflow_dispatch' ||
@@ -62,7 +62,7 @@ jobs:
             - name: Set up Python
               uses: actions/setup-python@v6
               with:
-                  python-version: '3.12'
+                  python-version: '3.13'
 
             - name: Copy TODO scanner
               run: |
@@ -120,7 +120,7 @@ jobs:
     process-todos:
         needs: scan-todos
         if: needs.scan-todos.outputs.todo-count > 0
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         strategy:
             matrix:
                 todo: ${{ fromJson(needs.scan-todos.outputs.todos) }}
@@ -140,7 +140,7 @@ jobs:
             - name: Set up Python
               uses: actions/setup-python@v6
               with:
-                  python-version: '3.12'
+                  python-version: '3.13'
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -219,7 +219,7 @@ jobs:
                   echo "Available files:"
                   ls -la
 
-                  # Run the agent with comprehensive logging
+                  # Run the agent with detailed logging
                   echo "Starting agent execution..."
                   set +e  # Don't exit on error, we want to capture it
                   uv run python agent.py "$TODO_JSON" 2>&1 | tee agent_output.log
@@ -297,7 +297,7 @@ jobs:
     summary:
         needs: [scan-todos, process-todos]
         if: always()
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Generate Summary
               run: |
