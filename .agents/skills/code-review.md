@@ -78,6 +78,8 @@ When reviewing PRs that modify event types (e.g., `TextContent`, `Message`, `Eve
    - Load a new event format (without the deprecated field) successfully
    - Verify both can be loaded in sequence (simulating mixed conversations)
 
+3. **Test naming convention**: The version in the test name should be the **LAST version** where a particular event structure exists. For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field), not `test_v1_8_0_...` (when it was introduced). This avoids duplicate tests and clearly documents when a field was last present.
+
 **Important**: Deprecated field handlers are **permanent** and should never be removed. They ensure old conversations can always be loaded.
 
 ### Example Pattern (Required)

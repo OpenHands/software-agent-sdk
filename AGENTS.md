@@ -278,6 +278,22 @@ When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic mode
    - Test that new format (without deprecated field) works
    - Test that loading a sequence of mixed old/new events works
 
+### Test Naming Convention for Backward Compatibility Tests
+
+**The version in the test name should be the LAST version where a particular event structure exists.**
+
+For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field), not `test_v1_8_0_...` (when it was introduced).
+
+This convention:
+- Makes it clear which version's format is being tested
+- Avoids duplicate tests for the same structure across multiple versions
+- Documents when a field was last present in the schema
+
+Example test names:
+- `test_v1_10_0_text_content_with_enable_truncation` - Tests the last version with `enable_truncation`
+- `test_v1_9_0_message_with_deprecated_fields` - Tests the last version with Message deprecated fields
+- `test_text_content_current_format` - Tests the current format (no version needed)
+
 ### Example: See `TextContent` and `Message` in `openhands/sdk/llm/message.py`
 
 These classes demonstrate the proper pattern for handling deprecated fields while maintaining backward compatibility with persisted events.
