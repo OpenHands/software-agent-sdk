@@ -321,10 +321,11 @@ class RemoteEventsList(EventsListBase):
             page_id=page_id, ignore_errors=True
         )
 
-        if page_id:
+        if page_id and events and events[0].id == page_id:
             # The API uses inclusive pagination: when page_id is provided, results
-            # start from that event (not after it). Filter it out to avoid duplicates.
-            events = [event for event in events if event.id != page_id]
+            # start from that event (not after it). Remove the first event to avoid
+            # duplicates. This is O(1) since we only check the first element.
+            events = events[1:]
 
         # Merge events into cache, acquiring lock once for all events
         added_count = 0
@@ -579,6 +580,9 @@ class RemoteConversation(BaseConversation):
     _visualizer: ConversationVisualizerBase | None
     _ws_client: "WebSocketCallbackClient | None"
 
+    # Post-run reconciliation timing constants.
+    # SETTLE_INTERVAL: Wait between cycles for late events to arrive via REST.
+    # MAX_CYCLES: Limit iterations to prevent infinite loops if events keep arriving.
     RECONCILE_SETTLE_INTERVAL = 0.2
     RECONCILE_MAX_CYCLES = 5
 
