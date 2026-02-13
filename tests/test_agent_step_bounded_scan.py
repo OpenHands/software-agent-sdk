@@ -99,5 +99,46 @@ def test_agent_step_uses_last_user_message_id(tmp_path):
     assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
+def test_agent_step_legacy_state_no_last_user_id(tmp_path, caplog):
+    """Verify graceful handling of old state without last_user_message_id.
+
+    When last_user_message_id is None but blocked_messages exist (legacy state),
+    the code should log a debug message and continue processing rather than
+    checking for blocked messages.
+    """
+    import logging
+
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key="x"), tools=[])
+    workspace = LocalWorkspace(working_dir=tmp_path)
+    conv = LocalConversation(agent=agent, workspace=workspace)
+
+    conv.send_message("hi")
+    message = conv.state.events[-1]
+
+    # Simulate legacy state: blocked_messages exist but last_user_message_id is None
+    conv.state.block_message(message.id, "blocked by hook")
+    conv.state.last_user_message_id = None
+
+    # Capture debug logs
+    with caplog.at_level(logging.DEBUG, logger="openhands.sdk.agent.agent"):
+        # Step should NOT finish early since we can't check blocked messages
+        # without last_user_message_id. It will proceed to LLM call which will
+        # fail due to invalid API key, but that's expected.
+        try:
+            agent.step(conv, on_event=conv._on_event)
+        except Exception:
+            # Expected: LLM call fails with invalid API key
+            pass
+
+    # Verify the legacy fallback debug message was logged
+    assert any(
+        "Blocked messages exist but last_user_message_id is None" in record.message
+        for record in caplog.records
+    )
+
+    # Verify blocked_messages was NOT consumed (since we skipped the check)
+    assert message.id in conv.state.blocked_messages
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__]))
