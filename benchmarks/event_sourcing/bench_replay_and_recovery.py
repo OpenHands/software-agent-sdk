@@ -11,6 +11,7 @@ logs of increasing size, and measures:
 Usage:
     python bench_replay_and_recovery.py --eval-dir <path-to-eval-run>
 """
+
 import argparse
 import gc
 import json
@@ -21,6 +22,7 @@ import statistics
 import tarfile
 import tempfile
 import time
+
 
 EVENTS_DIR_NAME = "events"
 
@@ -107,15 +109,18 @@ def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
 
             total_bytes = sum(ef["size_bytes"] for ef in events)
 
+            all_files = sorted(os.listdir(events_dir))
+            json_files = [f for f in all_files if f.endswith(".json")]
+
             # Index rebuild: list dir + parse filenames
             index_times = []
             for _ in range(n_trials):
                 gc.disable()
                 t0 = time.perf_counter()
                 files = sorted(os.listdir(events_dir))
-                json_files = [f for f in files if f.endswith(".json")]
+                jfiles = [f for f in files if f.endswith(".json")]
                 index = {}
-                for fname in json_files:
+                for fname in jfiles:
                     m = pattern.match(fname)
                     if m:
                         index[int(m.group(1))] = fname
@@ -183,7 +188,7 @@ def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
             results.append(r)
 
             print(
-                f"  {target:>5} events ({total_bytes/1024:>7.1f}KB): "
+                f"  {target:>5} events ({total_bytes / 1024:>7.1f}KB): "
                 f"index={r['index_rebuild_ms']['median']:.2f}ms  "
                 f"replay={r['full_replay_ms']['median']:.2f}ms  "
                 f"recover={r['time_to_recover_ms']['median']:.2f}ms"
@@ -196,18 +201,33 @@ def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark replay time and time-to-recover vs. log size")
-    parser.add_argument("--eval-dir", required=True, help="Path to evaluation run directory (contains conversations/)")
-    parser.add_argument("--output", default="bench_replay_and_recovery_results.json", help="Output JSON file path")
-    parser.add_argument("--n-trials", type=int, default=5, help="Number of trials per checkpoint (default: 5)")
+    parser = argparse.ArgumentParser(
+        description="Benchmark replay time and time-to-recover vs. log size"
+    )
+    parser.add_argument(
+        "--eval-dir",
+        required=True,
+        help="Path to evaluation run directory (contains conversations/)",
+    )
+    parser.add_argument(
+        "--output",
+        default="bench_replay_and_recovery_results.json",
+        help="Output JSON file path",
+    )
+    parser.add_argument(
+        "--n-trials",
+        type=int,
+        default=5,
+        help="Number of trials per checkpoint (default: 5)",
+    )
     args = parser.parse_args()
 
     print("Collecting real event payloads from traces...")
     event_pool = collect_event_pool(args.eval_dir)
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("Replay Time and Time-to-Recover vs. Log Size")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     results = benchmark_replay_and_recovery(event_pool, n_trials=args.n_trials)
 
     with open(args.output, "w") as f:

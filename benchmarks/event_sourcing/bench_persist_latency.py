@@ -9,6 +9,7 @@ measure per-event and per-cycle persist latency.
 Usage:
     python bench_persist_latency.py --eval-dir <path-to-eval-run>
 """
+
 import argparse
 import gc
 import json
@@ -20,6 +21,7 @@ import tempfile
 import time
 
 from openhands.sdk.io import LocalFileStore
+
 
 EVENTS_DIR_NAME = "events"
 LOCK_FILE = "events/.eventlog.lock"
@@ -97,10 +99,25 @@ def main():
 
     logging.getLogger("openhands").setLevel(logging.ERROR)
 
-    parser = argparse.ArgumentParser(description="Benchmark persist latency per event/action cycle")
-    parser.add_argument("--eval-dir", required=True, help="Path to evaluation run directory (contains conversations/ and output.jsonl)")
-    parser.add_argument("--output", default="bench_persist_latency_results.json", help="Output JSON file path")
-    parser.add_argument("--sample-step", type=int, default=15, help="Sample every Nth conversation (default: 15)")
+    parser = argparse.ArgumentParser(
+        description="Benchmark persist latency per event/action cycle"
+    )
+    parser.add_argument(
+        "--eval-dir",
+        required=True,
+        help="Path to evaluation run directory",
+    )
+    parser.add_argument(
+        "--output",
+        default="bench_persist_latency_results.json",
+        help="Output JSON file path",
+    )
+    parser.add_argument(
+        "--sample-step",
+        type=int,
+        default=15,
+        help="Sample every Nth conversation (default: 15)",
+    )
     args = parser.parse_args()
 
     # Load instance metadata
@@ -141,7 +158,10 @@ def main():
             action_p = [r for r in persist_results if r["kind"] == "ActionEvent"]
             obs_p = [r for r in persist_results if r["kind"] == "ObservationEvent"]
             n_cycles = min(len(action_p), len(obs_p))
-            cycle_persist = [action_p[i]["persist_ms"] + obs_p[i]["persist_ms"] for i in range(n_cycles)]
+            cycle_persist = [
+                action_p[i]["persist_ms"] + obs_p[i]["persist_ms"]
+                for i in range(n_cycles)
+            ]
 
             total_persist_ms = sum(r["persist_ms"] for r in persist_results)
 
@@ -151,27 +171,37 @@ def main():
                     "n_events": len(event_files),
                     "n_cycles": n_cycles,
                     "total_persist_ms": total_persist_ms,
-                    "mean_cycle_persist_ms": statistics.mean(cycle_persist) if cycle_persist else 0,
+                    "mean_cycle_persist_ms": statistics.mean(cycle_persist)
+                    if cycle_persist
+                    else 0,
                 }
             )
-            print(f"  {instance_id[:50]:50s}  events={len(event_files):>4}  persist={total_persist_ms:>7.1f}ms")
+            n_ev = len(event_files)
+            print(
+                f"  {instance_id[:50]:50s}  events={n_ev:>4}"
+                f"  persist={total_persist_ms:>7.1f}ms"
+            )
 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     # --- Analysis ---
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("RESULTS: Persist Latency per Event / Action Cycle")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     # Per-event persist latency by type
     by_kind = {}
     for r in all_persist:
         by_kind.setdefault(r["kind"], []).append(r)
 
-    print(f"\n--- Per-Event Persist Latency ---")
-    print(f"  {'Event Type':<35} {'N':>5} {'Median':>10} {'Mean':>10} {'P95':>10} {'MedSize':>10}")
-    print(f"  {'-'*80}")
+    print("\n--- Per-Event Persist Latency ---")
+    header = (
+        f"  {'Event Type':<35} {'N':>5} {'Median':>10}"
+        f" {'Mean':>10} {'P95':>10} {'MedSize':>10}"
+    )
+    print(header)
+    print(f"  {'-' * 80}")
     for kind in [
         "SystemPromptEvent",
         "MessageEvent",
@@ -187,30 +217,36 @@ def main():
         sizes = sorted([e["size_bytes"] for e in entries])
         n = len(lats)
         print(
-            f"  {kind:<35} {n:>5} {lats[n//2]:>9.3f}ms "
-            f"{statistics.mean(lats):>9.3f}ms {lats[int(n*0.95)]:>9.3f}ms "
-            f"{sizes[n//2]:>8,}B"
+            f"  {kind:<35} {n:>5} {lats[n // 2]:>9.3f}ms "
+            f"{statistics.mean(lats):>9.3f}ms {lats[int(n * 0.95)]:>9.3f}ms "
+            f"{sizes[n // 2]:>8,}B"
         )
 
     all_lats = sorted([r["persist_ms"] for r in all_persist])
     all_sizes = sorted([r["size_bytes"] for r in all_persist])
     n = len(all_lats)
-    print(f"  {'-'*80}")
+    print(f"  {'-' * 80}")
     print(
-        f"  {'ALL EVENTS':<35} {n:>5} {all_lats[n//2]:>9.3f}ms "
-        f"{statistics.mean(all_lats):>9.3f}ms {all_lats[int(n*0.95)]:>9.3f}ms "
-        f"{all_sizes[n//2]:>8,}B"
+        f"  {'ALL EVENTS':<35} {n:>5} {all_lats[n // 2]:>9.3f}ms "
+        f"{statistics.mean(all_lats):>9.3f}ms {all_lats[int(n * 0.95)]:>9.3f}ms "
+        f"{all_sizes[n // 2]:>8,}B"
     )
 
     # Per action cycle
-    print(f"\n--- Per Action Cycle (Action + Observation) ---")
-    cycle_persists = [s["mean_cycle_persist_ms"] for s in conv_summaries if s["n_cycles"] > 0]
-    print(f"  Median per-cycle persist time:  {statistics.median(cycle_persists):.2f}ms")
+    print("\n--- Per Action Cycle (Action + Observation) ---")
+    cycle_persists = [
+        s["mean_cycle_persist_ms"] for s in conv_summaries if s["n_cycles"] > 0
+    ]
+    print(
+        f"  Median per-cycle persist time:  {statistics.median(cycle_persists):.2f}ms"
+    )
     print(f"  Mean per-cycle persist time:    {statistics.mean(cycle_persists):.2f}ms")
 
     # Save
     with open(args.output, "w") as f:
-        json.dump({"per_event": all_persist, "conversations": conv_summaries}, f, indent=2)
+        json.dump(
+            {"per_event": all_persist, "conversations": conv_summaries}, f, indent=2
+        )
     print(f"\nRaw data saved to {args.output}")
 
 

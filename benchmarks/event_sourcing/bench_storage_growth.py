@@ -9,13 +9,14 @@ storage composition by event type.
 Usage:
     python bench_storage_growth.py --eval-dir <path-to-eval-run>
 """
+
 import argparse
 import json
 import os
+import shutil
 import statistics
 import tarfile
 import tempfile
-import shutil
 
 
 def analyze_conversation(tarpath: str) -> dict | None:
@@ -65,9 +66,19 @@ def analyze_conversation(tarpath: str) -> dict | None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark storage growth across evaluation conversations")
-    parser.add_argument("--eval-dir", required=True, help="Path to evaluation run directory (contains conversations/)")
-    parser.add_argument("--output", default="bench_storage_growth_results.json", help="Output JSON file path")
+    parser = argparse.ArgumentParser(
+        description="Benchmark storage growth across evaluation conversations"
+    )
+    parser.add_argument(
+        "--eval-dir",
+        required=True,
+        help="Path to evaluation run directory (contains conversations/)",
+    )
+    parser.add_argument(
+        "--output",
+        default="bench_storage_growth_results.json",
+        help="Output JSON file path",
+    )
     args = parser.parse_args()
 
     conv_dir = os.path.join(args.eval_dir, "conversations")
@@ -87,35 +98,37 @@ def main():
         all_convs.append(conv)
 
         if (i + 1) % 50 == 0:
-            print(f"  Processed {i+1}/{len(tarballs)}...")
+            print(f"  Processed {i + 1}/{len(tarballs)}...")
 
     print(f"\n  Analyzed {len(all_convs)} conversations total")
 
     # --- Conversation Size Distribution ---
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("1. Conversation Size Distribution")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     n_events_all = sorted([c["n_events"] for c in all_convs])
     sizes_kb = sorted([c["total_bytes"] / 1024 for c in all_convs])
     n = len(n_events_all)
-    print(f"  Events per conversation:")
+    print("  Events per conversation:")
     print(
-        f"    Min={n_events_all[0]}  P25={n_events_all[n//4]}  "
-        f"Median={n_events_all[n//2]}  P75={n_events_all[3*n//4]}  "
+        f"    Min={n_events_all[0]}  P25={n_events_all[n // 4]}  "
+        f"Median={n_events_all[n // 2]}  P75={n_events_all[3 * n // 4]}  "
         f"Max={n_events_all[-1]}"
     )
-    print(f"    Mean={statistics.mean(n_events_all):.1f}  Stdev={statistics.stdev(n_events_all):.1f}")
-    print(f"  Storage per conversation:")
+    mean_ev = statistics.mean(n_events_all)
+    stdev_ev = statistics.stdev(n_events_all)
+    print(f"    Mean={mean_ev:.1f}  Stdev={stdev_ev:.1f}")
+    print("  Storage per conversation:")
     print(
-        f"    Min={sizes_kb[0]:.1f}KB  Median={sizes_kb[n//2]:.1f}KB  "
-        f"P75={sizes_kb[3*n//4]:.1f}KB  P95={sizes_kb[int(n*0.95)]:.1f}KB  "
+        f"    Min={sizes_kb[0]:.1f}KB  Median={sizes_kb[n // 2]:.1f}KB  "
+        f"P75={sizes_kb[3 * n // 4]:.1f}KB  P95={sizes_kb[int(n * 0.95)]:.1f}KB  "
         f"Max={sizes_kb[-1]:.1f}KB"
     )
 
     # --- Storage Composition ---
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("2. Storage Composition by Event Type")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     global_kinds = {}
     for c in all_convs:
         for kind, data in c["by_kind"].items():
@@ -127,19 +140,31 @@ def main():
     total_all_bytes = sum(v["total_bytes"] for v in global_kinds.values())
     total_all_events = sum(v["count"] for v in global_kinds.values())
 
-    print(f"  {'Event Type':<35} {'Count':>7} {'%Events':>8} {'TotalMB':>9} {'%Storage':>9} {'AvgKB':>8}")
-    print(f"  {'-'*78}")
-    for kind in sorted(global_kinds, key=lambda k: global_kinds[k]["total_bytes"], reverse=True):
+    header = (
+        f"  {'Event Type':<35} {'Count':>7} {'%Events':>8}"
+        f" {'TotalMB':>9} {'%Storage':>9} {'AvgKB':>8}"
+    )
+    print(header)
+    print(f"  {'-' * 78}")
+    for kind in sorted(
+        global_kinds, key=lambda k: global_kinds[k]["total_bytes"], reverse=True
+    ):
         d = global_kinds[kind]
         pct_events = d["count"] / total_all_events * 100
         pct_storage = d["total_bytes"] / total_all_bytes * 100
         avg_kb = d["total_bytes"] / d["count"] / 1024
+        total_mb = d["total_bytes"] / 1024 / 1024
         print(
-            f"  {kind:<35} {d['count']:>7} {pct_events:>7.1f}% {d['total_bytes']/1024/1024:>8.1f}MB "
-            f"{pct_storage:>8.1f}% {avg_kb:>7.2f}KB"
+            f"  {kind:<35} {d['count']:>7}"
+            f" {pct_events:>7.1f}% {total_mb:>8.1f}MB"
+            f" {pct_storage:>8.1f}% {avg_kb:>7.2f}KB"
         )
-    print(f"  {'-'*78}")
-    print(f"  {'TOTAL':<35} {total_all_events:>7} {'100.0':>7}% {total_all_bytes/1024/1024:>8.1f}MB")
+    print(f"  {'-' * 78}")
+    total_mb = total_all_bytes / 1024 / 1024
+    print(
+        f"  {'TOTAL':<35} {total_all_events:>7}"
+        f" {'100.0':>7}% {total_mb:>8.1f}MB"
+    )
 
     # Save
     output = {
@@ -164,7 +189,9 @@ def main():
             kind: {
                 "count": global_kinds[kind]["count"],
                 "total_bytes": global_kinds[kind]["total_bytes"],
-                "pct_storage": global_kinds[kind]["total_bytes"] / total_all_bytes * 100,
+                "pct_storage": global_kinds[kind]["total_bytes"]
+                / total_all_bytes
+                * 100,
             }
             for kind in global_kinds
         },
