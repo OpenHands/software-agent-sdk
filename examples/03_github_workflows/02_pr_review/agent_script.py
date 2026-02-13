@@ -842,16 +842,20 @@ def main():
             else None
         )
 
-        if trace_id:
-            # Set trace metadata for later retrieval and filtering
-            Laminar.set_trace_metadata(
-                {
+        if trace_id and laminar_span_context:
+            # Set trace metadata within an active span context
+            # Using start_as_current_span with parent_span_context to continue the trace
+            with Laminar.start_as_current_span(
+                name="pr-review-metadata",
+                parent_span_context=laminar_span_context,
+                metadata={
                     "pr_number": pr_info["number"],
                     "repo_name": pr_info["repo_name"],
                     "workflow_phase": "review",
                     "review_style": review_style,
-                }
-            )
+                },
+            ) as span:
+                pass  # Metadata is set within this active span context
 
             # Store trace context in file for GitHub artifact upload
             # This allows the evaluation workflow to add its span to this trace
