@@ -278,7 +278,7 @@ When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic mode
    - Test that new format (without deprecated field) works
    - Test that loading a sequence of mixed old/new events works
 
-### Test Naming Convention for Backward Compatibility Tests
+### Test Naming Convention for Event Backward Compatibility Tests
 
 **The version in the test name should be the LAST version where a particular event structure exists.**
 
