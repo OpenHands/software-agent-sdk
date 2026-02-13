@@ -421,9 +421,9 @@ class LocalConversation(BaseConversation):
             # Wire lazy-loading callback for FallbackRouter so that
             # lazily-loaded fallback LLMs get registered in the LLMRegistry
             # and picked up by ConversationStats.
-            from openhands.sdk.llm.router.impl.fallback import FallbackRouter
+            from openhands.sdk.agent.base import FallbackStrategy
 
-            if isinstance(self.agent.llm, FallbackRouter):
+            if isinstance(self.agent.llm, FallbackStrategy):
                 self.agent.llm.set_on_llm_created(self.llm_registry.add)
 
             # Wire lazy-loading callback for agent-level FallbackStrategy
