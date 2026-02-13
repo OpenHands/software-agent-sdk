@@ -284,12 +284,22 @@ def main() -> int:
         return 1
 
     def resolve(root, dotted: str):
-        """Resolve a dotted path to a griffe object."""
+        """Resolve a dotted path to a griffe object.
+
+        Handles the case where griffe.load() returns the module directly
+        (e.g., root.path == 'openhands.sdk') rather than a hierarchy.
+        """
+        # If the root IS the module we're looking for, return it directly
+        if getattr(root, "path", None) == dotted:
+            return root
+
+        # Try direct subscript access
         try:
             return root[dotted]
         except Exception:
             pass
-        # Try relative to SDK_PACKAGE
+
+        # Try relative to SDK_PACKAGE (for submodule paths)
         rel = dotted
         if dotted.startswith(SDK_PACKAGE + "."):
             rel = dotted[len(SDK_PACKAGE) + 1 :]
