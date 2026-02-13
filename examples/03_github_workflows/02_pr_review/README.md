@@ -115,19 +115,19 @@ There are two ways to trigger an automated review of a pull request:
 4. The workflow will automatically start and analyze the changes
 5. Review comments will be posted to the PR when complete
 
-**Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
+**Note**: Adding labels or requesting a *new* reviewer requires write access. GitHub may still allow PR authors to use "Re-request review" for a reviewer who has already reviewed.
 
 ## Customizing the Code Review
 
-Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.openhands/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
+Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.agents/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
 
 ### How It Works
 
-The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.openhands/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
+The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.agents/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
 
 ### Example: Custom Code Review Skill
 
-Create `.openhands/skills/code-review.md` in your repository:
+Create `.agents/skills/code-review.md` in your repository:
 
 ```markdown
 ---
@@ -169,7 +169,7 @@ You are a code reviewer for this project. Follow these guidelines:
 
 ### Reference Example
 
-See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.openhands/skills/code-review.md) for a complete example of a custom code review skill.
+See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.agents/skills/code-review.md) for a complete example of a custom code review skill.
 
 ## Composite Action
 

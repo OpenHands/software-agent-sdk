@@ -145,6 +145,13 @@ MODELS = {
             "disable_vision": True,
         },
     },
+    "glm-5": {
+        "id": "glm-5",
+        "display_name": "GLM-5",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5",
+        },
+    },
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",
         "display_name": "Qwen3 Coder Next",
