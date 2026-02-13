@@ -141,7 +141,7 @@ async def test_start_merges_request_and_file_hooks(tmp_path):
 
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         hook_config=request_hooks,
@@ -185,7 +185,7 @@ async def test_start_uses_file_hooks_when_no_request_hooks(tmp_path):
 
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
     )
