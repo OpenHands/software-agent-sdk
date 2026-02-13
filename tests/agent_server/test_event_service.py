@@ -215,7 +215,7 @@ async def test_start_ignores_malformed_hooks_json(tmp_path):
 
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
     )
