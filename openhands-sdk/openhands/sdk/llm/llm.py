@@ -463,7 +463,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._init_model_info_and_caps()
 
         if self.temperature is None:
-            self.temperature = get_default_temperature(self.model)
+            self.temperature = get_default_temperature()
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "

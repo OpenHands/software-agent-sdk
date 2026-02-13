@@ -314,42 +314,17 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
     assert features.send_reasoning_content is expected_send_reasoning
 
 
-@pytest.mark.parametrize(
-    "model,expected_temperature",
-    [
-        # All models now default to None (use provider default)
-        ("gpt-4", None),
-        ("gpt-4o", None),
-        ("gpt-4o-mini", None),
-        ("claude-3-5-sonnet", None),
-        ("claude-3-7-sonnet", None),
-        ("gemini-1.5-pro", None),
-        ("gemini-2.5-pro-experimental", None),
-        ("o1", None),
-        ("o1-mini", None),
-        ("o3", None),
-        ("deepseek-chat", None),
-        ("llama-3.1-70b", None),
-        ("azure/gpt-4o-mini", None),
-        ("openai/gpt-4o", None),
-        ("anthropic/claude-3-5-sonnet", None),
-        ("unknown-model", None),
-    ],
-)
-def test_get_default_temperature(model, expected_temperature):
-    """Test that get_default_temperature returns correct values for different models."""
-    assert get_default_temperature(model) == expected_temperature
+def test_get_default_temperature():
+    """Test that get_default_temperature returns None."""
+    assert get_default_temperature() is None
 
 
 def test_get_default_temperature_fallback():
-    """Test that get_default_temperature returns None for unknown models."""
-    assert get_default_temperature("completely-unknown-model-12345") is None
-    assert get_default_temperature("some-random-model") is None
+    """Test that get_default_temperature returns None."""
+    assert get_default_temperature() is None
 
 
-def test_get_default_temperature_case_insensitive():
-    """Test that get_default_temperature returns None regardless of case."""
+def test_get_default_temperature_returns_none():
+    """Test that get_default_temperature returns None regardless of input."""
     # All models now return None, so case doesn't matter
-    assert get_default_temperature("gpt-4o") is None
-    assert get_default_temperature("GPT-4O") is None
-    assert get_default_temperature("Gpt-4o") is None
+    assert get_default_temperature() is None

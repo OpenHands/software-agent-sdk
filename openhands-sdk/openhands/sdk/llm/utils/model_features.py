@@ -180,10 +180,10 @@ def get_features(model: str) -> ModelFeatures:
     )
 
 
-def get_default_temperature(_model: str) -> float | None:
-    """Return the default temperature for a given model pattern.
+def get_default_temperature() -> float | None:
+    """Return the default temperature for a given model.
 
-    Returns None for most models to use provider defaults.
+    Returns None to use provider defaults.
     Previously supported specific temperature overrides for certain models,
     but now all models use provider defaults.
     """
