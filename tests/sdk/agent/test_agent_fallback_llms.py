@@ -18,7 +18,7 @@ MESSAGES = [Message(role="user", content=[TextContent(text="Hello")])]
 TOOLS: list = []
 
 
-def _make_agent(
+def get_agent(
     fallback_strategy: FallbackStrategy | None = None,
     mock_profile_store: Mock | None = None,
 ) -> Agent:
@@ -46,7 +46,7 @@ def test_primary_succeeds(mock_make_completion):
     mock_response = Mock(spec=LLMResponse)
     mock_make_completion.return_value = mock_response
 
-    agent = _make_agent()
+    agent = get_agent()
     result = agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
 
     assert result is mock_response
@@ -63,7 +63,7 @@ def test_no_fallbacks_raises_original(mock_make_completion):
     """With no fallback strategy, the original exception propagates."""
     mock_make_completion.side_effect = LLMRateLimitError("rate limited")
 
-    agent = _make_agent()
+    agent = get_agent()
 
     with pytest.raises(LLMRateLimitError, match="rate limited"):
         agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
@@ -76,7 +76,7 @@ def test_empty_fallback_list_raises(mock_make_completion):
 
     mock_store = Mock()
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: []})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     with pytest.raises(LLMRateLimitError, match="rate limited"):
         agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
@@ -98,7 +98,7 @@ def test_fallback_succeeds(mock_make_completion):
     mock_store = Mock()
     mock_store.load.return_value = Mock(spec=LLM)
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: ["my-fallback"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     result = agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
 
@@ -128,7 +128,7 @@ def test_second_fallback_succeeds(mock_make_completion):
     strategy = FallbackStrategy(
         fallback_mapping={LLMServiceUnavailableError: ["fb-1", "fb-2"]}
     )
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     result = agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
 
@@ -149,7 +149,7 @@ def test_unmapped_exception_raises_immediately(mock_make_completion):
 
     mock_store = Mock()
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: ["fb-1"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     with pytest.raises(LLMAuthenticationError, match="bad key"):
         agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
@@ -167,7 +167,7 @@ def test_non_transient_exceptions_skip_fallback(mock_make_completion, exc_class)
 
     mock_store = Mock()
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: ["fb-1"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     with pytest.raises(exc_class):
         agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
@@ -192,7 +192,7 @@ def test_mapped_exceptions_trigger_fallback(mock_make_completion, exc_class):
     mock_store = Mock()
     mock_store.load.return_value = Mock(spec=LLM)
     strategy = FallbackStrategy(fallback_mapping={exc_class: ["fb-1"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     result = agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
 
@@ -220,7 +220,7 @@ def test_profile_load_failure_skips_to_next(mock_make_completion):
     ]
 
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: ["fb-1", "fb-2"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     result = agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
 
@@ -236,7 +236,7 @@ def test_all_profiles_fail_to_load(mock_make_completion):
     mock_store.load.side_effect = FileNotFoundError("no profile")
 
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: ["fb-1"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     with pytest.raises(Exception):
         agent._make_llm_completion_with_fallback(MESSAGES, TOOLS)
@@ -256,7 +256,7 @@ def test_on_token_forwarded_to_fallback(mock_make_completion):
     mock_store.load.return_value = Mock(spec=LLM)
     on_token = Mock()
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: ["fb-1"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     agent._make_llm_completion_with_fallback(MESSAGES, TOOLS, on_token=on_token)
 
@@ -279,7 +279,7 @@ def test_tools_forwarded_to_fallback(mock_make_completion):
     mock_store.load.return_value = Mock(spec=LLM)
     tools = [Mock(), Mock()]
     strategy = FallbackStrategy(fallback_mapping={LLMRateLimitError: ["fb-1"]})
-    agent = _make_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
+    agent = get_agent(fallback_strategy=strategy, mock_profile_store=mock_store)
 
     agent._make_llm_completion_with_fallback(MESSAGES, tools)
 

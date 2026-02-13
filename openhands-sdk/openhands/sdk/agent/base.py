@@ -4,7 +4,7 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from pathlib import Path
@@ -72,9 +72,20 @@ class FallbackStrategy(BaseModel):
     If None, the default profile directory is used.
     """
 
+    _on_llm_created: Callable[[LLM], None] | None = PrivateAttr(default=None)
+    _llm_cache: dict[str, LLM] = PrivateAttr(default_factory=dict)
+
     @cached_property
     def profile_store(self) -> LLMProfileStore:
         return LLMProfileStore(self.profile_store_dir)
+
+    def set_on_llm_created(self, callback: Callable[[LLM], None]) -> None:
+        """Set callback fired when a fallback LLM is first loaded.
+
+        Typically wired to ``llm_registry.add`` so the new LLM appears in
+        ``ConversationStats``.
+        """
+        self._on_llm_created = callback
 
     def resolve(self, error: Exception | None = None) -> list[str]:
         """
@@ -102,12 +113,24 @@ class FallbackStrategy(BaseModel):
         """Yield ``(profile_name, llm)`` pairs for fallbacks matching *error*.
 
         Profiles that fail to load are logged and skipped.
+        LLMs are cached so repeated calls don't reload or re-register them.
         """
         for name in self.resolve(error):
+            # Return from cache if already loaded
+            if name in self._llm_cache:
+                yield name, self._llm_cache[name]
+                continue
             try:
-                yield name, self.profile_store.load(name)
+                llm = self.profile_store.load(name)
+                self._llm_cache[name] = llm
+                if self._on_llm_created is not None:
+                    self._on_llm_created(llm)
+                yield name, llm
             except Exception as exc:
-                logger.warning(f"Failed to load fallback profile '{name}': {exc}")
+                logger.warning(
+                    f"[FallbackStrategy] Failed to load "
+                    f"fallback profile '{name}': {exc}"
+                )
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
