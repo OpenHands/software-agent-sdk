@@ -42,6 +42,8 @@ jobs:
             - name: Run PR Review
               uses: OpenHands/software-agent-sdk/.github/actions/pr-review@main
               with:
+                  # LLM model(s) to use. Can be comma-separated for A/B testing
+                  # - one model will be randomly selected per review
                   llm-model: litellm_proxy/claude-sonnet-4-5-20250929
                   llm-base-url: https://llm-proxy.app.all-hands.dev
                   # Review style: roasted (other option: standard)
