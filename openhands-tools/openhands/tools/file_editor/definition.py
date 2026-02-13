@@ -21,7 +21,7 @@ from openhands.sdk.tool import (
 from openhands.tools.file_editor.utils.diff import visualize_diff
 
 
-CommandLiteral = Literal["view", "create", "str_replace", "insert", "undo_edit"]
+CommandLiteral = Literal["view", "create", "str_replace", "insert"]
 
 
 class FileEditorAction(Action):
@@ -29,7 +29,7 @@ class FileEditorAction(Action):
 
     command: CommandLiteral = Field(
         description="The commands to run. Allowed options are: `view`, `create`, "
-        "`str_replace`, `insert`, `undo_edit`."
+        "`str_replace`, `insert`."
     )
     path: str = Field(description="Absolute path to file or directory.")
     file_text: str | None = Field(
@@ -69,8 +69,7 @@ class FileEditorObservation(Observation):
 
     command: CommandLiteral = Field(
         description=(
-            "The command that was run: `view`, `create`, `str_replace`, "
-            "`insert`, or `undo_edit`."
+            "The command that was run: `view`, `create`, `str_replace`, or `insert`."
         )
     )
 
@@ -129,15 +128,15 @@ class FileEditorObservation(Observation):
         if not self.path:
             return False
 
-        if self.command not in ("create", "str_replace", "insert", "undo_edit"):
+        if self.command not in ("create", "str_replace", "insert"):
             return False
 
         # File creation case
         if self.command == "create" and self.new_content and not self.prev_exist:
             return True
 
-        # File modification cases (str_replace, insert, undo_edit)
-        if self.command in ("str_replace", "insert", "undo_edit"):
+        # File modification cases (str_replace, insert)
+        if self.command in ("str_replace", "insert"):
             # Need both old and new content to show meaningful diff
             if self.old_content is not None and self.new_content is not None:
                 # Only show diff if content actually changed
@@ -151,7 +150,6 @@ Command = Literal[
     "create",
     "str_replace",
     "insert",
-    "undo_edit",
 ]
 
 
@@ -160,7 +158,6 @@ TOOL_DESCRIPTION = """Custom editing tool for viewing, creating and editing file
 * If `path` is a text file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep
 * The `create` command cannot be used if the specified `path` already exists as a file
 * If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
-* The `undo_edit` command will revert the last edit made to the file at `path`
 * This tool can be used for creating and editing files in plain-text format.
 
 

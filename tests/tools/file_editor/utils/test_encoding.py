@@ -411,40 +411,6 @@ def test_create_non_utf8_file():
             pass
 
 
-def test_undo_edit_non_utf8_file(temp_non_utf8_file):
-    """Test undoing an edit in a non-UTF-8 encoded file."""
-    # First, make a change
-    file_editor(
-        command="str_replace",
-        path=str(temp_non_utf8_file),
-        old_str="Привет, мир!",
-        new_str="Здравствуй, мир!",
-    )
-
-    # Now undo the change
-    result = file_editor(
-        command="undo_edit",
-        path=str(temp_non_utf8_file),
-    )
-
-    # Parse the result
-    # Parse the result - now using direct access
-
-    # Verify the undo was successful
-    assert result.text is not None and "undone successfully" in result.text
-
-    # Verify the original content was restored with the correct encoding
-    with open(temp_non_utf8_file, "rb") as f:
-        content = f.read()
-
-    try:
-        decoded = content.decode("cp1251")
-        assert "Привет, мир!" in decoded
-        assert "Здравствуй, мир!" not in decoded
-    except UnicodeDecodeError:
-        pytest.fail("File was not restored with the correct encoding")
-
-
 def test_complex_workflow_non_utf8_file(temp_non_utf8_file):
     """Test a complex workflow with multiple operations on a non-UTF-8 encoded file."""
     # 1. View the file
@@ -485,22 +451,14 @@ def test_complex_workflow_non_utf8_file(temp_non_utf8_file):
     assert result.text is not None and "Добавленная строка" in result.text
     assert result.text is not None and "boolean_var = True" in result.text
 
-    # 5. Undo the last edit
-    result = file_editor(
-        command="undo_edit",
-        path=str(temp_non_utf8_file),
-    )
-    # Parse the result - now using direct access
-    assert result.text is not None and "undone successfully" in result.text
-
-    # 6. Verify the file content after all operations
+    # 5. Verify the file content after all operations
     with open(temp_non_utf8_file, "rb") as f:
         content = f.read()
 
     try:
         decoded = content.decode("cp1251")
         assert "Здравствуй, мир!" in decoded  # From step 2
-        assert "Добавленная строка" not in decoded  # Undone in step 5
+        assert "Добавленная строка" in decoded  # From step 3
     except UnicodeDecodeError:
         pytest.fail("File was not maintained with the correct encoding")
 

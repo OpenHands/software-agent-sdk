@@ -122,19 +122,3 @@ def test_insert_validation(temp_file):
     )
     assert_error_result(result)
     assert result.is_error and "should be within the range" in result.text
-
-
-def test_undo_validation(temp_file):
-    """Test undo_edit validation."""
-    # Create a test file
-    content = "line 1\nline 2\nline 3\n"
-    with open(temp_file, "w") as f:
-        f.write(content)
-
-    # Try to undo without any previous edits
-    result = file_editor(
-        command="undo_edit",
-        path=temp_file,
-    )
-    assert_error_result(result)
-    assert result.is_error and "No edit history found" in result.text
