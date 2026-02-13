@@ -269,6 +269,10 @@ def main() -> int:
         return 1
 
     # Load previous from PyPI
+    # Ensure griffe cache directory exists (workaround for griffe issue)
+    griffe_cache = os.path.expanduser("~/.cache/griffe")
+    os.makedirs(griffe_cache, exist_ok=True)
+
     try:
         old_root = griffe.load_pypi(
             package=SDK_PACKAGE,
