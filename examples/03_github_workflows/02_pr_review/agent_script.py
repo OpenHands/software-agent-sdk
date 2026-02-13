@@ -53,6 +53,7 @@ from typing import Any
 from lmnr import Laminar
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
+from openhands.sdk.context.skills import load_project_skills
 from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.git.utils import run_git_command
 from openhands.tools.preset.default import get_default_condenser, get_default_tools
@@ -720,7 +721,7 @@ def main():
         prompt = format_prompt(
             skill_trigger=skill_trigger,
             title=pr_info.get("title", "N/A"),
-            body=pr_info.get("body", "No description provided"),
+            body=pr_info.get("body") or "No description provided",
             repo_name=pr_info.get("repo_name", "N/A"),
             base_branch=pr_info.get("base_branch", "main"),
             head_branch=pr_info.get("head_branch", "N/A"),
@@ -750,12 +751,22 @@ def main():
         # Get the current working directory as workspace
         cwd = os.getcwd()
 
-        # Create AgentContext with public skills enabled
-        # This loads skills from https://github.com/OpenHands/skills including:
+        # Load project-specific skills from the repository being reviewed
+        # This includes AGENTS.md, .cursorrules, and skills from .agents/skills/
+        project_skills = load_project_skills(cwd)
+        logger.info(
+            f"Loaded {len(project_skills)} project skills: "
+            f"{[s.name for s in project_skills]}"
+        )
+
+        # Create AgentContext with public skills enabled and project skills
+        # Public skills from https://github.com/OpenHands/skills include:
         # - /codereview: Standard code review skill
         # - /codereview-roasted: Linus Torvalds style brutally honest review
+        # Project skills include repo-specific guidance (AGENTS.md, etc.)
         agent_context = AgentContext(
             load_public_skills=True,
+            skills=project_skills,
         )
 
         # Create agent with default tools and agent context
