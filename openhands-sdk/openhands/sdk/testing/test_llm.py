@@ -17,6 +17,15 @@ Example:
     >>> user_msg = Message(role="user", content=[TextContent(text="Hi")])
     >>> response = llm.completion([user_msg])
     >>> print(response.message.content[0].text)  # "Hello!"
+
+    >>> # Scripted errors (like unittest.mock side_effect)
+    >>> from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
+    >>> llm = TestLLM.from_responses([
+    ...     Message(role="assistant", content=[TextContent(text="OK")]),
+    ...     LLMContextWindowExceedError(),
+    ... ])
+    >>> llm.completion([...])  # returns "OK"
+    >>> llm.completion([...])  # raises LLMContextWindowExceedError
 """
 
 from __future__ import annotations
@@ -93,7 +102,7 @@ class TestLLM(LLM):
     __test__ = False
 
     model: str = Field(default="test-model")
-    _scripted_responses: deque[Message] = PrivateAttr(default_factory=deque)
+    _scripted_responses: deque[Message | Exception] = PrivateAttr(default_factory=deque)
     _call_count: int = PrivateAttr(default=0)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -110,18 +119,19 @@ class TestLLM(LLM):
     @classmethod
     def from_messages(
         cls,
-        messages: list[Message],
+        messages: list[Message | Exception],
         *,
         model: str = "test-model",
         usage_id: str = "test-llm",
         **kwargs: Any,
     ) -> TestLLM:
-        """Create a TestLLM with scripted responses.
+        """Create a TestLLM with scripted responses and/or errors.
 
         Args:
-            messages: List of Message objects to return in order.
-                Each call to completion() or responses() will return
-                the next message from this list.
+            messages: List of Message or Exception objects to return in order.
+                Each call to completion() or responses() consumes the next
+                item: Message objects are returned normally, Exception objects
+                are raised (like unittest.mock side_effect).
             model: Model name (default: "test-model")
             usage_id: Usage ID for metrics (default: "test-llm")
             **kwargs: Additional LLM configuration options
@@ -132,7 +142,7 @@ class TestLLM(LLM):
         Example:
             >>> llm = TestLLM.from_messages([
             ...     Message(role="assistant", content=[TextContent(text="First")]),
-            ...     Message(role="assistant", content=[TextContent(text="Second")]),
+            ...     LLMContextWindowExceedError("context too long"),
             ... ])
         """
         return cls(
@@ -166,6 +176,7 @@ class TestLLM(LLM):
 
         Raises:
             TestLLMExhaustedError: When no more scripted responses are available.
+            Exception: Any scripted exception placed in the response queue.
         """
         if not self._scripted_responses:
             raise TestLLMExhaustedError(
@@ -173,8 +184,14 @@ class TestLLM(LLM):
                 f"(exhausted after {self._call_count} calls)"
             )
 
-        message = self._scripted_responses.popleft()
+        item = self._scripted_responses.popleft()
         self._call_count += 1
+
+        # Raise scripted exceptions (like unittest.mock side_effect)
+        if isinstance(item, Exception):
+            raise item
+
+        message = item
 
         # Create a minimal ModelResponse for raw_response
         raw_response = self._create_model_response(message)
