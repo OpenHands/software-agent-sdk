@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
-from openhands.sdk.utils.deprecation import warn_deprecated
+from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
 
 
 logger = get_logger(__name__)
@@ -171,41 +171,16 @@ class TextContent(BaseContent):
         extra="forbid", populate_by_name=True
     )
 
-    # Deprecated fields that are accepted for backward compatibility when loading
-    # old events. These fields are ignored but emit a warning.
-    # REMOVE_AT: 1.12.0 - Remove this list and the _handle_deprecated_fields validator
+    # Deprecated fields that are silently removed for backward compatibility when
+    # loading old events. These are kept permanently to ensure old conversations
+    # can always be loaded.
     _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("enable_truncation",)
 
     @model_validator(mode="before")
     @classmethod
     def _handle_deprecated_fields(cls, data: Any) -> Any:
-        """Handle deprecated fields by emitting warnings and removing them.
-
-        This ensures old events with deprecated fields can still be loaded without
-        errors. The fields are removed so Pydantic's extra="forbid" doesn't reject
-        them.
-
-        REMOVE_AT: 1.12.0 - Remove this validator along with _DEPRECATED_FIELDS
-        """
-        if not isinstance(data, dict):
-            return data
-
-        deprecated_found = [f for f in cls._DEPRECATED_FIELDS if f in data]
-        for field in deprecated_found:
-            warn_deprecated(
-                f"TextContent.{field}",
-                deprecated_in="1.9.0",
-                removed_in="1.12.0",
-                details=(
-                    f"The '{field}' field has been removed from TextContent. "
-                    "It has no effect and will be ignored."
-                ),
-                stacklevel=4,  # Adjust for validator call depth
-            )
-            # Remove the deprecated field so Pydantic doesn't complain
-            del data[field]
-
-        return data
+        """Remove deprecated fields for backward compatibility with old events."""
+        return handle_deprecated_model_fields(data, cls._DEPRECATED_FIELDS)
 
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""
@@ -259,8 +234,8 @@ class Message(BaseModel):
     )
 
     # Deprecated fields that were moved to to_chat_dict() parameters.
-    # These fields are ignored but accepted for backward compatibility.
-    # REMOVE_AT: 1.12.0 - Remove this list and the _handle_deprecated_fields validator
+    # These are silently removed for backward compatibility when loading old events.
+    # Kept permanently to ensure old conversations can always be loaded.
     _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = (
         "cache_enabled",
         "vision_enabled",
@@ -274,30 +249,8 @@ class Message(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _handle_deprecated_fields(cls, data: Any) -> Any:
-        """Handle deprecated fields by emitting warnings and removing them.
-
-        REMOVE_AT: 1.12.0 - Remove this validator along with _DEPRECATED_FIELDS
-        """
-        if not isinstance(data, dict):
-            return data
-
-        deprecated_found = [f for f in cls._DEPRECATED_FIELDS if f in data]
-        for field in deprecated_found:
-            warn_deprecated(
-                f"Message.{field}",
-                deprecated_in="1.9.1",
-                removed_in="1.12.0",
-                details=(
-                    f"The '{field}' field has been removed from Message. "
-                    "Pass it as a parameter to to_chat_dict() instead, or use "
-                    "LLM.format_messages_for_llm() which handles this automatically."
-                ),
-                stacklevel=4,  # Adjust for validator call depth
-            )
-            # Remove the deprecated field so Pydantic doesn't complain
-            del data[field]
-
-        return data
+        """Remove deprecated fields for backward compatibility with old events."""
+        return handle_deprecated_model_fields(data, cls._DEPRECATED_FIELDS)
 
     @property
     def contains_image(self) -> bool:

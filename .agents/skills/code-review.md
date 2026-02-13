@@ -71,30 +71,32 @@ When reviewing PRs that modify event types (e.g., `TextContent`, `Message`, `Eve
 
 ### Required for Removing/Deprecating Fields
 
-1. **Model validator present**: If a field is being removed from an event type with `extra="forbid"`, there MUST be a `@model_validator(mode="before")` that removes the deprecated field before validation. Otherwise, old events will fail to load.
+1. **Model validator present**: If a field is being removed from an event type with `extra="forbid"`, there MUST be a `@model_validator(mode="before")` that uses `handle_deprecated_model_fields()` to remove the deprecated field before validation. Otherwise, old events will fail to load.
 
-2. **Deprecation warning emitted**: The validator should call `warn_deprecated()` to alert developers that the field is deprecated.
-
-3. **Tests for backward compatibility**: The PR MUST include tests that:
+2. **Tests for backward compatibility**: The PR MUST include tests that:
    - Load an old event format (with the deprecated field) successfully
    - Load a new event format (without the deprecated field) successfully
    - Verify both can be loaded in sequence (simulating mixed conversations)
-   - Verify a deprecation warning is emitted for old format
+
+**Important**: Deprecated field handlers are **permanent** and should never be removed. They ensure old conversations can always be loaded.
 
 ### Example Pattern (Required)
 
 ```python
-_DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("old_field_name",)
+from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
 
-@model_validator(mode="before")
-@classmethod
-def _handle_deprecated_fields(cls, data: Any) -> Any:
-    if not isinstance(data, dict):
-        return data
-    for field in [f for f in cls._DEPRECATED_FIELDS if f in data]:
-        warn_deprecated(f"ClassName.{field}", deprecated_in="X.X.X", ...)
-        del data[field]
-    return data
+class MyModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Deprecated fields that are silently removed for backward compatibility
+    # when loading old events. These are kept permanently.
+    _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("old_field_name",)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_fields(cls, data: Any) -> Any:
+        """Remove deprecated fields for backward compatibility with old events."""
+        return handle_deprecated_model_fields(data, cls._DEPRECATED_FIELDS)
 ```
 
 ### Why This Matters
