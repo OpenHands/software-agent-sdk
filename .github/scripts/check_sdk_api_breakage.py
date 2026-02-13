@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""SDK API breakage detection using Griffe.
+
+This script compares the current workspace SDK against the previous PyPI release
+to detect breaking changes in the public API. It focuses on symbols exported via
+`__all__` in `openhands.sdk` and enforces a MINOR version bump policy when
+breaking changes are detected.
+
+Complementary to the deprecation mechanism:
+- Deprecation (`check_deprecations.py`): Handles planned lifecycle with user warnings
+- This script: Catches unplanned/accidental API breaks automatically
+"""
+
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -7,17 +21,28 @@ import urllib.request
 from collections.abc import Iterable
 
 
+# Package configuration - centralized for maintainability
+SDK_PACKAGE = "openhands.sdk"
+DISTRIBUTION_NAME = "openhands-sdk"
+PYPROJECT_RELATIVE_PATH = "openhands-sdk/pyproject.toml"
+
+
 def read_version_from_pyproject(path: str) -> str:
+    """Read the version string from a pyproject.toml file."""
     with open(path, "rb") as f:
         data = tomllib.load(f)
     proj = data.get("project", {})
     v = proj.get("version")
     if not v:
-        raise SystemExit("Could not read version from pyproject")
+        raise SystemExit(f"Could not read version from {path}")
     return str(v)
 
 
 def _version_tuple_fallback(v: str) -> tuple[int, int, int]:
+    """Parse version string into (major, minor, patch) tuple.
+
+    Handles versions like "1.2.3", "1.2.3a1", "1.2.3.dev0", etc.
+    """
     parts = v.split(".")
     nums: list[int] = []
     for p in parts[:3]:
@@ -33,32 +58,47 @@ def _version_tuple_fallback(v: str) -> tuple[int, int, int]:
     return tuple(nums)  # type: ignore[return-value]
 
 
+class _FallbackVersion:
+    """Lightweight version object for comparison when packaging is unavailable."""
+
+    def __init__(self, t: tuple[int, int, int]):
+        self.t = t
+        self.major, self.minor, self.micro = t
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, _FallbackVersion):
+            return NotImplemented
+        return self.t < other.t
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _FallbackVersion):
+            return NotImplemented
+        return self.t == other.t
+
+    def __repr__(self) -> str:
+        return f"_FallbackVersion({self.t})"
+
+
 def _parse_version(v: str):
+    """Parse a version string, using packaging if available, else fallback."""
     try:
         from packaging import version as _pkg_version
 
         return _pkg_version.parse(v)
     except Exception:
-        # Fallback: return a lightweight object with comparable tuple behavior
-        class _V:
-            def __init__(self, t: tuple[int, int, int]):
-                self.t = t
-                self.major, self.minor, self.micro = t
-
-            def __lt__(self, other: object) -> bool:
-                if not isinstance(other, _V):
-                    return NotImplemented
-                return self.t < other.t
-
-            def __eq__(self, other: object) -> bool:
-                if not isinstance(other, _V):
-                    return NotImplemented
-                return self.t == other.t
-
-        return _V(_version_tuple_fallback(v))
+        return _FallbackVersion(_version_tuple_fallback(v))
 
 
 def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
+    """Fetch the previous release version from PyPI.
+
+    Args:
+        pkg: Package name on PyPI (e.g., "openhands-sdk")
+        current: Current version to find the predecessor of, or None for latest
+
+    Returns:
+        Previous version string, or None if not found or on network error
+    """
     req = urllib.request.Request(
         url=f"https://pypi.org/pypi/{pkg}/json",
         headers={"User-Agent": "openhands-sdk-api-check/1.0"},
@@ -67,7 +107,8 @@ def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             meta = json.load(r)
-    except Exception:
+    except Exception as e:
+        print(f"::warning title=SDK API::Failed to fetch PyPI metadata: {e}")
         return None
 
     releases = list(meta.get("releases", {}).keys())
@@ -75,9 +116,7 @@ def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
         return None
 
     def _sort_key(s: str):
-        v = _parse_version(s)
-        # packaging.Version supports comparison; fallback also supports it
-        return v
+        return _parse_version(s)
 
     if current is None:
         releases_sorted = sorted(releases, key=_sort_key, reverse=True)
@@ -91,14 +130,21 @@ def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
 
 
 def ensure_griffe() -> None:
+    """Verify griffe is installed, raising an error if not."""
     try:
         import griffe  # noqa: F401
-    except Exception:
-        sys.stderr.write("griffe not installed; please install griffe[pypi]\n")
-        raise
+    except ImportError:
+        sys.stderr.write(
+            "ERROR: griffe not installed. Install with: pip install griffe[pypi]\n"
+        )
+        raise SystemExit(1)
 
 
 def _collect_breakages_pairs(objs: Iterable[tuple[object, object]]) -> list:
+    """Find breaking changes between pairs of old/new API objects.
+
+    Only reports breakages for public API members.
+    """
     import griffe
     from griffe import ExplanationStyle
 
@@ -114,11 +160,19 @@ def _collect_breakages_pairs(objs: Iterable[tuple[object, object]]) -> list:
 
 
 def _extract_exported_names(module) -> set[str]:
+    """Extract names exported from a module via __all__.
+
+    Falls back to is_exported attribute or non-underscore names if __all__ is not
+    defined.
+    """
     names: set[str] = set()
+
+    # Primary: use __all__ if defined
     try:
         all_var = module["__all__"]
     except Exception:
         all_var = None
+
     if all_var is not None:
         val = getattr(all_var, "value", None)
         elts = getattr(val, "elements", None)
@@ -127,65 +181,114 @@ def _extract_exported_names(module) -> set[str]:
                 s = getattr(el, "value", None)
                 if isinstance(s, str):
                     names.add(s)
+
     if names:
         return names
-    # Fallback: rely on is_exported if available, else non-underscore names
+
+    # Fallback: rely on is_exported if available
     for n, m in getattr(module, "members", {}).items():
         if n == "__all__":
             continue
         if getattr(m, "is_exported", False):
             names.add(n)
+
     if names:
         return names
+
+    # Last resort: non-underscore names
     return {n for n in getattr(module, "members", {}) if not n.startswith("_")}
 
 
+def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
+    """Check if version bump policy is satisfied for breaking changes.
+
+    Policy: Breaking changes require at least a MINOR version bump.
+
+    Returns:
+        0 if policy satisfied, 1 if not
+    """
+    if total_breaks == 0:
+        print("No SDK breaking changes detected")
+        return 0
+
+    parsed_prev = _parse_version(prev)
+    parsed_new = _parse_version(new_version)
+
+    old_major = getattr(parsed_prev, "major", _version_tuple_fallback(prev)[0])
+    old_minor = getattr(parsed_prev, "minor", _version_tuple_fallback(prev)[1])
+    new_major = getattr(parsed_new, "major", _version_tuple_fallback(new_version)[0])
+    new_minor = getattr(parsed_new, "minor", _version_tuple_fallback(new_version)[1])
+
+    # MINOR bump required: same major, higher minor OR higher major
+    ok = (new_major > old_major) or (new_major == old_major and new_minor > old_minor)
+
+    if not ok:
+        print(
+            f"::error title=SDK SemVer::Breaking changes detected ({total_breaks}); "
+            f"require at least minor version bump from {old_major}.{old_minor}.x, "
+            f"but new is {new_version}"
+        )
+        return 1
+
+    print(
+        f"SDK breaking changes detected ({total_breaks}) and version bump policy "
+        f"satisfied ({prev} -> {new_version})"
+    )
+    return 0
+
+
 def main() -> int:
+    """Main entry point for SDK API breakage detection."""
     ensure_griffe()
     import griffe
 
     repo_root = os.getcwd()
-    sdk_pkg = "openhands.sdk"
-    current_pyproj = os.path.join(repo_root, "openhands-sdk", "pyproject.toml")
+    current_pyproj = os.path.join(repo_root, PYPROJECT_RELATIVE_PATH)
     new_version = read_version_from_pyproject(current_pyproj)
 
-    include = os.environ.get("SDK_INCLUDE_PATHS", sdk_pkg).split(",")
+    include = os.environ.get("SDK_INCLUDE_PATHS", SDK_PACKAGE).split(",")
     include = [p.strip() for p in include if p.strip()]
 
-    prev = get_prev_pypi_version("openhands-sdk", new_version)
+    prev = get_prev_pypi_version(DISTRIBUTION_NAME, new_version)
     if not prev:
         print(
-            "::warning title=SDK API::No previous openhands-sdk release found; "
+            f"::warning title=SDK API::No previous {DISTRIBUTION_NAME} release found; "
             "skipping breakage check",
         )
         return 0
 
+    print(f"Comparing {DISTRIBUTION_NAME} {new_version} against {prev}")
+
     # Load currently checked-out code
-    new_root = griffe.load(
-        sdk_pkg, search_paths=[os.path.join(repo_root, "openhands-sdk")]
-    )
+    try:
+        new_root = griffe.load(
+            SDK_PACKAGE, search_paths=[os.path.join(repo_root, "openhands-sdk")]
+        )
+    except Exception as e:
+        print(f"::error title=SDK API::Failed to load current SDK: {e}")
+        return 1
 
     # Load previous from PyPI
     try:
         old_root = griffe.load_pypi(
-            package="openhands.sdk",
-            distribution="openhands-sdk",
+            package=SDK_PACKAGE,
+            distribution=DISTRIBUTION_NAME,
             version_spec=f"=={prev}",
         )
     except Exception as e:
-        print(f"::warning title=SDK API::Failed to load previous from PyPI: {e}")
-        return 0
+        print(f"::error title=SDK API::Failed to load {prev} from PyPI: {e}")
+        return 1
 
     def resolve(root, dotted: str):
-        # Try absolute path first
+        """Resolve a dotted path to a griffe object."""
         try:
             return root[dotted]
         except Exception:
             pass
-        # Try relative to sdk_pkg
+        # Try relative to SDK_PACKAGE
         rel = dotted
-        if dotted.startswith(sdk_pkg + "."):
-            rel = dotted[len(sdk_pkg) + 1 :]
+        if dotted.startswith(SDK_PACKAGE + "."):
+            rel = dotted[len(SDK_PACKAGE) + 1 :]
         obj = root
         for part in rel.split("."):
             obj = obj[part]
@@ -193,36 +296,39 @@ def main() -> int:
 
     total_breaks = 0
 
-    # Always process top-level exports of openhands.sdk
+    # Process top-level exports of openhands.sdk (governed by __all__)
     try:
-        old_mod = resolve(old_root, sdk_pkg)
-        new_mod = resolve(new_root, sdk_pkg)
+        old_mod = resolve(old_root, SDK_PACKAGE)
+        new_mod = resolve(new_root, SDK_PACKAGE)
         old_exports = _extract_exported_names(old_mod)
         new_exports = _extract_exported_names(new_mod)
 
+        # Check for removed exports
         removed = sorted(old_exports - new_exports)
         for name in removed:
             print(
                 f"::error title=SDK API::Removed exported symbol '{name}' from "
-                + f"{sdk_pkg}.__all__",
+                f"{SDK_PACKAGE}.__all__",
             )
             total_breaks += 1
 
+        # Check for signature changes in common exports
         common = sorted(old_exports & new_exports)
         pairs: list[tuple[object, object]] = []
         for name in common:
             try:
                 pairs.append((old_mod[name], new_mod[name]))
-            except Exception as e:  # pragma: no cover - unexpected griffe model state
+            except Exception as e:
                 print(f"::warning title=SDK API::Unable to resolve symbol {name}: {e}")
         total_breaks += len(_collect_breakages_pairs(pairs))
     except Exception as e:
-        print(f"::warning title=SDK API::Failed to process top-level exports: {e}")
+        print(f"::error title=SDK API::Failed to process top-level exports: {e}")
+        return 1
 
     # Additionally honor include paths that are not the top-level module
     extra_pairs: list[tuple[object, object]] = []
     for path in include:
-        if path == sdk_pkg:
+        if path == SDK_PACKAGE:
             continue
         try:
             old_obj = resolve(old_root, path)
@@ -234,29 +340,7 @@ def main() -> int:
     if extra_pairs:
         total_breaks += len(_collect_breakages_pairs(extra_pairs))
 
-    if total_breaks == 0:
-        print("No SDK breaking changes detected")
-        return 0
-
-    # Enforce MINOR bump for breaking changes (policy agreed)
-    parsed_prev = _parse_version(prev)
-    parsed_new = _parse_version(new_version)
-    # Both packaging.Version and fallback expose major/minor
-    old_major = getattr(parsed_prev, "major", _version_tuple_fallback(prev)[0])
-    old_minor = getattr(parsed_prev, "minor", _version_tuple_fallback(prev)[1])
-    new_major = getattr(parsed_new, "major", _version_tuple_fallback(new_version)[0])
-    new_minor = getattr(parsed_new, "minor", _version_tuple_fallback(new_version)[1])
-
-    ok = (new_major == old_major) and (new_minor > old_minor)
-    if not ok:
-        print(
-            "::error title=SDK SemVer::Breaking changes detected; require minor "
-            f"version bump from {old_major}.{old_minor}.x, but new is {new_version}"
-        )
-        return 1
-
-    print("SDK breaking changes detected and minor bump policy satisfied")
-    return 0
+    return _check_version_bump(prev, new_version, total_breaks)
 
 
 if __name__ == "__main__":
