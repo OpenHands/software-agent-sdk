@@ -20,17 +20,7 @@ jobs:
                   enable-cache: true
             - name: Install workspace deps (dev)
               run: uv sync --frozen --group dev
-            - name: Ensure griffe is available
-              run: |
-                  uv run python - << 'PY'
-                  try:
-                      import griffe  # noqa: F401
-                  except Exception:
-                      import subprocess
-                      subprocess.check_call(["uv", "pip", "install", "griffe[pypi]"])
-                  PY
             - name: Run SDK API breakage check
               env:
                   SDK_INCLUDE_PATHS: openhands.sdk
-              run: |
-                  uv run python .github/scripts/check_sdk_api_breakage.py
+              run: uv run python .github/scripts/check_sdk_api_breakage.py

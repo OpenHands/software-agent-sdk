@@ -20,6 +20,8 @@ import tomllib
 import urllib.request
 from collections.abc import Iterable
 
+from packaging import version as pkg_version
+
 
 # Package configuration - centralized for maintainability
 SDK_PACKAGE = "openhands.sdk"
@@ -38,55 +40,9 @@ def read_version_from_pyproject(path: str) -> str:
     return str(v)
 
 
-def _version_tuple_fallback(v: str) -> tuple[int, int, int]:
-    """Parse version string into (major, minor, patch) tuple.
-
-    Handles versions like "1.2.3", "1.2.3a1", "1.2.3.dev0", etc.
-    """
-    parts = v.split(".")
-    nums: list[int] = []
-    for p in parts[:3]:
-        n = ""
-        for ch in p:
-            if ch.isdigit():
-                n += ch
-            else:
-                break
-        nums.append(int(n or 0))
-    while len(nums) < 3:
-        nums.append(0)
-    return tuple(nums)  # type: ignore[return-value]
-
-
-class _FallbackVersion:
-    """Lightweight version object for comparison when packaging is unavailable."""
-
-    def __init__(self, t: tuple[int, int, int]):
-        self.t = t
-        self.major, self.minor, self.micro = t
-
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, _FallbackVersion):
-            return NotImplemented
-        return self.t < other.t
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, _FallbackVersion):
-            return NotImplemented
-        return self.t == other.t
-
-    def __repr__(self) -> str:
-        return f"_FallbackVersion({self.t})"
-
-
-def _parse_version(v: str):
-    """Parse a version string, using packaging if available, else fallback."""
-    try:
-        from packaging import version as _pkg_version
-
-        return _pkg_version.parse(v)
-    except Exception:
-        return _FallbackVersion(_version_tuple_fallback(v))
+def _parse_version(v: str) -> pkg_version.Version:
+    """Parse a version string using packaging."""
+    return pkg_version.parse(v)
 
 
 def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
@@ -214,19 +170,16 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
     parsed_prev = _parse_version(prev)
     parsed_new = _parse_version(new_version)
 
-    old_major = getattr(parsed_prev, "major", _version_tuple_fallback(prev)[0])
-    old_minor = getattr(parsed_prev, "minor", _version_tuple_fallback(prev)[1])
-    new_major = getattr(parsed_new, "major", _version_tuple_fallback(new_version)[0])
-    new_minor = getattr(parsed_new, "minor", _version_tuple_fallback(new_version)[1])
-
     # MINOR bump required: same major, higher minor OR higher major
-    ok = (new_major > old_major) or (new_major == old_major and new_minor > old_minor)
+    ok = (parsed_new.major > parsed_prev.major) or (
+        parsed_new.major == parsed_prev.major and parsed_new.minor > parsed_prev.minor
+    )
 
     if not ok:
         print(
             f"::error title=SDK SemVer::Breaking changes detected ({total_breaks}); "
-            f"require at least minor version bump from {old_major}.{old_minor}.x, "
-            f"but new is {new_version}"
+            f"require at least minor version bump from "
+            f"{parsed_prev.major}.{parsed_prev.minor}.x, but new is {new_version}"
         )
         return 1
 
