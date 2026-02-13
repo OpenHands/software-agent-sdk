@@ -1,8 +1,11 @@
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
+
+from pydantic import ValidationError
 
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -446,8 +449,16 @@ class EventService:
         if request_hook_config is not None and request_hook_config.is_empty():
             request_hook_config = None
 
-        file_hook_config = HookConfig.load(working_dir=workspace.working_dir)
-        if file_hook_config.is_empty():
+        try:
+            file_hook_config = HookConfig.load(working_dir=workspace.working_dir)
+        except (json.JSONDecodeError, OSError, ValidationError, ValueError) as exc:
+            logger.warning(
+                "Failed to load hooks.json from %s: %s",
+                workspace.working_dir,
+                exc,
+            )
+            file_hook_config = None
+        if file_hook_config is not None and file_hook_config.is_empty():
             file_hook_config = None
 
         hook_configs: list[HookConfig] = []

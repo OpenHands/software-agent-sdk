@@ -206,6 +206,33 @@ async def test_start_uses_file_hooks_when_no_request_hooks(tmp_path):
         await service.close()
 
 
+@pytest.mark.asyncio
+async def test_start_ignores_malformed_hooks_json(tmp_path):
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir()
+    hooks_file = hooks_dir / "hooks.json"
+    hooks_file.write_text("{ invalid json }")
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        assert conversation._pending_hook_config is None
+    finally:
+        await service.close()
+
+
 class TestEventServiceSearchEvents:
     """Test cases for EventService.search_events method."""
 
