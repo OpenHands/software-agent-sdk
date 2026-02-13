@@ -428,13 +428,17 @@ class Agent(CriticMixin, AgentBase):
                 )
 
         # Build a summary of all failures
-    summary_lines = [f"Primary LLM failed: {type(primary_exc).__name__}: {primary_exc}"]
-    profiles_failed_to_load = len(fallback_profiles) - len(failed)
-    if profiles_failed_to_load:
-        summary_lines.append(f"- {profiles_failed_to_load} profile(s) failed to load")
-    summary_lines.extend(f"- {name}: {type(exc).__name__}: {exc}" for name, exc in failed)
-    raise LLMError("\n".join(summary_lines)) from primary_exc
-            summary_lines.append(f"- {name}: {type(exc).__name__}: {exc}")
+        summary_lines = [
+            f"Primary LLM failed: {type(primary_exc).__name__}: {primary_exc}"
+        ]
+        profiles_failed_to_load = len(fallback_profiles) - len(failed)
+        if profiles_failed_to_load:
+            summary_lines.append(
+                f"- {profiles_failed_to_load} profile(s) failed to load"
+            )
+        summary_lines.extend(
+            f"- {name}: {type(exc).__name__}: {exc}" for name, exc in failed
+        )
         raise LLMError("\n".join(summary_lines)) from primary_exc
 
     def _requires_user_confirmation(
