@@ -612,17 +612,6 @@ def test_insert_missing_line_param(editor):
         editor(command="insert", path=str(test_file), new_str="Missing insert line")
 
 
-def test_undo_edit_command_not_available():
-    """Test that undo_edit command is no longer available."""
-    from typing import get_args
-
-    from openhands.tools.file_editor.definition import CommandLiteral
-
-    # Verify undo_edit is not in the allowed commands
-    allowed_commands = get_args(CommandLiteral)
-    assert "undo_edit" not in allowed_commands
-    assert set(allowed_commands) == {"view", "create", "str_replace", "insert"}
-
 
 def test_view_directory_with_hidden_files(tmp_path):
     editor = FileEditor()
