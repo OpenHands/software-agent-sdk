@@ -36,6 +36,11 @@ from openhands.sdk.workspace import LocalWorkspace
 logger = get_logger(__name__)
 
 
+def _normalize_hook_config(config: HookConfig | None) -> HookConfig | None:
+    """Return None if config is None or empty, otherwise return config."""
+    return None if config is None or config.is_empty() else config
+
+
 @dataclass
 class EventService:
     """
@@ -445,9 +450,7 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
-        request_hook_config = self.stored.hook_config
-        if request_hook_config is not None and request_hook_config.is_empty():
-            request_hook_config = None
+        request_hook_config = _normalize_hook_config(self.stored.hook_config)
 
         try:
             file_hook_config = HookConfig.load(working_dir=workspace.working_dir)
@@ -458,8 +461,7 @@ class EventService:
                 exc,
             )
             file_hook_config = None
-        if file_hook_config is not None and file_hook_config.is_empty():
-            file_hook_config = None
+        file_hook_config = _normalize_hook_config(file_hook_config)
 
         hook_configs: list[HookConfig] = []
         if request_hook_config is not None:
