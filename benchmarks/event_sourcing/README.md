@@ -17,9 +17,21 @@ We report four SDK-attributable systems metrics for the event-sourced state mana
 **Workload:** Event payloads extracted from a full SWE-Bench Verified evaluation run (433 instances, `litellm_proxy` backend, max 500 iterations). Events range from 190B to 260KB, with a median of 1.5KB.
 **I/O path:** All persist measurements exercise the production code path — `LocalFileStore.lock()` followed by `LocalFileStore.write()` — with the original JSON payloads from the evaluation traces.
 
+## Data
+
+The evaluation traces used for these benchmarks are from a SWE-Bench Verified run (433 instances, SDK commit `cfe52af`, GitHub Actions run `21870831025`). To download:
+
+```bash
+curl -L -o results.tar.gz \
+  https://results.eval.all-hands.dev/swtbench/litellm_proxy-jade-spark-2862/21870831025/results.tar.gz
+tar xzf results.tar.gz
+```
+
+After extraction, pass the inner run directory as `--eval-dir`. It should contain `conversations/` (with `.tar.gz` traces) and `output.jsonl`.
+
 ## Scripts
 
-All scripts accept `--eval-dir <path>` pointing to an evaluation run directory (must contain `conversations/` with `.tar.gz` traces, and `output.jsonl`).
+All scripts accept `--eval-dir <path>` pointing to the extracted evaluation run directory.
 
 | Script | Metrics | Usage |
 |---|---|---|
