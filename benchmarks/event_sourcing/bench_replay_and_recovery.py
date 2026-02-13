@@ -6,7 +6,8 @@ Collects real event payloads from SWE-Bench evaluation traces, builds event
 logs of increasing size, and measures:
   - Index rebuild time (directory listing + filename regex parse)
   - Full replay time (read + JSON parse all events)
-  - Time-to-recover (full replay + reverse scan for unmatched actions)
+  - Time-to-recover (full deserialization + unmatched-action detection
+    using the SDK's ConversationState.get_unmatched_actions)
 
 Usage:
     python bench_replay_and_recovery.py --eval-dir <path-to-eval-run>
@@ -19,43 +20,17 @@ import os
 import re
 import shutil
 import statistics
-import tarfile
 import tempfile
 import time
 
+from benchmark_utils import (
+    extract_conversation,
+    read_event_files,
+    register_tool_types,
+)
+
 
 EVENTS_DIR_NAME = "events"
-
-
-def extract_conversation(tarpath: str, dest: str) -> str | None:
-    with tarfile.open(tarpath, "r:gz") as tf:
-        tf.extractall(dest, filter="data")
-    for root, _, _ in os.walk(dest):
-        if os.path.basename(root) == "events":
-            return root
-    return None
-
-
-def read_event_files(events_dir: str) -> list[dict]:
-    files = sorted(f for f in os.listdir(events_dir) if f.endswith(".json"))
-    result = []
-    for fname in files:
-        path = os.path.join(events_dir, fname)
-        with open(path) as f:
-            content = f.read()
-        try:
-            kind = json.loads(content).get("kind", "unknown")
-        except Exception:
-            kind = "unknown"
-        result.append(
-            {
-                "filename": fname,
-                "json_str": content,
-                "size_bytes": len(content.encode("utf-8")),
-                "kind": kind,
-            }
-        )
-    return result
 
 
 def collect_event_pool(eval_dir: str, target_count: int = 2000) -> list[dict]:
@@ -63,7 +38,7 @@ def collect_event_pool(eval_dir: str, target_count: int = 2000) -> list[dict]:
     conv_dir = os.path.join(eval_dir, "conversations")
     tarballs = sorted(os.listdir(conv_dir))
 
-    all_events = []
+    all_events: list[dict] = []
     for tarname in tarballs:
         tarpath = os.path.join(conv_dir, tarname)
         tmpdir = tempfile.mkdtemp(prefix="bench_pool_")
@@ -87,8 +62,13 @@ def collect_event_pool(eval_dir: str, target_count: int = 2000) -> list[dict]:
     return all_events
 
 
-def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
+def benchmark_replay_and_recovery(
+    event_pool: list[dict], n_trials: int = 5
+) -> list[dict]:
     """Measure replay time and time-to-recover at increasing log sizes."""
+    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.event.base import Event
+
     checkpoints = [10, 25, 50, 100, 200, 500, 1000, 1500]
     pattern = re.compile(r"^event-(\d+)-([a-f0-9\-]+)\.json$")
 
@@ -104,7 +84,8 @@ def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
             events_dir = os.path.join(tmpdir, EVENTS_DIR_NAME)
             os.makedirs(events_dir)
             for ef in events:
-                with open(os.path.join(events_dir, ef["filename"]), "w") as f:
+                path = os.path.join(events_dir, ef["filename"])
+                with open(path, "w") as f:
                     f.write(ef["json_str"])
 
             total_bytes = sum(ef["size_bytes"] for ef in events)
@@ -141,33 +122,23 @@ def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
                 gc.enable()
                 replay_times.append((t1 - t0) * 1000)
 
-            # Time-to-recover: full replay + reverse scan for unmatched actions
+            # Time-to-recover: deserialize via SDK + get_unmatched_actions
             recovery_times = []
             for _ in range(n_trials):
                 gc.disable()
                 t0 = time.perf_counter()
-                loaded_events = []
+                deserialized = []
                 for fname in json_files:
                     path = os.path.join(events_dir, fname)
                     with open(path) as f:
-                        loaded_events.append(json.load(f))
-                seen_action_ids = set()
-                unmatched = []
-                for ev in reversed(loaded_events):
-                    kind = ev.get("kind", "")
-                    if kind == "ObservationEvent":
-                        aid = ev.get("action_id")
-                        if aid:
-                            seen_action_ids.add(aid)
-                    elif kind == "ActionEvent":
-                        eid = ev.get("id")
-                        if eid and eid not in seen_action_ids:
-                            unmatched.append(ev)
+                        content = f.read()
+                    deserialized.append(Event.model_validate_json(content))
+                ConversationState.get_unmatched_actions(deserialized)
                 t1 = time.perf_counter()
                 gc.enable()
                 recovery_times.append((t1 - t0) * 1000)
 
-            def stats(times):
+            def stats(times: list[float]) -> dict:
                 s = sorted(times)
                 n = len(s)
                 return {
@@ -187,11 +158,15 @@ def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
             }
             results.append(r)
 
+            idx_ms = r["index_rebuild_ms"]["median"]
+            rpl_ms = r["full_replay_ms"]["median"]
+            rec_ms = r["time_to_recover_ms"]["median"]
             print(
-                f"  {target:>5} events ({total_bytes / 1024:>7.1f}KB): "
-                f"index={r['index_rebuild_ms']['median']:.2f}ms  "
-                f"replay={r['full_replay_ms']['median']:.2f}ms  "
-                f"recover={r['time_to_recover_ms']['median']:.2f}ms"
+                f"  {target:>5} events"
+                f" ({total_bytes / 1024:>7.1f}KB):"
+                f" index={idx_ms:.2f}ms"
+                f"  replay={rpl_ms:.2f}ms"
+                f"  recover={rec_ms:.2f}ms"
             )
 
         finally:
@@ -201,13 +176,18 @@ def benchmark_replay_and_recovery(event_pool: list[dict], n_trials: int = 5):
 
 
 def main():
+    import logging
+
+    logging.getLogger("openhands").setLevel(logging.ERROR)
+    register_tool_types()
+
     parser = argparse.ArgumentParser(
-        description="Benchmark replay time and time-to-recover vs. log size"
+        description=("Benchmark replay time and time-to-recover vs. log size")
     )
     parser.add_argument(
         "--eval-dir",
         required=True,
-        help="Path to evaluation run directory (contains conversations/)",
+        help="Path to evaluation run directory",
     )
     parser.add_argument(
         "--output",

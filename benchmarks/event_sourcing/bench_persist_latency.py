@@ -16,48 +16,16 @@ import json
 import os
 import shutil
 import statistics
-import tarfile
 import tempfile
 import time
+
+from benchmark_utils import extract_conversation, read_event_files
 
 from openhands.sdk.io import LocalFileStore
 
 
 EVENTS_DIR_NAME = "events"
 LOCK_FILE = "events/.eventlog.lock"
-
-
-def extract_conversation(tarpath: str, dest: str) -> str | None:
-    """Extract a conversation .tar.gz and return the events/ dir path."""
-    with tarfile.open(tarpath, "r:gz") as tf:
-        tf.extractall(dest, filter="data")
-    for root, _, _ in os.walk(dest):
-        if os.path.basename(root) == "events":
-            return root
-    return None
-
-
-def read_event_files(events_dir: str) -> list[dict]:
-    """Read all event JSON files. Return list of {filename, json_str, size, kind}."""
-    files = sorted(f for f in os.listdir(events_dir) if f.endswith(".json"))
-    result = []
-    for fname in files:
-        path = os.path.join(events_dir, fname)
-        with open(path) as f:
-            content = f.read()
-        try:
-            kind = json.loads(content).get("kind", "unknown")
-        except Exception:
-            kind = "unknown"
-        result.append(
-            {
-                "filename": fname,
-                "json_str": content,
-                "size_bytes": len(content.encode("utf-8")),
-                "kind": kind,
-            }
-        )
-    return result
 
 
 def measure_persist_latencies(event_files: list[dict]) -> list[dict]:
@@ -132,8 +100,8 @@ def main():
     sample_tarballs = tarballs[:: args.sample_step]
     print(f"Sampling {len(sample_tarballs)} of {len(tarballs)} conversations\n")
 
-    all_persist = []
-    conv_summaries = []
+    all_persist: list[dict] = []
+    conv_summaries: list[dict] = []
 
     for tarname in sample_tarballs:
         instance_id = tarname.replace(".tar.gz", "")
@@ -171,9 +139,9 @@ def main():
                     "n_events": len(event_files),
                     "n_cycles": n_cycles,
                     "total_persist_ms": total_persist_ms,
-                    "mean_cycle_persist_ms": statistics.mean(cycle_persist)
-                    if cycle_persist
-                    else 0,
+                    "mean_cycle_persist_ms": (
+                        statistics.mean(cycle_persist) if cycle_persist else 0
+                    ),
                 }
             )
             n_ev = len(event_files)
@@ -190,8 +158,7 @@ def main():
     print("RESULTS: Persist Latency per Event / Action Cycle")
     print(f"{'=' * 70}")
 
-    # Per-event persist latency by type
-    by_kind = {}
+    by_kind: dict[str, list[dict]] = {}
     for r in all_persist:
         by_kind.setdefault(r["kind"], []).append(r)
 
@@ -217,9 +184,11 @@ def main():
         sizes = sorted([e["size_bytes"] for e in entries])
         n = len(lats)
         print(
-            f"  {kind:<35} {n:>5} {lats[n // 2]:>9.3f}ms "
-            f"{statistics.mean(lats):>9.3f}ms {lats[int(n * 0.95)]:>9.3f}ms "
-            f"{sizes[n // 2]:>8,}B"
+            f"  {kind:<35} {n:>5}"
+            f" {lats[n // 2]:>9.3f}ms"
+            f" {statistics.mean(lats):>9.3f}ms"
+            f" {lats[int(n * 0.95)]:>9.3f}ms"
+            f" {sizes[n // 2]:>8,}B"
         )
 
     all_lats = sorted([r["persist_ms"] for r in all_persist])
@@ -227,9 +196,11 @@ def main():
     n = len(all_lats)
     print(f"  {'-' * 80}")
     print(
-        f"  {'ALL EVENTS':<35} {n:>5} {all_lats[n // 2]:>9.3f}ms "
-        f"{statistics.mean(all_lats):>9.3f}ms {all_lats[int(n * 0.95)]:>9.3f}ms "
-        f"{all_sizes[n // 2]:>8,}B"
+        f"  {'ALL EVENTS':<35} {n:>5}"
+        f" {all_lats[n // 2]:>9.3f}ms"
+        f" {statistics.mean(all_lats):>9.3f}ms"
+        f" {all_lats[int(n * 0.95)]:>9.3f}ms"
+        f" {all_sizes[n // 2]:>8,}B"
     )
 
     # Per action cycle
@@ -237,15 +208,17 @@ def main():
     cycle_persists = [
         s["mean_cycle_persist_ms"] for s in conv_summaries if s["n_cycles"] > 0
     ]
-    print(
-        f"  Median per-cycle persist time:  {statistics.median(cycle_persists):.2f}ms"
-    )
-    print(f"  Mean per-cycle persist time:    {statistics.mean(cycle_persists):.2f}ms")
+    med = statistics.median(cycle_persists)
+    mean = statistics.mean(cycle_persists)
+    print(f"  Median per-cycle persist time:  {med:.2f}ms")
+    print(f"  Mean per-cycle persist time:    {mean:.2f}ms")
 
     # Save
     with open(args.output, "w") as f:
         json.dump(
-            {"per_event": all_persist, "conversations": conv_summaries}, f, indent=2
+            {"per_event": all_persist, "conversations": conv_summaries},
+            f,
+            indent=2,
         )
     print(f"\nRaw data saved to {args.output}")
 

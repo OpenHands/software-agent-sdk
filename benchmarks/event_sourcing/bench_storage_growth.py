@@ -15,21 +15,15 @@ import json
 import os
 import shutil
 import statistics
-import tarfile
 import tempfile
+
+from benchmark_utils import extract_conversation
 
 
 def analyze_conversation(tarpath: str) -> dict | None:
     tmpdir = tempfile.mkdtemp(prefix="bench_storage_")
     try:
-        with tarfile.open(tarpath, "r:gz") as tf:
-            tf.extractall(tmpdir, filter="data")
-
-        events_dir = None
-        for root, _, _ in os.walk(tmpdir):
-            if os.path.basename(root) == "events":
-                events_dir = root
-                break
+        events_dir = extract_conversation(tarpath, tmpdir)
         if not events_dir:
             return None
 
@@ -37,7 +31,7 @@ def analyze_conversation(tarpath: str) -> dict | None:
         if not files:
             return None
 
-        by_kind = {}
+        by_kind: dict[str, dict] = {}
         total_bytes = 0
         for fname in files:
             path = os.path.join(events_dir, fname)
@@ -161,10 +155,7 @@ def main():
         )
     print(f"  {'-' * 78}")
     total_mb = total_all_bytes / 1024 / 1024
-    print(
-        f"  {'TOTAL':<35} {total_all_events:>7}"
-        f" {'100.0':>7}% {total_mb:>8.1f}MB"
-    )
+    print(f"  {'TOTAL':<35} {total_all_events:>7} {'100.0':>7}% {total_mb:>8.1f}MB")
 
     # Save
     output = {

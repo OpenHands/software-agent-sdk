@@ -120,13 +120,13 @@ ObservationEvents (tool outputs) account for 78% of storage despite being only 4
 
 | Events | Storage | Time-to-Recover |
 |---|---|---|
-| 10 | 36.4KB | 0.33ms |
-| 25 | 57.5KB | 0.56ms |
-| 50 | 122.1KB | 1.20ms |
-| 100 | 227.0KB | 2.34ms |
-| 200 | 576.2KB | 4.97ms |
-| 500 | 2.0MB | 13.88ms |
-| 1,000 | 4.3MB | 29.41ms |
-| 1,500 | 8.2MB | 48.33ms |
+| 10 | 36.4KB | 0.64ms |
+| 25 | 57.5KB | 1.45ms |
+| 50 | 122.1KB | 2.71ms |
+| 100 | 227.0KB | 5.35ms |
+| 200 | 576.2KB | 10.70ms |
+| 500 | 2.0MB | 27.92ms |
+| 1,000 | 4.3MB | 57.50ms |
+| 1,500 | 8.2MB | 90.26ms |
 
-Recovery includes deserializing all events and scanning in reverse for actions that lack a corresponding observation (indicating a crash mid-execution). At the median conversation size (82 events), recovery completes in ~2ms. At the largest observed conversation (358 events), recovery completes in under 10ms.
+Recovery includes full Pydantic deserialization of all events via `Event.model_validate_json()` and scanning in reverse for actions that lack a corresponding observation (indicating a crash mid-execution) via `ConversationState.get_unmatched_actions()`. At the median conversation size (82 events), recovery completes in ~5ms. At the largest observed conversation (358 events), recovery completes in under 20ms.
