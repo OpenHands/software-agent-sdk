@@ -548,6 +548,8 @@ class OpenAISubscriptionAuth:
             credentials: OAuth credentials to use. If None, uses stored credentials.
             instructions: Optional instructions for the Codex model.
             **llm_kwargs: Additional arguments to pass to LLM constructor.
+                If usage_id is not provided, a unique ID will be auto-generated
+                to avoid registry conflicts when creating multiple LLMs.
 
         Returns:
             An LLM instance configured for Codex access.
@@ -555,7 +557,12 @@ class OpenAISubscriptionAuth:
         Raises:
             ValueError: If the model is not supported or no credentials available.
         """
-        from openhands.sdk.llm.llm import LLM
+        from openhands.sdk.llm.llm import LLM, generate_usage_id
+
+        # Auto-generate unique usage_id if not provided to avoid registry conflicts
+        # when creating multiple LLMs (e.g., for agent and condenser)
+        if "usage_id" not in llm_kwargs:
+            llm_kwargs["usage_id"] = generate_usage_id("chatgpt-subscription")
 
         if model not in OPENAI_CODEX_MODELS:
             raise ValueError(

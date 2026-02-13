@@ -9,7 +9,7 @@ from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
-from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
+from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent, generate_usage_id
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
@@ -991,6 +991,54 @@ def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
             usage_id="test-llm",
         )
         assert llm.max_input_tokens == 2048
+
+
+# generate_usage_id Tests
+
+
+def test_generate_usage_id_default_prefix():
+    """Test generate_usage_id with default prefix."""
+    usage_id = generate_usage_id()
+    assert usage_id.startswith("llm-")
+    # Should have 8 hex characters after prefix
+    suffix = usage_id.split("-", 1)[1]
+    assert len(suffix) == 8
+    # Should be valid hex
+    int(suffix, 16)
+
+
+def test_generate_usage_id_custom_prefix():
+    """Test generate_usage_id with custom prefix."""
+    usage_id = generate_usage_id("my-agent")
+    assert usage_id.startswith("my-agent-")
+    suffix = usage_id.split("-")[-1]
+    assert len(suffix) == 8
+
+
+def test_generate_usage_id_uniqueness():
+    """Test that generate_usage_id produces unique IDs."""
+    ids = {generate_usage_id() for _ in range(100)}
+    # All 100 IDs should be unique
+    assert len(ids) == 100
+
+
+def test_generate_usage_id_with_llm():
+    """Test using generate_usage_id when creating LLMs."""
+    llm1 = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id=generate_usage_id("agent"),
+    )
+    llm2 = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id=generate_usage_id("condenser"),
+    )
+
+    # Both should have unique usage_ids
+    assert llm1.usage_id != llm2.usage_id
+    assert llm1.usage_id.startswith("agent-")
+    assert llm2.usage_id.startswith("condenser-")
 
 
 # LLM Registry Tests

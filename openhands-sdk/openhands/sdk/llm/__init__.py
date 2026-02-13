@@ -4,7 +4,7 @@ from openhands.sdk.llm.auth import (
     OAuthCredentials,
     OpenAISubscriptionAuth,
 )
-from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm.llm import LLM, generate_usage_id
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
@@ -37,6 +37,7 @@ __all__ = [
     # Core
     "LLMResponse",
     "LLM",
+    "generate_usage_id",
     "LLMRegistry",
     "LLMProfileStore",
     "RouterLLM",

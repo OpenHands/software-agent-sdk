@@ -203,6 +203,57 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     assert llm.extra_headers.get("originator") == "codex_cli_rs"
 
 
+def test_openai_subscription_auth_create_llm_auto_generates_usage_id(tmp_path):
+    """Test create_llm auto-generates unique usage_id when not provided.
+
+    This prevents registry conflicts when creating multiple LLMs via create_llm()
+    without explicit usage_id (e.g., for agent and condenser).
+    See issue #1964.
+    """
+    store = CredentialStore(credentials_dir=tmp_path)
+    auth = OpenAISubscriptionAuth(credential_store=store)
+
+    # Save valid credentials
+    creds = OAuthCredentials(
+        vendor="openai",
+        access_token="test_access_token",
+        refresh_token="test_refresh",
+        expires_at=int(time.time() * 1000) + 3600_000,
+    )
+    store.save(creds)
+
+    # Create two LLMs without explicit usage_id
+    llm1 = auth.create_llm(model="gpt-5.2-codex")
+    llm2 = auth.create_llm(model="gpt-5.2-codex")
+
+    # Both should have auto-generated unique usage_ids
+    assert llm1.usage_id.startswith("chatgpt-subscription-")
+    assert llm2.usage_id.startswith("chatgpt-subscription-")
+    # usage_ids should be unique
+    assert llm1.usage_id != llm2.usage_id
+
+
+def test_openai_subscription_auth_create_llm_respects_explicit_usage_id(tmp_path):
+    """Test create_llm respects explicitly provided usage_id."""
+    store = CredentialStore(credentials_dir=tmp_path)
+    auth = OpenAISubscriptionAuth(credential_store=store)
+
+    # Save valid credentials
+    creds = OAuthCredentials(
+        vendor="openai",
+        access_token="test_access_token",
+        refresh_token="test_refresh",
+        expires_at=int(time.time() * 1000) + 3600_000,
+    )
+    store.save(creds)
+
+    # Create LLM with explicit usage_id
+    llm = auth.create_llm(model="gpt-5.2-codex", usage_id="my-custom-agent")
+
+    # Should use the explicit usage_id, not auto-generate
+    assert llm.usage_id == "my-custom-agent"
+
+
 @pytest.mark.asyncio
 async def test_openai_subscription_auth_refresh_if_needed_no_creds(tmp_path):
     """Test refresh_if_needed returns None when no credentials."""

@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import warnings
+from uuid import uuid4
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
@@ -99,7 +100,29 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["LLM"]
+__all__ = ["LLM", "generate_usage_id"]
+
+
+def generate_usage_id(prefix: str = "llm") -> str:
+    """Generate a unique usage_id for LLM instances.
+
+    Use this when creating multiple LLMs to avoid registry conflicts.
+    The generated ID includes a random suffix to ensure uniqueness.
+
+    Args:
+        prefix: Optional prefix for the usage_id. Defaults to "llm".
+            Use descriptive prefixes like "agent", "condenser", "critic"
+            to identify the LLM's purpose in logs and metrics.
+
+    Returns:
+        A unique usage_id string in the format "{prefix}-{random_hex}".
+
+    Example:
+        >>> from openhands.sdk.llm import generate_usage_id
+        >>> usage_id = generate_usage_id("my-agent")
+        >>> llm = LLM(model="gpt-4o", usage_id=usage_id, ...)
+    """
+    return f"{prefix}-{uuid4().hex[:8]}"
 
 
 # Exceptions we retry on
