@@ -103,6 +103,27 @@ class ApptainerWorkspace(RemoteWorkspace):
         ),
     )
 
+    enable_docker_compat: bool = Field(
+        default=True,
+        description=(
+            "Whether to use --compat for maximum Docker compatibility. "
+            "Check this URL for documentation: "
+            "https://apptainer.org/docs/user/main/docker_and_oci.html#docker-like-compat-flag"
+            " Set to False if you want custom Apptainer behavior."
+        ),
+    )
+
+    disable_mount_locations: list[str] = Field(
+        default=["hostfs", "bind-paths"],
+        description=(
+            "List of locations to disable mounting for. "
+            "Helpful for disabling system-level mounts/binds from apptainer.conf. "
+            "Check this URL for documentation: "
+            "https://apptainer.org/docs/user/main/bind_paths_and_mounts.html. "
+            "Specify locations to disable mounts for custom Apptainer behavior."
+        ),
+    )
+
     _instance_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
@@ -231,17 +252,19 @@ class ApptainerWorkspace(RemoteWorkspace):
             )
 
         # Build container options
-        container_opts: list[str] = [
-            "--writable-tmpfs",
-            "--cleanenv",  # Prevent host environment leakage
-            "--no-home",  # Don't mount host home directory
-            "--no-mount",
-            "tmp",  # Don't bind host /tmp (avoids tmux socket conflicts)
-        ]
+        container_opts: list[str] = []
 
         # Add fakeroot for consistent file ownership (user appears as root)
         if self.use_fakeroot:
             container_opts.append("--fakeroot")
+        if self.enable_docker_compat:
+            container_opts.append("--compat")
+        if self.disable_mount_locations:
+            for loc in self.disable_mount_locations:
+                container_opts += [
+                    "--no-mount",
+                    loc,
+                ]  # Disable specified mount locations
 
         # Run the agent server using apptainer run to respect the image's entrypoint
         # This works with both 'source' and 'binary' build targets

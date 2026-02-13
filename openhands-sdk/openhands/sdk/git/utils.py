@@ -1,4 +1,5 @@
 import logging
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -13,12 +14,17 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-def run_git_command(args: list[str], cwd: str | Path) -> str:
+def run_git_command(
+    args: list[str],
+    cwd: str | Path | None = None,
+    timeout: int = 30,
+) -> str:
     """Run a git command safely without shell injection vulnerabilities.
 
     Args:
         args: List of command arguments (e.g., ['git', 'status', '--porcelain'])
-        cwd: Working directory to run the command in
+        cwd: Working directory to run the command in (optional for commands like clone)
+        timeout: Timeout in seconds (default: 30)
 
     Returns:
         Command output as string
@@ -33,7 +39,7 @@ def run_git_command(args: list[str], cwd: str | Path) -> str:
             capture_output=True,
             text=True,
             check=False,
-            timeout=30,  # Prevent hanging commands
+            timeout=timeout,
         )
 
         if result.returncode != 0:
@@ -73,6 +79,28 @@ def run_git_command(args: list[str], cwd: str | Path) -> str:
         ) from e
 
 
+def _repo_has_commits(repo_dir: str | Path) -> bool:
+    """Check if a git repository has any commits.
+
+    Uses 'git rev-list --count --all' which returns "0" for empty repos
+    without failing, avoiding ERROR logs for expected conditions.
+
+    Args:
+        repo_dir: Path to the git repository
+
+    Returns:
+        True if the repository has at least one commit, False otherwise
+    """
+    try:
+        count = run_git_command(
+            ["git", "--no-pager", "rev-list", "--count", "--all"], repo_dir
+        )
+        return count.strip() != "0"
+    except GitCommandError:
+        logger.debug("Could not check commit count")
+        return False
+
+
 def get_valid_ref(repo_dir: str | Path) -> str | None:
     """Get a valid git reference to compare against.
 
@@ -89,6 +117,12 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
         Valid git reference hash, or None if no valid reference found
     """
     refs_to_try = []
+
+    # Check if repo has any commits first. Empty repos (created with git init)
+    # won't have commits or remotes, so we can skip directly to the empty tree fallback.
+    if not _repo_has_commits(repo_dir):
+        logger.debug("Repository has no commits yet, using empty tree reference")
+        return GIT_EMPTY_TREE_HASH
 
     # Try current branch's origin
     try:
@@ -136,10 +170,6 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
     except GitCommandError:
         logger.debug("Could not get remote information")
 
-    # Add empty tree as fallback for new repositories
-    refs_to_try.append(GIT_EMPTY_TREE_HASH)
-    logger.debug(f"Added empty tree reference: {GIT_EMPTY_TREE_HASH}")
-
     # Find the first valid reference
     for ref in refs_to_try:
         try:
@@ -153,8 +183,9 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
             logger.debug(f"Reference not valid: {ref}")
             continue
 
-    logger.warning("No valid git reference found")
-    return None
+    # Fallback to empty tree hash (always valid, no verification needed)
+    logger.debug(f"Using empty tree reference: {GIT_EMPTY_TREE_HASH}")
+    return GIT_EMPTY_TREE_HASH
 
 
 def validate_git_repository(repo_dir: str | Path) -> Path:
@@ -187,3 +218,112 @@ def validate_git_repository(repo_dir: str | Path) -> Path:
             raise GitRepositoryError(f"Not a git repository: {repo_path}") from e
 
     return repo_path
+
+
+# ============================================================================
+# Git URL utilities
+# ============================================================================
+
+
+def is_git_url(source: str) -> bool:
+    """Check if a source string looks like a git URL.
+
+    Detects git URLs by their protocol/scheme rather than enumerating providers.
+    This handles any git hosting service (GitHub, GitLab, Codeberg, self-hosted, etc.)
+
+    Args:
+        source: String to check.
+
+    Returns:
+        True if the string appears to be a git URL, False otherwise.
+
+    Examples:
+        >>> is_git_url("https://github.com/owner/repo.git")
+        True
+        >>> is_git_url("git@github.com:owner/repo.git")
+        True
+        >>> is_git_url("/local/path")
+        False
+    """
+    # HTTPS/HTTP URLs to git repositories
+    if source.startswith(("https://", "http://")):
+        return True
+
+    # SSH format: git@host:path or user@host:path
+    if re.match(r"^[\w.-]+@[\w.-]+:", source):
+        return True
+
+    # Git protocol
+    if source.startswith("git://"):
+        return True
+
+    # File protocol (for testing)
+    if source.startswith("file://"):
+        return True
+
+    return False
+
+
+def normalize_git_url(url: str) -> str:
+    """Normalize a git URL by ensuring .git suffix for HTTPS URLs.
+
+    Args:
+        url: Git URL to normalize.
+
+    Returns:
+        Normalized URL with .git suffix for HTTPS/HTTP URLs.
+
+    Examples:
+        >>> normalize_git_url("https://github.com/owner/repo")
+        "https://github.com/owner/repo.git"
+        >>> normalize_git_url("https://github.com/owner/repo.git")
+        "https://github.com/owner/repo.git"
+        >>> normalize_git_url("git@github.com:owner/repo.git")
+        "git@github.com:owner/repo.git"
+    """
+    if url.startswith(("https://", "http://")) and not url.endswith(".git"):
+        url = url.rstrip("/")
+        url = f"{url}.git"
+    return url
+
+
+def extract_repo_name(source: str) -> str:
+    """Extract a human-readable repository name from a git URL or path.
+
+    Extracts the last path component (repo name) and sanitizes it for use
+    in directory names or display purposes.
+
+    Args:
+        source: Git URL or local path string.
+
+    Returns:
+        A sanitized name suitable for use in directory names (max 32 chars).
+
+    Examples:
+        >>> extract_repo_name("https://github.com/owner/my-repo.git")
+        "my-repo"
+        >>> extract_repo_name("git@github.com:owner/my-repo.git")
+        "my-repo"
+        >>> extract_repo_name("/path/to/local-repo")
+        "local-repo"
+    """
+    # Strip common prefixes to get to the path portion
+    name = source
+    for prefix in ("github:", "https://", "http://", "git://", "file://"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+
+    # Handle SSH format: user@host:path -> path
+    if "@" in name and ":" in name and "/" not in name.split(":")[0]:
+        name = name.split(":", 1)[1]
+
+    # Remove .git suffix and get last path component
+    name = name.rstrip("/").removesuffix(".git")
+    name = name.rsplit("/", 1)[-1]
+
+    # Sanitize: keep alphanumeric, dash, underscore only
+    name = re.sub(r"[^a-zA-Z0-9_-]", "-", name)
+    name = re.sub(r"-+", "-", name).strip("-")
+
+    return name[:32] if name else "repo"

@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 
 class FileStore(ABC):
@@ -6,6 +8,9 @@ class FileStore(ABC):
 
     This class defines the interface for file storage backends that can
     handle basic file operations like reading, writing, listing, and deleting files.
+
+    Implementations should provide a locking mechanism via the `lock()` context
+    manager for thread/process-safe operations.
     """
 
     @abstractmethod
@@ -46,3 +51,50 @@ class FileStore(ABC):
         Args:
             path: The file or directory path to delete.
         """
+
+    @abstractmethod
+    def exists(self, path: str) -> bool:
+        """Check if a file or directory exists at the specified path.
+
+        Args:
+            path: The file or directory path to check.
+
+        Returns:
+            True if the path exists, False otherwise.
+        """
+
+    @abstractmethod
+    def get_absolute_path(self, path: str) -> str:
+        """Get the absolute filesystem path for a given relative path.
+
+        Args:
+            path: The relative path within the file store.
+
+        Returns:
+            The absolute path on the filesystem.
+        """
+
+    @abstractmethod
+    @contextmanager
+    def lock(self, path: str, timeout: float = 30.0) -> Iterator[None]:
+        """Acquire an exclusive lock for the given path.
+
+        This context manager provides thread and process-safe locking.
+        Implementations may use file-based locking, threading locks, or
+        other mechanisms as appropriate.
+
+        Args:
+            path: The path to lock (used to identify the lock).
+            timeout: Maximum seconds to wait for lock acquisition.
+
+        Yields:
+            None when lock is acquired.
+
+        Raises:
+            TimeoutError: If lock cannot be acquired within timeout.
+
+        Note:
+            File-based locking (flock) does NOT work reliably on NFS mounts
+            or network filesystems.
+        """
+        yield  # pragma: no cover

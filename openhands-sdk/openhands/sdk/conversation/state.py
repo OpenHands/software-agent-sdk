@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import AliasChoices, Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -23,6 +23,8 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -44,6 +46,25 @@ class ConversationExecutionStatus(str, Enum):
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
     DELETING = "deleting"  # Conversation is in the process of being deleted
 
+    def is_terminal(self) -> bool:
+        """Check if this status represents a terminal state.
+
+        Terminal states indicate the run has completed and the agent is no longer
+        actively processing. These are: FINISHED, ERROR, STUCK.
+
+        Note: IDLE is NOT a terminal state - it's the initial state of a conversation
+        before any run has started. Including IDLE would cause false positives when
+        the WebSocket delivers the initial state update during connection.
+
+        Returns:
+            True if this is a terminal status, False otherwise.
+        """
+        return self in (
+            ConversationExecutionStatus.FINISHED,
+            ConversationExecutionStatus.ERROR,
+            ConversationExecutionStatus.STUCK,
+        )
+
 
 class ConversationState(OpenHandsModel):
     # ===== Public, validated fields =====
@@ -60,7 +81,10 @@ class ConversationState(OpenHandsModel):
     )
     workspace: BaseWorkspace = Field(
         ...,
-        description="Working directory for agent operations and tool execution",
+        description=(
+            "Workspace used by the agent to execute commands and read/write files. "
+            "Not the process working directory."
+        ),
     )
     persistence_dir: str | None = Field(
         default="workspace/conversations",
@@ -116,13 +140,22 @@ class ConversationState(OpenHandsModel):
     secret_registry: SecretRegistry = Field(
         default_factory=SecretRegistry,
         description="Registry for handling secrets and sensitive data",
-        validation_alias=AliasChoices("secret_registry", "secrets_manager"),
-        serialization_alias="secret_registry",
+    )
+
+    # Agent-specific runtime state (simple dict for flexibility)
+    agent_state: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary for agent-specific runtime state that persists across "
+        "iterations. Agents can store feature-specific state using string keys. "
+        "To trigger autosave, always reassign: "
+        "state.agent_state = {**state.agent_state, key: value}. "
+        "See https://docs.openhands.dev/sdk/guides/convo-persistence#how-state-persistence-works",
     )
 
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
     )  # to avoid recursion during init
@@ -132,6 +165,29 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_legacy_fields(cls, data: Any) -> Any:
+        """Handle legacy field names for backward compatibility."""
+        if not isinstance(data, dict):
+            return data
+
+        # Handle legacy 'secrets_manager' field name
+        if "secrets_manager" in data:
+            warn_deprecated(
+                "ConversationState.secrets_manager",
+                deprecated_in="1.12.0",
+                removed_in="1.15.0",
+                details=(
+                    "The 'secrets_manager' field has been renamed to "
+                    "'secret_registry'. Please update your code to use "
+                    "'secret_registry' instead."
+                ),
+                stacklevel=4,
+            )
+            data["secret_registry"] = data.pop("secrets_manager")
+        return data
 
     @property
     def events(self) -> EventLog:
@@ -157,8 +213,20 @@ class ConversationState(OpenHandsModel):
     def _save_base_state(self, fs: FileStore) -> None:
         """
         Persist base state snapshot (no events; events are file-backed).
+
+        If a cipher is configured, secrets will be encrypted. Otherwise, they
+        will be redacted (serialized as '**********').
         """
-        payload = self.model_dump_json(exclude_none=True)
+        context = {"cipher": self._cipher} if self._cipher else None
+        # Warn if secrets exist but no cipher is configured
+        if not self._cipher and self.secret_registry.secret_sources:
+            logger.warning(
+                f"Saving conversation state without cipher - "
+                f"{len(self.secret_registry.secret_sources)} secret(s) will be "
+                "redacted and lost on restore. Consider providing a cipher to "
+                "preserve secrets."
+            )
+        payload = self.model_dump_json(exclude_none=True, context=context)
         fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
@@ -171,11 +239,41 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        cipher: Cipher | None = None,
     ) -> "ConversationState":
-        """
-        If base_state.json exists: resume (attach EventLog,
-            reconcile agent, enforce id).
-        Else: create fresh (agent required), persist base, and return.
+        """Create a new conversation state or resume from persistence.
+
+        This factory method handles both new conversation creation and resumption
+        from persisted state.
+
+        **New conversation:**
+        The provided Agent is used directly. Pydantic validation happens via the
+        cls() constructor.
+
+        **Restored conversation:**
+        The provided Agent is validated against the persisted agent using
+        agent.load(). Tools must match (they may have been used in conversation
+        history), but all other configuration can be freely changed: LLM,
+        agent_context, condenser, system prompts, etc.
+
+        Args:
+            id: Unique conversation identifier
+            agent: The Agent to use (tools must match persisted on restore)
+            workspace: Working directory for agent operations
+            persistence_dir: Directory for persisting state and events
+            max_iterations: Maximum iterations per run
+            stuck_detection: Whether to enable stuck detection
+            cipher: Optional cipher for encrypting/decrypting secrets in
+                    persisted state. If provided, secrets are encrypted when
+                    saving and decrypted when loading. If not provided, secrets
+                    are redacted (lost) on serialization.
+
+        Returns:
+            ConversationState ready for use
+
+        Raises:
+            ValueError: If conversation ID or tools mismatch on restore
+            ValidationError: If agent or other fields fail Pydantic validation
         """
         file_store = (
             LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
@@ -190,30 +288,33 @@ class ConversationState(OpenHandsModel):
 
         # ---- Resume path ----
         if base_text:
-            state = cls.model_validate(json.loads(base_text))
+            # Use cipher context for decrypting secrets if provided
+            context = {"cipher": cipher} if cipher else None
+            state = cls.model_validate(json.loads(base_text), context=context)
 
-            # Enforce conversation id match
+            # Restore the conversation with the same id
             if state.id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
                     f"but persisted state has {state.id}"
                 )
 
-            # Attach event log early so we can read history
+            # Attach event log early so we can read history for tool verification
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+            state._cipher = cipher
 
-            # Reconcile agent config with deserialized one
-            # Pass event log so tool usage can be checked on-the-fly if needed
-            resolved = agent.resolve_diff_from_deserialized(
-                state.agent, events=state._events
-            )
+            # Verify compatibility (agent class + tools)
+            agent.verify(state.agent, events=state._events)
 
-            # Commit reconciled agent (may autosave)
+            # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
-            state.agent = resolved
+            state.agent = agent
+            state.workspace = workspace
+            state.max_iterations = max_iterations
 
-            state.stats = ConversationStats()
+            # Note: stats are already deserialized from base_state.json above.
+            # Do NOT reset stats here - this would lose accumulated metrics.
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"
@@ -236,10 +337,9 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
-        # Record existing analyzer configuration in state
-        state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+        state._cipher = cipher
         state.stats = ConversationStats()
 
         state._save_base_state(file_store)  # initial snapshot

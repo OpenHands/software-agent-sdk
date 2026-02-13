@@ -139,10 +139,10 @@ async def bash_events_socket(
 
 async def _send_event(event: Event, websocket: WebSocket):
     try:
-        dumped = event.model_dump()
+        dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
     except Exception:
-        logger.exception("error_sending_event:{event}", stack_info=True)
+        logger.exception("error_sending_event: %r", event, stack_info=True)
 
 
 @dataclass
@@ -157,10 +157,10 @@ class _WebSocketSubscriber(Subscriber):
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
     try:
-        dumped = event.model_dump()
+        dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
     except Exception:
-        logger.exception("error_sending_event:{event}", stack_info=True)
+        logger.exception("error_sending_bash_event: %r", event, stack_info=True)
 
 
 @dataclass

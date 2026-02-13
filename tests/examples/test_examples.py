@@ -19,9 +19,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 EXAMPLES_ROOT = REPO_ROOT / "examples"
 
+# Maximum time (seconds) allowed for a single example script to run
+EXAMPLE_TIMEOUT_SECONDS = 600  # 10 minutes
+
 _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk",
     EXAMPLES_ROOT / "02_remote_agent_server",
+    # These examples live under subdirectories (each with a single `main.py`).
+    EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
+    EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
 )
 
 # LLM-specific examples that require model overrides
@@ -43,7 +49,9 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/15_browser_use.py",
     "examples/01_standalone_sdk/16_llm_security_analyzer.py",
     "examples/01_standalone_sdk/27_observability_laminar.py",
-    "examples/02_remote_agent_server/04_vscode_with_docker_sandboxed_server.py",
+    "examples/01_standalone_sdk/35_subscription_login.py",
+    # Requires interactive input() which fails in CI with EOFError
+    "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
 }
 
 
@@ -100,18 +108,34 @@ def test_example_scripts(
     if overrides:
         env.update(overrides)
 
-    process = subprocess.run(  # noqa: S603
-        [sys.executable, str(example_path)],
-        cwd=str(REPO_ROOT),
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    duration = time.perf_counter() - start
+    timed_out = False
+    try:
+        process = subprocess.run(  # noqa: S603
+            [sys.executable, str(example_path)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=EXAMPLE_TIMEOUT_SECONDS,
+        )
+        stdout = process.stdout
+        stderr = process.stderr
+        returncode = process.returncode
+    except subprocess.TimeoutExpired as e:
+        timed_out = True
+        # e.stdout/e.stderr are bytes|str|None; ensure we have str
+        raw_stdout = e.stdout
+        raw_stderr = e.stderr
+        stdout = (
+            raw_stdout.decode() if isinstance(raw_stdout, bytes) else (raw_stdout or "")
+        )
+        stderr = (
+            raw_stderr.decode() if isinstance(raw_stderr, bytes) else (raw_stderr or "")
+        )
+        returncode = -1
 
-    stdout = process.stdout
-    stderr = process.stderr
+    duration = time.perf_counter() - start
 
     cost = None
     for line in stdout.splitlines():
@@ -122,9 +146,12 @@ def test_example_scripts(
     status = "passed"
     failure_reason = None
 
-    if process.returncode != 0:
+    if timed_out:
         status = "failed"
-        failure_reason = f"Exit code {process.returncode}"
+        failure_reason = f"Timed out after {EXAMPLE_TIMEOUT_SECONDS} seconds"
+    elif returncode != 0:
+        status = "failed"
+        failure_reason = f"Exit code {returncode}"
     elif cost is None:
         status = "failed"
         failure_reason = "Missing EXAMPLE_COST marker in stdout"
@@ -134,7 +161,7 @@ def test_example_scripts(
         "status": status,
         "duration_seconds": duration,
         "cost": cost,
-        "returncode": process.returncode,
+        "returncode": returncode,
         "failure_reason": failure_reason,
     }
 

@@ -101,11 +101,11 @@ class SleepExecutor(ToolExecutor):
             f"{action.duration}s - '{action.message}'"
         )
 
-        # Track final step timing if this is the final sleep
+        # Log final step timing if this is the final sleep
+        # Note: final_step_start timestamp is recorded in _mock_llm_response
+        # when the flag is set, to avoid race with butterfly thread
         if "Final sleep" in action.message:
-            print(f"[+{elapsed:.3f}s] FINAL STEP STARTED")
-            if hasattr(self, "test_instance") and self.test_instance is not None:
-                self.test_instance.timestamps.append(("final_step_start", start_time))
+            print(f"[+{elapsed:.3f}s] FINAL STEP SLEEP STARTED")
 
         time.sleep(action.duration)
 
@@ -211,6 +211,8 @@ class TestMessageWhileFinishing:
 
         elif self.step_count == 2:
             # Step 2: Final step - sleep AND finish (multiple tool calls)
+            # Record timestamp BEFORE setting flag to avoid race with butterfly thread
+            self.timestamps.append(("final_step_start", time.time()))
             self.final_step_started = True
 
             response_content = "Now I'll sleep for a longer time and then finish"
@@ -313,16 +315,19 @@ class TestMessageWhileFinishing:
         self.final_step_started = False
         self.test_start_time = time.time()
 
+        conversation = Conversation(agent=self.agent)
+        # Store conversation reference for use in mock LLM
+        self.conversation = conversation
+
+        # Trigger lazy agent initialization to create tools
+        conversation._ensure_agent_ready()
+
         # Set the test start time reference for the sleep executor
-        # Access the actual tool instances from the agent's _tools dict
+        # This must happen AFTER agent init but BEFORE any messages are processed
         sleep_tool = self.agent._tools.get("sleep")
         if sleep_tool and sleep_tool.executor is not None:
             setattr(sleep_tool.executor, "test_start_time", self.test_start_time)
             setattr(sleep_tool.executor, "test_instance", self)
-
-        conversation = Conversation(agent=self.agent)
-        # Store conversation reference for use in mock LLM
-        self.conversation = conversation
 
         def elapsed_time():
             return f"[+{time.time() - self.test_start_time:.3f}s]"

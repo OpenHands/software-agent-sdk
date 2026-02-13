@@ -23,7 +23,7 @@ class TestRemoteConversation:
     def setup_method(self):
         """Set up test environment."""
         self.host: str = "http://localhost:8000"
-        self.llm: LLM = LLM(model="gpt-4", api_key=SecretStr("test-key"))
+        self.llm: LLM = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
         self.agent: Agent = Agent(llm=self.llm, tools=[])
         self.mock_client: Mock = Mock(spec=httpx.Client)
         self.workspace: RemoteWorkspace = RemoteWorkspace(
@@ -53,6 +53,7 @@ class TestRemoteConversation:
                 # Return conversation info response with finished status
                 # (needed for run() polling to complete)
                 response = Mock()
+                response.status_code = 200
                 response.raise_for_status.return_value = None
                 conv_info = mock_conv_response.json.return_value.copy()
                 conv_info["execution_status"] = "finished"
@@ -61,6 +62,7 @@ class TestRemoteConversation:
             elif method == "POST" and "/events" in url:
                 # POST to events endpoint (send_message)
                 response = Mock()
+                response.status_code = 200
                 response.raise_for_status.return_value = None
                 response.json.return_value = {}
                 return response
@@ -74,11 +76,13 @@ class TestRemoteConversation:
             elif method == "POST" or method == "PUT":
                 # Default success response for other POST/PUT requests
                 response = Mock()
+                response.status_code = 200
                 response.raise_for_status.return_value = None
                 response.json.return_value = {}
                 return response
             else:
                 response = Mock()
+                response.status_code = 200
                 response.raise_for_status.return_value = None
                 return response
 
@@ -91,6 +95,7 @@ class TestRemoteConversation:
             conversation_id = str(uuid.uuid4())
 
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.raise_for_status.return_value = None
         mock_response.json.return_value = {
             "id": conversation_id,
@@ -104,6 +109,7 @@ class TestRemoteConversation:
             events = []
 
         mock_response = Mock()
+        mock_response.status_code = 200
         mock_response.raise_for_status.return_value = None
         mock_response.json.return_value = {
             "items": events,
@@ -221,6 +227,91 @@ class TestRemoteConversation:
         assert len(get_events_calls) >= 1, (
             "Should have made at least one GET call to /events/search "
             "to fetch initial events"
+        )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_initialization_nonexistent_conversation_creates_new(
+        self, mock_ws_client
+    ):
+        """Test RemoteConversation creates conversation when ID doesn't exist."""
+        conversation_id = uuid.uuid4()
+        mock_client_instance = Mock()
+        self.workspace._client = mock_client_instance
+
+        mock_conv_response = self.create_mock_conversation_response(
+            str(conversation_id)
+        )
+        mock_events_response = self.create_mock_events_response()
+
+        def request_side_effect(method, url, **kwargs):
+            # GET for specific conversation returns 404
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                response = Mock()
+                response.status_code = 404
+                response.raise_for_status.side_effect = None
+                return response
+            elif method == "POST" and url == "/api/conversations":
+                return mock_conv_response
+            elif method == "GET" and "/events/search" in url:
+                return mock_events_response
+            elif method == "GET" and url.startswith("/api/conversations/"):
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                conv_info = mock_conv_response.json.return_value.copy()
+                conv_info["execution_status"] = "finished"
+                response.json.return_value = conv_info
+                return response
+            else:
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                response.json.return_value = {}
+                return response
+
+        mock_client_instance.request.side_effect = request_side_effect
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        # Create RemoteConversation with a non-existent ID
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            conversation_id=conversation_id,
+        )
+
+        # Verify conversation ID is set correctly
+        assert conversation.id == conversation_id
+
+        # Verify GET call was made to check if conversation exists
+        get_conversation_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "GET"
+            and call[0][1] == f"/api/conversations/{conversation_id}"
+        ]
+        assert len(get_conversation_calls) == 1, (
+            "Should have made exactly one GET call to check if conversation exists"
+        )
+
+        # Verify POST call was made to create the conversation
+        post_create_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+        ]
+        assert len(post_create_calls) == 1, (
+            "Should have made exactly one POST call to create the conversation"
+        )
+
+        # Verify the POST payload contains the conversation_id
+        post_call = post_create_calls[0]
+        payload = post_call[1].get("json", {})
+        assert payload.get("conversation_id") == str(conversation_id), (
+            "POST payload should contain the specified conversation_id"
         )
 
     @patch(
@@ -421,7 +512,12 @@ class TestRemoteConversation:
     def test_remote_conversation_run_blocking_polls_until_finished(
         self, mock_ws_client
     ):
-        """Test that blocking=True polls until status is not running."""
+        """Test that blocking=True polls until status is not running.
+
+        The implementation waits for WebSocket to deliver terminal status, but falls
+        back to REST polling if WebSocket doesn't deliver. The fallback requires 3
+        consecutive terminal polls (TERMINAL_POLL_THRESHOLD) before returning.
+        """
         # Setup mocks
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
@@ -458,8 +554,11 @@ class TestRemoteConversation:
         conversation.run(blocking=True, poll_interval=0.01)  # Fast polling for test
 
         # Verify polling happened multiple times
-        assert poll_count[0] == 3, (
-            f"Should have polled 3 times (2 running + 1 finished), got {poll_count[0]}"
+        # With the fallback mechanism, we need 3 consecutive terminal polls:
+        # 2 running + 3 finished = 5 total polls
+        assert poll_count[0] == 5, (
+            f"Should have polled 5 times (2 running + 3 finished for fallback "
+            f"threshold), got {poll_count[0]}"
         )
 
     @patch(
@@ -901,3 +1000,35 @@ class TestRemoteConversation:
 
         # Verify trailing slash was removed and workspace host was normalized
         assert conversation.workspace.host == "http://localhost:8000"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_execute_tool_not_implemented(self, mock_ws_client):
+        """Test that execute_tool raises NotImplementedError for RemoteConversation."""
+        # Setup mocks
+        mock_client_instance = self.setup_mock_client()
+
+        conversation_id = str(uuid.uuid4())
+        mock_conv_response = self.create_mock_conversation_response(conversation_id)
+        mock_events_response = self.create_mock_events_response()
+
+        mock_client_instance.post.return_value = mock_conv_response
+        mock_client_instance.get.return_value = mock_events_response
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        # Create conversation
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        # Create a dummy action (using a simple mock)
+        from unittest.mock import MagicMock
+
+        mock_action = MagicMock()
+
+        # Verify execute_tool raises NotImplementedError
+        with pytest.raises(NotImplementedError) as exc_info:
+            conversation.execute_tool("any_tool", mock_action)
+
+        assert "not yet supported for RemoteConversation" in str(exc_info.value)

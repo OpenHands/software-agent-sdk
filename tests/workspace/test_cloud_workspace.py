@@ -283,3 +283,104 @@ def test_cloud_api_url_trailing_slash_removed():
         # Clean up
         workspace._sandbox_id = None
         workspace.cleanup()
+
+
+def test_sandbox_id_field_is_public():
+    """Test that sandbox_id is a public field that can be set."""
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
+        workspace = OpenHandsCloudWorkspace(
+            cloud_api_url="https://cloud.example.com",
+            cloud_api_key="test-api-key",
+            sandbox_id="existing-sandbox-123",
+        )
+
+        assert workspace.sandbox_id == "existing-sandbox-123"
+
+        # Clean up
+        workspace._sandbox_id = None
+        workspace.cleanup()
+
+
+def test_sandbox_id_triggers_resume_instead_of_create():
+    """Test that providing sandbox_id calls resume endpoint instead of create."""
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
+        workspace = OpenHandsCloudWorkspace(
+            cloud_api_url="https://cloud.example.com",
+            cloud_api_key="test-api-key",
+            sandbox_id="existing-sandbox-123",
+        )
+
+    # Mock the methods - use class-level patch for reset_client
+    with (
+        patch.object(workspace, "_resume_sandbox") as mock_resume,
+        patch.object(workspace, "_create_new_sandbox") as mock_create,
+        patch.object(workspace, "_wait_until_sandbox_ready"),
+        patch.object(workspace, "_get_agent_server_url") as mock_get_url,
+        patch.object(OpenHandsCloudWorkspace, "reset_client"),
+    ):
+        mock_get_url.return_value = "https://agent.example.com"
+        workspace._start_sandbox()
+
+        # Should call resume, not create
+        mock_resume.assert_called_once()
+        mock_create.assert_not_called()
+        assert workspace._sandbox_id == "existing-sandbox-123"
+
+    # Clean up
+    workspace._sandbox_id = None
+    workspace.cleanup()
+
+
+def test_no_sandbox_id_creates_new_sandbox():
+    """Test that without sandbox_id, a new sandbox is created."""
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
+        workspace = OpenHandsCloudWorkspace(
+            cloud_api_url="https://cloud.example.com",
+            cloud_api_key="test-api-key",
+        )
+
+    # Mock the methods - use class-level patch for reset_client
+    with (
+        patch.object(workspace, "_resume_sandbox") as mock_resume,
+        patch.object(workspace, "_create_new_sandbox") as mock_create,
+        patch.object(workspace, "_wait_until_sandbox_ready"),
+        patch.object(workspace, "_get_agent_server_url") as mock_get_url,
+        patch.object(OpenHandsCloudWorkspace, "reset_client"),
+    ):
+        mock_get_url.return_value = "https://agent.example.com"
+        workspace._start_sandbox()
+
+        # Should call create, not resume
+        mock_create.assert_called_once()
+        mock_resume.assert_not_called()
+
+    # Clean up
+    workspace._sandbox_id = None
+    workspace.cleanup()
+
+
+def test_resume_existing_sandbox_sets_internal_id():
+    """Test that _resume_existing_sandbox sets _sandbox_id from sandbox_id."""
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
+        workspace = OpenHandsCloudWorkspace(
+            cloud_api_url="https://cloud.example.com",
+            cloud_api_key="test-api-key",
+            sandbox_id="my-sandbox-id",
+        )
+
+    with patch.object(workspace, "_send_api_request"):
+        workspace._resume_existing_sandbox()
+
+        assert workspace._sandbox_id == "my-sandbox-id"
+
+    # Clean up
+    workspace._sandbox_id = None
+    workspace.cleanup()

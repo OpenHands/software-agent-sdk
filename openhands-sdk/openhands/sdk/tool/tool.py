@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 ActionT = TypeVar("ActionT", bound=Action)
 ObservationT = TypeVar("ObservationT", bound=Observation)
 _action_types_with_risk: dict[type, type] = {}
+_action_types_with_summary: dict[type, type] = {}
 
 
 def _camel_to_snake(name: str) -> str:
@@ -364,17 +365,18 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         action_type: type[Schema] | None = None,
     ) -> dict[str, Any]:
         action_type = action_type or self.action_type
-        action_type_with_risk = create_action_type_with_risk(action_type)
 
+        # Apply security risk enhancement if enabled
         add_security_risk_prediction = add_security_risk_prediction and (
             self.annotations is None or (not self.annotations.readOnlyHint)
         )
-        schema = (
-            action_type_with_risk.to_mcp_schema()
-            if add_security_risk_prediction
-            else action_type.to_mcp_schema()
-        )
-        return schema
+        if add_security_risk_prediction:
+            action_type = create_action_type_with_risk(action_type)
+
+        # Always add summary field for transparency and explainability
+        action_type = _create_action_type_with_summary(action_type)
+
+        return action_type.to_mcp_schema()
 
     def to_openai_tool(
         self,
@@ -391,6 +393,10 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             action_type: Optionally override the action_type to use for the schema.
                 This is useful for MCPTool to use a dynamically created action type
                 based on the tool's input schema.
+
+        Note:
+            Summary field is always added to the schema for transparency and
+            explainability of agent actions.
         """
         return ChatCompletionToolParam(
             type="function",
@@ -398,7 +404,8 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 name=self.name,
                 description=self.description,
                 parameters=self._get_tool_schema(
-                    add_security_risk_prediction, action_type
+                    add_security_risk_prediction,
+                    action_type,
                 ),
             ),
         )
@@ -412,6 +419,14 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
         For Responses API, function tools expect top-level keys:
         { "type": "function", "name": ..., "description": ..., "parameters": ... }
+
+        Args:
+            add_security_risk_prediction: Whether to add a `security_risk` field
+            action_type: Optional override for the action type
+
+        Note:
+            Summary field is always added to the schema for transparency and
+            explainability of agent actions.
         """
 
         return {
@@ -419,7 +434,8 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             "name": self.name,
             "description": self.description,
             "parameters": self._get_tool_schema(
-                add_security_risk_prediction, action_type
+                add_security_risk_prediction,
+                action_type,
             ),
             "strict": False,
         }
@@ -479,3 +495,38 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
     )
     _action_types_with_risk[action_type] = action_type_with_risk
     return action_type_with_risk
+
+
+def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
+    """Create a new action type with summary field for LLM to predict.
+
+    This dynamically adds a 'summary' field to the action schema, allowing
+    the LLM to provide a brief explanation of what each action does.
+
+    Args:
+        action_type: The original action type to enhance
+
+    Returns:
+        A new type that includes the summary field
+    """
+    action_type_with_summary = _action_types_with_summary.get(action_type)
+    if action_type_with_summary:
+        return action_type_with_summary
+
+    action_type_with_summary = type(
+        f"{action_type.__name__}WithSummary",
+        (action_type,),
+        {
+            "summary": Field(
+                default=None,
+                description=(
+                    "A concise summary (approximately 10 words) describing what "
+                    "this specific action does. Focus on the key operation and target. "
+                    "Example: 'List all Python files in current directory'"
+                ),
+            ),
+            "__annotations__": {"summary": str | None},
+        },
+    )
+    _action_types_with_summary[action_type] = action_type_with_summary
+    return action_type_with_summary

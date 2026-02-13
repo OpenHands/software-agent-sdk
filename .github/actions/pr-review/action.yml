@@ -1,0 +1,143 @@
+---
+name: OpenHands PR Review
+description: Automated PR review using OpenHands agent
+author: OpenHands
+
+branding:
+    icon: code
+    color: blue
+
+inputs:
+    llm-model:
+        description: LLM model to use for the review
+        required: false
+        default: anthropic/claude-sonnet-4-5-20250929
+    llm-base-url:
+        description: LLM base URL (optional, for custom LLM endpoints)
+        required: false
+        default: ''
+    review-style:
+        description: "Review style: 'standard' (balanced review covering style, readability, and security) or 'roasted' (Linus Torvalds-style brutally honest
+            feedback focusing on data structures, simplicity, and pragmatism)"
+        required: false
+        default: roasted
+    sdk-repo:
+        description: GitHub repository for the SDK (owner/repo)
+        required: false
+        default: OpenHands/software-agent-sdk
+    sdk-version:
+        description: Git ref to use for the SDK (tag, branch, or commit SHA, e.g., v1.0.0, main, or abc1234)
+        required: false
+        default: main
+    llm-api-key:
+        description: LLM API key (required)
+        required: true
+    github-token:
+        description: GitHub token for API access (required)
+        required: true
+    lmnr-api-key:
+        description: Laminar API key for observability (optional)
+        required: false
+        default: ''
+
+runs:
+    using: composite
+    steps:
+        - name: Checkout software-agent-sdk repository
+          uses: actions/checkout@v4
+          with:
+              repository: ${{ inputs.sdk-repo }}
+              ref: ${{ inputs.sdk-version }}
+              path: software-agent-sdk
+
+        - name: Checkout PR repository
+          uses: actions/checkout@v4
+          with:
+              repository: ${{ github.event.pull_request.head.repo.full_name }}
+              ref: ${{ github.event.pull_request.head.ref }}
+              fetch-depth: 0
+              persist-credentials: false
+              path: pr-repo
+
+        - name: Set up Python
+          uses: actions/setup-python@v5
+          with:
+              python-version: '3.12'
+
+        - name: Install uv
+          uses: astral-sh/setup-uv@v6
+          with:
+              enable-cache: true
+
+        - name: Install GitHub CLI
+          shell: bash
+          run: |
+              sudo apt-get update
+              sudo apt-get install -y gh
+
+        - name: Install OpenHands dependencies
+          shell: bash
+          run: |
+              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr
+
+        - name: Check required configuration
+          shell: bash
+          env:
+              LLM_API_KEY: ${{ inputs.llm-api-key }}
+              GITHUB_TOKEN: ${{ inputs.github-token }}
+          run: |
+              if [ -z "$LLM_API_KEY" ]; then
+                echo "Error: llm-api-key is required."
+                exit 1
+              fi
+              if [ -z "$GITHUB_TOKEN" ]; then
+                echo "Error: github-token is required."
+                exit 1
+              fi
+
+              echo "PR Number: ${{ github.event.pull_request.number }}"
+              echo "PR Title: ${{ github.event.pull_request.title }}"
+              echo "Repository: ${{ github.repository }}"
+              echo "SDK Version: ${{ inputs.sdk-version }}"
+              echo "LLM model: ${{ inputs.llm-model }}"
+              if [ -n "${{ inputs.llm-base-url }}" ]; then
+                echo "LLM base URL: ${{ inputs.llm-base-url }}"
+              fi
+
+        - name: Run PR review
+          shell: bash
+          env:
+              LLM_MODEL: ${{ inputs.llm-model }}
+              LLM_BASE_URL: ${{ inputs.llm-base-url }}
+              REVIEW_STYLE: ${{ inputs.review-style }}
+              LLM_API_KEY: ${{ inputs.llm-api-key }}
+              GITHUB_TOKEN: ${{ inputs.github-token }}
+              LMNR_PROJECT_API_KEY: ${{ inputs.lmnr-api-key }}
+              PR_NUMBER: ${{ github.event.pull_request.number }}
+              PR_TITLE: ${{ github.event.pull_request.title }}
+              PR_BODY: ${{ github.event.pull_request.body }}
+              PR_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+              PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+              REPO_NAME: ${{ github.repository }}
+          run: |
+              cd pr-repo
+              uv run python ../software-agent-sdk/examples/03_github_workflows/02_pr_review/agent_script.py
+
+        - name: Upload logs as artifact
+          uses: actions/upload-artifact@v4
+          if: always()
+          with:
+              name: openhands-pr-review-logs
+              path: |
+                  *.log
+                  output/
+              retention-days: 7
+
+        - name: Upload Laminar trace info for evaluation
+          uses: actions/upload-artifact@v4
+          if: success()
+          with:
+              name: pr-review-trace-${{ github.event.pull_request.number }}
+              path: pr-repo/laminar_trace_info.json
+              retention-days: 30
+              if-no-files-found: ignore

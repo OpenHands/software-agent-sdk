@@ -1,5 +1,6 @@
 ---
 name: Run Eval
+run-name: Run Eval (${{ inputs.benchmark || 'swebench' }}) ${{ inputs.reason || github.event.label.name || 'release' }}
 
 on:
     pull_request_target:
@@ -18,10 +19,17 @@ on:
                     - swebench
                     - swtbench
                     - commit0
+                    - multiswebench
+                    - swebenchmultimodal
             sdk_ref:
-                description: SDK commit/ref to evaluate
+                description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: main
+                default: v1.11.1
+            allow_unreleased_branches:
+                description: Allow unreleased branches (bypasses semantic version requirement)
+                required: false
+                default: false
+                type: boolean
             eval_limit:
                 description: Number of instances to run
                 required: false
@@ -29,6 +37,7 @@ on:
                 type: choice
                 options:
                     - '1'
+                    - '100'
                     - '50'
                     - '200'
                     - '500'
@@ -66,6 +75,16 @@ on:
                 required: false
                 default: ''
                 type: string
+            enable_conversation_event_logging:
+                description: 'Enable Datadog persistence for conversation events (default: false)'
+                required: false
+                default: false
+                type: boolean
+            max_retries:
+                description: Max retries per instance (passed to benchmarks)
+                required: false
+                default: '3'
+                type: string
 
 
 env:
@@ -98,6 +117,19 @@ jobs:
               with:
                   ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
                   fetch-depth: 0
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.13'
+
+            - name: Validate SDK reference (semantic version check)
+              if: github.event_name == 'workflow_dispatch'
+              env:
+                  SDK_REF: ${{ github.event.inputs.sdk_ref }}
+                  ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches }}
+              run: |
+                  python3 .github/run-eval/validate_sdk_ref.py
 
             - name: Load model IDs from Python script
               id: load-models
@@ -159,8 +191,10 @@ jobs:
                     EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
                     SDK_REF="${{ github.event.inputs.sdk_ref }}"
                     # Convert ref to SHA for manual dispatch
-                    # Try with origin/ prefix first for remote branches, then without prefix, then use as-is
-                    SDK_SHA=$(git rev-parse "origin/$SDK_REF" 2>/dev/null || git rev-parse "$SDK_REF" 2>/dev/null || echo "$SDK_REF")
+                    # Resolve SHA robustly for both branch refs and raw SHAs (avoid double-prefix issues)
+                    SDK_SHA=$(git rev-parse --verify "$SDK_REF^{commit}" 2>/dev/null || \
+                              git rev-parse --verify "origin/$SDK_REF^{commit}" 2>/dev/null || \
+                              echo "$SDK_REF")
                     PR_NUMBER=""
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
@@ -184,11 +218,18 @@ jobs:
                     fi
                   done
 
-                  echo "eval_limit=$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
-                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
-                  echo "models=$MODELS" >> "$GITHUB_OUTPUT"
-                  echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-                  echo "trigger_desc=$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
+                  # Sanitize values to avoid GITHUB_OUTPUT parse errors (e.g., raw SHAs)
+                  SDK_SHA=$(printf '%s' "$SDK_SHA" | tr -d '\n\r')
+                  EVAL_LIMIT=$(printf '%s' "$EVAL_LIMIT" | tr -d '\n\r')
+                  PR_NUMBER=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
+                  MODELS=$(printf '%s' "$MODELS" | tr -d '\n\r')
+                  TRIGGER_DESCRIPTION=$(printf '%s' "$TRIGGER_DESCRIPTION" | tr -d '\n\r')
+
+                  printf 'eval_limit=%s\n' "$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
+                  printf 'sdk_sha=%s\n' "$SDK_SHA" >> "$GITHUB_OUTPUT"
+                  printf 'models=%s\n' "$MODELS" >> "$GITHUB_OUTPUT"
+                  printf 'pr_number=%s\n' "$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  printf 'trigger_desc=%s\n' "$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
 
             - name: Resolve model configurations
               id: resolve-models
@@ -212,6 +253,9 @@ jobs:
                   INSTANCE_IDS: ${{ github.event.inputs.instance_ids || '' }}
                   NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '' }}
                   NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
+                  ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || false }}
+                  MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
+                  TRIGGERED_BY: ${{ github.actor }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -226,7 +270,10 @@ jobs:
                     --arg instance_ids "$INSTANCE_IDS" \
                     --arg num_infer_workers "$NUM_INFER_WORKERS" \
                     --arg num_eval_workers "$NUM_EVAL_WORKERS" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers}}')
+                    --argjson enable_conversation_event_logging "$ENABLE_CONVERSATION_EVENT_LOGGING" \
+                    --arg max_retries "$MAX_RETRIES" \
+                    --arg triggered_by "$TRIGGERED_BY" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \

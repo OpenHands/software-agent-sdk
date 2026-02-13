@@ -1,0 +1,14 @@
+{
+  "stop": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": ".openhands/hooks/on_stop.sh",
+          "timeout": 600
+        }
+      ]
+    }
+  ]
+}

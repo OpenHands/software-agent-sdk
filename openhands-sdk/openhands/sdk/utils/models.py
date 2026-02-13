@@ -151,6 +151,9 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def _serialize_by_kind(
         self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
     ):
+        if isinstance(self, dict):
+            # Sometimes pydantic passes a dict in here.
+            return self
         if self._is_handler_for_current_class(handler):
             result = handler(self)
             return result

@@ -25,6 +25,43 @@ class ToolMockAction(Action):
     array_field: list[int] = Field(default_factory=list, description="Array field")
 
 
+# Module-level Action classes to avoid "local class not supported" errors
+# during serialization tests. Local classes (defined inside functions) cannot be
+# deserialized because they may not exist at deserialization time.
+class ComplexSchemaAction(Action):
+    """Action with complex field types for schema generation testing."""
+
+    simple_field: str = Field(description="Simple string field")
+    optional_int: int | None = Field(default=None, description="Optional integer")
+    string_list: list[str] = Field(default_factory=list, description="List of strings")
+
+
+class RequiredFieldAction(Action):
+    """Action with required and optional fields for testing."""
+
+    required_field: str = Field(description="This field is required")
+    optional_field: str | None = Field(
+        default=None, description="This field is optional"
+    )
+
+
+class ComplexNestedAction(Action):
+    """Action with complex nested types for testing."""
+
+    simple_string: str = Field(description="Simple string field")
+    optional_int: int | None = Field(default=None, description="Optional integer")
+    string_array: list[str] = Field(
+        default_factory=list, description="Array of strings"
+    )
+    int_array: list[int] = Field(default_factory=list, description="Array of integers")
+    nested_dict: dict[str, Any] = Field(
+        default_factory=dict, description="Nested dictionary"
+    )
+    optional_array: list[str | None] | None = Field(
+        default=None, description="Optional array"
+    )
+
+
 class ToolMockObservation(Observation):
     """Mock observation class for testing."""
 
@@ -34,6 +71,32 @@ class ToolMockObservation(Observation):
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
         return [TextContent(text=self.result)]
+
+
+class ComplexObservation(Observation):
+    """Observation with complex data for testing."""
+
+    data: dict[str, Any] = Field(default_factory=dict, description="Complex data")
+    count: int = Field(default=0, description="Count field")
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=f"Data: {self.data}, Count: {self.count}")]
+
+
+class RequiredFieldsObservation(Observation):
+    """Observation with required fields for validation testing.
+
+    Note: Defined at module level to ensure a stable qualified name for
+    JSON serialization/deserialization.
+    """
+
+    message: str = Field(description="Required message field")
+    value: int = Field(description="Required value field")
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=f"{self.message}: {self.value}")]
 
 
 class MockTestTool(ToolDefinition[ToolMockAction, ToolMockObservation]):
@@ -184,19 +247,9 @@ class TestTool:
 
     def test_schema_generation_complex_types(self):
         """Test schema generation with complex field types."""
-
-        class ComplexAction(Action):
-            simple_field: str = Field(description="Simple string field")
-            optional_int: int | None = Field(
-                default=None, description="Optional integer"
-            )
-            string_list: list[str] = Field(
-                default_factory=list, description="List of strings"
-            )
-
         tool = MockTestTool(
             description="Tool with complex types",
-            action_type=ComplexAction,
+            action_type=ComplexSchemaAction,
             observation_type=ToolMockObservation,
         )
 
@@ -343,16 +396,6 @@ class TestTool:
     def test_complex_executor_return_types(self):
         """Test executor with complex return types."""
 
-        class ComplexObservation(Observation):
-            data: dict[str, Any] = Field(
-                default_factory=dict, description="Complex data"
-            )
-            count: int = Field(default=0, description="Count field")
-
-            @property
-            def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-                return [TextContent(text=f"Data: {self.data}, Count: {self.count}")]
-
         class MockComplexExecutor(ToolExecutor):
             def __call__(self, action, conversation=None) -> ComplexObservation:
                 return ComplexObservation(
@@ -395,28 +438,20 @@ class TestTool:
     def test_executor_with_observation_validation(self):
         """Test that executor return values are validated."""
 
-        class StrictObservation(Observation):
-            message: str = Field(description="Required message field")
-            value: int = Field(description="Required value field")
-
-            @property
-            def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-                return [TextContent(text=f"{self.message}: {self.value}")]
-
         class ValidExecutor(ToolExecutor):
-            def __call__(self, action, conversation=None) -> StrictObservation:
-                return StrictObservation(message="success", value=42)
+            def __call__(self, action, conversation=None) -> RequiredFieldsObservation:
+                return RequiredFieldsObservation(message="success", value=42)
 
         tool = MockTestTool(
-            description="Tool with strict observation",
+            description="Tool with required fields observation",
             action_type=ToolMockAction,
-            observation_type=StrictObservation,
+            observation_type=RequiredFieldsObservation,
             executor=ValidExecutor(),
         )
 
         action = ToolMockAction(command="test")
         result = tool(action)
-        assert isinstance(result, StrictObservation)
+        assert isinstance(result, RequiredFieldsObservation)
         assert result.message == "success"
         assert result.value == 42
 
@@ -441,13 +476,6 @@ class TestTool:
 
     def test_mcp_tool_schema_required_fields(self):
         """Test that MCP tool schema includes required fields."""
-
-        class RequiredFieldAction(Action):
-            required_field: str = Field(description="This field is required")
-            optional_field: str | None = Field(
-                default=None, description="This field is optional"
-            )
-
         tool = MockTestTool(
             description="Tool with required fields",
             action_type=RequiredFieldAction,
@@ -481,27 +509,6 @@ class TestTool:
 
     def test_to_mcp_tool_complex_nested_types(self):
         """Test MCP tool schema generation with complex nested types."""
-
-        class ComplexNestedAction(Action):
-            """Action with complex nested types for testing."""
-
-            simple_string: str = Field(description="Simple string field")
-            optional_int: int | None = Field(
-                default=None, description="Optional integer"
-            )
-            string_array: list[str] = Field(
-                default_factory=list, description="Array of strings"
-            )
-            int_array: list[int] = Field(
-                default_factory=list, description="Array of integers"
-            )
-            nested_dict: dict[str, Any] = Field(
-                default_factory=dict, description="Nested dictionary"
-            )
-            optional_array: list[str | None] | None = Field(
-                default=None, description="Optional array"
-            )
-
         tool = MockTestTool(
             description="Tool with complex nested types",
             action_type=ComplexNestedAction,

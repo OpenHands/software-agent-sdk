@@ -179,3 +179,35 @@ def get_conversation_summary(
 def _matches_pattern(path: str, pattern: str) -> bool:
     """Helper to match file paths against patterns."""
     return fnmatch.fnmatch(path, pattern) or pattern in path
+
+
+def verify_all_actions_have_summary(collected_events: list[Event]) -> tuple[bool, str]:
+    """
+    Verify that all ActionEvents have a non-empty summary field.
+
+    The summary field is always added to tool schemas and should be populated
+    either by the LLM or with a default value.
+
+    Args:
+        collected_events: List of events collected from conversation
+
+    Returns:
+        Tuple of (success, reason) where success is True if all actions have
+        summaries, and reason explains any failures
+    """
+    from openhands.sdk.event import ActionEvent
+
+    action_events = [e for e in collected_events if isinstance(e, ActionEvent)]
+
+    if not action_events:
+        return True, "No action events found"
+
+    missing_summaries = []
+    for i, event in enumerate(action_events):
+        if not event.summary or not event.summary.strip():
+            missing_summaries.append(f"Action {i + 1}: {event.tool_name}")
+
+    if missing_summaries:
+        return False, f"Actions missing summaries: {', '.join(missing_summaries)}"
+
+    return True, f"All {len(action_events)} actions have summaries"

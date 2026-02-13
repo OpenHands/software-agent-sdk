@@ -218,6 +218,26 @@ class TestMCPToolExecutor:
         assert observation.is_error is True
         assert "Connection failed" in observation.text
 
+    def test_call_tool_timeout(self):
+        """Test tool execution with timeout error returns observation."""
+        # Mock action
+        mock_action = MagicMock()
+        mock_action.model_dump.return_value = {"param": "value"}
+
+        # Mock call_async_from_sync to raise TimeoutError
+        def mock_call_async_from_sync(coro_func, **kwargs):
+            raise TimeoutError("Operation timed out")
+
+        self.mock_client.call_async_from_sync = mock_call_async_from_sync
+
+        observation = self.executor(mock_action)
+
+        assert isinstance(observation, MCPToolObservation)
+        assert observation.tool_name == "test_tool"
+        assert observation.is_error is True
+        assert "timed out" in observation.text
+        assert f"{self.executor.timeout} seconds" in observation.text
+
 
 class TestMCPTool:
     """Test MCPTool functionality."""
@@ -255,13 +275,14 @@ class TestMCPTool:
         input_schema = function_def["parameters"]
 
         # Since security_risk was removed from Action, it should not be in schema
-        assert len(input_schema["properties"]) == 1
+        # Summary field is always added for LLM transparency
+        assert len(input_schema["properties"]) == 2
         assert "security_risk" not in input_schema["properties"]
+        assert "summary" in input_schema["properties"]
 
-        assert input_schema == {
-            "type": "object",
-            "properties": {"param": {"type": "string"}},
-        }
+        # Check the actual tool parameter is present
+        assert "param" in input_schema["properties"]
+        assert input_schema["properties"]["param"] == {"type": "string"}
 
     def test_mcp_tool_with_annotations(self):
         """Test creating an MCP tool with annotations."""

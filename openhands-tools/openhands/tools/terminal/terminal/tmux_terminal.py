@@ -1,12 +1,12 @@
 """Tmux-based terminal backend implementation."""
 
-import os
 import time
 import uuid
 
 import libtmux
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import HISTORY_LIMIT
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
@@ -41,7 +41,8 @@ class TmuxTerminal(TerminalInterface):
         if self._initialized:
             return
 
-        self.server = libtmux.Server()
+        env = sanitized_env()
+        self.server = libtmux.Server(environment=env)
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
@@ -58,7 +59,7 @@ class TmuxTerminal(TerminalInterface):
             x=1000,
             y=1000,
         )
-        for k, v in os.environ.items():
+        for k, v in env.items():
             self.session.set_environment(k, v)
 
         # Set history limit to a large number to avoid losing history

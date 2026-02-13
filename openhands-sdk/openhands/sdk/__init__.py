@@ -1,6 +1,9 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from openhands.sdk.agent import Agent, AgentBase
+from openhands.sdk.agent import (
+    Agent,
+    AgentBase,
+)
 from openhands.sdk.context import (
     AgentContext,
     load_project_skills,
@@ -25,6 +28,7 @@ from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
+    LLMProfileStore,
     LLMRegistry,
     LLMStreamChunk,
     Message,
@@ -41,6 +45,7 @@ from openhands.sdk.mcp import (
     MCPToolObservation,
     create_mcp_tools,
 )
+from openhands.sdk.plugin import Plugin
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -65,6 +70,7 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMProfileStore",
     "LLMStreamChunk",
     "TokenCallbackType",
     "ConversationStats",
@@ -98,6 +104,7 @@ __all__ = [
     "LLMSummarizingCondenser",
     "FileStore",
     "LocalFileStore",
+    "Plugin",
     "register_tool",
     "resolve_tool",
     "list_registered_tools",

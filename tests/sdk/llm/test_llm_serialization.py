@@ -62,6 +62,19 @@ def test_llm_secret_fields_serialization() -> None:
     assert deserialized_llm.aws_secret_access_key is None
 
 
+def test_llm_model_dump_json_masks_secrets() -> None:
+    """Test that JSON serialization masks secrets by default."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="test-model",
+        api_key=SecretStr("secret-api-key"),
+    )
+
+    dumped = llm.model_dump_json()
+    assert "secret-api-key" not in dumped
+    assert "**********" in dumped
+
+
 def test_llm_excluded_fields_not_serialized() -> None:
     """Test that excluded fields are not included in serialization."""
     # Create LLM with excluded fields

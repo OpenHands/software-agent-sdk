@@ -5,6 +5,7 @@ from pydantic import ValidationError, model_validator
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
@@ -20,14 +21,16 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
-    LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
     TokenEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.event.condenser import (
+    Condensation,
+    CondensationRequest,
+)
 from openhands.sdk.llm import (
     LLMResponse,
     Message,
@@ -63,13 +66,18 @@ from openhands.sdk.tool.builtins import (
 logger = get_logger(__name__)
 maybe_init_laminar()
 
+# Maximum number of events to scan during init_state defensive checks.
+# SystemPromptEvent must appear within this prefix (at index 0 or 1).
+INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
-class Agent(AgentBase):
+
+class Agent(CriticMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
     interact with tools, process messages, and execute actions. It inherits from
-    AgentBase and implements the agent execution logic.
+    AgentBase and implements the agent execution logic. Critic-related functionality
+    is provided by CriticMixin.
 
     Example:
         >>> from openhands.sdk import LLM, Agent, Tool
@@ -98,24 +106,101 @@ class Agent(AgentBase):
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
-        super().init_state(state, on_event=on_event)
-        # TODO(openhands): we should add test to test this init_state will actually
-        # modify state in-place
+        """Initialize conversation state.
 
-        llm_convertible_messages = [
-            event for event in state.events if isinstance(event, LLMConvertibleEvent)
-        ]
-        if len(llm_convertible_messages) == 0:
-            # Prepare system message
-            event = SystemPromptEvent(
-                source="agent",
-                system_prompt=TextContent(text=self.system_message),
-                # Tools are stored as ToolDefinition objects and converted to
-                # OpenAI format with security_risk parameter during LLM completion.
-                # See make_llm_completion() in agent/utils.py for details.
-                tools=list(self.tools_map.values()),
+        Invariants enforced by this method:
+        - If a SystemPromptEvent is already present, it must be within the first 3
+          events (index 0 or 1 in practice; index 2 is included in the scan window
+          to detect a user message appearing before the system prompt).
+        - A user MessageEvent should not appear before the SystemPromptEvent.
+
+        These invariants keep event ordering predictable for downstream components
+        (condenser, UI, etc.) and also prevent accidentally materializing the full
+        event history during initialization.
+        """
+        super().init_state(state, on_event=on_event)
+
+        # Defensive check: Analyze state to detect unexpected initialization scenarios
+        # These checks help diagnose issues related to lazy loading and event ordering
+        # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
+        #
+        # NOTE: len() is O(1) for EventLog (file-backed implementation).
+        event_count = len(state.events)
+
+        # NOTE: state.events is intentionally an EventsListBase (Sequence-like), not
+        # a plain list. Avoid materializing the full history via list(state.events)
+        # here (conversations can reach 30k+ events).
+        #
+        # Invariant: when init_state is called, SystemPromptEvent (if present) must be
+        # at index 0 or 1.
+        #
+        # Rationale:
+        # - Local conversations start empty and init_state is responsible for adding
+        #   the SystemPromptEvent as the first event.
+        # - Remote conversations may receive an initial ConversationStateUpdateEvent
+        #   from the agent-server immediately after subscription. In a typical remote
+        #   session prefix you may see:
+        #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
+        #
+        # We intentionally only inspect the first few events (cheap for both local and
+        # remote) to enforce this invariant.
+        prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
+
+        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
+        has_user_message = any(
+            isinstance(e, MessageEvent) and e.source == "user" for e in prefix_events
+        )
+        # Log state for debugging initialization order issues
+        logger.debug(
+            f"init_state called: conversation_id={state.id}, "
+            f"event_count={event_count}, "
+            f"has_system_prompt={has_system_prompt}, "
+            f"has_user_message={has_user_message}"
+        )
+
+        if has_system_prompt:
+            # Restoring/resuming conversations is normal: a system prompt already
+            # present means this conversation was initialized previously.
+            logger.debug(
+                "init_state: SystemPromptEvent already present; skipping init. "
+                f"conversation_id={state.id}, event_count={event_count}."
             )
-            on_event(event)
+            return
+
+        # Assert: A user message should never appear before the system prompt.
+        #
+        # NOTE: This is a best-effort check based on the first few events only.
+        # Remote conversations can include a ConversationStateUpdateEvent near the
+        # start, so we scan a small prefix window.
+        if has_user_message:
+            event_types = [type(e).__name__ for e in prefix_events]
+            logger.error(
+                f"init_state: User message found in prefix before SystemPromptEvent! "
+                f"conversation_id={state.id}, prefix_events={event_types}"
+            )
+            raise AssertionError(
+                "Unexpected state: user message exists before SystemPromptEvent. "
+                f"conversation_id={state.id}, event_count={event_count}, "
+                f"prefix_event_types={event_types}."
+            )
+
+        # Prepare system message with separate static and dynamic content.
+        # The dynamic_context is included as a second content block in the
+        # system message (without a cache marker) to enable cross-conversation
+        # prompt caching of the static system prompt.
+        dynamic_context = self.dynamic_context
+        event = SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text=self.static_system_message),
+            # Tools are stored as ToolDefinition objects and converted to
+            # OpenAI format with security_risk parameter during LLM completion.
+            # See make_llm_completion() in agent/utils.py for details.
+            tools=list(self.tools_map.values()),
+            dynamic_context=TextContent(text=dynamic_context)
+            if dynamic_context
+            else None,
+        )
+        on_event(event)
 
     def _execute_actions(
         self,
@@ -234,6 +319,7 @@ class Agent(AgentBase):
             for i, tool_call in enumerate(message.tool_calls):
                 action_event = self._get_action_event(
                     tool_call,
+                    conversation=conversation,
                     llm_response_id=llm_response.id,
                     on_event=on_event,
                     security_analyzer=state.security_analyzer,
@@ -272,6 +358,14 @@ class Agent(AgentBase):
             llm_message=message,
             llm_response_id=llm_response.id,
         )
+        # Run critic evaluation if configured for finish_and_message mode
+        if self.critic is not None and self.critic.mode == "finish_and_message":
+            critic_result = self._evaluate_with_critic(conversation, msg_event)
+            if critic_result is not None:
+                # Create new event with critic result
+                msg_event = msg_event.model_copy(
+                    update={"critic_result": critic_result}
+                )
         on_event(msg_event)
 
         # Emit VLLM token ids if enabled
@@ -359,9 +453,34 @@ class Agent(AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
+    def _extract_summary(self, tool_name: str, arguments: dict) -> str:
+        """Extract and validate the summary field from tool arguments.
+
+        Summary field is always requested but optional - if LLM doesn't provide
+        it or provides invalid data, we generate a default summary using the
+        tool name and arguments.
+
+        Args:
+            tool_name: Name of the tool being called
+            arguments: Dictionary of tool arguments from LLM
+
+        Returns:
+            The summary string - either from LLM or a default generated one
+        """
+        summary = arguments.pop("summary", None)
+
+        # If valid summary provided by LLM, use it
+        if summary is not None and isinstance(summary, str) and summary.strip():
+            return summary
+
+        # Generate default summary: {tool_name}: {arguments}
+        args_str = json.dumps(arguments)
+        return f"{tool_name}: {args_str}"
+
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
+        conversation: LocalConversation,
         llm_response_id: str,
         on_event: ConversationCallbackType,
         security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
@@ -420,6 +539,8 @@ class Agent(AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
+            summary = self._extract_summary(tool.name, arguments)
+
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
             err = (
@@ -448,6 +569,7 @@ class Agent(AgentBase):
             on_event(event)
             return
 
+        # Create initial action event
         action_event = ActionEvent(
             action=action,
             thought=thought or [],
@@ -459,7 +581,18 @@ class Agent(AgentBase):
             tool_call=tool_call,
             llm_response_id=llm_response_id,
             security_risk=security_risk,
+            summary=summary,
         )
+
+        # Run critic evaluation if configured
+        if self._should_evaluate_with_critic(action):
+            critic_result = self._evaluate_with_critic(conversation, action_event)
+            if critic_result is not None:
+                # Create new event with critic result
+                action_event = action_event.model_copy(
+                    update={"critic_result": critic_result}
+                )
+
         on_event(action_event)
         return action_event
 
@@ -490,6 +623,7 @@ class Agent(AgentBase):
                 tool_name=action_event.tool_name,
                 tool_call_id=action_event.tool_call_id,
                 rejection_reason=reason,
+                rejection_source="hook",
             )
             on_event(rejection)
             return rejection
@@ -536,7 +670,22 @@ class Agent(AgentBase):
 
         # Set conversation state
         if tool.name == FinishTool.name:
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            # Check if iterative refinement should continue
+            should_continue, followup = self._check_iterative_refinement(
+                conversation, action_event
+            )
+            if should_continue and followup:
+                # Send follow-up message and continue agent loop
+                followup_msg = MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text=followup)]
+                    ),
+                )
+                on_event(followup_msg)
+                # Don't set FINISHED - let the agent continue
+            else:
+                state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
 
     def _maybe_emit_vllm_tokens(

@@ -2,6 +2,10 @@
 <EXTRA_INFO>
 The following information has been included based on a keyword match for "{{ agent_info.trigger }}".
 It may or may not be relevant to the user's request.
+{% if agent_info.location %}
+Skill location: {{ agent_info.location }}
+(Use this path to resolve relative file references in the skill content below)
+{% endif %}
 
 {{ agent_info.content }}
 </EXTRA_INFO>

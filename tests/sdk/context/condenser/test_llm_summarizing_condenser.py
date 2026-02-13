@@ -1,9 +1,10 @@
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from litellm.types.utils import ModelResponse
 
+from openhands.sdk.context.condenser.base import CondensationRequirement
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
     Reason,
@@ -108,13 +109,15 @@ def test_should_condense(mock_llm: LLM) -> None:
     small_events = [message_event(f"Event {i}") for i in range(max_size)]
     small_view = View.from_events(small_events)
 
-    assert not condenser.should_condense(small_view)
+    assert condenser.condensation_requirement(small_view) is None
 
-    # Create events above the threshold
+    # Create events above the threshold (triggers EVENTS reason -> SOFT requirement)
     large_events = [message_event(f"Event {i}") for i in range(max_size + 1)]
     large_view = View.from_events(large_events)
 
-    assert condenser.should_condense(large_view)
+    assert (
+        condenser.condensation_requirement(large_view) == CondensationRequirement.SOFT
+    )
 
 
 def test_condense_returns_view_when_no_condensation_needed(mock_llm: LLM) -> None:
@@ -151,10 +154,11 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
-    # summary_offset should be the smallest manipulation index > keep_first
+    # summary_offset should be the smallest manipulation index >= keep_first
     # Since all events are MessageEvents, manipulation indices are [0,1,2,3,4,...]
-    # The smallest index > keep_first (3) is 4
-    assert result.summary_offset == keep_first + 1
+    # The smallest index >= keep_first (3) is 3
+    # This means we keep events [0:3] = indices 0,1,2 = 3 events
+    assert result.summary_offset == keep_first
     assert len(result.forgotten_event_ids) > 0
 
     # LLM should be called once
@@ -362,10 +366,10 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     # naive_start = keep_first = 2
     # naive_end = 25 - 7 = 18
     # manipulation_indices = [0, 1, 2, 3, ..., 25]
-    # forgetting_start = smallest index > keep_first = 3
+    # forgetting_start = smallest index >= keep_first = 2
     # forgetting_end = smallest index >= naive_end = 18
-    # Forgotten: events[3:18] = 15 events
-    expected_forgotten_count = 15
+    # Forgotten: events[2:18] = 16 events
+    expected_forgotten_count = 16
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
@@ -546,15 +550,15 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     # naive_start = keep_first = 2
     # naive_end = 40 - 12 = 28
     # manipulation_indices = [0, 1, 2, 3, ..., 40]
-    # forgetting_start = smallest index > keep_first = 3
+    # forgetting_start = smallest index >= keep_first = 2
     # forgetting_end = smallest index >= naive_end = 28
-    # Forgotten events: events[3:28] = 25 events
-    expected_forgotten_count = 25
+    # Forgotten events: events[2:28] = 26 events
+    expected_forgotten_count = 26
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
 def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
-    """Test that _generate_condensation raises ValueError when given 0 events.
+    """Test that _generate_condensation raises AssertionError when given 0 events.
 
     This prevents the LLM from being called with an empty event list, which would
     produce a confusing summary like "I don't see any events provided to summarize."
@@ -562,12 +566,143 @@ def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
     """
     condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
 
-    with pytest.raises(ValueError, match="Cannot condense 0 events"):
+    with pytest.raises(AssertionError, match="No events to condense"):
         condenser._generate_condensation(
-            summary_event_content="",
             forgotten_events=[],
             summary_offset=0,
         )
 
     # Verify the LLM was never called
     cast(MagicMock, mock_llm.completion).assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [set()],
+)
+def test_condensation_requirement_returns_none(
+    mock_llm: LLM, reasons: set[Reason]
+) -> None:
+    """Test that condensation_requirement returns None when appropriate.
+
+    Mocks get_condensation_reasons to test different reason combinations.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    with patch.object(
+        LLMSummarizingCondenser, "get_condensation_reasons", return_value=reasons
+    ):
+        result = condenser.condensation_requirement(view)
+        assert result is None
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        {Reason.TOKENS},
+        {Reason.EVENTS},
+        {Reason.TOKENS, Reason.EVENTS},
+    ],
+)
+def test_condensation_requirement_returns_soft(
+    mock_llm: LLM, reasons: set[Reason]
+) -> None:
+    """Test that condensation_requirement returns SOFT for resource constraints.
+
+    Mocks get_condensation_reasons to test different resource reason combinations.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    with patch.object(
+        LLMSummarizingCondenser, "get_condensation_reasons", return_value=reasons
+    ):
+        result = condenser.condensation_requirement(view)
+        assert result == CondensationRequirement.SOFT
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        {Reason.REQUEST},
+        {Reason.REQUEST, Reason.TOKENS},
+        {Reason.REQUEST, Reason.EVENTS},
+        {Reason.REQUEST, Reason.TOKENS, Reason.EVENTS},
+    ],
+)
+def test_condensation_requirement_returns_hard(
+    mock_llm: LLM, reasons: set[Reason]
+) -> None:
+    """Test that condensation_requirement returns HARD when REQUEST is present.
+
+    Mocks get_condensation_reasons to test different combinations with REQUEST.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    with patch.object(
+        LLMSummarizingCondenser, "get_condensation_reasons", return_value=reasons
+    ):
+        result = condenser.condensation_requirement(view)
+        assert result == CondensationRequirement.HARD
+
+
+def test_condense_with_hard_requirement_and_no_condensation_available(
+    mock_llm: LLM,
+) -> None:
+    """Test that condense raises error with hard requirement but no condensation.
+
+    When there's a hard requirement but no valid condensation range available
+    (e.g., entire view is a single atomic unit), should raise an exception.
+    """
+    from openhands.sdk.context.condenser.base import NoCondensationAvailableException
+
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    # Mock to return HARD requirement but no events to condense
+    # Also mock hard_context_reset to return None so the exception gets re-raised
+    with (
+        patch.object(
+            LLMSummarizingCondenser,
+            "get_condensation_reasons",
+            return_value={Reason.REQUEST},
+        ),
+        patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
+        patch.object(LLMSummarizingCondenser, "hard_context_reset", return_value=None),
+    ):
+        with pytest.raises(NoCondensationAvailableException):
+            condenser.condense(view)
+
+
+def test_condense_with_soft_requirement_and_no_condensation_available(
+    mock_llm: LLM,
+) -> None:
+    """Test that condense returns view with soft requirement but no condensation.
+
+    When there's a soft requirement but no valid condensation range available,
+    should return the original view unchanged.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    # Mock to return SOFT requirement but no events to condense
+    with (
+        patch.object(
+            LLMSummarizingCondenser,
+            "get_condensation_reasons",
+            return_value={Reason.EVENTS},
+        ),
+        patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
+    ):
+        result = condenser.condense(view)
+        assert isinstance(result, View)
+        assert result == view
+        # LLM should not be called
+        cast(MagicMock, mock_llm.completion).assert_not_called()

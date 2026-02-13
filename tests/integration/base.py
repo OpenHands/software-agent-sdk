@@ -128,7 +128,7 @@ class BaseIntegrationTest(ABC):
                 self.early_stop_result = result
                 self.conversation.pause()  # Trigger graceful stop
 
-    def run_instruction(self) -> TestResult:
+    def run_integration_test(self) -> TestResult:
         """
         Run user instruction through the agent and verify results.
 
@@ -149,12 +149,7 @@ class BaseIntegrationTest(ABC):
             stderr_buffer = StringIO()
 
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                self.conversation.send_message(
-                    message=Message(
-                        role="user", content=[TextContent(text=self.instruction)]
-                    )
-                )
-                self.conversation.run()
+                self.run_instructions(self.conversation)
 
             # Save captured output to log file
             captured_output = stdout_buffer.getvalue()
@@ -188,11 +183,25 @@ class BaseIntegrationTest(ABC):
 
             return result
 
+        except SkipTest:
+            # Re-raise SkipTest so it can be caught by the test runner
+            raise
+
         except Exception as e:
             return TestResult(success=False, reason=f"Test execution failed: {str(e)}")
 
         finally:
             self.teardown()
+
+    def run_instructions(self, conversation: LocalConversation) -> None:
+        """Feed user instructions to the agent and manage the conversation."""
+        conversation.send_message(message=self.instruction_message)
+        conversation.run()
+
+    @property
+    def instruction_message(self) -> Message:
+        """The initial instruction message for the agent."""
+        return Message(role="user", content=[TextContent(text=self.instruction)])
 
     @property
     @abstractmethod
@@ -218,7 +227,6 @@ class BaseIntegrationTest(ABC):
         """
         return 100
 
-    @abstractmethod
     def setup(self) -> None:
         """
         Initialize test-specific setup.
@@ -227,6 +235,41 @@ class BaseIntegrationTest(ABC):
         resources needed for the test.
         """
         pass
+
+    def skip_if_model_matches(self, pattern: str | list[str], reason: str) -> None:
+        """Skip test if the model name matches the given pattern(s).
+
+        Extracts the canonical model name and checks if it matches any of the provided
+        patterns. If a match is found, raises SkipTest with the given reason.
+
+        Args:
+            pattern: A single model name or list of model names to check against
+            reason: The reason for skipping the test
+
+        Raises:
+            SkipTest: If the model name matches any of the patterns
+        """
+        model_name = self.llm.model
+        canonical = self.llm.model_info.get("model") if self.llm.model_info else None
+        name = (canonical or model_name or "").split("/")[-1]
+
+        patterns = [pattern] if isinstance(pattern, str) else pattern
+        if name in patterns:
+            raise SkipTest(reason)
+
+    def create_llm_copy(self, usage_id: str) -> LLM:
+        """Create a copy of the test LLM with a different usage_id.
+
+        This is useful when a test needs multiple LLM instances for different purposes
+        (e.g., a separate LLM for a condenser).
+
+        Args:
+            usage_id: The usage_id for the LLM copy (used for metrics tracking)
+
+        Returns:
+            A copy of self.llm with the specified usage_id
+        """
+        return self.llm.model_copy(update={"usage_id": usage_id})
 
     @abstractmethod
     def verify_result(self) -> TestResult:

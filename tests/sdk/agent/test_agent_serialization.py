@@ -221,3 +221,108 @@ def test_agent_type_annotation_on_basemodel_works_json() -> None:
     assert isinstance(deserialized_model.agent, Agent)
     assert deserialized_model.agent.model_dump() == agent.model_dump()
     assert deserialized_model.model_dump() == model.model_dump()
+
+
+def test_include_default_tools_serialization_default() -> None:
+    """Test that include_default_tools serializes correctly with default value."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[])
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+    agent_dict = json.loads(agent_json)
+
+    # Default should include both FinishTool and ThinkTool as strings
+    assert "include_default_tools" in agent_dict
+    assert set(agent_dict["include_default_tools"]) == {"FinishTool", "ThinkTool"}
+
+
+def test_include_default_tools_serialization_empty() -> None:
+    """Test that include_default_tools serializes correctly when empty."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], include_default_tools=[])
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+    agent_dict = json.loads(agent_json)
+
+    # Should be empty list
+    assert agent_dict["include_default_tools"] == []
+
+
+def test_include_default_tools_serialization_partial() -> None:
+    """Test that include_default_tools serializes correctly with partial list."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], include_default_tools=["FinishTool"])
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+    agent_dict = json.loads(agent_json)
+
+    # Should be serialized as string
+    assert agent_dict["include_default_tools"] == ["FinishTool"]
+
+
+def test_include_default_tools_deserialization_roundtrip() -> None:
+    """Test that include_default_tools deserializes correctly after round-trip."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], include_default_tools=["FinishTool"])
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+
+    # Deserialize from JSON
+    deserialized_agent = AgentBase.model_validate_json(agent_json)
+
+    # Should have the same include_default_tools
+    assert isinstance(deserialized_agent, Agent)
+    assert deserialized_agent.include_default_tools == ["FinishTool"]
+
+
+def test_include_default_tools_deserialization_all_tools() -> None:
+    """Test that include_default_tools deserializes correctly with all tools."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], include_default_tools=["FinishTool", "ThinkTool"])
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+
+    # Deserialize from JSON
+    deserialized_agent = AgentBase.model_validate_json(agent_json)
+
+    # Should have both tools
+    assert isinstance(deserialized_agent, Agent)
+    assert set(deserialized_agent.include_default_tools) == {"FinishTool", "ThinkTool"}
+
+
+def test_include_default_tools_deserialization_empty() -> None:
+    """Test that include_default_tools deserializes correctly when empty."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], include_default_tools=[])
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+
+    # Deserialize from JSON
+    deserialized_agent = AgentBase.model_validate_json(agent_json)
+
+    # Should be empty
+    assert isinstance(deserialized_agent, Agent)
+    assert deserialized_agent.include_default_tools == []
+
+
+def test_include_default_tools_deserialization_from_dict() -> None:
+    """Test that include_default_tools deserializes correctly from dict."""
+    agent_dict = {
+        "llm": {"model": "test-model", "usage_id": "test-llm"},
+        "tools": [],
+        "include_default_tools": ["ThinkTool"],
+        "kind": "Agent",
+    }
+
+    # Deserialize from dict
+    agent = AgentBase.model_validate(agent_dict)
+
+    # Should have ThinkTool
+    assert isinstance(agent, Agent)
+    assert agent.include_default_tools == ["ThinkTool"]

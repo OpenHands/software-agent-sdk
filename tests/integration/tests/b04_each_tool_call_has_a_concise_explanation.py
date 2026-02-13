@@ -5,7 +5,10 @@ from __future__ import annotations
 from textwrap import dedent
 
 from tests.integration.base import TestResult
-from tests.integration.behavior_utils import get_conversation_summary
+from tests.integration.behavior_utils import (
+    get_conversation_summary,
+    verify_all_actions_have_summary,
+)
 from tests.integration.utils.behavior_helpers import (
     SoftwareAgentSDKBehaviorTest,
     append_environment_tips,
@@ -35,6 +38,18 @@ class EachToolCallHavingExplanation(SoftwareAgentSDKBehaviorTest):
         if self.repo_dir is None:
             raise RuntimeError("Repository directory was not initialized.")
 
+        # First, verify all actions have summary fields populated
+        # This is a hard requirement - the summary field should always be present
+        summary_check_passed, summary_check_reason = verify_all_actions_have_summary(
+            self.collected_events
+        )
+        if not summary_check_passed:
+            return TestResult(
+                success=False,
+                reason=f"Summary field check failed: {summary_check_reason}",
+            )
+
+        # Then use LLM judge to evaluate the quality of explanations
         conversation_summary = get_conversation_summary(self.collected_events)
         evaluation_criteria = dedent(
             """
@@ -61,6 +76,7 @@ class EachToolCallHavingExplanation(SoftwareAgentSDKBehaviorTest):
             return TestResult(
                 success=True,
                 reason=(
+                    f"All actions have summaries ({summary_check_reason}). "
                     "Agent provided a concise explanation for each tool call. "
                     f"Judge reasoning: {judgment.reasoning} "
                     f"(confidence={judgment.confidence:.2f})"

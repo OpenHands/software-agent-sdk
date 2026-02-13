@@ -16,6 +16,7 @@ from openhands.sdk.conversation.visualizer import (
 )
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -40,9 +41,14 @@ class Conversation:
 
     Example:
         >>> from openhands.sdk import LLM, Agent, Conversation
+        >>> from openhands.sdk.plugin import PluginSource
         >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
         >>> agent = Agent(llm=llm, tools=[])
-        >>> conversation = Conversation(agent=agent, workspace="./workspace")
+        >>> conversation = Conversation(
+        ...     agent=agent,
+        ...     workspace="./workspace",
+        ...     plugins=[PluginSource(source="github:org/security-plugin", ref="v1.0")],
+        ... )
         >>> conversation.send_message("Hello!")
         >>> conversation.run()
     """
@@ -53,6 +59,7 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: str | Path | LocalWorkspace = "workspace/project",
+        plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
@@ -67,6 +74,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        delete_on_close: bool = False,
     ) -> "LocalConversation": ...
 
     @overload
@@ -75,6 +83,7 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: RemoteWorkspace,
+        plugins: list[PluginSource] | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
@@ -88,6 +97,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        delete_on_close: bool = False,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -95,6 +105,7 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: str | Path | LocalWorkspace | RemoteWorkspace = "workspace/project",
+        plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
@@ -109,6 +120,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        delete_on_close: bool = False,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -116,14 +128,14 @@ class Conversation:
         )
 
         if isinstance(workspace, RemoteWorkspace):
-            # For RemoteConversation, persistence_dir should not be used
-            # Only check if it was explicitly set to something other than the default
+            # For RemoteConversation, persistence_dir should not be used.
             if persistence_dir is not None:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
                 )
             return RemoteConversation(
                 agent=agent,
+                plugins=plugins,
                 conversation_id=conversation_id,
                 callbacks=callbacks,
                 token_callbacks=token_callbacks,
@@ -134,10 +146,12 @@ class Conversation:
                 visualizer=visualizer,
                 workspace=workspace,
                 secrets=secrets,
+                delete_on_close=delete_on_close,
             )
 
         return LocalConversation(
             agent=agent,
+            plugins=plugins,
             conversation_id=conversation_id,
             callbacks=callbacks,
             token_callbacks=token_callbacks,
@@ -149,4 +163,5 @@ class Conversation:
             workspace=workspace,
             persistence_dir=persistence_dir,
             secrets=secrets,
+            delete_on_close=delete_on_close,
         )

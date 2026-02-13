@@ -6,6 +6,7 @@ from openhands.sdk.event import ActionEvent, Event, MessageEvent, ObservationEve
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookEventType
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 
 
@@ -41,6 +42,9 @@ class HookEventProcessor:
 
     def on_event(self, event: Event) -> None:
         """Process an event and run appropriate hooks."""
+        # Track the event to pass to callbacks (may be modified by hooks)
+        callback_event = event
+
         # Run PreToolUse hooks for action events
         if isinstance(event, ActionEvent) and event.action is not None:
             self._handle_pre_tool_use(event)
@@ -51,11 +55,11 @@ class HookEventProcessor:
 
         # Run UserPromptSubmit hooks for user messages
         if isinstance(event, MessageEvent) and event.source == "user":
-            self._handle_user_prompt_submit(event)
+            callback_event = self._handle_user_prompt_submit(event)
 
-        # Call original callback
+        # Call original callback with (possibly modified) event
         if self.original_callback:
-            self.original_callback(event)
+            self.original_callback(callback_event)
 
     def _handle_pre_tool_use(self, event: ActionEvent) -> None:
         """Handle PreToolUse hooks. Blocked actions are marked in conversation state."""
@@ -141,16 +145,18 @@ class HookEventProcessor:
             if result.error:
                 logger.warning(f"PostToolUse hook error: {result.error}")
 
-    def _handle_user_prompt_submit(self, event: MessageEvent) -> None:
-        """Handle UserPromptSubmit hooks before processing a user message."""
+    def _handle_user_prompt_submit(self, event: MessageEvent) -> MessageEvent:
+        """Handle UserPromptSubmit hooks before processing a user message.
+
+        Returns the (possibly modified) event. If hooks inject additional_context,
+        a new MessageEvent is created with the context appended to extended_content.
+        """
         if not self.hook_manager.has_hooks(HookEventType.USER_PROMPT_SUBMIT):
-            return
+            return event
 
         # Extract message text
         message = ""
         if event.llm_message and event.llm_message.content:
-            from openhands.sdk.llm import TextContent
-
             for content in event.llm_message.content:
                 if isinstance(content, TextContent):
                     message += content.text
@@ -175,9 +181,23 @@ class HookEventProcessor:
                     "after creating the Conversation."
                 )
 
-        # TODO: Inject additional_context into the message
+        # Inject additional_context into extended_content
         if additional_context:
-            logger.info(f"Hook injected context: {additional_context[:100]}...")
+            logger.debug(f"Hook injecting context: {additional_context[:100]}...")
+            new_extended_content = list(event.extended_content) + [
+                TextContent(text=additional_context)
+            ]
+            # MessageEvent is frozen, so create a new one
+            event = MessageEvent(
+                source=event.source,
+                llm_message=event.llm_message,
+                llm_response_id=event.llm_response_id,
+                activated_skills=event.activated_skills,
+                extended_content=new_extended_content,
+                sender=event.sender,
+            )
+
+        return event
 
     def is_action_blocked(self, action_id: str) -> bool:
         """Check if an action was blocked by a hook."""
@@ -204,6 +224,33 @@ class HookEventProcessor:
         for r in results:
             if r.error:
                 logger.warning(f"SessionEnd hook error: {r.error}")
+
+    def run_stop(self, reason: str | None = None) -> tuple[bool, str | None]:
+        """Run Stop hooks. Returns (should_stop, feedback)."""
+        if not self.hook_manager.has_hooks(HookEventType.STOP):
+            return True, None
+
+        should_stop, results = self.hook_manager.run_stop(reason=reason)
+
+        # Log any errors
+        for r in results:
+            if r.error:
+                logger.warning(f"Stop hook error: {r.error}")
+
+        # Collect feedback if denied
+        feedback = None
+        if not should_stop:
+            reason_text = self.hook_manager.get_blocking_reason(results)
+            logger.info(f"Stop hook denied stopping: {reason_text}")
+            feedback_parts = [
+                r.additional_context for r in results if r.additional_context
+            ]
+            if feedback_parts:
+                feedback = "\n".join(feedback_parts)
+            elif reason_text:
+                feedback = reason_text
+
+        return should_stop, feedback
 
 
 def create_hook_callback(

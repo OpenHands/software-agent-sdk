@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 from collections.abc import Mapping
+from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -11,6 +12,7 @@ from openhands.sdk.context.skills import (
     SkillKnowledge,
     load_public_skills,
     load_user_skills,
+    to_prompt,
 )
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
@@ -77,6 +79,16 @@ class AgentContext(BaseModel):
             "Secrets are used for authentication and sensitive data handling. "
             "Values can be either strings or SecretSource instances "
             "(str | SecretSource)."
+        ),
+    )
+    current_datetime: datetime | str | None = Field(
+        default_factory=datetime.now,
+        description=(
+            "Current date and time information to provide to the agent. "
+            "Can be a datetime object (which will be formatted as ISO 8601) "
+            "or a pre-formatted string. When provided, this information is "
+            "included in the system prompt to give the agent awareness of "
+            "the current time context. Defaults to the current datetime."
         ),
     )
 
@@ -155,6 +167,20 @@ class AgentContext(BaseModel):
             secret_infos.append({"name": name, "description": description})
         return secret_infos
 
+    def get_formatted_datetime(self) -> str | None:
+        """Get formatted datetime string for inclusion in prompts.
+
+        Returns:
+            Formatted datetime string, or None if current_datetime is not set.
+            If current_datetime is a datetime object, it's formatted as ISO 8601.
+            If current_datetime is already a string, it's returned as-is.
+        """
+        if self.current_datetime is None:
+            return None
+        if isinstance(self.current_datetime, datetime):
+            return self.current_datetime.isoformat()
+        return self.current_datetime
+
     def get_system_message_suffix(
         self,
         llm_model: str | None = None,
@@ -167,8 +193,32 @@ class AgentContext(BaseModel):
         - Runtime information (e.g., available hosts, current date)
         - Conversation instructions (e.g., user preferences, task details)
         - Repository-specific instructions (collected from repo skills)
+        - Available skills list (for AgentSkills-format and triggered skills)
+
+        Skill categorization:
+        - AgentSkills-format (SKILL.md): Always in <available_skills> (progressive
+          disclosure). If has triggers, content is ALSO auto-injected on trigger
+          in user prompts.
+        - Legacy with trigger=None: Full content in <REPO_CONTEXT> (always active)
+        - Legacy with triggers: Listed in <available_skills>, injected on trigger
         """
-        repo_skills = [s for s in self.skills if s.trigger is None]
+        # Categorize skills based on format and trigger:
+        # - AgentSkills-format: always in available_skills (progressive disclosure)
+        # - Legacy: trigger=None -> REPO_CONTEXT, else -> available_skills
+        repo_skills: list[Skill] = []
+        available_skills: list[Skill] = []
+
+        for s in self.skills:
+            if s.is_agentskills_format:
+                # AgentSkills: always list (triggers also auto-inject via
+                # get_user_message_suffix)
+                available_skills.append(s)
+            elif s.trigger is None:
+                # Legacy OpenHands: no trigger = full content in REPO_CONTEXT
+                repo_skills.append(s)
+            else:
+                # Legacy OpenHands: has trigger = list in available_skills
+                available_skills.append(s)
 
         # Gate vendor-specific repo skills based on model family.
         if llm_model or llm_model_canonical:
@@ -189,16 +239,35 @@ class AgentContext(BaseModel):
                     filtered.append(s)
                 repo_skills = filtered
 
-        logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
+        logger.debug(f"Loaded {len(repo_skills)} repository skills: {repo_skills}")
+
+        # Generate available skills prompt
+        available_skills_prompt = ""
+        if available_skills:
+            available_skills_prompt = to_prompt(available_skills)
+            logger.debug(
+                f"Generated available skills prompt for {len(available_skills)} skills"
+            )
+
         # Build the workspace context information
         secret_infos = self.get_secret_infos()
-        if repo_skills or self.system_message_suffix or secret_infos:
+        formatted_datetime = self.get_formatted_datetime()
+        has_content = (
+            repo_skills
+            or self.system_message_suffix
+            or secret_infos
+            or available_skills_prompt
+            or formatted_datetime
+        )
+        if has_content:
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",
                 repo_skills=repo_skills,
                 system_message_suffix=self.system_message_suffix or "",
                 secret_infos=secret_infos,
+                available_skills_prompt=available_skills_prompt,
+                current_datetime=formatted_datetime,
             ).strip()
             return formatted_text
         elif self.system_message_suffix and self.system_message_suffix.strip():
@@ -245,6 +314,7 @@ class AgentContext(BaseModel):
                         name=skill.name,
                         trigger=trigger,
                         content=skill.content,
+                        location=skill.source,
                     )
                 )
         if recalled_knowledge:

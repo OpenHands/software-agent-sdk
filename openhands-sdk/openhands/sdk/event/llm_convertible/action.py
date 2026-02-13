@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from pydantic import Field
 from rich.text import Text
 
+from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType, ToolCallID
 from openhands.sdk.llm import (
@@ -65,6 +66,25 @@ class ActionEvent(LLMConvertibleEvent):
         description="The LLM's assessment of the safety risk of this action.",
     )
 
+    critic_result: CriticResult | None = Field(
+        default=None,
+        description="Optional critic evaluation of this action and preceding history.",
+    )
+
+    summary: str | None = Field(
+        default=None,
+        description=(
+            "A concise summary (approximately 10 words) of what this action does, "
+            "provided by the LLM for explainability and debugging. "
+            "Examples of good summaries: "
+            "'editing configuration file for deployment settings' | "
+            "'searching codebase for authentication function definitions' | "
+            "'installing required dependencies from package manifest' | "
+            "'running tests to verify bug fix' | "
+            "'viewing directory structure to locate source files'"
+        ),
+    )
+
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this action event."""
@@ -72,6 +92,12 @@ class ActionEvent(LLMConvertibleEvent):
 
         if self.security_risk != risk.SecurityRisk.UNKNOWN:
             content.append(self.security_risk.visualize)
+
+        # Display summary if available
+        if self.summary:
+            content.append("Summary: ", style="bold cyan")
+            content.append(self.summary)
+            content.append("\n\n")
 
         # Display reasoning content first if available
         if self.reasoning_content:
@@ -104,6 +130,10 @@ class ActionEvent(LLMConvertibleEvent):
             # When action is None (non-executable), show the function call
             content.append("Function call:\n", style="bold")
             content.append(f"- {self.tool_call.name} ({self.tool_call.id})\n")
+
+        # Display critic result if available
+        if self.critic_result is not None:
+            content.append(self.critic_result.visualize)
 
         return content
 

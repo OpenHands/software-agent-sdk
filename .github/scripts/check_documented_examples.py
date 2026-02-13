@@ -21,6 +21,7 @@ def find_documented_examples(docs_path: Path) -> set[str]:
 
     Searches for patterns like:
     - examples/01_standalone_sdk/02_custom_tools.py
+    - examples/02_remote_agent_server/06_custom_tool/custom_tools/log_data.py
     in MDX files.
 
     Returns:
@@ -28,10 +29,9 @@ def find_documented_examples(docs_path: Path) -> set[str]:
     """
     documented_examples: set[str] = set()
 
-    # Pattern to match example file references
-    # Matches: examples/[folder1]/[folder2]/[file].py or
-    # examples/[folder1]/[file].py
-    pattern = r"examples/[\w_]+(?:/[\w_]+)?/[\w_]+\.py"
+    # Pattern to match example file references with arbitrary nesting depth.
+    # Matches: examples/<dir>/.../<file>.py
+    pattern = r"examples/(?:[-\w]+/)+[-\w]+\.py"
 
     for root, _, files in os.walk(docs_path):
         for file in files:
@@ -84,6 +84,10 @@ def find_agent_sdk_examples(agent_sdk_path: Path) -> set[str]:
                 # Skip LLM-specific tools examples: these are intentionally not
                 # enforced by the docs check. See discussion in PR #1486.
                 if relative_path_str.startswith("examples/04_llm_specific_tools/"):
+                    continue
+
+                # Skip __init__.py files as they typically don't need documentation
+                if file == "__init__.py":
                     continue
 
                 examples.add(relative_path_str)

@@ -75,13 +75,21 @@ class EventsImmutabilityMockTool(
         ]
 
 
+class _TestEventForImmutability(Event):
+    """Test event class for immutability tests.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    test_field: str = "test_value"
+
+
 def test_event_base_is_frozen():
     """Test that Event instances are frozen and cannot be modified."""
-
-    class TestEvent(Event):
-        test_field: str = "test_value"
-
-    event = TestEvent(source="agent", test_field="initial_value")
+    event = _TestEventForImmutability(source="agent", test_field="initial_value")
 
     # Test that we cannot modify any field
     with pytest.raises(Exception):  # Pydantic raises ValidationError for frozen models
@@ -215,6 +223,31 @@ def test_user_reject_observation_is_frozen():
 
     with pytest.raises(Exception):
         event.rejection_reason = "Modified rejection"
+
+    with pytest.raises(Exception):
+        event.rejection_source = "hook"
+
+
+def test_user_reject_observation_rejection_source():
+    """Test that UserRejectObservation rejection_source field works correctly."""
+    # Default should be "user"
+    user_event = UserRejectObservation(
+        action_id="test_action_id",
+        tool_name="test_tool",
+        tool_call_id="test_call_id",
+        rejection_reason="User rejected",
+    )
+    assert user_event.rejection_source == "user"
+
+    # Hook rejection should have "hook" source
+    hook_event = UserRejectObservation(
+        action_id="test_action_id",
+        tool_name="test_tool",
+        tool_call_id="test_call_id",
+        rejection_reason="Blocked by hook",
+        rejection_source="hook",
+    )
+    assert hook_event.rejection_source == "hook"
 
 
 def test_agent_error_event_is_frozen():
