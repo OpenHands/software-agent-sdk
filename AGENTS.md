@@ -282,7 +282,7 @@ When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic mode
 
 **The version in the test name should be the LAST version where a particular event structure exists.**
 
-For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field), not `test_v1_8_0_...` (when it was introduced).
+For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field).
 
 This convention:
 - Makes it clear which version's format is being tested
