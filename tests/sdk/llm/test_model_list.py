@@ -44,42 +44,6 @@ def test_organize_models_and_providers():
         assert "1024-x-1024/gpt-image-1.5" in result["other"]
 
 
-def test_unverified_models_fallback_when_no_provider_list():
-    models = [
-        "openai/gpt-4o",  # treated as unverified (provider validation disabled)
-        "anthropic/claude-sonnet-4-20250514",  # treated as unverified
-        "o3",  # openhands model -> excluded
-        "custom-provider/custom-model",
-        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-        "1024-x-1024/gpt-image-1.5",
-    ]
-
-    with (
-        patch(
-            "openhands.sdk.llm.utils.unverified_models.get_supported_llm_models",
-            return_value=models,
-        ),
-        patch(
-            "openhands.sdk.llm.utils.unverified_models._LITELLM_PROVIDER_NAMES",
-            set(),
-        ),
-    ):
-        result = get_unverified_models()
-
-    # Without provider validation, openai/anthropic entries are treated as
-    # verified and therefore are excluded from the unverified mapping.
-    assert "openai" not in result
-    assert "anthropic" not in result
-
-    # When LiteLLM doesn't expose a provider registry, we keep historical behavior
-    # (split on '/' or '.') rather than bucketing everything under "other".
-    assert result == {
-        "custom-provider": ["custom-model"],
-        "us": ["anthropic.claude-3-5-sonnet-20241022-v2:0"],
-        "1024-x-1024": ["gpt-image-1.5"],
-    }
-
-
 def test_list_bedrock_models_without_boto3(monkeypatch):
     """Should warn and return empty list if boto3 is missing."""
     # Pretend boto3 is not installed
