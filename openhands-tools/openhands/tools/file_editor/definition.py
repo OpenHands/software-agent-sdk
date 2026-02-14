@@ -1,9 +1,9 @@
 """String replace editor tool implementation."""
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 
 if TYPE_CHECKING:
@@ -23,6 +23,19 @@ from openhands.tools.file_editor.utils.diff import visualize_diff
 
 CommandLiteral = Literal["view", "create", "str_replace", "insert"]
 
+# Deprecated command values that are silently migrated for backward
+# compatibility when loading old events. These mappings are permanent.
+_DEPRECATED_COMMANDS: dict[str, CommandLiteral] = {
+    "undo_edit": "view",
+}
+
+
+def _migrate_deprecated_command(data: Any) -> Any:
+    """Migrate deprecated command values for backward compatibility."""
+    if isinstance(data, dict) and data.get("command") in _DEPRECATED_COMMANDS:
+        data = {**data, "command": _DEPRECATED_COMMANDS[data["command"]]}
+    return data
+
 
 class FileEditorAction(Action):
     """Schema for file editor operations."""
@@ -31,6 +44,13 @@ class FileEditorAction(Action):
         description="The commands to run. Allowed options are: `view`, `create`, "
         "`str_replace`, `insert`."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_commands(cls, data: Any) -> Any:
+        """Migrate deprecated command values for backward compat with old events."""
+        return _migrate_deprecated_command(data)
+
     path: str = Field(description="Absolute path to file or directory.")
     file_text: str | None = Field(
         default=None,
@@ -72,6 +92,12 @@ class FileEditorObservation(Observation):
             "The command that was run: `view`, `create`, `str_replace`, or `insert`."
         )
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_commands(cls, data: Any) -> Any:
+        """Migrate deprecated command values for backward compat with old events."""
+        return _migrate_deprecated_command(data)
 
     path: str | None = Field(default=None, description="The file path that was edited.")
     prev_exist: bool = Field(
