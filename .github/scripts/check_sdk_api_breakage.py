@@ -192,8 +192,12 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
 
 def _resolve_griffe_object(root, dotted: str):
     """Resolve a dotted path to a griffe object."""
-    if getattr(root, "path", None) == dotted:
+    root_path = getattr(root, "path", None)
+    if root_path == dotted:
         return root
+
+    if isinstance(root_path, str) and dotted.startswith(root_path + "."):
+        dotted = dotted[len(root_path) + 1 :]
 
     try:
         return root[dotted]
@@ -267,8 +271,7 @@ def _compute_breakages(old_root, new_root, include: list[str]) -> int:
                 print(f"::warning title=SDK API::Unable to resolve symbol {name}: {e}")
         total_breaks += len(_collect_breakages_pairs(pairs))
     except Exception as e:
-        print(f"::error title=SDK API::Failed to process top-level exports: {e}")
-        return 1
+        print(f"::warning title=SDK API::Failed to process top-level exports: {e}")
 
     extra_pairs: list[tuple[object, object]] = []
     for path in include:

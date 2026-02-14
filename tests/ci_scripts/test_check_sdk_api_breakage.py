@@ -59,11 +59,8 @@ class TextContent:
         "openhands.sdk.llm.message", search_paths=[str(tmp_path / "new")]
     )
 
-    old_mod = _prod._resolve_griffe_object(old_root, "openhands.sdk.llm.message")
-    new_mod = _prod._resolve_griffe_object(new_root, "openhands.sdk.llm.message")
-
     total_breaks = _prod._compute_breakages(
-        old_mod, new_mod, include=["openhands.sdk.llm.message.TextContent"]
+        old_root, new_root, include=["openhands.sdk.llm.message.TextContent"]
     )
     assert total_breaks > 0
 
