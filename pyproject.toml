@@ -12,6 +12,7 @@ openhands-agent-server = { workspace = true }
 [dependency-groups]
 dev = [
     "pre-commit>=4.3.0",
+    "packaging>=24.2",
     "psutil>=7.0.0",
     "pyright[nodejs]>=1.1.405",
     "pytest>=8.4.1",
@@ -25,6 +26,7 @@ dev = [
     "pyinstaller>=6.16.0",
     "streamlit>=1.49.1",
     "pytest-timeout>=2.4.0",
+    "griffe[pypi]>=2.0.0",
 ]
 
 # Ruff configuration
