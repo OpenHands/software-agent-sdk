@@ -850,10 +850,12 @@ def main():
                 parent_span_context=laminar_span_context,
             ) as _:
                 # Set trace metadata within this active span context
+                pr_url = f"https://github.com/{pr_info['repo_name']}/pull/{pr_info['number']}"
                 Laminar.set_trace_metadata(
                     {
                         "pr_number": pr_info["number"],
                         "repo_name": pr_info["repo_name"],
+                        "pr_url": pr_url,
                         "workflow_phase": "review",
                         "review_style": review_style,
                     }

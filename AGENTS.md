@@ -240,6 +240,63 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+
+## Event Type Deprecation Policy
+
+When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic model used in event serialization), follow these guidelines to ensure backward compatibility:
+
+### Critical Requirement: Old Events Must Always Load
+
+**Old events should ALWAYS load without error.** Production systems may resume conversations that contain events serialized with older SDK versions. Breaking changes to event schemas will cause production failures.
+
+**Important**: Deprecated field handlers are **permanent** and should never be removed. They ensure old conversations can always be loaded, regardless of when they were created.
+
+### When Removing a Field from an Event Type
+
+1. **Never use `extra="forbid"` without a deprecation handler** - This will reject old events that contain removed fields.
+
+2. **Add a model validator to handle deprecated fields** using the `handle_deprecated_model_fields` utility:
+   ```python
+   from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
+
+   class MyModel(BaseModel):
+       model_config = ConfigDict(extra="forbid")
+
+       # Deprecated fields that are silently removed for backward compatibility
+       # when loading old events. These are kept permanently.
+       _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("old_field_name",)
+
+       @model_validator(mode="before")
+       @classmethod
+       def _handle_deprecated_fields(cls, data: Any) -> Any:
+           """Remove deprecated fields for backward compatibility with old events."""
+           return handle_deprecated_model_fields(data, cls._DEPRECATED_FIELDS)
+   ```
+
+3. **Write tests that verify both old and new event formats load correctly**:
+   - Test that old format (with deprecated field) loads successfully
+   - Test that new format (without deprecated field) works
+   - Test that loading a sequence of mixed old/new events works
+
+### Test Naming Convention for Event Backward Compatibility Tests
+
+**The version in the test name should be the LAST version where a particular event structure exists.**
+
+For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field).
+
+This convention:
+- Makes it clear which version's format is being tested
+- Avoids duplicate tests for the same structure across multiple versions
+- Documents when a field was last present in the schema
+
+Example test names:
+- `test_v1_10_0_text_content_with_enable_truncation` - Tests the last version with `enable_truncation`
+- `test_v1_9_0_message_with_deprecated_fields` - Tests the last version with Message deprecated fields
+- `test_text_content_current_format` - Tests the current format (no version needed)
+
+### Example: See `TextContent` and `Message` in `openhands/sdk/llm/message.py`
+
+These classes demonstrate the proper pattern for handling deprecated fields while maintaining backward compatibility with persisted events.
 </CODE>
 
 <TESTING>
