@@ -14,6 +14,7 @@ def mock_browser_server():
     """Create a mock CustomBrowserUseServer."""
     server = MagicMock()
     server._init_browser_session = AsyncMock()
+    server._inject_scripts_to_session = AsyncMock()
     return server
 
 

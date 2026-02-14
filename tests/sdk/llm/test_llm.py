@@ -576,31 +576,31 @@ def test_llm_force_string_serializer_override():
         usage_id="test-force-true",
     )
     assert llm_force_true.force_string_serializer is True
-    # Even with vision or cache enabled, should force string serialization
+    # force_string_serializer=True should force string serialization
     messages = [
         Message(
             role="user",
             content=[TextContent(text="Test")],
-            cache_enabled=True,  # Would normally trigger list serialization
         )
     ]
     formatted = llm_force_true.format_messages_for_llm(messages)
     assert isinstance(formatted[0]["content"], str)
 
     # Explicitly set force_string_serializer=False for a model that normally needs it
+    # Use a model that supports caching to test list serialization
     llm_force_false = LLM(
-        model="deepseek-v3",
+        model="anthropic/claude-sonnet-4-20250514",  # Supports caching
         api_key=SecretStr("test_key"),
         force_string_serializer=False,
+        caching_prompt=True,  # Enable caching to trigger list serialization
         usage_id="test-force-false",
     )
     assert llm_force_false.force_string_serializer is False
-    # With cache enabled and force_string_serializer=False, should use list
+    # With caching enabled and force_string_serializer=False, should use list
     messages_cache = [
         Message(
             role="user",
             content=[TextContent(text="Test")],
-            cache_enabled=True,
         )
     ]
     formatted_cache = llm_force_false.format_messages_for_llm(messages_cache)
@@ -948,6 +948,100 @@ def test_unmapped_model_with_logging_enabled(mock_transport):
         assert isinstance(token_usage["context_window"], int)
         # Should default to 0 when max_input_tokens is None
         assert token_usage["context_window"] == 0
+
+
+# Context Window Validation Tests
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_llm_raises_error_on_small_context_window(mock_get_model_info):
+    """Test that LLM raises error when context window is too small."""
+    from openhands.sdk.llm.exceptions import LLMContextWindowTooSmallError
+    from openhands.sdk.llm.llm import MIN_CONTEXT_WINDOW_TOKENS
+
+    mock_get_model_info.return_value = {"max_input_tokens": 2048}
+
+    with pytest.raises(LLMContextWindowTooSmallError) as exc_info:
+        LLM(
+            model="ollama/test-model",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        )
+
+    assert exc_info.value.context_window == 2048
+    assert exc_info.value.min_required == MIN_CONTEXT_WINDOW_TOKENS
+    assert "docs.openhands.dev" in str(exc_info.value)
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
+    """Test that ALLOW_SHORT_CONTEXT_WINDOWS env var bypasses validation."""
+    import os
+
+    from openhands.sdk.llm.llm import ENV_ALLOW_SHORT_CONTEXT_WINDOWS
+
+    mock_get_model_info.return_value = {"max_input_tokens": 2048}
+
+    # Set the environment variable
+    with patch.dict(os.environ, {ENV_ALLOW_SHORT_CONTEXT_WINDOWS: "true"}):
+        # Should not raise
+        llm = LLM(
+            model="ollama/test-model",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        )
+        assert llm.max_input_tokens == 2048
+
+
+# LLM model_copy Tests
+
+
+def test_llm_model_copy_preserves_configuration():
+    """Test that model_copy preserves the LLM configuration."""
+    # Create original LLM with custom configuration
+    original = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="original-llm",
+        temperature=0.5,
+        max_output_tokens=1000,
+        caching_prompt=False,
+    )
+
+    # Copy with updated usage_id
+    copied = original.model_copy(update={"usage_id": "copied-llm"})
+
+    # Verify configuration is preserved
+    assert copied.model == original.model
+    assert copied.temperature == original.temperature
+    assert copied.max_output_tokens == original.max_output_tokens
+    assert copied.caching_prompt == original.caching_prompt
+
+    # Verify usage_id was updated
+    assert copied.usage_id == "copied-llm"
+    assert original.usage_id == "original-llm"
+
+
+def test_llm_reset_metrics():
+    """Test that reset_metrics creates fresh metrics and telemetry instances."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Access metrics to trigger lazy initialization
+    original_metrics = llm.metrics
+    original_telemetry = llm.telemetry
+    original_metrics.add_cost(1.0)
+
+    # Reset metrics
+    llm.reset_metrics()
+
+    # Verify new metrics are created
+    assert llm.metrics is not original_metrics
+    assert llm.telemetry is not original_telemetry
+    assert llm.metrics.accumulated_cost == 0.0
 
 
 # LLM Registry Tests

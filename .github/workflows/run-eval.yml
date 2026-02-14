@@ -19,10 +19,17 @@ on:
                     - swebench
                     - swtbench
                     - commit0
+                    - multiswebench
+                    - swebenchmultimodal
             sdk_ref:
-                description: SDK commit/ref to evaluate
+                description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: main
+                default: v1.11.1
+            allow_unreleased_branches:
+                description: Allow unreleased branches (bypasses semantic version requirement)
+                required: false
+                default: false
+                type: boolean
             eval_limit:
                 description: Number of instances to run
                 required: false
@@ -30,6 +37,7 @@ on:
                 type: choice
                 options:
                     - '1'
+                    - '100'
                     - '50'
                     - '200'
                     - '500'
@@ -67,11 +75,11 @@ on:
                 required: false
                 default: ''
                 type: string
-            push_to_index:
-                description: 'Push results to openhands-index-results (default: false)'
+            enable_conversation_event_logging:
+                description: 'Enable Datadog persistence for conversation events (default: false)'
                 required: false
-                default: 'false'
-                type: string
+                default: false
+                type: boolean
             max_retries:
                 description: Max retries per instance (passed to benchmarks)
                 required: false
@@ -109,6 +117,19 @@ jobs:
               with:
                   ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
                   fetch-depth: 0
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.13'
+
+            - name: Validate SDK reference (semantic version check)
+              if: github.event_name == 'workflow_dispatch'
+              env:
+                  SDK_REF: ${{ github.event.inputs.sdk_ref }}
+                  ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches }}
+              run: |
+                  python3 .github/run-eval/validate_sdk_ref.py
 
             - name: Load model IDs from Python script
               id: load-models
@@ -232,8 +253,9 @@ jobs:
                   INSTANCE_IDS: ${{ github.event.inputs.instance_ids || '' }}
                   NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '' }}
                   NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
-                  PUSH_TO_INDEX: ${{ github.event.inputs.push_to_index || 'false' }}
+                  ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || false }}
                   MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
+                  TRIGGERED_BY: ${{ github.actor }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -248,9 +270,10 @@ jobs:
                     --arg instance_ids "$INSTANCE_IDS" \
                     --arg num_infer_workers "$NUM_INFER_WORKERS" \
                     --arg num_eval_workers "$NUM_EVAL_WORKERS" \
-                    --arg push_to_index "$PUSH_TO_INDEX" \
+                    --argjson enable_conversation_event_logging "$ENABLE_CONVERSATION_EVENT_LOGGING" \
                     --arg max_retries "$MAX_RETRIES" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, push_to_index: $push_to_index, max_retries: $max_retries}}')
+                    --arg triggered_by "$TRIGGERED_BY" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \

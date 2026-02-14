@@ -7,7 +7,9 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationPage,
@@ -39,7 +41,7 @@ def sample_stored_conversation():
     """Create a sample StoredConversation for testing."""
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -122,7 +124,7 @@ class TestConversationServiceSearchConversations:
         ):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -174,7 +176,7 @@ class TestConversationServiceSearchConversations:
         for i in range(3):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -251,7 +253,7 @@ class TestConversationServiceSearchConversations:
         for i in range(5):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -321,7 +323,7 @@ class TestConversationServiceSearchConversations:
         for status, created_at in conversations_data:
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -438,7 +440,7 @@ class TestConversationServiceCountConversations:
         for i, status in enumerate(statuses):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -500,7 +502,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 secrets=test_secrets,
@@ -524,7 +526,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -563,7 +565,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request without secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
             )
@@ -586,7 +588,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -617,7 +619,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -635,7 +637,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -646,7 +648,7 @@ class TestConversationServiceStartConversation:
             assert is_new
 
             duplicate_request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -670,7 +672,7 @@ class TestConversationServiceStartConversation:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -718,7 +720,7 @@ class TestConversationServiceStartConversation:
         mock_event_service.is_open.return_value = True
         mock_event_service.stored = StoredConversation(
             id=custom_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -738,7 +740,7 @@ class TestConversationServiceStartConversation:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -761,7 +763,7 @@ class TestConversationServiceStartConversation:
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -797,7 +799,7 @@ class TestConversationServiceStartConversation:
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -1059,7 +1061,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1168,7 +1170,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1211,7 +1213,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1261,7 +1263,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,

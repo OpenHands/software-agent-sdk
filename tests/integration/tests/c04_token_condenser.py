@@ -11,7 +11,7 @@ from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
-from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
+from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 # Instruction designed to generate multiple agent messages
@@ -44,18 +44,13 @@ class TokenCondenserTest(BaseIntegrationTest):
         super().__init__(*args, **kwargs)
 
         # Some models explicitly disallow long, repetitive tool loops for cost/safety.
-        # GPT-5.1 Codex Max often refuses the 1..1000 echo prompt and may disable
-        # extended tool usage. In such cases, token-count-based condensation cannot be
-        # reliably exercised. Skip this test for that model to avoid spurious failures.
-        model_name = self.llm.model
-        canonical = self.llm.model_info.get("model") if self.llm.model_info else None
-        name = (canonical or model_name or "").split("/")[-1]
-        if name == "gpt-5.1-codex-max":
-            raise SkipTest(
-                "This test stresses long repetitive tool loops to trigger token-based "
-                "condensation. GPT-5.1 Codex Max often declines such requests for "
-                "efficiency/safety reasons."
-            )
+        # Skip this test for models that decline such requests.
+        self.skip_if_model_matches(
+            "gpt-5.1-codex-max",
+            "This test stresses long repetitive tool loops to trigger token-based "
+            "condensation. GPT-5.1 Codex Max often declines such requests for "
+            "efficiency/safety reasons.",
+        )
 
     @property
     def tools(self) -> list[Tool]:
@@ -70,7 +65,7 @@ class TokenCondenserTest(BaseIntegrationTest):
         """Configure a token-based condenser with low limits to trigger condensation."""
         # Create a condenser with a low token limit to trigger condensation
         # Using max_tokens instead of max_size to test token counting
-        condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
+        condenser_llm = self.create_llm_copy("test-condenser-llm")
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=1000,  # Set high so it doesn't trigger on event count

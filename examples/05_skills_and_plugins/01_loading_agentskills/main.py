@@ -21,6 +21,7 @@ when triggered, plus the agent can proactively read them anytime.
 """
 
 import os
+import sys
 from pathlib import Path
 
 from pydantic import SecretStr
@@ -35,105 +36,99 @@ from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 
 
-def main():
-    # Get the directory containing this script
-    script_dir = Path(__file__).parent
-    example_skills_dir = script_dir / "example_skills"
+# Get the directory containing this script
+script_dir = Path(__file__).parent
+example_skills_dir = script_dir / "example_skills"
 
-    # =========================================================================
-    # Part 1: Loading Skills from a Directory
-    # =========================================================================
-    print("=" * 80)
-    print("Part 1: Loading Skills from a Directory")
-    print("=" * 80)
+# =========================================================================
+# Part 1: Loading Skills from a Directory
+# =========================================================================
+print("=" * 80)
+print("Part 1: Loading Skills from a Directory")
+print("=" * 80)
 
-    print(f"Loading skills from: {example_skills_dir}")
+print(f"Loading skills from: {example_skills_dir}")
 
-    # Discover resources in the skill directory
-    skill_subdir = example_skills_dir / "rot13-encryption"
-    resources = discover_skill_resources(skill_subdir)
-    print("\nDiscovered resources in rot13-encryption/:")
-    print(f"  - scripts: {resources.scripts}")
-    print(f"  - references: {resources.references}")
-    print(f"  - assets: {resources.assets}")
+# Discover resources in the skill directory
+skill_subdir = example_skills_dir / "rot13-encryption"
+resources = discover_skill_resources(skill_subdir)
+print("\nDiscovered resources in rot13-encryption/:")
+print(f"  - scripts: {resources.scripts}")
+print(f"  - references: {resources.references}")
+print(f"  - assets: {resources.assets}")
 
-    # Load skills from the directory
-    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
-        example_skills_dir
-    )
+# Load skills from the directory
+repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(example_skills_dir)
 
-    print("\nLoaded skills from directory:")
-    print(f"  - Repo skills: {list(repo_skills.keys())}")
-    print(f"  - Knowledge skills: {list(knowledge_skills.keys())}")
-    print(f"  - Agent skills (SKILL.md): {list(agent_skills.keys())}")
+print("\nLoaded skills from directory:")
+print(f"  - Repo skills: {list(repo_skills.keys())}")
+print(f"  - Knowledge skills: {list(knowledge_skills.keys())}")
+print(f"  - Agent skills (SKILL.md): {list(agent_skills.keys())}")
 
-    # Access the loaded skill and show all AgentSkills standard fields
-    if agent_skills:
-        skill_name = list(agent_skills.keys())[0]
-        loaded_skill = agent_skills[skill_name]
-        print(f"\nDetails for '{skill_name}' (AgentSkills standard fields):")
-        print(f"  - Name: {loaded_skill.name}")
-        desc = loaded_skill.description or ""
-        print(f"  - Description: {desc[:70]}...")
-        print(f"  - License: {loaded_skill.license}")
-        print(f"  - Compatibility: {loaded_skill.compatibility}")
-        print(f"  - Metadata: {loaded_skill.metadata}")
-        if loaded_skill.resources:
-            print("  - Resources:")
-            print(f"    - Scripts: {loaded_skill.resources.scripts}")
-            print(f"    - References: {loaded_skill.resources.references}")
-            print(f"    - Assets: {loaded_skill.resources.assets}")
-            print(f"    - Skill root: {loaded_skill.resources.skill_root}")
+# Access the loaded skill and show all AgentSkills standard fields
+if agent_skills:
+    skill_name = next(iter(agent_skills))
+    loaded_skill = agent_skills[skill_name]
+    print(f"\nDetails for '{skill_name}' (AgentSkills standard fields):")
+    print(f"  - Name: {loaded_skill.name}")
+    desc = loaded_skill.description or ""
+    print(f"  - Description: {desc[:70]}...")
+    print(f"  - License: {loaded_skill.license}")
+    print(f"  - Compatibility: {loaded_skill.compatibility}")
+    print(f"  - Metadata: {loaded_skill.metadata}")
+    if loaded_skill.resources:
+        print("  - Resources:")
+        print(f"    - Scripts: {loaded_skill.resources.scripts}")
+        print(f"    - References: {loaded_skill.resources.references}")
+        print(f"    - Assets: {loaded_skill.resources.assets}")
+        print(f"    - Skill root: {loaded_skill.resources.skill_root}")
 
-    # =========================================================================
-    # Part 2: Using Skills with an Agent
-    # =========================================================================
-    print("\n" + "=" * 80)
-    print("Part 2: Using Skills with an Agent")
-    print("=" * 80)
+# =========================================================================
+# Part 2: Using Skills with an Agent
+# =========================================================================
+print("\n" + "=" * 80)
+print("Part 2: Using Skills with an Agent")
+print("=" * 80)
 
-    # Check for API key
-    api_key = os.getenv("LLM_API_KEY")
-    if not api_key:
-        print("Skipping agent demo (LLM_API_KEY not set)")
-        print("\nTo run the full demo, set the LLM_API_KEY environment variable:")
-        print("  export LLM_API_KEY=your-api-key")
-        return
+# Check for API key
+api_key = os.getenv("LLM_API_KEY")
+if not api_key:
+    print("Skipping agent demo (LLM_API_KEY not set)")
+    print("\nTo run the full demo, set the LLM_API_KEY environment variable:")
+    print("  export LLM_API_KEY=your-api-key")
+    sys.exit(0)
 
-    # Configure LLM
-    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-    llm = LLM(
-        usage_id="skills-demo",
-        model=model,
-        api_key=SecretStr(api_key),
-        base_url=os.getenv("LLM_BASE_URL"),
-    )
+# Configure LLM
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+llm = LLM(
+    usage_id="skills-demo",
+    model=model,
+    api_key=SecretStr(api_key),
+    base_url=os.getenv("LLM_BASE_URL"),
+)
 
-    # Create agent context with loaded skills
-    agent_context = AgentContext(
-        skills=list(agent_skills.values()),
-        # Disable public skills for this demo to keep output focused
-        load_public_skills=False,
-    )
+# Create agent context with loaded skills
+agent_context = AgentContext(
+    skills=list(agent_skills.values()),
+    # Disable public skills for this demo to keep output focused
+    load_public_skills=False,
+)
 
-    # Create agent with tools so it can read skill resources
-    tools = [
-        Tool(name=TerminalTool.name),
-        Tool(name=FileEditorTool.name),
-    ]
-    agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
+# Create agent with tools so it can read skill resources
+tools = [
+    Tool(name=TerminalTool.name),
+    Tool(name=FileEditorTool.name),
+]
+agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
 
-    # Create conversation
-    conversation = Conversation(agent=agent, workspace=os.getcwd())
+# Create conversation
+conversation = Conversation(agent=agent, workspace=os.getcwd())
 
-    # Test the skill (triggered by "encrypt" keyword)
-    # The skill provides instructions and a script for ROT13 encryption
-    print("\nSending message with 'encrypt' keyword to trigger skill...")
-    conversation.send_message("Encrypt the message 'hello world'.")
-    conversation.run()
+# Test the skill (triggered by "encrypt" keyword)
+# The skill provides instructions and a script for ROT13 encryption
+print("\nSending message with 'encrypt' keyword to trigger skill...")
+conversation.send_message("Encrypt the message 'hello world'.")
+conversation.run()
 
-    print(f"\nTotal cost: ${llm.metrics.accumulated_cost:.4f}")
-
-
-if __name__ == "__main__":
-    main()
+print(f"\nTotal cost: ${llm.metrics.accumulated_cost:.4f}")
+print(f"EXAMPLE_COST: {llm.metrics.accumulated_cost:.4f}")

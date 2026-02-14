@@ -16,7 +16,7 @@ from openhands.sdk.workspace import RemoteWorkspace
 @pytest.fixture
 def agent():
     """Create test agent."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("test-key"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
     return Agent(llm=llm, tools=[])
 
 
@@ -37,12 +37,21 @@ def remote_workspace():
     mock_conv_response.raise_for_status.return_value = None
     mock_conv_response.json.return_value = {"id": conversation_id}
 
-    # Mock events response
+    # Mock events response (used by _do_full_sync during RemoteEventsList init)
     mock_events_response = Mock()
     mock_events_response.raise_for_status.return_value = None
     mock_events_response.json.return_value = {"items": [], "next_page_id": None}
 
-    mock_client.request.side_effect = [mock_conv_response, mock_events_response]
+    # Mock events response for reconcile() call after WebSocket subscription
+    mock_reconcile_response = Mock()
+    mock_reconcile_response.raise_for_status.return_value = None
+    mock_reconcile_response.json.return_value = {"items": [], "next_page_id": None}
+
+    mock_client.request.side_effect = [
+        mock_conv_response,
+        mock_events_response,
+        mock_reconcile_response,
+    ]
 
     return workspace
 

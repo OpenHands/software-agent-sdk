@@ -1,7 +1,7 @@
 import io
 import re
 from pathlib import Path
-from typing import Annotated, ClassVar, Union
+from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -27,14 +27,25 @@ from openhands.sdk.context.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
 
-# Maximum characters for third-party skill files (e.g., AGENTS.md, CLAUDE.md, GEMINI.md)
-# These files are always active, so we want to keep them reasonably sized
-THIRD_PARTY_SKILL_MAX_CHARS = 10_000
+
+class SkillInfo(BaseModel):
+    """Lightweight representation of a skill's essential information.
+
+    This class provides a standardized, serializable format for skill metadata
+    that can be used across different components of the system.
+    """
+
+    name: str
+    type: Literal["repo", "knowledge", "agentskills"]
+    content: str
+    triggers: list[str] = Field(default_factory=list)
+    source: str | None = None
+    description: str | None = None
+    is_agentskills_format: bool = False
 
 
 class SkillResources(BaseModel):
@@ -469,32 +480,14 @@ class Skill(BaseModel):
         """Handle third-party skill files (e.g., .cursorrules, AGENTS.md).
 
         Creates a Skill with None trigger (always active) if the file type
-        is recognized. Truncates content if it exceeds the limit.
+        is recognized.
         """
         skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
 
         if skill_name is not None:
-            truncated_content = maybe_truncate(
-                file_content,
-                truncate_after=THIRD_PARTY_SKILL_MAX_CHARS,
-                truncate_notice=(
-                    f"\n\n<TRUNCATED><NOTE>The file {path} exceeded the "
-                    f"maximum length ({THIRD_PARTY_SKILL_MAX_CHARS} "
-                    f"characters) and has been truncated. Only the "
-                    f"beginning and end are shown. You can read the full "
-                    f"file if needed.</NOTE>\n\n"
-                ),
-            )
-
-            if len(file_content) > THIRD_PARTY_SKILL_MAX_CHARS:
-                logger.warning(
-                    f"Third-party skill file {path} ({len(file_content)} chars) "
-                    f"exceeded limit ({THIRD_PARTY_SKILL_MAX_CHARS} chars), truncating"
-                )
-
             return Skill(
                 name=skill_name,
-                content=truncated_content,
+                content=file_content,
                 source=str(path),
                 trigger=None,
             )
@@ -559,6 +552,48 @@ class Skill(BaseModel):
         variables = self.extract_variables(self.content)
         logger.debug(f"This skill requires user input: {variables}")
         return len(variables) > 0
+
+    def get_skill_type(self) -> Literal["repo", "knowledge", "agentskills"]:
+        """Determine the type of this skill.
+
+        Returns:
+            "agentskills" for AgentSkills format, "repo" for always-active skills,
+            "knowledge" for trigger-based skills.
+        """
+        if self.is_agentskills_format:
+            return "agentskills"
+        elif self.trigger is None:
+            return "repo"
+        else:
+            return "knowledge"
+
+    def get_triggers(self) -> list[str]:
+        """Extract trigger keywords from this skill.
+
+        Returns:
+            List of trigger strings, or empty list if no triggers.
+        """
+        if isinstance(self.trigger, KeywordTrigger):
+            return self.trigger.keywords
+        elif isinstance(self.trigger, TaskTrigger):
+            return self.trigger.triggers
+        return []
+
+    def to_skill_info(self) -> SkillInfo:
+        """Convert this skill to a SkillInfo.
+
+        Returns:
+            SkillInfo containing the skill's essential information.
+        """
+        return SkillInfo(
+            name=self.name,
+            type=self.get_skill_type(),
+            content=self.content,
+            triggers=self.get_triggers(),
+            source=self.source,
+            description=self.description,
+            is_agentskills_format=self.is_agentskills_format,
+        )
 
 
 def load_skills_from_dir(
@@ -674,10 +709,16 @@ def load_user_skills() -> list[Skill]:
 def load_project_skills(work_dir: str | Path) -> list[Skill]:
     """Load skills from project-specific directories.
 
-    Searches for skills in {work_dir}/.openhands/skills/ and
-    {work_dir}/.openhands/microagents/ (legacy). Skills from both
-    directories are merged, with skills/ taking precedence for
-    duplicate names.
+    Searches for skills in {work_dir}/.agents/skills/,
+    {work_dir}/.openhands/skills/, and {work_dir}/.openhands/microagents/
+    (legacy). Skills are merged in priority order, with earlier directories
+    taking precedence for duplicate names.
+
+    Use .agents/skills for new skills. .openhands/skills is the legacy
+    OpenHands location, and .openhands/microagents is deprecated.
+
+    Example: If "my-skill" exists in both .agents/skills/ and
+    .openhands/skills/, the version from .agents/skills/ is used.
 
     Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
     directly from the work directory.
@@ -710,8 +751,10 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
         except (SkillError, OSError) as e:
             logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
-    # Load project-specific skills from .openhands/skills and legacy microagents
+    # Load project-specific skills from .agents/skills, .openhands/skills,
+    # and legacy microagents (priority order; first wins for duplicates)
     project_skills_dirs = [
+        work_dir / ".agents" / "skills",
         work_dir / ".openhands" / "skills",
         work_dir / ".openhands" / "microagents",  # Legacy support
     ]
@@ -769,6 +812,10 @@ def load_public_skills(
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
 
+    Note: When a skill directory contains a SKILL.md file (AgentSkills format),
+    any other markdown files in that directory or its subdirectories are treated
+    as reference materials for that skill, NOT as separate skills.
+
     Args:
         repo_url: URL of the skills repository. Defaults to the official
             OpenHands skills repository.
@@ -805,13 +852,21 @@ def load_public_skills(
             logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        # Find all .md files in the skills directory
-        md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
+        # Find SKILL.md directories (AgentSkills format) and regular .md files
+        # This ensures that markdown files in SKILL.md directories are NOT loaded
+        # as separate skills - they are reference materials for the parent skill.
+        skill_md_files = find_skill_md_directories(skills_dir)
+        skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
+        regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
 
-        logger.info(f"Found {len(md_files)} skill files in public skills repository")
+        # Combine all skill files to load
+        all_skill_files = list(skill_md_files) + list(regular_md_files)
+        logger.info(
+            f"Found {len(all_skill_files)} skill files in public skills repository"
+        )
 
         # Load each skill file
-        for skill_file in md_files:
+        for skill_file in all_skill_files:
             try:
                 skill = Skill.load(
                     path=skill_file,

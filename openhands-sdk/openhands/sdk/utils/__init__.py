@@ -1,5 +1,6 @@
 """Utility functions for the OpenHands SDK."""
 
+from .command import sanitized_env
 from .deprecation import (
     deprecated,
     warn_deprecated,
@@ -19,4 +20,5 @@ __all__ = [
     "deprecated",
     "warn_deprecated",
     "sanitize_openhands_mentions",
+    "sanitized_env",
 ]

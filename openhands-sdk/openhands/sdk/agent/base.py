@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -16,6 +18,7 @@ from pydantic import (
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -27,6 +30,7 @@ from openhands.sdk.tool import (
     ToolDefinition,
     resolve_tool,
 )
+from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -36,7 +40,6 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
-
 
 logger = get_logger(__name__)
 
@@ -174,6 +177,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ],
     )
 
+    critic: CriticBase | None = Field(
+        default=None,
+        description=(
+            "EXPERIMENTAL: Optional critic to evaluate agent actions and messages "
+            "in real-time. API and behavior may change without notice. "
+            "May impact performance, especially in 'all_actions' mode."
+        ),
+        examples=[{"kind": "AgentFinishedCritic"}],
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -193,8 +206,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return self.__class__.__name__
 
     @property
-    def system_message(self) -> str:
-        """Compute system message on-demand to maintain statelessness."""
+    def static_system_message(self) -> str:
+        """Compute the static portion of the system message.
+
+        This returns only the base system prompt template without any dynamic
+        per-conversation context. This static portion can be cached and reused
+        across conversations for better prompt caching efficiency.
+
+        Returns:
+            The rendered system prompt template without dynamic context.
+        """
         template_kwargs = dict(self.system_prompt_kwargs)
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
@@ -210,24 +231,75 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:
                 template_kwargs["model_variant"] = spec.variant
-        system_message = render_template(
+        return render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
             **template_kwargs,
         )
-        if self.agent_context:
-            _system_message_suffix = self.agent_context.get_system_message_suffix(
-                llm_model=self.llm.model,
-                llm_model_canonical=self.llm.model_canonical_name,
-            )
-            if _system_message_suffix:
-                system_message += "\n\n" + _system_message_suffix
+
+    @property
+    def dynamic_context(self) -> str | None:
+        """Get the dynamic per-conversation context.
+
+        This returns the context that varies between conversations, such as:
+        - Repository information and skills
+        - Runtime information (hosts, working directory)
+        - User-specific secrets and settings
+        - Conversation instructions
+
+        This content should NOT be included in the cached system prompt to enable
+        cross-conversation cache sharing. Instead, it is sent as a second content
+        block (without a cache marker) inside the system message.
+
+        Returns:
+            The dynamic context string, or None if no context is configured.
+        """
+        if not self.agent_context:
+            return None
+        return self.agent_context.get_system_message_suffix(
+            llm_model=self.llm.model,
+            llm_model_canonical=self.llm.model_canonical_name,
+        )
+
+    @property
+    @deprecated(
+        deprecated_in="1.11.0",
+        removed_in="1.16.0",
+        details=(
+            "Use static_system_message for the cacheable system prompt and "
+            "dynamic_context for per-conversation content. Using system_message "
+            "DISABLES cross-conversation prompt caching because it combines static "
+            "and dynamic content into a single string."
+        ),
+    )
+    def system_message(self) -> str:
+        """Return the combined system message (static + dynamic).
+
+        .. deprecated:: 1.11.0
+            Use :attr:`static_system_message` for the cacheable system prompt and
+            :attr:`dynamic_context` for per-conversation content. This separation
+            enables cross-conversation prompt caching. Will be removed in 1.16.0.
+
+        .. warning::
+            Using this property DISABLES cross-conversation prompt caching because
+            it combines static and dynamic content into a single string. Use
+            :attr:`static_system_message` and :attr:`dynamic_context` separately
+            to enable caching.
+        """
+        logger.warning(
+            "Accessing system_message property disables cross-conversation prompt "
+            "caching. Use static_system_message and dynamic_context separately."
+        )
+        system_message = self.static_system_message
+        dynamic = self.dynamic_context
+        if dynamic:
+            system_message += "\n\n" + dynamic
         return system_message
 
     def init_state(
         self,
-        state: "ConversationState",
-        on_event: "ConversationCallbackType",  # noqa: ARG002
+        state: ConversationState,
+        on_event: ConversationCallbackType,  # noqa: ARG002
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -238,7 +310,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: "ConversationState"):
+    def _initialize(self, state: ConversationState):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._initialized:
@@ -310,9 +382,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @abstractmethod
     def step(
         self,
-        conversation: "LocalConversation",
-        on_event: "ConversationCallbackType",
-        on_token: "ConversationTokenCallbackType | None" = None,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -332,29 +404,29 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def verify(
         self,
-        persisted: "AgentBase",
-        events: "Sequence[Any] | None" = None,
-    ) -> "AgentBase":
+        persisted: AgentBase,
+        events: Sequence[Any] | None = None,  # noqa: ARG002
+    ) -> AgentBase:
         """Verify that we can resume this agent from persisted state.
 
-        This PR's goal is to *not* reconcile configuration between persisted and
-        runtime Agent instances. Instead, we verify compatibility requirements
-        and then continue with the runtime-provided Agent.
+        We do not merge configuration between persisted and runtime Agent
+        instances. Instead, we verify compatibility requirements and then
+        continue with the runtime-provided Agent.
 
         Compatibility requirements:
         - Agent class/type must match.
-        - Tools:
-          - If events are provided, only tools that were actually used in history
-            must exist in runtime.
-          - If events are not provided, tool names must match exactly.
+        - Tools must match exactly (same tool names).
 
-        All other configuration (LLM, agent_context, condenser, system prompts,
-        etc.) can be freely changed between sessions.
+        Tools are part of the system prompt and cannot be changed mid-conversation.
+        To use different tools, start a new conversation or use conversation forking
+        (see https://github.com/OpenHands/OpenHands/issues/8560).
+
+        All other configuration (LLM, agent_context, condenser, etc.) can be
+        freely changed between sessions.
 
         Args:
             persisted: The agent loaded from persisted state.
-            events: Optional event sequence to scan for used tools if tool names
-                don't match.
+            events: Unused, kept for API compatibility.
 
         Returns:
             This runtime agent (self) if verification passes.
@@ -369,45 +441,39 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{self.__class__.__name__}."
             )
 
+        # Collect explicit tool names
         runtime_names = {tool.name for tool in self.tools}
         persisted_names = {tool.name for tool in persisted.tools}
+
+        # Add builtin tool names from include_default_tools
+        # These are runtime names like 'finish', 'think'
+        for tool_class_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                runtime_names.add(tool_class.name)
+
+        for tool_class_name in persisted.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                persisted_names.add(tool_class.name)
 
         if runtime_names == persisted_names:
             return self
 
-        if events is not None:
-            from openhands.sdk.event import ActionEvent
-
-            used_tools = {
-                event.tool_name
-                for event in events
-                if isinstance(event, ActionEvent) and event.tool_name
-            }
-
-            # Only require tools that were actually used in history.
-            missing_used_tools = used_tools - runtime_names
-            if missing_used_tools:
-                raise ValueError(
-                    "Cannot resume conversation: tools that were used in history "
-                    f"are missing from runtime: {sorted(missing_used_tools)}. "
-                    f"Available tools: {sorted(runtime_names)}"
-                )
-
-            return self
-
-        # No events provided: strict tool name matching.
+        # Tools don't match - this is not allowed
         missing_in_runtime = persisted_names - runtime_names
-        missing_in_persisted = runtime_names - persisted_names
+        added_in_runtime = runtime_names - persisted_names
 
         details: list[str] = []
         if missing_in_runtime:
-            details.append(f"Missing in runtime: {sorted(missing_in_runtime)}")
-        if missing_in_persisted:
-            details.append(f"Missing in persisted: {sorted(missing_in_persisted)}")
+            details.append(f"removed: {sorted(missing_in_runtime)}")
+        if added_in_runtime:
+            details.append(f"added: {sorted(added_in_runtime)}")
 
-        suffix = f" ({'; '.join(details)})" if details else ""
         raise ValueError(
-            "Tools don't match between runtime and persisted agents." + suffix
+            f"Cannot resume conversation: tools cannot be changed mid-conversation "
+            f"({'; '.join(details)}). "
+            f"To use different tools, start a new conversation."
         )
 
     def model_dump_succint(self, **kwargs):
@@ -497,5 +563,5 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             RuntimeError: If the agent has not been initialized.
         """
         if not self._initialized:
-            raise RuntimeError("Agent not initialized; call initialize() before use")
+            raise RuntimeError("Agent not initialized; call _initialize() before use")
         return self._tools

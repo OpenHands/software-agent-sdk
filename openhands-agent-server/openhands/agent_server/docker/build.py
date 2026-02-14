@@ -204,6 +204,32 @@ def _sanitize_branch(ref: str) -> str:
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
 
 
+def _truncate_ident(repo: str, tag: str, budget: int) -> str:
+    """
+    Truncate repo+tag to fit budget, prioritizing tag preservation.
+
+    Strategy:
+    1. If both fit: return both
+    2. If tag fits but repo doesn't: truncate repo, keep full tag
+    3. If tag doesn't fit: truncate tag, discard repo
+    4. If no tag: truncate repo
+    """
+    tag_suffix = f"_tag_{tag}" if tag else ""
+    full_ident = repo + tag_suffix
+
+    if len(full_ident) <= budget:
+        return full_ident
+
+    if not tag:
+        return repo[:budget]
+
+    if len(tag_suffix) <= budget:
+        repo_budget = budget - len(tag_suffix)
+        return repo[:repo_budget] + tag_suffix
+
+    return tag_suffix[:budget]
+
+
 def _base_slug(image: str, max_len: int = 64) -> str:
     """
     If the slug is too long, keep the most identifiable parts:
@@ -226,15 +252,12 @@ def _base_slug(image: str, max_len: int = 64) -> str:
 
     # Parse components from the slug form
     if "_tag_" in base_slug:
-        left, tag = base_slug.split("_tag_", 1)
+        left, tag = base_slug.rsplit("_tag_", 1)  # Split on last : (rightmost tag)
     else:
         left, tag = base_slug, ""
 
     parts = left.split("_s_") if left else []
     repo = parts[-1] if parts else left  # last path segment is the repo
-
-    # Reconstruct a compact, identifiable core: "<repo>[_tag_<tag>]"
-    ident = repo + (f"_tag_{tag}" if tag else "")
 
     # Fit within budget, reserving space for the digest suffix
     visible_budget = max_len - len(suffix)
@@ -242,8 +265,8 @@ def _base_slug(image: str, max_len: int = 64) -> str:
         f"max_len too small to fit digest suffix with length {len(suffix)}"
     )
 
-    kept = ident[:visible_budget]
-    return kept + suffix
+    ident = _truncate_ident(repo, tag, visible_budget)
+    return ident + suffix
 
 
 def _git_info() -> tuple[str, str]:
@@ -310,6 +333,8 @@ _DEFAULT_PACKAGE_VERSION = _package_version()
 
 
 class BuildOptions(BaseModel):
+    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+    # with Python 3.13. See issue #1886 for details.
     base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22")
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
@@ -639,6 +664,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--base-image",
+        # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+        # with Python 3.13. See issue #1886.
         default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22"),
         help="Base image to use (default from $BASE_IMAGE).",
     )

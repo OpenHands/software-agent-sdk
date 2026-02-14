@@ -5,7 +5,13 @@ Hooks are event-driven scripts that execute at specific lifecycle events
 during agent execution, enabling deterministic control over agent behavior.
 """
 
-from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.hooks.config import (
+    HOOK_EVENT_FIELDS,
+    HookConfig,
+    HookDefinition,
+    HookMatcher,
+    HookType,
+)
 from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
     create_hook_callback,
@@ -16,9 +22,11 @@ from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 
 
 __all__ = [
+    "HOOK_EVENT_FIELDS",
     "HookConfig",
     "HookDefinition",
     "HookMatcher",
+    "HookType",
     "HookExecutor",
     "HookResult",
     "HookManager",

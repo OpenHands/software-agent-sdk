@@ -36,10 +36,18 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.plugin import (
+    Plugin,
+    PluginSource,
+    ResolvedPluginSource,
+    fetch_plugin_with_resolution,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -58,11 +66,18 @@ class LocalConversation(BaseConversation):
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
+    delete_on_close: bool = True
+    # Plugin lazy loading state
+    _plugin_specs: list[PluginSource] | None
+    _resolved_plugins: list[ResolvedPluginSource] | None
+    _plugins_loaded: bool
+    _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
 
     def __init__(
         self,
         agent: AgentBase,
         workspace: str | Path | LocalWorkspace,
+        plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
@@ -77,14 +92,22 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        delete_on_close: bool = True,
+        cipher: Cipher | None = None,
         **_: object,
     ):
         """Initialize the conversation.
 
         Args:
-            agent: The agent to use for the conversation
+            agent: The agent to use for the conversation.
             workspace: Working directory for agent operations and tool execution.
                 Can be a string path, Path object, or LocalWorkspace instance.
+            plugins: Optional list of plugins to load. Each plugin is specified
+                with a source (github:owner/repo, git URL, or local path),
+                optional ref (branch/tag/commit), and optional repo_path for
+                monorepos. Plugins are loaded in order with these merge
+                semantics: skills override by name (last wins), MCP config
+                override by key (last wins), hooks concatenate (all run).
             persistence_dir: Directory for persisting conversation state and events.
                 Can be a string path or Path object.
             conversation_id: Optional ID for the conversation. If provided, will
@@ -92,7 +115,8 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
-            hook_config: Optional hook configuration to auto-wire session hooks
+            hook_config: Optional hook configuration to auto-wire session hooks.
+                If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -105,11 +129,23 @@ class LocalConversation(BaseConversation):
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
+            cipher: Optional cipher for encrypting/decrypting secrets in persisted
+                   state. If provided, secrets are encrypted when saving and
+                   decrypted when loading. If not provided, secrets are redacted
+                   (lost) on serialization.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+
+        # Store plugin specs for lazy loading (no IO in constructor)
+        # Plugins will be loaded on first run() or send_message() call
+        self._plugin_specs = plugins
+        self._resolved_plugins = None
+        self._plugins_loaded = False
+        self._pending_hook_config = hook_config  # Will be combined with plugin hooks
+        self._agent_ready = False  # Agent initialized lazily after plugins loaded
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -134,6 +170,7 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            cipher=cipher,
         )
 
         # Default callback: persist every event to state
@@ -165,18 +202,13 @@ class LocalConversation(BaseConversation):
 
         # Compose the base callback chain (visualizer -> user callbacks -> default)
         base_callback = BaseConversation.compose_callbacks(composed_list)
+        self._base_callback = base_callback  # Store for _ensure_plugins_loaded
 
-        # If hooks configured, wrap with hook processor that forwards to base chain
+        # Defer all hook setup to _ensure_plugins_loaded() for consistency
+        # This runs on first run()/send_message() call and handles both
+        # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        if hook_config is not None:
-            self._hook_processor, self._on_event = create_hook_callback(
-                hook_config=hook_config,
-                working_dir=str(self.workspace.working_dir),
-                session_id=str(desired_id),
-                original_callback=base_callback,
-            )
-        else:
-            self._on_event = base_callback
+        self._on_event = base_callback
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -201,18 +233,9 @@ class LocalConversation(BaseConversation):
         else:
             self._stuck_detector = None
 
-        if self._hook_processor is not None:
-            self._hook_processor.set_conversation_state(self._state)
-            self._hook_processor.run_session_start()
-
-        with self._state:
-            self.agent.init_state(self._state, on_event=self._on_event)
-
-        # Register existing llms in agent
+        # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
+        # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self.llm_registry.subscribe(self._state.stats.register_llm)
-        for llm in list(self.agent.get_all_llms()):
-            self.llm_registry.add(llm)
 
         # Initialize secrets if provided
         if secrets:
@@ -222,6 +245,7 @@ class LocalConversation(BaseConversation):
 
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
+        self.delete_on_close = delete_on_close
 
     @property
     def id(self) -> ConversationID:
@@ -248,6 +272,154 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
+    @property
+    def resolved_plugins(self) -> list[ResolvedPluginSource] | None:
+        """Get the resolved plugin sources after plugins are loaded.
+
+        Returns None if plugins haven't been loaded yet, or if no plugins
+        were specified. Use this for persistence to ensure conversation
+        resume uses the exact same plugin versions.
+        """
+        return self._resolved_plugins
+
+    def _ensure_plugins_loaded(self) -> None:
+        """Lazy load plugins and set up hooks on first use.
+
+        This method is called automatically before run() and send_message().
+        It handles both plugin loading and hook initialization in one place
+        for consistency.
+
+        The method:
+        1. Fetches plugins from their sources (network IO for remote sources)
+        2. Resolves refs to commit SHAs for deterministic resume
+        3. Loads plugin contents (skills, MCP config, hooks)
+        4. Merges plugin contents into the agent
+        5. Sets up hook processor with combined hooks (explicit + plugin)
+        6. Runs session_start hooks
+        """
+        if self._plugins_loaded:
+            return
+
+        all_plugin_hooks: list[HookConfig] = []
+
+        # Load plugins if specified
+        if self._plugin_specs:
+            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
+            self._resolved_plugins = []
+
+            # Start with agent's existing context and MCP config
+            merged_context = self.agent.agent_context
+            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+            for spec in self._plugin_specs:
+                # Fetch plugin and get resolved commit SHA
+                path, resolved_ref = fetch_plugin_with_resolution(
+                    source=spec.source,
+                    ref=spec.ref,
+                    repo_path=spec.repo_path,
+                )
+
+                # Store resolved ref for persistence
+                resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
+                self._resolved_plugins.append(resolved)
+
+                # Load the plugin
+                plugin = Plugin.load(path)
+                logger.debug(
+                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+                    + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
+                )
+
+                # Merge plugin contents
+                merged_context = plugin.add_skills_to(merged_context)
+                merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+
+                # Collect hooks
+                if plugin.hooks and not plugin.hooks.is_empty():
+                    all_plugin_hooks.append(plugin.hooks)
+
+            # Update agent with merged content
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": merged_mcp,
+                }
+            )
+
+            # Also update the agent in _state so API responses reflect loaded plugins
+            with self._state:
+                self._state.agent = self.agent
+
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Combine explicit hook_config with plugin hooks
+        # Explicit hooks run first (before plugin hooks)
+        final_hook_config = self._pending_hook_config
+        if all_plugin_hooks:
+            plugin_hooks = HookConfig.merge(all_plugin_hooks)
+            if plugin_hooks is not None:
+                if final_hook_config is not None:
+                    final_hook_config = HookConfig.merge(
+                        [final_hook_config, plugin_hooks]
+                    )
+                else:
+                    final_hook_config = plugin_hooks
+
+        # Set up hook processor with the combined config
+        if final_hook_config is not None:
+            self._hook_processor, self._on_event = create_hook_callback(
+                hook_config=final_hook_config,
+                working_dir=str(self.workspace.working_dir),
+                session_id=str(self._state.id),
+                original_callback=self._base_callback,
+            )
+            self._hook_processor.set_conversation_state(self._state)
+            self._hook_processor.run_session_start()
+
+        self._plugins_loaded = True
+
+    def _ensure_agent_ready(self) -> None:
+        """Ensure agent is fully initialized with plugins loaded.
+
+        This method combines plugin loading and agent initialization to ensure
+        the agent is initialized exactly once with complete configuration.
+
+        Called lazily on first send_message() or run() to:
+        1. Load plugins (if specified)
+        2. Initialize agent with complete plugin config and hooks
+        3. Register LLMs in the registry
+
+        This preserves the design principle that constructors should not perform
+        I/O or error-prone operations, while eliminating double initialization.
+
+        Thread-safe: Uses state lock to prevent concurrent initialization.
+        """
+        # Fast path: if already initialized, skip lock acquisition entirely.
+        # This is crucial for concurrent send_message() calls during run(),
+        # which holds the state lock during agent.step(). Without this check,
+        # send_message() would block waiting for the lock even though no
+        # initialization is needed.
+        if self._agent_ready:
+            return
+
+        with self._state:
+            # Re-check after acquiring lock in case another thread initialized
+            if self._agent_ready:
+                return
+
+            # Load plugins first (merges skills, MCP config, hooks)
+            self._ensure_plugins_loaded()
+
+            # Initialize agent with complete configuration
+            self.agent.init_state(self._state, on_event=self._on_event)
+
+            # Register LLMs in the registry (still holding lock)
+            self.llm_registry.subscribe(self._state.stats.register_llm)
+            for llm in list(self.agent.get_all_llms()):
+                self.llm_registry.add(llm)
+
+            self._agent_ready = True
+
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
@@ -260,6 +432,9 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
+        # Ensure agent is fully initialized (loads plugins and initializes agent)
+        self._ensure_agent_ready()
+
         # Convert string to Message if needed
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
@@ -318,6 +493,8 @@ class LocalConversation(BaseConversation):
 
         Can be paused between steps
         """
+        # Ensure agent is fully initialized (loads plugins and initializes agent)
+        self._ensure_agent_ready()
 
         with self._state:
             if self._state.execution_status in [
@@ -535,20 +712,23 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        try:
-            tools_map = self.agent.tools_map
-        except (AttributeError, RuntimeError):
-            # Agent not initialized or partially constructed
-            return
-        for tool in tools_map.values():
+        if self.delete_on_close:
             try:
-                executable_tool = tool.as_executable()
-                executable_tool.executor.close()
-            except NotImplementedError:
-                # Tool has no executor, skip it without erroring
-                continue
-            except Exception as e:
-                logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
+                tools_map = self.agent.tools_map
+            except (AttributeError, RuntimeError):
+                # Agent not initialized or partially constructed
+                return
+            for tool in tools_map.values():
+                try:
+                    executable_tool = tool.as_executable()
+                    executable_tool.executor.close()
+                except NotImplementedError:
+                    # Tool has no executor, skip it without erroring
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        f"Error closing executor for tool '{tool.name}': {e}"
+                    )
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
@@ -565,6 +745,9 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
+        # Ensure agent is initialized (needs tools_map)
+        self._ensure_agent_ready()
+
         # Import here to avoid circular imports
         from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
 
@@ -684,6 +867,49 @@ class LocalConversation(BaseConversation):
             self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
 
         logger.info("Condensation request processed")
+
+    def execute_tool(self, tool_name: str, action: Action) -> Observation:
+        """Execute a tool directly without going through the agent loop.
+
+        This method allows executing tools before or outside of the normal
+        conversation.run() flow. It handles agent initialization automatically,
+        so tools can be executed before the first run() call.
+
+        Note: This method bypasses the agent loop, including confirmation
+        policies and security analyzer checks. Callers are responsible for
+        applying any safeguards before executing potentially destructive tools.
+
+        This is useful for:
+        - Pre-run setup operations (e.g., indexing repositories)
+        - Manual tool execution for environment setup
+        - Testing tool behavior outside the agent loop
+
+        Args:
+            tool_name: The name of the tool to execute (e.g., "sleeptime_compute")
+            action: The action to pass to the tool executor
+
+        Returns:
+            The observation returned by the tool execution
+
+        Raises:
+            KeyError: If the tool is not found in the agent's tools
+            NotImplementedError: If the tool has no executor
+        """
+        # Ensure agent is initialized (loads plugins and initializes tools)
+        self._ensure_agent_ready()
+
+        # Get the tool from the agent's tools_map
+        tool = self.agent.tools_map.get(tool_name)
+        if tool is None:
+            available_tools = list(self.agent.tools_map.keys())
+            raise KeyError(
+                f"Tool '{tool_name}' not found. Available tools: {available_tools}"
+            )
+
+        # Execute the tool
+        if not tool.executor:
+            raise NotImplementedError(f"Tool '{tool_name}' has no executor")
+        return tool(action, self)
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""

@@ -116,7 +116,119 @@ When reviewing code, provide constructive feedback:
 - If it is a single-line string, you can break it into a multi-line string by doing "ABC" -> ("A"\n"B"\n"C")
 - If it is a long multi-line string (e.g., docstring), you should just add type ignore AFTER the ending """. You should NEVER ADD IT INSIDE the docstring.
 
+# PyInstaller Data Files
+
+When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
+
 </DEV_SETUP>
+
+<PR_ARTIFACTS>
+# PR-Specific Documents
+
+When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
+
+## Usage
+
+```bash
+# Create the directory if it doesn't exist
+mkdir -p .pr
+
+# Add your PR-specific documents
+.pr/
+├── design.md       # Design decisions and architecture notes
+├── analysis.md     # Investigation or debugging notes
+└── notes.md        # Any other PR-specific content
+```
+
+## How It Works
+
+1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
+2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
+3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+
+## Important Notes
+
+- Do NOT put anything in `.pr/` that needs to be preserved
+- The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
+- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+
+## When to Use
+
+- Complex refactoring that benefits from written design rationale
+- Debugging sessions where you want to document your investigation
+- Feature implementations that need temporary planning docs
+- Temporary script that are intended to show reviewers that the feature works
+- Any analysis that helps reviewers understand the PR but isn't needed long-term
+</PR_ARTIFACTS>
+
+<REVIEW_HANDLING>
+- Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
+  - Does it fix a real bug or improve clarity significantly?
+  - Does it align with the project's engineering principles (simplicity, maintainability)?
+  - Is the suggested change proportional to the benefit, or does it add unnecessary complexity?
+- It's acceptable to respectfully decline suggestions that add verbosity without clear benefit, over-engineer for hypothetical edge cases, or contradict the project's pragmatic approach.
+- After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
+- Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
+- Prefer resolving threads only once fixes are pushed or a clear decision is documented.
+- Use the GitHub GraphQL API to reply to and resolve review threads (see below).
+
+## Resolving Review Threads via GraphQL
+
+The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
+
+1. Get the thread IDs (replace `<OWNER>`, `<REPO>`, `<PR_NUMBER>`):
+```bash
+gh api graphql -f query='
+{
+  repository(owner: "<OWNER>", name: "<REPO>") {
+    pullRequest(number: <PR_NUMBER>) {
+      reviewThreads(first: 20) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+2. Reply to the thread explaining how the feedback was addressed:
+```bash
+gh api graphql -f query='
+mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: "<THREAD_ID>"
+    body: "Fixed in <COMMIT_SHA>"
+  }) {
+    comment { id }
+  }
+}'
+```
+
+3. Resolve the thread:
+```bash
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+    thread { isResolved }
+  }
+}'
+```
+
+4. Get the failed workflow run ID and rerun it:
+```bash
+# Find the run ID from the failed check URL, or use:
+gh run list --repo <OWNER>/<REPO> --branch <BRANCH> --limit 5
+
+# Rerun failed jobs
+gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
+```
+</REVIEW_HANDLING>
+
 
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
@@ -171,3 +283,56 @@ Co-authored-by: openhands <openhands@all-hands.dev>"
 git push -u origin <feature-name>
 ```
 </DOCUMENTATION_WORKFLOW>
+
+<AGENT_TMP_DIRECTORY>
+# Agent Temporary Directory Convention
+
+When tools need to store observation files (e.g., browser session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
+
+The browser session recording tool saves recordings to `.agent_tmp/observations/recording-{timestamp}/`.
+
+This convention ensures tool-generated observation files are stored in a predictable location that can be easily:
+- Added to `.gitignore`
+- Cleaned up after agent sessions
+- Identified as agent-generated artifacts
+
+Note: This is separate from `persistence_dir` which is used for conversation state persistence.
+</AGENT_TMP_DIRECTORY>
+
+<REPO>
+<PROJECT_STRUCTURE>
+- `openhands-sdk/` core SDK; `openhands-tools/` built-in tools; `openhands-workspace/` workspace management; `openhands-agent-server/` server runtime; `examples/` runnable patterns; `tests/` split by domain (`tests/sdk`, `tests/tools`, `tests/agent_server`, etc.).
+- Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
+</PROJECT_STRUCTURE>
+
+<QUICK_COMMANDS>
+- Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
+- Lint/format: `make lint`, `make format`
+- Run tests: `uv run pytest`
+- Build agent-server: `make build-server` (output: `dist/agent-server/`)
+- Clean caches: `make clean`
+- Run an example: `uv run python examples/01_standalone_sdk/main.py`
+</QUICK_COMMANDS>
+
+<RUNNING_EXAMPLES>
+# Running SDK Examples
+
+When implementing or modifying examples in `examples/`, always verify they work before committing:
+
+```bash
+# Run examples using the All-Hands LLM proxy
+LLM_BASE_URL="https://llm-proxy.eval.all-hands.dev" LLM_API_KEY="$LLM_API_KEY" \
+  uv run python examples/01_standalone_sdk/<example_name>.py
+```
+
+The `LLM_API_KEY` environment variable may be available in the OpenHands development environment and works with the All-Hands LLM proxy (`llm-proxy.eval.all-hands.dev` OR `llm-proxy.app.all-hands.dev`). Please consult the human user for the LLM key if it is not found.
+
+For examples that use the critic model (e.g., `34_critic_example.py`), the critic is auto-configured when using the All-Hands LLM proxy - no additional setup needed.
+</RUNNING_EXAMPLES>
+
+<REPO_CONFIG_NOTES>
+- Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
+- Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
+- Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
+</REPO_CONFIG_NOTES>
+</REPO>
