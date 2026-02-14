@@ -30,13 +30,6 @@ _DEPRECATED_COMMANDS: dict[str, CommandLiteral] = {
 }
 
 
-def _migrate_deprecated_command(data: Any) -> Any:
-    """Migrate deprecated command values for backward compatibility."""
-    if isinstance(data, dict) and data.get("command") in _DEPRECATED_COMMANDS:
-        data = {**data, "command": _DEPRECATED_COMMANDS[data["command"]]}
-    return data
-
-
 class FileEditorAction(Action):
     """Schema for file editor operations."""
 
@@ -49,7 +42,11 @@ class FileEditorAction(Action):
     @classmethod
     def _handle_deprecated_commands(cls, data: Any) -> Any:
         """Migrate deprecated command values for backward compat with old events."""
-        return _migrate_deprecated_command(data)
+        if isinstance(data, dict):
+            command = data.get("command")
+            if command in _DEPRECATED_COMMANDS:
+                return {**data, "command": _DEPRECATED_COMMANDS[command]}
+        return data
 
     path: str = Field(description="Absolute path to file or directory.")
     file_text: str | None = Field(
@@ -97,7 +94,11 @@ class FileEditorObservation(Observation):
     @classmethod
     def _handle_deprecated_commands(cls, data: Any) -> Any:
         """Migrate deprecated command values for backward compat with old events."""
-        return _migrate_deprecated_command(data)
+        if isinstance(data, dict):
+            command = data.get("command")
+            if command in _DEPRECATED_COMMANDS:
+                return {**data, "command": _DEPRECATED_COMMANDS[command]}
+        return data
 
     path: str | None = Field(default=None, description="The file path that was edited.")
     prev_exist: bool = Field(
