@@ -197,8 +197,11 @@ def _resolve_griffe_object(root, dotted: str):
 
     try:
         return root[dotted]
-    except Exception:
-        pass
+    except (KeyError, TypeError) as e:
+        print(
+            f"::warning title=SDK API::Unable to resolve {dotted} via direct lookup; "
+            f"falling back to manual traversal: {e}"
+        )
 
     rel = dotted
     if dotted.startswith(SDK_PACKAGE + "."):
@@ -206,7 +209,10 @@ def _resolve_griffe_object(root, dotted: str):
 
     obj = root
     for part in rel.split("."):
-        obj = obj[part]
+        try:
+            obj = obj[part]
+        except (KeyError, TypeError) as e:
+            raise KeyError(f"Unable to resolve {dotted}: failed at {part}") from e
     return obj
 
 
