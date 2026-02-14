@@ -171,14 +171,6 @@ class FileEditorObservation(Observation):
         return False
 
 
-Command = Literal[
-    "view",
-    "create",
-    "str_replace",
-    "insert",
-]
-
-
 TOOL_DESCRIPTION = """Custom editing tool for viewing, creating and editing files in plain-text format
 * State is persistent across command calls and discussions with the user
 * If `path` is a text file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep
