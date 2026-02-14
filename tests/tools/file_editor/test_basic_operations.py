@@ -612,7 +612,6 @@ def test_insert_missing_line_param(editor):
         editor(command="insert", path=str(test_file), new_str="Missing insert line")
 
 
-
 def test_view_directory_with_hidden_files(tmp_path):
     editor = FileEditor()
 
