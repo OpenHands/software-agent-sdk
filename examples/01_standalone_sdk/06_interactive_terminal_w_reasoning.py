@@ -19,13 +19,15 @@ logger = get_logger(__name__)
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
-base_url = os.getenv("LLM_BASE_URL")
+model = os.getenv("LLM_MODEL", "litellm_proxy/openai/gpt-5-nano")
+base_url = os.getenv("LLM_BASE_URL", "https://llm-proxy.eval.all-hands.dev")
 llm = LLM(
     service_id="agent",
     model=model,
     base_url=base_url,
     api_key=SecretStr(api_key),
+    log_completions=True,
+    log_completions_folder=os.path.join(os.getcwd(), ".pr", "completions"),
 )
 
 # Tools
@@ -54,8 +56,16 @@ conversation = Conversation(
 )
 
 conversation.send_message(
-    "Enter python interactive mode by directly running `python3`, then tell me "
-    "the current time, and exit python interactive mode."
+    "You can use the BashTool to run commands in the workspace. Do the following, "
+    "in order, using tool calls:\n"
+    "1) Run `python3` in interactive mode, print the current time, then exit.\n"
+    "2) Create a file named `.pr/reasoning_example.txt` with the contents `alpha`\n"
+    "3) Edit the file so the first line becomes `alpha-edited`\n"
+    "4) Append a final line `omega`\n"
+    "5) Print the file to confirm\n"
+    "6) Delete the file\n"
+    "7) Confirm deletion by listing `.pr/`\n"
+    "Be explicit and verify each step before moving on."
 )
 conversation.run()
 
