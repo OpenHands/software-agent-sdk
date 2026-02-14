@@ -135,6 +135,9 @@ def _extract_exported_names(module) -> set[str]:
 
     names: set[str] = set()
     for el in elts:
+        if isinstance(el, str):
+            names.add(el.strip("\"'"))
+            continue
         s = getattr(el, "value", None)
         if isinstance(s, str):
             names.add(s)
