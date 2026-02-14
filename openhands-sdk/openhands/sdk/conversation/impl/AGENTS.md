@@ -1,10 +1,16 @@
-# Conversation impl: RemoteConversation event sync (WS + REST)
+# SDK conversations (overview)
 
-This directory contains the concrete `Conversation` implementations:
-- `local_conversation.py`
-- `remote_conversation.py`
+This directory contains the concrete `Conversation` implementations used by the SDK:
+- `local_conversation.py`: runs locally / in-process
+- `remote_conversation.py`: connects to an **agent-server** over HTTP + WebSocket
 
-The **RemoteConversation** client consumes events via two interfaces:
+If you’re adding SDK user-facing behavior around runs, status, or event consumption, it likely belongs here.
+
+---
+
+# RemoteConversation: event sync (WS + REST)
+
+`RemoteConversation` consumes events via two interfaces:
 - **WebSocket** (`/events/{conversation_id}`) for low-latency streaming
 - **REST** (`/api/conversations/{conversation_id}/events/search`) for authoritative state
 

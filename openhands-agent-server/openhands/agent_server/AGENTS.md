@@ -1,10 +1,27 @@
-# Agent-server: events via REST + WebSocket
+# OpenHands agent-server (overview)
 
-This package implements the agent-server APIs that clients (including `RemoteConversation` in the SDK) use to consume events.
+This directory is the **agent-server** package: a minimal REST API + WebSocket server that exposes OpenHands agent runs programmatically.
 
-Key code:
-- REST: `event_router.py`, `event_service.py`
-- WebSocket: `sockets.py` (and publish/subscribe plumbing in `pub_sub.py`)
+High-level traits (see also `README.md` in this directory):
+- **REST API** for conversations, events, files, tools, etc.
+- **WebSockets** for low-latency event streaming (and bash-event streaming).
+- **Local storage**: persists conversations/events/workspace state to the local filesystem (intended for dev/testing/light deployments).
+- Optional **API-key auth**, **CORS**, and **webhooks**.
+
+Common entrypoints / orientation:
+- App wiring / startup: `api.py`, `__main__.py`, `config.py`
+- Conversations: `conversation_router.py`, `conversation_service.py`
+- Events (REST): `event_router.py`, `event_service.py`
+- Events (WS): `sockets.py` (+ publish/subscribe plumbing in `pub_sub.py`)
+- Tools: `tool_router.py`, `tool_preload_service.py`
+- Files: `file_router.py`
+- Webhooks: `hooks_router.py`, `hooks_service.py`
+
+---
+
+# Events: REST + WebSocket contracts
+
+This package implements the event APIs that clients (including `RemoteConversation` in the SDK) use to consume events.
 
 ## Design stance
 
