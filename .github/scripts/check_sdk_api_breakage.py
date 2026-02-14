@@ -3,22 +3,31 @@
 
 This script compares the current workspace SDK against the previous PyPI release
 to detect breaking changes in the public API. It focuses on symbols exported via
-`__all__` in `openhands.sdk` and enforces a MINOR version bump policy when
-breaking changes are detected.
+``__all__`` in ``openhands.sdk`` and enforces two policies:
+
+1. **Deprecation-before-removal** – any symbol removed from ``__all__`` must
+   have been marked deprecated in the *previous* release using the SDK's
+   canonical deprecation helpers (``@deprecated`` decorator or
+   ``warn_deprecated()`` call from ``openhands.sdk.utils.deprecation``).
+
+2. **MINOR version bump** – any breaking change (removal or structural) requires
+   at least a MINOR version bump according to SemVer.
 
 Complementary to the deprecation mechanism:
-- Deprecation (`check_deprecations.py`): Handles planned lifecycle with user warnings
-- This script: Catches unplanned/accidental API breaks automatically
+- Deprecation (``check_deprecations.py``): enforces cleanup deadlines
+- This script: prevents unannounced removals and enforces SemVer bumps
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import sys
 import tomllib
 import urllib.request
 from collections.abc import Iterable
+from pathlib import Path
 
 from packaging import version as pkg_version
 
@@ -245,8 +254,81 @@ def _load_prev_sdk_from_pypi(griffe_module, prev: str):
         return None
 
 
-def _compute_breakages(old_root, new_root, include: list[str]) -> int:
+def _find_deprecated_symbols(source_root: Path) -> set[str]:
+    """Scan source files for symbols marked with the SDK deprecation helpers.
+
+    Detects two forms:
+    - ``@deprecated(...)`` decorator on a class or function
+    - ``warn_deprecated('SymbolName', ...)`` call (top-level names only)
+
+    Returns the set of top-level symbol names that were deprecated.
+    """
+    names: set[str] = set()
+    for pyfile in source_root.rglob("*.py"):
+        try:
+            tree = ast.parse(pyfile.read_text())
+        except SyntaxError:
+            continue
+
+        for node in ast.walk(tree):
+            # @deprecated(...) decorator on class/function
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                for deco in node.decorator_list:
+                    if not isinstance(deco, ast.Call):
+                        continue
+                    target = deco.func
+                    deco_name = None
+                    if isinstance(target, ast.Name):
+                        deco_name = target.id
+                    elif isinstance(target, ast.Attribute):
+                        deco_name = target.attr
+                    if deco_name == "deprecated":
+                        names.add(node.name)
+
+            # warn_deprecated("SymbolName", ...) call
+            elif isinstance(node, ast.Call):
+                target = node.func
+                func_name = None
+                if isinstance(target, ast.Name):
+                    func_name = target.id
+                elif isinstance(target, ast.Attribute):
+                    func_name = target.attr
+                if func_name != "warn_deprecated" or not node.args:
+                    continue
+                feature = _extract_string_literal(node.args[0])
+                if feature is not None:
+                    # "Foo.bar" → "Foo"; plain "Foo" → "Foo"
+                    names.add(feature.split(".")[0])
+
+    return names
+
+
+def _extract_string_literal(node: ast.AST) -> str | None:
+    """Return the string value if *node* is a simple string literal."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _get_source_root(griffe_root: object) -> Path | None:
+    """Derive the package source directory from a griffe module's filepath."""
+    filepath = getattr(griffe_root, "filepath", None)
+    if filepath is not None:
+        return Path(filepath).parent
+    return None
+
+
+def _compute_breakages(old_root, new_root, include: list[str]) -> tuple[int, int]:
+    """Detect breaking changes between old and new SDK versions.
+
+    Returns:
+        ``(total_breaks, undeprecated_removals)`` — *total_breaks* counts all
+        structural breakages (for the version-bump policy), while
+        *undeprecated_removals* counts exports removed without a prior
+        deprecation marker (a separate hard failure).
+    """
     total_breaks = 0
+    undeprecated_removals = 0
 
     try:
         old_mod = _resolve_griffe_object(old_root, SDK_PACKAGE)
@@ -255,12 +337,30 @@ def _compute_breakages(old_root, new_root, include: list[str]) -> int:
         new_exports = _extract_exported_names(new_mod)
 
         removed = sorted(old_exports - new_exports)
-        for name in removed:
-            print(
-                f"::error title=SDK API::Removed exported symbol '{name}' from "
-                f"{SDK_PACKAGE}.__all__",
+
+        # Check deprecation-before-removal policy
+        if removed:
+            source_root = _get_source_root(old_root)
+            deprecated_names = (
+                _find_deprecated_symbols(source_root) if source_root else set()
             )
-            total_breaks += 1
+
+            for name in removed:
+                total_breaks += 1  # every removal is a structural break
+                if name not in deprecated_names:
+                    print(
+                        f"::error title=SDK API::Removed '{name}' from "
+                        f"{SDK_PACKAGE}.__all__ without prior deprecation. "
+                        f"Mark it with @deprecated or warn_deprecated() "
+                        f"for at least one release before removing."
+                    )
+                    undeprecated_removals += 1
+                else:
+                    print(
+                        f"::notice title=SDK API::Removed previously-"
+                        f"deprecated symbol '{name}' from "
+                        f"{SDK_PACKAGE}.__all__"
+                    )
 
         common = sorted(old_exports & new_exports)
         pairs: list[tuple[object, object]] = []
@@ -287,7 +387,7 @@ def _compute_breakages(old_root, new_root, include: list[str]) -> int:
     if extra_pairs:
         total_breaks += len(_collect_breakages_pairs(extra_pairs))
 
-    return total_breaks
+    return total_breaks, undeprecated_removals
 
 
 def main() -> int:
@@ -320,8 +420,18 @@ def main() -> int:
     if not old_root:
         return 1
 
-    total_breaks = _compute_breakages(old_root, new_root, include)
-    return _check_version_bump(prev, new_version, total_breaks)
+    total_breaks, undeprecated = _compute_breakages(old_root, new_root, include)
+
+    if undeprecated:
+        print(
+            f"::error title=SDK API::{undeprecated} symbol(s) removed "
+            f"without prior deprecation — see errors above"
+        )
+
+    bump_rc = _check_version_bump(prev, new_version, total_breaks)
+
+    # Fail if either policy is violated
+    return 1 if (undeprecated or bump_rc) else 0
 
 
 if __name__ == "__main__":

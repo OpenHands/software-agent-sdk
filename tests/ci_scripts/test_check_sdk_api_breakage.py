@@ -2,15 +2,14 @@
 
 We import the production script via a file-based module load (rather than copying
 functions) so tests remain coupled to real behavior.
-
-These tests cover the SemVer policy helper functions and do not require griffe or
-network access.
 """
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+
+import griffe
 
 
 def _load_prod_module():
@@ -26,11 +25,21 @@ def _load_prod_module():
 _prod = _load_prod_module()
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
+_find_deprecated_symbols = _prod._find_deprecated_symbols
+
+
+def _write_sdk_init(tmp_path, root: str, all_names: list[str]):
+    """Helper to create a minimal openhands.sdk package with __all__."""
+    pkg = tmp_path / root / "openhands" / "sdk"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (tmp_path / root / "openhands" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text(
+        "__all__ = [\n" + "\n".join(f"    {name!r}," for name in all_names) + "\n]\n"
+    )
+    return pkg
 
 
 def test_griffe_breakage_removed_attribute_requires_minor_bump(tmp_path):
-    griffe = __import__("griffe")
-
     old_pkg = tmp_path / "old" / "openhands" / "sdk" / "llm"
     new_pkg = tmp_path / "new" / "openhands" / "sdk" / "llm"
     old_pkg.mkdir(parents=True)
@@ -59,7 +68,7 @@ class TextContent:
         "openhands.sdk.llm.message", search_paths=[str(tmp_path / "new")]
     )
 
-    total_breaks = _prod._compute_breakages(
+    total_breaks, _undeprecated = _prod._compute_breakages(
         old_root, new_root, include=["openhands.sdk.llm.message.TextContent"]
     )
     assert total_breaks > 0
@@ -69,28 +78,57 @@ class TextContent:
 
 
 def test_griffe_removed_export_from_all_is_breaking(tmp_path):
-    griffe = __import__("griffe")
-
-    def write_init(root: str, all_names: list[str]):
-        pkg = tmp_path / root / "openhands" / "sdk"
-        pkg.mkdir(parents=True)
-        (tmp_path / root / "openhands" / "__init__.py").write_text("")
-        (pkg / "__init__.py").write_text(
-            "__all__ = [\n"
-            + "\n".join(f"    {name!r}," for name in all_names)
-            + "\n]\n"
-        )
-
-    write_init("old", ["Foo", "Bar"])
-    write_init("new", ["Foo"])
+    _write_sdk_init(tmp_path, "old", ["Foo", "Bar"])
+    _write_sdk_init(tmp_path, "new", ["Foo"])
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
-    total_breaks = _prod._compute_breakages(
+    total_breaks, undeprecated = _prod._compute_breakages(
         old_root, new_root, include=["openhands.sdk"]
     )
     assert total_breaks == 1
+    # Bar was not deprecated before removal
+    assert undeprecated == 1
+
+
+def test_removal_of_deprecated_symbol_does_not_count_as_undeprecated(tmp_path):
+    old_pkg = _write_sdk_init(tmp_path, "old", ["Foo", "Bar"])
+    (old_pkg / "bar.py").write_text(
+        "@deprecated(deprecated_in='1.0', removed_in='2.0')\nclass Bar:\n    pass\n"
+    )
+    _write_sdk_init(tmp_path, "new", ["Foo"])
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, include=["openhands.sdk"]
+    )
+    assert total_breaks == 1
+    assert undeprecated == 0
+
+
+def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
+    old_pkg = _write_sdk_init(tmp_path, "old", ["Foo", "Bar"])
+    (old_pkg / "bar.py").write_text(
+        "class Bar:\n"
+        "    @property\n"
+        "    def value(self):\n"
+        "        warn_deprecated('Bar.value', deprecated_in='1.0',"
+        " removed_in='2.0')\n"
+        "        return 42\n"
+    )
+    _write_sdk_init(tmp_path, "new", ["Foo"])
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, include=["openhands.sdk"]
+    )
+    assert total_breaks == 1
+    assert undeprecated == 0
 
 
 def test_parse_version_simple():
@@ -140,3 +178,41 @@ def test_prerelease_versions():
     assert _check_version_bump("1.0.0", "1.1.0a1", total_breaks=1) == 0
     # 1.0.1a1 is still a patch bump
     assert _check_version_bump("1.0.0", "1.0.1a1", total_breaks=1) == 1
+
+
+def test_find_deprecated_symbols_decorator(tmp_path):
+    """@deprecated decorator on class/function is detected."""
+    (tmp_path / "mod.py").write_text(
+        "@deprecated(deprecated_in='1.0', removed_in='2.0')\n"
+        "class Foo:\n"
+        "    pass\n"
+        "\n"
+        "@deprecated(deprecated_in='1.0', removed_in='2.0')\n"
+        "def bar():\n"
+        "    pass\n"
+        "\n"
+        "class NotDeprecated:\n"
+        "    pass\n"
+    )
+    result = _find_deprecated_symbols(tmp_path)
+    assert result == {"Foo", "bar"}
+
+
+def test_find_deprecated_symbols_warn_deprecated(tmp_path):
+    """warn_deprecated() calls are detected; dotted names map to top-level."""
+    (tmp_path / "mod.py").write_text(
+        "warn_deprecated('Alpha', deprecated_in='1.0', removed_in='2.0')\n"
+        "warn_deprecated('Beta.attr', deprecated_in='1.0', removed_in='2.0')\n"
+    )
+    result = _find_deprecated_symbols(tmp_path)
+    assert result == {"Alpha", "Beta"}
+
+
+def test_find_deprecated_symbols_ignores_syntax_errors(tmp_path):
+    """Files with syntax errors are silently skipped."""
+    (tmp_path / "bad.py").write_text("def broken(\n")
+    (tmp_path / "good.py").write_text(
+        "@deprecated(deprecated_in='1.0', removed_in='2.0')\ndef ok(): pass\n"
+    )
+    result = _find_deprecated_symbols(tmp_path)
+    assert result == {"ok"}

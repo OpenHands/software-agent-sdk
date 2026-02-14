@@ -297,6 +297,18 @@ Example test names:
 ### Example: See `TextContent` and `Message` in `openhands/sdk/llm/message.py`
 
 These classes demonstrate the proper pattern for handling deprecated fields while maintaining backward compatibility with persisted events.
+
+## Public API Removal Policy
+
+Symbols exported via `openhands.sdk.__all__` are the SDK's public surface. Two CI policies govern changes:
+
+1. **Deprecation before removal** – before removing a symbol from `__all__`, mark it as deprecated for at least one release using the canonical helpers in `openhands.sdk.utils.deprecation`:
+   - `@deprecated(deprecated_in=..., removed_in=...)` decorator for functions/classes
+   - `warn_deprecated(feature, deprecated_in=..., removed_in=...)` for runtime paths (e.g., property accessors)
+
+2. **MINOR version bump** – any breaking change (removal or structural) requires at least a MINOR version bump.
+
+These are enforced by `check_sdk_api_breakage.py` (runs on release PRs). Deprecation deadlines are separately enforced by `check_deprecations.py` (runs on every PR).
 </CODE>
 
 <TESTING>
