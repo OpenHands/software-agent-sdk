@@ -230,7 +230,28 @@ class Message(BaseModel):
     # OpenAI Responses reasoning item (when provided via Responses API output)
     responses_reasoning_item: ReasoningItemModel | None = Field(
         default=None,
-        description="OpenAI Responses reasoning item from model output",
+        description=(
+            "OpenAI Responses reasoning item from model output. Preserved only for "
+            "Responses API round-trips."
+        ),
+    )
+    # OpenAI Responses message id/status (required on the following message item
+    # when a reasoning item is present)
+    responses_message_id: str | None = Field(
+        default=None,
+        description=(
+            "OpenAI Responses message id from model output. Preserved only for "
+            "Responses API round-trips when a reasoning item is present."
+        ),
+    )
+    responses_message_status: (
+        Literal["in_progress", "completed", "incomplete"] | None
+    ) = Field(
+        default=None,
+        description=(
+            "OpenAI Responses message status from model output. Preserved only for "
+            "Responses API round-trips when a reasoning item is present."
+        ),
     )
 
     @property
@@ -545,12 +566,24 @@ class Message(BaseModel):
         assistant_text_parts: list[str] = []
         tool_calls: list[MessageToolCall] = []
         responses_reasoning_item: ReasoningItemModel | None = None
+        responses_message_id: str | None = None
+        responses_message_status: (
+            Literal["in_progress", "completed", "incomplete"] | None
+        ) = None
 
         for item in output or []:
             if (
                 isinstance(item, GenericResponseOutputItem)
                 or isinstance(item, ResponseOutputMessage)
             ) and item.type == "message":
+                item_id = getattr(item, "id", None)
+                if isinstance(item_id, str) and item_id:
+                    responses_message_id = item_id
+
+                item_status = getattr(item, "status", None)
+                if item_status in ("in_progress", "completed", "incomplete"):
+                    responses_message_status = item_status
+
                 for part in item.content or []:
                     if part.type == "output_text" and part.text:
                         assistant_text_parts.append(part.text)
@@ -587,6 +620,8 @@ class Message(BaseModel):
             content=[TextContent(text=assistant_text)] if assistant_text else [],
             tool_calls=tool_calls or None,
             responses_reasoning_item=responses_reasoning_item,
+            responses_message_id=responses_message_id,
+            responses_message_status=responses_message_status,
         )
 
 

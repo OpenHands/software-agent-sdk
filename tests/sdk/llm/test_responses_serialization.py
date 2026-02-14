@@ -85,7 +85,13 @@ def test_assistant_includes_reasoning_passthrough():
         encrypted_content="enc",
         status="completed",
     )
-    m = Message(role="assistant", content=[], responses_reasoning_item=ri)
+    m = Message(
+        role="assistant",
+        content=[TextContent(text="x")],
+        responses_reasoning_item=ri,
+        responses_message_id="msg_1",
+        responses_message_status="completed",
+    )
     out = m.to_responses_dict(vision_enabled=False)
 
     # Contains a reasoning item with exact passthrough fields
@@ -97,3 +103,22 @@ def test_assistant_includes_reasoning_passthrough():
     assert [c["text"] for c in r.get("content", [])] == ["c1"]
     assert r.get("encrypted_content") == "enc"
     assert r.get("status") == "completed"
+
+
+def test_assistant_from_responses_output_captures_message_id_and_status():
+    msg = {
+        "type": "message",
+        "role": "assistant",
+        "id": "msg_test_1",
+        "status": "completed",
+        "content": [
+            {"type": "output_text", "text": "hello", "annotations": []},
+        ],
+    }
+
+    from openai.types.responses.response_output_message import ResponseOutputMessage
+
+    m = Message.from_llm_responses_output([ResponseOutputMessage.model_validate(msg)])
+    assert m.responses_message_id == "msg_test_1"
+    assert m.responses_message_status == "completed"
+    assert [c.text for c in m.content if isinstance(c, TextContent)] == ["hello"]
