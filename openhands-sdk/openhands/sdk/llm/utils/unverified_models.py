@@ -111,6 +111,10 @@ def _get_litellm_provider_names() -> set[str]:
 _LITELLM_PROVIDER_NAMES = _get_litellm_provider_names()
 
 
+def _has_provider_registry() -> bool:
+    return bool(_LITELLM_PROVIDER_NAMES)
+
+
 def _extract_model_and_provider(model: str) -> tuple[str, str, str]:
     """Extract provider and model information from a model identifier.
 
@@ -147,7 +151,10 @@ def _extract_model_and_provider(model: str) -> tuple[str, str, str]:
     provider = split[0]
     model_id = separator.join(split[1:])
 
-    if provider not in _LITELLM_PROVIDER_NAMES:
+    # If we have a provider registry, only accept known LiteLLM providers.
+    # If not, fall back to the historical behavior to avoid dropping all
+    # provider groupings in older LiteLLM versions.
+    if _has_provider_registry() and provider not in _LITELLM_PROVIDER_NAMES:
         return "", model, ""
 
     return provider, model_id, separator
