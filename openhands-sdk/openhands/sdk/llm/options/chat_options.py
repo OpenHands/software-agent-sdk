@@ -33,7 +33,8 @@ def select_chat_options(
         out["extra_headers"] = dict(llm.extra_headers)
 
     # Reasoning-model quirks
-    if get_features(llm.model).supports_reasoning_effort:
+    supports_reasoning_effort = get_features(llm.model).supports_reasoning_effort
+    if supports_reasoning_effort:
         # LiteLLM automatically handles reasoning_effort for all models, including
         # Claude Opus 4.5 (maps to output_config and adds beta header automatically)
         if llm.reasoning_effort is not None:
@@ -43,10 +44,12 @@ def select_chat_options(
         out.pop("temperature", None)
         out.pop("top_p", None)
 
-        # Gemini 2.5-pro default to low if not set
-        if "gemini-2.5-pro" in llm.model:
-            if llm.reasoning_effort in {None, "none"}:
-                out["reasoning_effort"] = "low"
+    # Gemini 2.5-pro should default to low when not set.
+    if "gemini-2.5-pro" in llm.model and llm.reasoning_effort in {None, "none"}:
+        out["reasoning_effort"] = "low"
+        if supports_reasoning_effort:
+            out.pop("temperature", None)
+            out.pop("top_p", None)
 
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:

@@ -211,3 +211,6 @@ agent-sdk.workspace.code-workspace
 
 # Integration test outputs
 tests/integration/outputs/
+
+# Agent-generated temp
+.agent_tmp/
