@@ -28,7 +28,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 boto3 = ["boto3>=1.35.0"]
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-dir]
