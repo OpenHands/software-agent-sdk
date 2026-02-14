@@ -116,43 +116,33 @@ def _collect_breakages_pairs(objs: Iterable[tuple[object, object]]) -> list:
 
 
 def _extract_exported_names(module) -> set[str]:
-    """Extract names exported from a module via __all__.
+    """Extract names exported from a module via ``__all__``.
 
-    Falls back to is_exported attribute or non-underscore names if __all__ is not
-    defined.
+    This check is explicitly meant to track the curated public surface. The SDK
+    is expected to define ``__all__`` in ``openhands.sdk``; if it's missing or we
+    can't statically interpret it, we fail fast rather than silently widening the
+    surface area (which would make the check noisy and brittle).
     """
-    names: set[str] = set()
-
-    # Primary: use __all__ if defined
     try:
         all_var = module["__all__"]
-    except Exception:
-        all_var = None
+    except Exception as e:
+        raise ValueError("Expected __all__ to be defined on the public module") from e
 
-    if all_var is not None:
-        val = getattr(all_var, "value", None)
-        elts = getattr(val, "elements", None)
-        if elts:
-            for el in elts:
-                s = getattr(el, "value", None)
-                if isinstance(s, str):
-                    names.add(s)
+    val = getattr(all_var, "value", None)
+    elts = getattr(val, "elements", None)
+    if not elts:
+        raise ValueError("Unable to statically evaluate __all__")
 
-    if names:
-        return names
+    names: set[str] = set()
+    for el in elts:
+        s = getattr(el, "value", None)
+        if isinstance(s, str):
+            names.add(s)
 
-    # Fallback: rely on is_exported if available
-    for n, m in getattr(module, "members", {}).items():
-        if n == "__all__":
-            continue
-        if getattr(m, "is_exported", False):
-            names.add(n)
+    if not names:
+        raise ValueError("__all__ resolved to an empty set")
 
-    if names:
-        return names
-
-    # Last resort: non-underscore names
-    return {n for n in getattr(module, "members", {}) if not n.startswith("_")}
+    return names
 
 
 def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
@@ -190,6 +180,97 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
     return 0
 
 
+def _resolve_griffe_object(root, dotted: str):
+    """Resolve a dotted path to a griffe object."""
+    if getattr(root, "path", None) == dotted:
+        return root
+
+    try:
+        return root[dotted]
+    except Exception:
+        pass
+
+    rel = dotted
+    if dotted.startswith(SDK_PACKAGE + "."):
+        rel = dotted[len(SDK_PACKAGE) + 1 :]
+
+    obj = root
+    for part in rel.split("."):
+        obj = obj[part]
+    return obj
+
+
+def _load_current_sdk(griffe_module, repo_root: str):
+    try:
+        return griffe_module.load(
+            SDK_PACKAGE, search_paths=[os.path.join(repo_root, "openhands-sdk")]
+        )
+    except Exception as e:
+        print(f"::error title=SDK API::Failed to load current SDK: {e}")
+        return None
+
+
+def _load_prev_sdk_from_pypi(griffe_module, prev: str):
+    griffe_cache = os.path.expanduser("~/.cache/griffe")
+    os.makedirs(griffe_cache, exist_ok=True)
+
+    try:
+        return griffe_module.load_pypi(
+            package=SDK_PACKAGE,
+            distribution=DISTRIBUTION_NAME,
+            version_spec=f"=={prev}",
+        )
+    except Exception as e:
+        print(f"::error title=SDK API::Failed to load {prev} from PyPI: {e}")
+        return None
+
+
+def _compute_breakages(old_root, new_root, include: list[str]) -> int:
+    total_breaks = 0
+
+    try:
+        old_mod = _resolve_griffe_object(old_root, SDK_PACKAGE)
+        new_mod = _resolve_griffe_object(new_root, SDK_PACKAGE)
+        old_exports = _extract_exported_names(old_mod)
+        new_exports = _extract_exported_names(new_mod)
+
+        removed = sorted(old_exports - new_exports)
+        for name in removed:
+            print(
+                f"::error title=SDK API::Removed exported symbol '{name}' from "
+                f"{SDK_PACKAGE}.__all__",
+            )
+            total_breaks += 1
+
+        common = sorted(old_exports & new_exports)
+        pairs: list[tuple[object, object]] = []
+        for name in common:
+            try:
+                pairs.append((old_mod[name], new_mod[name]))
+            except Exception as e:
+                print(f"::warning title=SDK API::Unable to resolve symbol {name}: {e}")
+        total_breaks += len(_collect_breakages_pairs(pairs))
+    except Exception as e:
+        print(f"::error title=SDK API::Failed to process top-level exports: {e}")
+        return 1
+
+    extra_pairs: list[tuple[object, object]] = []
+    for path in include:
+        if path == SDK_PACKAGE:
+            continue
+        try:
+            old_obj = _resolve_griffe_object(old_root, path)
+            new_obj = _resolve_griffe_object(new_root, path)
+            extra_pairs.append((old_obj, new_obj))
+        except Exception as e:
+            print(f"::warning title=SDK API::Path {path} not found: {e}")
+
+    if extra_pairs:
+        total_breaks += len(_collect_breakages_pairs(extra_pairs))
+
+    return total_breaks
+
+
 def main() -> int:
     """Main entry point for SDK API breakage detection."""
     ensure_griffe()
@@ -212,101 +293,15 @@ def main() -> int:
 
     print(f"Comparing {DISTRIBUTION_NAME} {new_version} against {prev}")
 
-    # Load currently checked-out code
-    try:
-        new_root = griffe.load(
-            SDK_PACKAGE, search_paths=[os.path.join(repo_root, "openhands-sdk")]
-        )
-    except Exception as e:
-        print(f"::error title=SDK API::Failed to load current SDK: {e}")
+    new_root = _load_current_sdk(griffe, repo_root)
+    if not new_root:
         return 1
 
-    # Load previous from PyPI
-    # Ensure griffe cache directory exists (workaround for griffe issue)
-    griffe_cache = os.path.expanduser("~/.cache/griffe")
-    os.makedirs(griffe_cache, exist_ok=True)
-
-    try:
-        old_root = griffe.load_pypi(
-            package=SDK_PACKAGE,
-            distribution=DISTRIBUTION_NAME,
-            version_spec=f"=={prev}",
-        )
-    except Exception as e:
-        print(f"::error title=SDK API::Failed to load {prev} from PyPI: {e}")
+    old_root = _load_prev_sdk_from_pypi(griffe, prev)
+    if not old_root:
         return 1
 
-    def resolve(root, dotted: str):
-        """Resolve a dotted path to a griffe object.
-
-        Handles the case where griffe.load() returns the module directly
-        (e.g., root.path == 'openhands.sdk') rather than a hierarchy.
-        """
-        # If the root IS the module we're looking for, return it directly
-        if getattr(root, "path", None) == dotted:
-            return root
-
-        # Try direct subscript access
-        try:
-            return root[dotted]
-        except Exception:
-            pass
-
-        # Try relative to SDK_PACKAGE (for submodule paths)
-        rel = dotted
-        if dotted.startswith(SDK_PACKAGE + "."):
-            rel = dotted[len(SDK_PACKAGE) + 1 :]
-        obj = root
-        for part in rel.split("."):
-            obj = obj[part]
-        return obj
-
-    total_breaks = 0
-
-    # Process top-level exports of openhands.sdk (governed by __all__)
-    try:
-        old_mod = resolve(old_root, SDK_PACKAGE)
-        new_mod = resolve(new_root, SDK_PACKAGE)
-        old_exports = _extract_exported_names(old_mod)
-        new_exports = _extract_exported_names(new_mod)
-
-        # Check for removed exports
-        removed = sorted(old_exports - new_exports)
-        for name in removed:
-            print(
-                f"::error title=SDK API::Removed exported symbol '{name}' from "
-                f"{SDK_PACKAGE}.__all__",
-            )
-            total_breaks += 1
-
-        # Check for signature changes in common exports
-        common = sorted(old_exports & new_exports)
-        pairs: list[tuple[object, object]] = []
-        for name in common:
-            try:
-                pairs.append((old_mod[name], new_mod[name]))
-            except Exception as e:
-                print(f"::warning title=SDK API::Unable to resolve symbol {name}: {e}")
-        total_breaks += len(_collect_breakages_pairs(pairs))
-    except Exception as e:
-        print(f"::error title=SDK API::Failed to process top-level exports: {e}")
-        return 1
-
-    # Additionally honor include paths that are not the top-level module
-    extra_pairs: list[tuple[object, object]] = []
-    for path in include:
-        if path == SDK_PACKAGE:
-            continue
-        try:
-            old_obj = resolve(old_root, path)
-            new_obj = resolve(new_root, path)
-            extra_pairs.append((old_obj, new_obj))
-        except Exception as e:
-            print(f"::warning title=SDK API::Path {path} not found: {e}")
-
-    if extra_pairs:
-        total_breaks += len(_collect_breakages_pairs(extra_pairs))
-
+    total_breaks = _compute_breakages(old_root, new_root, include)
     return _check_version_bump(prev, new_version, total_breaks)
 
 

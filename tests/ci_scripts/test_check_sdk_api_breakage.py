@@ -1,34 +1,31 @@
 """Tests for SDK API breakage check script.
 
-These tests verify the core policy logic without requiring griffe or network access.
-The functions are duplicated here to avoid import issues with the .github/scripts path.
+We import the production script via a file-based module load (rather than copying
+functions) so tests remain coupled to real behavior.
+
+These tests cover the SemVer policy helper functions and do not require griffe or
+network access.
 """
 
-from packaging import version as pkg_version
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
 
 
-def _parse_version(v: str) -> pkg_version.Version:
-    """Parse a version string using packaging (mirrors script implementation)."""
-    return pkg_version.parse(v)
+def _load_prod_module():
+    repo_root = Path(__file__).resolve().parents[2]
+    script_path = repo_root / ".github" / "scripts" / "check_sdk_api_breakage.py"
+    spec = importlib.util.spec_from_file_location("check_sdk_api_breakage", script_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
-    """Check version bump policy (mirrors script implementation).
-
-    Policy: Breaking changes require at least a MINOR version bump.
-    Returns 0 if policy satisfied, 1 if not.
-    """
-    if total_breaks == 0:
-        return 0
-
-    parsed_prev = _parse_version(prev)
-    parsed_new = _parse_version(new_version)
-
-    ok = (parsed_new.major > parsed_prev.major) or (
-        parsed_new.major == parsed_prev.major and parsed_new.minor > parsed_prev.minor
-    )
-
-    return 0 if ok else 1
+_prod = _load_prod_module()
+_parse_version = _prod._parse_version
+_check_version_bump = _prod._check_version_bump
 
 
 def test_parse_version_simple():
