@@ -3,7 +3,10 @@ name: API breakage checks
 
 on:
     pull_request:
-        branches: [main, release/*]
+        branches: [main]
+        # Only run on release PRs created by prepare-release.yml (rel-X.Y.Z branches)
+        # We enforce version-bump policy here, which does not apply to everyday PRs.
+        head-branches: [rel-*]
 
 jobs:
     sdk-api:
