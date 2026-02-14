@@ -63,6 +63,53 @@ If there are significant issues, leave detailed comments explaining the concerns
 - **Breaking Changes**: API changes affecting users, removed public fields/methods, changed defaults
 - **Code Quality**: Code duplication, missing comments for non-obvious decisions, inline imports (unless necessary for circular deps)
 - **Repository Conventions**: Use `pyright` not `mypy`, put fixtures in `conftest.py`, avoid `sys.path.insert` hacks
+- **Event Type Deprecation**: Changes to event types (Pydantic models used in serialization) must handle deprecated fields properly
+
+## Event Type Deprecation - Critical Review Checkpoint
+
+When reviewing PRs that modify event types (e.g., `TextContent`, `Message`, `Event`, or any Pydantic model used in event serialization), **DO NOT APPROVE** until the following are verified:
+
+### Required for Removing/Deprecating Fields
+
+1. **Model validator present**: If a field is being removed from an event type with `extra="forbid"`, there MUST be a `@model_validator(mode="before")` that uses `handle_deprecated_model_fields()` to remove the deprecated field before validation. Otherwise, old events will fail to load.
+
+2. **Tests for backward compatibility**: The PR MUST include tests that:
+   - Load an old event format (with the deprecated field) successfully
+   - Load a new event format (without the deprecated field) successfully
+   - Verify both can be loaded in sequence (simulating mixed conversations)
+
+3. **Test naming convention**: The version in the test name should be the **LAST version** where a particular event structure exists. For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field), not `test_v1_8_0_...` (when it was introduced). This avoids duplicate tests and clearly documents when a field was last present.
+
+**Important**: Deprecated field handlers are **permanent** and should never be removed. They ensure old conversations can always be loaded.
+
+### Example Pattern (Required)
+
+```python
+from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
+
+class MyModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Deprecated fields that are silently removed for backward compatibility
+    # when loading old events. These are kept permanently.
+    _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("old_field_name",)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_fields(cls, data: Any) -> Any:
+        """Remove deprecated fields for backward compatibility with old events."""
+        return handle_deprecated_model_fields(data, cls._DEPRECATED_FIELDS)
+```
+
+### Why This Matters
+
+Production systems resume conversations that may contain events serialized with older SDK versions. If the SDK can't load old events, users will see errors like:
+
+```
+pydantic_core.ValidationError: Extra inputs are not permitted
+```
+
+**This is a production-breaking change.** Do not approve PRs that modify event types without proper backward compatibility handling and tests.
 
 ## What NOT to Comment On
 
