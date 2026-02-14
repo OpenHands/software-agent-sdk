@@ -53,6 +53,11 @@ PACKAGES: tuple[PackageConfig, ...] = (
         distribution="openhands-workspace",
         source_dir="openhands-workspace",
     ),
+    PackageConfig(
+        package="openhands.tools",
+        distribution="openhands-tools",
+        source_dir="openhands-tools",
+    ),
 )
 
 
