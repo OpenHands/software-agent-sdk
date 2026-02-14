@@ -90,7 +90,7 @@ def _send_request(
         )
         raise e
     except httpx.RequestError as e:
-        logger.error("Request failed: %s", e, exc_info=DEBUG)
+        logger.error(f"Request failed: {e}", exc_info=DEBUG)
         raise e
 
 
@@ -283,7 +283,7 @@ class RemoteEventsList(EventsListBase):
 
     def _do_full_sync(self) -> None:
         """Perform a full sync with the remote API."""
-        logger.debug("Performing full sync for conversation %s", self._conversation_id)
+        logger.debug(f"Performing full sync for conversation {self._conversation_id}")
 
         events, had_errors = self._fetch_events_pages()
 
@@ -671,7 +671,7 @@ class RemoteConversation(BaseConversation):
             from openhands.sdk.tool.registry import get_tool_module_qualnames
 
             tool_qualnames = get_tool_module_qualnames()
-            logger.debug("Sending tool_module_qualnames to server: %s", tool_qualnames)
+            logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -852,9 +852,9 @@ class RemoteConversation(BaseConversation):
                 log_path = os.path.join(log_dir, event.filename)
                 with open(log_path, "w") as f:
                     f.write(event.log_data)
-                logger.debug("Wrote LLM completion log to %s", log_path)
+                logger.debug(f"Wrote LLM completion log to {log_path}")
             except Exception as e:
-                logger.warning("Failed to write LLM completion log: %s", e)
+                logger.warning(f"Failed to write LLM completion log: {e}")
 
         return callback
 
@@ -943,7 +943,7 @@ class RemoteConversation(BaseConversation):
         if resp.status_code == 409:
             logger.info("Conversation is already running; skipping run trigger")
         else:
-            logger.info("run() triggered successfully: %s", resp)
+            logger.info(f"run() triggered successfully: {resp}")
 
         if blocking:
             self._wait_for_run_completion(poll_interval, timeout)
@@ -1146,7 +1146,7 @@ class RemoteConversation(BaseConversation):
             )
             return
         if isinstance(exc, httpx.RequestError):
-            logger.warning("Error polling status (will retry): %s", exc)
+            logger.warning(f"Error polling status (will retry): {exc}")
             return
         raise ConversationRunError(self._id, exc) from exc
 
