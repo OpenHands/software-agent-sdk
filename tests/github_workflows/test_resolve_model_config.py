@@ -244,3 +244,12 @@ def test_gpt_oss_20b_config():
     assert model["id"] == "gpt-oss-20b"
     assert model["display_name"] == "GPT OSS 20B"
     assert model["llm_config"]["model"] == "litellm_proxy/gpt-oss-20b"
+
+
+def test_glm_5_config():
+    """Test that glm-5 has correct configuration."""
+    model = MODELS["glm-5"]
+
+    assert model["id"] == "glm-5"
+    assert model["display_name"] == "GLM-5"
+    assert model["llm_config"]["model"] == "litellm_proxy/openrouter/z-ai/glm-5"

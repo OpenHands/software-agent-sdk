@@ -116,6 +116,10 @@ When reviewing code, provide constructive feedback:
 - If it is a single-line string, you can break it into a multi-line string by doing "ABC" -> ("A"\n"B"\n"C")
 - If it is a long multi-line string (e.g., docstring), you should just add type ignore AFTER the ending """. You should NEVER ADD IT INSIDE the docstring.
 
+# PyInstaller Data Files
+
+When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
+
 </DEV_SETUP>
 
 <PR_ARTIFACTS>
