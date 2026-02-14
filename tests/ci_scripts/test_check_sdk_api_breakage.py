@@ -71,6 +71,31 @@ class TextContent:
     assert _check_version_bump("1.11.3", "1.12.0", total_breaks=total_breaks) == 0
 
 
+def test_griffe_removed_export_from_all_is_breaking(tmp_path):
+    griffe = __import__("griffe")
+
+    def write_init(root: str, all_names: list[str]):
+        pkg = tmp_path / root / "openhands" / "sdk"
+        pkg.mkdir(parents=True)
+        (tmp_path / root / "openhands" / "__init__.py").write_text("")
+        (pkg / "__init__.py").write_text(
+            "__all__ = [\n"
+            + "\n".join(f"    {name!r}," for name in all_names)
+            + "\n]\n"
+        )
+
+    write_init("old", ["Foo", "Bar"])
+    write_init("new", ["Foo"])
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks = _prod._compute_breakages(
+        old_root, new_root, include=["openhands.sdk"]
+    )
+    assert total_breaks == 1
+
+
 def test_parse_version_simple():
     v = _parse_version("1.2.3")
     assert v.major == 1
