@@ -17,7 +17,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 "Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-dir]
