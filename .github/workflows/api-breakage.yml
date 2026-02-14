@@ -12,6 +12,9 @@ jobs:
     sdk-api:
         name: SDK programmatic API (Griffe)
         runs-on: ubuntu-latest
+        # Non-blocking for now — report failures but don't gate releases.
+        # Remove continue-on-error once validated in production.
+        continue-on-error: true
         steps:
             - name: Checkout
               uses: actions/checkout@v5

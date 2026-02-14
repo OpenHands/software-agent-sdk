@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""SDK API breakage detection using Griffe.
+"""API breakage detection for published OpenHands packages using Griffe.
 
-This script compares the current workspace SDK against the previous PyPI release
-to detect breaking changes in the public API. It focuses on symbols exported via
-``__all__`` in ``openhands.sdk`` and enforces two policies:
+This script compares current workspace packages against their previous PyPI
+releases to detect breaking changes in the public API.  It focuses on symbols
+exported via ``__all__`` and enforces two policies:
 
 1. **Deprecation-before-removal** – any symbol removed from ``__all__`` must
-   have been marked deprecated in the *previous* release using the SDK's
-   canonical deprecation helpers (``@deprecated`` decorator or
-   ``warn_deprecated()`` call from ``openhands.sdk.utils.deprecation``).
+   have been marked deprecated in the *previous* release using the canonical
+   deprecation helpers (``@deprecated`` decorator or ``warn_deprecated()``
+   call from ``openhands.sdk.utils.deprecation``).
 
 2. **MINOR version bump** – any breaking change (removal or structural) requires
    at least a MINOR version bump according to SemVer.
@@ -27,15 +27,33 @@ import sys
 import tomllib
 import urllib.request
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from packaging import version as pkg_version
 
 
-# Package configuration - centralized for maintainability
-SDK_PACKAGE = "openhands.sdk"
-DISTRIBUTION_NAME = "openhands-sdk"
-PYPROJECT_RELATIVE_PATH = "openhands-sdk/pyproject.toml"
+@dataclass(frozen=True)
+class PackageConfig:
+    """Configuration for a single published package."""
+
+    package: str  # dotted module path, e.g. "openhands.sdk"
+    distribution: str  # PyPI distribution name, e.g. "openhands-sdk"
+    source_dir: str  # repo-relative directory, e.g. "openhands-sdk"
+
+
+PACKAGES: tuple[PackageConfig, ...] = (
+    PackageConfig(
+        package="openhands.sdk",
+        distribution="openhands-sdk",
+        source_dir="openhands-sdk",
+    ),
+    PackageConfig(
+        package="openhands.workspace",
+        distribution="openhands-workspace",
+        source_dir="openhands-workspace",
+    ),
+)
 
 
 def read_version_from_pyproject(path: str) -> str:
@@ -73,7 +91,7 @@ def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
         with urllib.request.urlopen(req, timeout=10) as r:
             meta = json.load(r)
     except Exception as e:
-        print(f"::warning title=SDK API::Failed to fetch PyPI metadata: {e}")
+        print(f"::warning title={pkg} API::Failed to fetch PyPI metadata: {e}")
         return None
 
     releases = list(meta.get("releases", {}).keys())
@@ -199,7 +217,7 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
     return 0
 
 
-def _resolve_griffe_object(root, dotted: str):
+def _resolve_griffe_object(root, dotted: str, root_package: str = ""):
     """Resolve a dotted path to a griffe object."""
     root_path = getattr(root, "path", None)
     if root_path == dotted:
@@ -212,13 +230,13 @@ def _resolve_griffe_object(root, dotted: str):
         return root[dotted]
     except (KeyError, TypeError) as e:
         print(
-            f"::warning title=SDK API::Unable to resolve {dotted} via direct lookup; "
-            f"falling back to manual traversal: {e}"
+            f"::warning title=SDK API::Unable to resolve {dotted} via "
+            f"direct lookup; falling back to manual traversal: {e}"
         )
 
     rel = dotted
-    if dotted.startswith(SDK_PACKAGE + "."):
-        rel = dotted[len(SDK_PACKAGE) + 1 :]
+    if root_package and dotted.startswith(root_package + "."):
+        rel = dotted[len(root_package) + 1 :]
 
     obj = root
     for part in rel.split("."):
@@ -229,28 +247,35 @@ def _resolve_griffe_object(root, dotted: str):
     return obj
 
 
-def _load_current_sdk(griffe_module, repo_root: str):
+def _load_current(griffe_module, repo_root: str, cfg: PackageConfig):
     try:
         return griffe_module.load(
-            SDK_PACKAGE, search_paths=[os.path.join(repo_root, "openhands-sdk")]
+            cfg.package,
+            search_paths=[os.path.join(repo_root, cfg.source_dir)],
         )
     except Exception as e:
-        print(f"::error title=SDK API::Failed to load current SDK: {e}")
+        print(
+            f"::error title={cfg.distribution} API::"
+            f"Failed to load current {cfg.distribution}: {e}"
+        )
         return None
 
 
-def _load_prev_sdk_from_pypi(griffe_module, prev: str):
+def _load_prev_from_pypi(griffe_module, prev: str, cfg: PackageConfig):
     griffe_cache = os.path.expanduser("~/.cache/griffe")
     os.makedirs(griffe_cache, exist_ok=True)
 
     try:
         return griffe_module.load_pypi(
-            package=SDK_PACKAGE,
-            distribution=DISTRIBUTION_NAME,
+            package=cfg.package,
+            distribution=cfg.distribution,
             version_spec=f"=={prev}",
         )
     except Exception as e:
-        print(f"::error title=SDK API::Failed to load {prev} from PyPI: {e}")
+        print(
+            f"::error title={cfg.distribution} API::"
+            f"Failed to load {cfg.distribution}=={prev} from PyPI: {e}"
+        )
         return None
 
 
@@ -318,8 +343,10 @@ def _get_source_root(griffe_root: object) -> Path | None:
     return None
 
 
-def _compute_breakages(old_root, new_root, include: list[str]) -> tuple[int, int]:
-    """Detect breaking changes between old and new SDK versions.
+def _compute_breakages(
+    old_root, new_root, cfg: PackageConfig, include: list[str]
+) -> tuple[int, int]:
+    """Detect breaking changes between old and new package versions.
 
     Returns:
         ``(total_breaks, undeprecated_removals)`` — *total_breaks* counts all
@@ -327,12 +354,14 @@ def _compute_breakages(old_root, new_root, include: list[str]) -> tuple[int, int
         *undeprecated_removals* counts exports removed without a prior
         deprecation marker (a separate hard failure).
     """
+    pkg = cfg.package
+    title = f"{cfg.distribution} API"
     total_breaks = 0
     undeprecated_removals = 0
 
     try:
-        old_mod = _resolve_griffe_object(old_root, SDK_PACKAGE)
-        new_mod = _resolve_griffe_object(new_root, SDK_PACKAGE)
+        old_mod = _resolve_griffe_object(old_root, pkg, root_package=pkg)
+        new_mod = _resolve_griffe_object(new_root, pkg, root_package=pkg)
         old_exports = _extract_exported_names(old_mod)
         new_exports = _extract_exported_names(new_mod)
 
@@ -349,17 +378,17 @@ def _compute_breakages(old_root, new_root, include: list[str]) -> tuple[int, int
                 total_breaks += 1  # every removal is a structural break
                 if name not in deprecated_names:
                     print(
-                        f"::error title=SDK API::Removed '{name}' from "
-                        f"{SDK_PACKAGE}.__all__ without prior deprecation. "
+                        f"::error title={title}::Removed '{name}' from "
+                        f"{pkg}.__all__ without prior deprecation. "
                         f"Mark it with @deprecated or warn_deprecated() "
                         f"for at least one release before removing."
                     )
                     undeprecated_removals += 1
                 else:
                     print(
-                        f"::notice title=SDK API::Removed previously-"
+                        f"::notice title={title}::Removed previously-"
                         f"deprecated symbol '{name}' from "
-                        f"{SDK_PACKAGE}.__all__"
+                        f"{pkg}.__all__"
                     )
 
         common = sorted(old_exports & new_exports)
@@ -368,21 +397,21 @@ def _compute_breakages(old_root, new_root, include: list[str]) -> tuple[int, int
             try:
                 pairs.append((old_mod[name], new_mod[name]))
             except Exception as e:
-                print(f"::warning title=SDK API::Unable to resolve symbol {name}: {e}")
+                print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
         total_breaks += len(_collect_breakages_pairs(pairs))
     except Exception as e:
-        print(f"::warning title=SDK API::Failed to process top-level exports: {e}")
+        print(f"::warning title={title}::Failed to process top-level exports: {e}")
 
     extra_pairs: list[tuple[object, object]] = []
     for path in include:
-        if path == SDK_PACKAGE:
+        if path == pkg:
             continue
         try:
-            old_obj = _resolve_griffe_object(old_root, path)
-            new_obj = _resolve_griffe_object(new_root, path)
+            old_obj = _resolve_griffe_object(old_root, path, root_package=pkg)
+            new_obj = _resolve_griffe_object(new_root, path, root_package=pkg)
             extra_pairs.append((old_obj, new_obj))
         except Exception as e:
-            print(f"::warning title=SDK API::Path {path} not found: {e}")
+            print(f"::warning title={title}::Path {path} not found: {e}")
 
     if extra_pairs:
         total_breaks += len(_collect_breakages_pairs(extra_pairs))
@@ -390,48 +419,62 @@ def _compute_breakages(old_root, new_root, include: list[str]) -> tuple[int, int
     return total_breaks, undeprecated_removals
 
 
-def main() -> int:
-    """Main entry point for SDK API breakage detection."""
-    ensure_griffe()
-    import griffe
+def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
+    """Run breakage checks for a single package. Returns 0 on success."""
+    pyproj = os.path.join(repo_root, cfg.source_dir, "pyproject.toml")
+    new_version = read_version_from_pyproject(pyproj)
 
-    repo_root = os.getcwd()
-    current_pyproj = os.path.join(repo_root, PYPROJECT_RELATIVE_PATH)
-    new_version = read_version_from_pyproject(current_pyproj)
-
-    include = os.environ.get("SDK_INCLUDE_PATHS", SDK_PACKAGE).split(",")
+    include_env = f"{cfg.package.upper().replace('.', '_')}_INCLUDE_PATHS"
+    include = os.environ.get(include_env, cfg.package).split(",")
     include = [p.strip() for p in include if p.strip()]
 
-    prev = get_prev_pypi_version(DISTRIBUTION_NAME, new_version)
+    title = f"{cfg.distribution} API"
+    prev = get_prev_pypi_version(cfg.distribution, new_version)
     if not prev:
         print(
-            f"::warning title=SDK API::No previous {DISTRIBUTION_NAME} release found; "
-            "skipping breakage check",
+            f"::warning title={title}::No previous {cfg.distribution} "
+            f"release found; skipping breakage check",
         )
         return 0
 
-    print(f"Comparing {DISTRIBUTION_NAME} {new_version} against {prev}")
+    print(f"Comparing {cfg.distribution} {new_version} against {prev}")
 
-    new_root = _load_current_sdk(griffe, repo_root)
+    new_root = _load_current(griffe_module, repo_root, cfg)
     if not new_root:
         return 1
 
-    old_root = _load_prev_sdk_from_pypi(griffe, prev)
+    old_root = _load_prev_from_pypi(griffe_module, prev, cfg)
     if not old_root:
         return 1
 
-    total_breaks, undeprecated = _compute_breakages(old_root, new_root, include)
+    total_breaks, undeprecated = _compute_breakages(old_root, new_root, cfg, include)
 
     if undeprecated:
         print(
-            f"::error title=SDK API::{undeprecated} symbol(s) removed "
-            f"without prior deprecation — see errors above"
+            f"::error title={title}::{undeprecated} symbol(s) removed "
+            f"from {cfg.package} without prior deprecation — "
+            f"see errors above"
         )
 
     bump_rc = _check_version_bump(prev, new_version, total_breaks)
 
-    # Fail if either policy is violated
     return 1 if (undeprecated or bump_rc) else 0
+
+
+def main() -> int:
+    """Main entry point for API breakage detection."""
+    ensure_griffe()
+    import griffe
+
+    repo_root = os.getcwd()
+    rc = 0
+    for cfg in PACKAGES:
+        print(f"\n{'=' * 60}")
+        print(f"Checking {cfg.distribution} ({cfg.package})")
+        print(f"{'=' * 60}")
+        rc |= _check_package(griffe, repo_root, cfg)
+
+    return rc
 
 
 if __name__ == "__main__":

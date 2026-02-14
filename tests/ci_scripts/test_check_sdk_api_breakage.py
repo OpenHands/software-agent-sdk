@@ -1,4 +1,4 @@
-"""Tests for SDK API breakage check script.
+"""Tests for API breakage check script.
 
 We import the production script via a file-based module load (rather than copying
 functions) so tests remain coupled to real behavior.
@@ -7,6 +7,7 @@ functions) so tests remain coupled to real behavior.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import griffe
@@ -15,24 +16,47 @@ import griffe
 def _load_prod_module():
     repo_root = Path(__file__).resolve().parents[2]
     script_path = repo_root / ".github" / "scripts" / "check_sdk_api_breakage.py"
-    spec = importlib.util.spec_from_file_location("check_sdk_api_breakage", script_path)
+    name = "check_sdk_api_breakage"
+    spec = importlib.util.spec_from_file_location(name, script_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
+    # Register so @dataclass can resolve the module's __dict__
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
 _prod = _load_prod_module()
+PackageConfig = _prod.PackageConfig
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
 
+# Reusable test config matching the _write_pkg_init helper
+_SDK_CFG = PackageConfig(
+    package="openhands.sdk",
+    distribution="openhands-sdk",
+    source_dir="openhands-sdk",
+)
 
-def _write_sdk_init(tmp_path, root: str, all_names: list[str]):
-    """Helper to create a minimal openhands.sdk package with __all__."""
-    pkg = tmp_path / root / "openhands" / "sdk"
+
+def _write_pkg_init(
+    tmp_path, root: str, all_names: list[str], module_parts: tuple[str, ...] = ()
+):
+    """Create a minimal package with ``__all__`` under *tmp_path/root*.
+
+    *module_parts* defaults to ``("openhands", "sdk")``; pass a different
+    tuple to create e.g. ``("openhands", "workspace")``.
+    """
+    parts = module_parts or ("openhands", "sdk")
+    pkg = tmp_path / root / Path(*parts)
     pkg.mkdir(parents=True, exist_ok=True)
-    (tmp_path / root / "openhands" / "__init__.py").write_text("")
+    # ensure parent __init__.py files exist
+    for i in range(1, len(parts)):
+        parent = tmp_path / root / Path(*parts[:i])
+        init = parent / "__init__.py"
+        if not init.exists():
+            init.write_text("")
     (pkg / "__init__.py").write_text(
         "__all__ = [\n" + "\n".join(f"    {name!r}," for name in all_names) + "\n]\n"
     )
@@ -69,7 +93,7 @@ class TextContent:
     )
 
     total_breaks, _undeprecated = _prod._compute_breakages(
-        old_root, new_root, include=["openhands.sdk.llm.message.TextContent"]
+        old_root, new_root, _SDK_CFG, include=["openhands.sdk.llm.message.TextContent"]
     )
     assert total_breaks > 0
 
@@ -78,14 +102,14 @@ class TextContent:
 
 
 def test_griffe_removed_export_from_all_is_breaking(tmp_path):
-    _write_sdk_init(tmp_path, "old", ["Foo", "Bar"])
-    _write_sdk_init(tmp_path, "new", ["Foo"])
+    _write_pkg_init(tmp_path, "old", ["Foo", "Bar"])
+    _write_pkg_init(tmp_path, "new", ["Foo"])
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, include=["openhands.sdk"]
+        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
     )
     assert total_breaks == 1
     # Bar was not deprecated before removal
@@ -93,24 +117,24 @@ def test_griffe_removed_export_from_all_is_breaking(tmp_path):
 
 
 def test_removal_of_deprecated_symbol_does_not_count_as_undeprecated(tmp_path):
-    old_pkg = _write_sdk_init(tmp_path, "old", ["Foo", "Bar"])
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo", "Bar"])
     (old_pkg / "bar.py").write_text(
         "@deprecated(deprecated_in='1.0', removed_in='2.0')\nclass Bar:\n    pass\n"
     )
-    _write_sdk_init(tmp_path, "new", ["Foo"])
+    _write_pkg_init(tmp_path, "new", ["Foo"])
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, include=["openhands.sdk"]
+        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
     )
     assert total_breaks == 1
     assert undeprecated == 0
 
 
 def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
-    old_pkg = _write_sdk_init(tmp_path, "old", ["Foo", "Bar"])
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo", "Bar"])
     (old_pkg / "bar.py").write_text(
         "class Bar:\n"
         "    @property\n"
@@ -119,13 +143,13 @@ def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
         " removed_in='2.0')\n"
         "        return 42\n"
     )
-    _write_sdk_init(tmp_path, "new", ["Foo"])
+    _write_pkg_init(tmp_path, "new", ["Foo"])
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, include=["openhands.sdk"]
+        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
     )
     assert total_breaks == 1
     assert undeprecated == 0
@@ -216,3 +240,25 @@ def test_find_deprecated_symbols_ignores_syntax_errors(tmp_path):
     )
     result = _find_deprecated_symbols(tmp_path)
     assert result == {"ok"}
+
+
+def test_workspace_removed_export_is_breaking(tmp_path):
+    """Breakage detection works for non-SDK packages (openhands.workspace)."""
+    ws_cfg = PackageConfig(
+        package="openhands.workspace",
+        distribution="openhands-workspace",
+        source_dir="openhands-workspace",
+    )
+    _write_pkg_init(
+        tmp_path, "old", ["Foo", "Bar"], module_parts=("openhands", "workspace")
+    )
+    _write_pkg_init(tmp_path, "new", ["Foo"], module_parts=("openhands", "workspace"))
+
+    old_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, ws_cfg, include=["openhands.workspace"]
+    )
+    assert total_breaks == 1
+    assert undeprecated == 1
