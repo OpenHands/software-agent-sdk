@@ -135,6 +135,13 @@ def _extract_exported_names(module) -> set[str]:
 
     names: set[str] = set()
     for el in elts:
+        # Griffe represents string literals in __all__ in different ways depending
+        # on how the module is loaded / griffe version:
+        # - sometimes as plain Python strings (including quotes, e.g. "'LLM'")
+        # - sometimes as expression nodes with a `.value` attribute
+        #
+        # We intentionally only support the "static __all__ of string literals"
+        # case; we just normalize the representation.
         if isinstance(el, str):
             names.add(el.strip("\"'"))
             continue
