@@ -28,6 +28,49 @@ _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 
 
+def test_griffe_breakage_removed_attribute_requires_minor_bump(tmp_path):
+    griffe = __import__("griffe")
+
+    old_pkg = tmp_path / "old" / "openhands" / "sdk" / "llm"
+    new_pkg = tmp_path / "new" / "openhands" / "sdk" / "llm"
+    old_pkg.mkdir(parents=True)
+    new_pkg.mkdir(parents=True)
+
+    (old_pkg / "message.py").write_text(
+        """
+class TextContent:
+    def __init__(self, text: str):
+        self.text = text
+        self.enable_truncation = True
+""".lstrip()
+    )
+    (new_pkg / "message.py").write_text(
+        """
+class TextContent:
+    def __init__(self, text: str):
+        self.text = text
+""".lstrip()
+    )
+
+    old_root = griffe.load(
+        "openhands.sdk.llm.message", search_paths=[str(tmp_path / "old")]
+    )
+    new_root = griffe.load(
+        "openhands.sdk.llm.message", search_paths=[str(tmp_path / "new")]
+    )
+
+    old_mod = _prod._resolve_griffe_object(old_root, "openhands.sdk.llm.message")
+    new_mod = _prod._resolve_griffe_object(new_root, "openhands.sdk.llm.message")
+
+    total_breaks = _prod._compute_breakages(
+        old_mod, new_mod, include=["openhands.sdk.llm.message.TextContent"]
+    )
+    assert total_breaks > 0
+
+    assert _check_version_bump("1.11.3", "1.11.4", total_breaks=total_breaks) == 1
+    assert _check_version_bump("1.11.3", "1.12.0", total_breaks=total_breaks) == 0
+
+
 def test_parse_version_simple():
     v = _parse_version("1.2.3")
     assert v.major == 1
