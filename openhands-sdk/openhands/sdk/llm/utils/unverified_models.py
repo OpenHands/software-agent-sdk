@@ -93,7 +93,7 @@ def _get_litellm_provider_names() -> set[str]:
 
     result: set[str] = set()
 
-    # In LiteLLM 1.80.10, this is `list(LlmProviders)` i.e. enum members.
+    # In LiteLLM, this is `list(LlmProviders)` i.e. enum members.
     for p in provider_list:
         if isinstance(p, str):
             if p:
