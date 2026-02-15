@@ -2,13 +2,20 @@
 """API breakage detection for published OpenHands packages using Griffe.
 
 This script compares current workspace packages against their previous PyPI
-releases to detect breaking changes in the public API.  It focuses on symbols
-exported via ``__all__`` and enforces two policies:
+releases to detect breaking changes in the public API.
 
-1. **Deprecation-before-removal** – any symbol removed from ``__all__`` must
-   have been marked deprecated in the *previous* release using the canonical
-   deprecation helpers (``@deprecated`` decorator or ``warn_deprecated()``
-   call from ``openhands.sdk.utils.deprecation``).
+It focuses on the curated public surface:
+- symbols exported via ``__all__``
+- public members removed from classes exported via ``__all__``
+
+It enforces two policies:
+
+1. **Deprecation-before-removal** – any removed export or removed public class
+   member must have been marked deprecated in the *previous* release using the
+   canonical deprecation helpers (``@deprecated`` decorator or
+   ``warn_deprecated()`` call from ``openhands.sdk.utils.deprecation``). For
+   members, the recommended ``warn_deprecated`` feature name is qualified (e.g.
+   ``"LLM.some_method"``).
 
 2. **MINOR version bump** – any breaking change (removal or structural) requires
    at least a MINOR version bump according to SemVer.

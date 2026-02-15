@@ -302,9 +302,17 @@ These classes demonstrate the proper pattern for handling deprecated fields whil
 
 Symbols exported via `openhands.sdk.__all__` are the SDK's public surface. Two CI policies govern changes:
 
-1. **Deprecation before removal** – before removing a symbol from `__all__`, mark it as deprecated for at least one release using the canonical helpers in `openhands.sdk.utils.deprecation`:
-   - `@deprecated(deprecated_in=..., removed_in=...)` decorator for functions/classes
-   - `warn_deprecated(feature, deprecated_in=..., removed_in=...)` for runtime paths (e.g., property accessors)
+1. **Deprecation before removal** – before removing a public API object, it must have been marked deprecated for at least one release using the canonical helpers in `openhands.sdk.utils.deprecation`.
+
+   This applies to:
+   - Removing a symbol from `openhands.sdk.__all__`.
+   - Removing a public class member (method/property/attribute) from a class that is exported via `openhands.sdk.__all__`.
+
+   Acceptable deprecation markers:
+   - `@deprecated(deprecated_in=..., removed_in=...)` decorator for functions/classes/methods
+   - `warn_deprecated(feature, deprecated_in=..., removed_in=...)` for runtime paths (e.g., attribute accessors). For members, use a qualified feature name like `"LLM.some_method"`.
+
+   Note: Deprecating a class counts as deprecating its members for the purposes of member removal.
 
 2. **MINOR version bump** – any breaking change (removal or structural) requires at least a MINOR version bump.
 
