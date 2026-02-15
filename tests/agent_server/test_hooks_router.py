@@ -8,7 +8,10 @@ def test_hooks_endpoint_returns_none_when_not_found(tmp_path):
     app = create_app(Config(session_api_keys=[]))
     client = TestClient(app)
 
-    resp = client.post("/api/hooks", json={"project_dir": str(tmp_path)})
+    resp = client.post(
+        "/api/hooks",
+        json={"load_project": True, "load_user": False, "project_dir": str(tmp_path)},
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["hook_config"] is None
@@ -25,8 +28,29 @@ def test_hooks_endpoint_returns_hook_config_when_present(tmp_path):
     app = create_app(Config(session_api_keys=[]))
     client = TestClient(app)
 
-    resp = client.post("/api/hooks", json={"project_dir": str(tmp_path)})
+    resp = client.post(
+        "/api/hooks",
+        json={"load_project": True, "load_user": False, "project_dir": str(tmp_path)},
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["hook_config"] is not None
     assert data["hook_config"]["session_start"][0]["hooks"][0]["command"] == "echo hi"
+
+
+def test_hooks_endpoint_respects_load_project_false(tmp_path):
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "hooks.json").write_text(
+        '{"session_start":[{"matcher":"*","hooks":[{"command":"echo hi"}]}]}'
+    )
+
+    app = create_app(Config(session_api_keys=[]))
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/hooks",
+        json={"load_project": False, "load_user": False, "project_dir": str(tmp_path)},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["hook_config"] is None
