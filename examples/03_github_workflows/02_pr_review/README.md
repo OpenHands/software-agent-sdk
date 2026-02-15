@@ -26,7 +26,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - **Smart commenting**: Avoids repeating issues that have already been raised and addressed
   - **Unresolved focus**: Prioritizes unresolved threads that may still need attention
   - **Pagination limits**: Fetches up to 100 threads per page (with pagination) and up to 50 comments per thread. For PRs with extensive review history exceeding these limits, older threads/comments may be omitted.
-- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
+- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/extensions>:
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
 - **Complete Diff Upfront**: The agent receives the complete git diff in the initial message for efficient review
@@ -123,7 +123,7 @@ Instead of forking the `agent_script.py`, you can customize the code review beha
 
 ### How It Works
 
-The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.agents/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
+The PR review agent uses skills from the [OpenHands/extensions](https://github.com/OpenHands/extensions) repository by default. When you add a `.agents/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
 
 ### Example: Custom Code Review Skill
 
