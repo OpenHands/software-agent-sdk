@@ -11,6 +11,8 @@ from openhands.sdk.hooks.config import (
     HookDefinition,
     HookMatcher,
     HookType,
+    load_project_hooks,
+    load_user_hooks,
 )
 from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
@@ -35,4 +37,6 @@ __all__ = [
     "HookDecision",
     "HookEventProcessor",
     "create_hook_callback",
+    "load_project_hooks",
+    "load_user_hooks",
 ]

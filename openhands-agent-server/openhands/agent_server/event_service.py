@@ -22,6 +22,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import AgentErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.hooks import HookConfig, load_project_hooks, load_user_hooks
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -30,6 +31,11 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
+
+
+def _normalize_hook_config(config: HookConfig | None) -> HookConfig | None:
+    """Return None if config is None or empty, otherwise return config."""
+    return None if config is None or config.is_empty() else config
 
 
 @dataclass
@@ -441,6 +447,18 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
+        # Merge hooks from multiple sources (request > project > user)
+        request_hook_config = _normalize_hook_config(self.stored.hook_config)
+        project_hook_config = load_project_hooks(workspace.working_dir)
+        user_hook_config = load_user_hooks()
+
+        hook_configs = [
+            c
+            for c in [request_hook_config, project_hook_config, user_hook_config]
+            if c is not None
+        ]
+        merged_hook_config = HookConfig.merge(hook_configs) if hook_configs else None
+
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -453,7 +471,7 @@ class EventService:
             visualizer=None,
             secrets=self.stored.secrets,
             cipher=self.cipher,
-            hook_config=self.stored.hook_config,
+            hook_config=merged_hook_config,
         )
 
         # Set confirmation mode if enabled

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +24,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -106,6 +108,265 @@ def mock_conversation_with_timestamped_events():
     conversation._state = state
 
     return conversation
+
+
+@pytest.mark.asyncio
+async def test_start_merges_request_and_project_hooks(tmp_path, monkeypatch):
+    """Test that request hooks and project hooks are merged (request first)."""
+    # Mock Path.home() to avoid loading real user hooks
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir()
+    hooks_file = hooks_dir / "hooks.json"
+    hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "echo project"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    request_hooks = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[HookDefinition(command="echo request")],
+            )
+        ]
+    )
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        hook_config=request_hooks,
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        pending = conversation._pending_hook_config
+        assert pending is not None
+        hook_commands = [matcher.hooks[0].command for matcher in pending.pre_tool_use]
+        assert hook_commands == ["echo request", "echo project"]
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_start_uses_project_hooks_when_no_request_hooks(tmp_path, monkeypatch):
+    """Test that project hooks are loaded when no request hooks are provided."""
+    # Mock Path.home() to avoid loading real user hooks
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir()
+    hooks_file = hooks_dir / "hooks.json"
+    hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "echo project"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        pending = conversation._pending_hook_config
+        assert pending is not None
+        hook_commands = [matcher.hooks[0].command for matcher in pending.pre_tool_use]
+        assert hook_commands == ["echo project"]
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_start_ignores_malformed_hooks_json(tmp_path, monkeypatch):
+    """Test that malformed project hooks.json is gracefully ignored."""
+    # Mock Path.home() to avoid loading real user hooks
+    fake_home = tmp_path / "fake_home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir()
+    hooks_file = hooks_dir / "hooks.json"
+    hooks_file.write_text("{ invalid json }")
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        assert conversation._pending_hook_config is None
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_start_merges_project_and_user_hooks(tmp_path, monkeypatch):
+    """Test that project hooks and user hooks are both loaded and merged."""
+    # Set up project hooks
+    project_hooks_dir = tmp_path / ".openhands"
+    project_hooks_dir.mkdir()
+    project_hooks_file = project_hooks_dir / "hooks.json"
+    project_hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "echo project"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    # Set up user hooks in a fake home directory
+    fake_home = tmp_path / "fake_home"
+    user_hooks_dir = fake_home / ".openhands"
+    user_hooks_dir.mkdir(parents=True)
+    user_hooks_file = user_hooks_dir / "hooks.json"
+    user_hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "echo user"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    # Mock Path.home() to return our fake home
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        pending = conversation._pending_hook_config
+        assert pending is not None
+        hook_commands = [matcher.hooks[0].command for matcher in pending.pre_tool_use]
+        # Project hooks come before user hooks
+        assert hook_commands == ["echo project", "echo user"]
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_start_uses_user_hooks_when_no_project_hooks(tmp_path, monkeypatch):
+    """Test that user hooks are loaded when no project hooks exist."""
+    # Set up user hooks in a fake home directory (no project hooks)
+    fake_home = tmp_path / "fake_home"
+    user_hooks_dir = fake_home / ".openhands"
+    user_hooks_dir.mkdir(parents=True)
+    user_hooks_file = user_hooks_dir / "hooks.json"
+    user_hooks_file.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "echo user"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    # Mock Path.home() to return our fake home
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    try:
+        await service.start()
+        conversation = service.get_conversation()
+        pending = conversation._pending_hook_config
+        assert pending is not None
+        hook_commands = [matcher.hooks[0].command for matcher in pending.pre_tool_use]
+        assert hook_commands == ["echo user"]
+    finally:
+        await service.close()
 
 
 class TestEventServiceSearchEvents:
