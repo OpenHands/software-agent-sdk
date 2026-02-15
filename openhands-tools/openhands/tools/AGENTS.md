@@ -1,6 +1,6 @@
-# Repository Guidelines
+# Package Guidelines
 
-## Project Structure & Module Organization
+## Package Structure & Module Organization
 
 - This directory (`openhands-tools/openhands/tools/`) contains runtime tool implementations under the `openhands.tools.*` namespace.
 - Most tools live in dedicated subpackages (for example `terminal/`, `file_editor/`, `browser_use/`) and typically split:

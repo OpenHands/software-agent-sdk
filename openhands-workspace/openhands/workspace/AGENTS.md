@@ -1,6 +1,6 @@
-# Repository Guidelines
+# Package Guidelines
 
-## Project Structure & Module Organization
+## Package Structure & Module Organization
 
 - This directory (`openhands-workspace/openhands/workspace/`) contains workspace implementations under the `openhands.workspace.*` namespace (Docker, Apptainer, cloud, and API-remote).
 - Each backend lives in its own subpackage (e.g. `docker/`, `cloud/`) and typically exposes a `*Workspace` class from `workspace.py`.
