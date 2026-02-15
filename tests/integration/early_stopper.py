@@ -58,13 +58,12 @@ class FileEditPruner(EarlyStopperBase):
 
         Args:
             forbidden_commands: List of file editor commands to detect.
-                Defaults to ["create", "str_replace", "insert", "undo_edit"]
+                Defaults to ["create", "str_replace", "insert"]
         """
         self.forbidden_commands = forbidden_commands or [
             "create",
             "str_replace",
             "insert",
-            "undo_edit",
         ]
 
     def check(self, events: list[Event]) -> EarlyStopResult:
