@@ -371,7 +371,10 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
             self.generic_visit(node)
             self.class_stack.pop()
 
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+        def _visit_function_like(
+            self,
+            node: ast.FunctionDef | ast.AsyncFunctionDef,
+        ) -> None:
             if any(_is_deprecated_decorator(deco) for deco in node.decorator_list):
                 if self.class_stack:
                     self.qualified.add(".".join([*self.class_stack, node.name]))
@@ -380,16 +383,12 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
                     self.qualified.add(node.name)
 
             self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            self._visit_function_like(node)
 
         def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
-            if any(_is_deprecated_decorator(deco) for deco in node.decorator_list):
-                if self.class_stack:
-                    self.qualified.add(".".join([*self.class_stack, node.name]))
-                else:
-                    self.top_level.add(node.name)
-                    self.qualified.add(node.name)
-
-            self.generic_visit(node)
+            self._visit_function_like(node)
 
         def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
             target = node.func
