@@ -1,49 +1,40 @@
 """Hooks service for OpenHands Agent Server.
 
-This module contains the business logic for loading hooks from the workspace.
+This module contains the business logic for loading hooks from project and user
+locations.
 
 Sources:
-- Project hooks: {workspace}/.openhands/hooks.json
+- Project hooks: {project_dir}/.openhands/hooks.json
+- User hooks: ~/.openhands/hooks.json
 
-We intentionally keep this limited to workspace/project hooks for now.
+The agent-server does not own policy; it only respects request flags.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from openhands.sdk.hooks import HookConfig
+from openhands.sdk.hooks import HookConfig, load_project_hooks, load_user_hooks
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
 
 
-def load_hooks_from_workspace(project_dir: str | None = None) -> HookConfig | None:
-    """Load hooks from the workspace .openhands/hooks.json file.
+def load_hooks(
+    *,
+    load_project: bool,
+    load_user: bool,
+    project_dir: str | None,
+) -> HookConfig | None:
+    hook_configs: list[HookConfig] = []
 
-    Args:
-        project_dir: Workspace directory path for project hooks.
+    if load_project and project_dir:
+        project_hooks = load_project_hooks(project_dir)
+        if project_hooks is not None:
+            hook_configs.append(project_hooks)
 
-    Returns:
-        HookConfig if hooks.json exists and is valid, None otherwise.
-    """
-    if not project_dir:
-        logger.debug("No project_dir provided, skipping hooks loading")
-        return None
+    if load_user:
+        user_hooks = load_user_hooks()
+        if user_hooks is not None:
+            hook_configs.append(user_hooks)
 
-    hooks_path = Path(project_dir) / ".openhands" / "hooks.json"
-    if not hooks_path.exists():
-        logger.debug(f"No hooks.json found at {hooks_path}")
-        return None
-
-    try:
-        hook_config = HookConfig.load(path=hooks_path)
-        if hook_config.is_empty():
-            logger.debug(f"hooks.json at {hooks_path} is empty")
-            return None
-        logger.info(f"Loaded hooks from {hooks_path}")
-        return hook_config
-    except Exception as e:
-        logger.warning(f"Failed to load hooks from {hooks_path}: {e}")
-        return None
+    return HookConfig.merge(hook_configs) if hook_configs else None
