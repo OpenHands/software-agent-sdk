@@ -59,23 +59,30 @@ class LocalFileStore(FileStore):
         return full
 
     @observe(name="LocalFileStore.write", span_type="TOOL")
-    def write(self, path: str, contents: str | bytes) -> None:
+    def _write(self, path: str, contents: str | bytes, cache: bool = False) -> None:
         full_path = self.get_full_path(path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         if isinstance(contents, str):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(contents)
-            self.cache[full_path] = contents
+            if cache:
+                self.cache[full_path] = contents
         else:
             with open(full_path, "wb") as f:
                 f.write(contents)
             # Don't cache binary content - LocalFileStore is meant for JSON data
             # If binary data is written and then read, it will error on read
 
-    def read(self, path: str) -> str:
+    def write(self, path: str, contents: str | bytes) -> None:
+        self._write(path, contents, True)
+
+    def directWrite(self, path: str, contents: str | bytes) -> None:
+        self._write(path, contents, False)
+
+    def _read(self, path: str, cache: bool = False) -> str:
         full_path = self.get_full_path(path)
 
-        if full_path in self.cache:
+        if cache and full_path in self.cache:
             return self.cache[full_path]
 
         if not os.path.exists(full_path):
@@ -83,9 +90,15 @@ class LocalFileStore(FileStore):
 
         with open(full_path, encoding="utf-8") as f:
             result = f.read()
-
-        self.cache[full_path] = result
+        if cache:
+            self.cache[full_path] = result
         return result
+
+    def read(self, path: str) -> str:
+        return self._read(path, True)
+
+    def directRead(self, path):
+        return self._read(path, False)
 
     @observe(name="LocalFileStore.list", span_type="TOOL")
     def list(self, path: str) -> list[str]:
