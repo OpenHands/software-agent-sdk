@@ -49,7 +49,7 @@ class PackageConfig:
     source_dir: str  # repo-relative directory, e.g. "openhands-sdk"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DeprecatedSymbols:
     """Deprecated SDK symbols detected in a source tree.
 
@@ -57,8 +57,8 @@ class DeprecatedSymbols:
     ``qualified`` tracks class members like ``LLM.some_method``.
     """
 
-    top_level: set[str]
-    qualified: set[str]
+    top_level: set[str] = frozenset()  # type: ignore[assignment]
+    qualified: set[str] = frozenset()  # type: ignore[assignment]
 
 
 PACKAGES: tuple[PackageConfig, ...] = (
@@ -152,7 +152,7 @@ def _collect_breakages_pairs(
     *,
     deprecated: DeprecatedSymbols,
     title: str,
-) -> tuple[list, int]:
+) -> tuple[list[object], int]:
     """Find breaking changes between pairs of old/new API objects.
 
     Only reports breakages for public API members.
@@ -273,7 +273,11 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
     return 0
 
 
-def _resolve_griffe_object(root, dotted: str, root_package: str = ""):
+def _resolve_griffe_object(
+    root: object,
+    dotted: str,
+    root_package: str = "",
+) -> object:
     """Resolve a dotted path to a griffe object."""
     root_path = getattr(root, "path", None)
     if root_path == dotted:
@@ -303,7 +307,9 @@ def _resolve_griffe_object(root, dotted: str, root_package: str = ""):
     return obj
 
 
-def _load_current(griffe_module, repo_root: str, cfg: PackageConfig):
+def _load_current(
+    griffe_module: object, repo_root: str, cfg: PackageConfig
+) -> object | None:
     try:
         return griffe_module.load(
             cfg.package,
@@ -317,7 +323,11 @@ def _load_current(griffe_module, repo_root: str, cfg: PackageConfig):
         return None
 
 
-def _load_prev_from_pypi(griffe_module, prev: str, cfg: PackageConfig):
+def _load_prev_from_pypi(
+    griffe_module: object,
+    prev: str,
+    cfg: PackageConfig,
+) -> object | None:
     griffe_cache = os.path.expanduser("~/.cache/griffe")
     os.makedirs(griffe_cache, exist_ok=True)
 
@@ -412,7 +422,11 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
     for pyfile in source_root.rglob("*.py"):
         try:
             tree = ast.parse(pyfile.read_text())
-        except SyntaxError:
+        except SyntaxError as e:
+            print(
+                f"::warning title=SDK API::Skipping {pyfile}: "
+                f"failed to parse (SyntaxError: {e})"
+            )
             continue
 
         visitor = _Visitor()
@@ -454,7 +468,7 @@ def _compute_breakages(
     total_breaks = 0
     undeprecated_removals = 0
 
-    deprecated = DeprecatedSymbols(top_level=set(), qualified=set())
+    deprecated = DeprecatedSymbols()
 
     try:
         old_mod = _resolve_griffe_object(old_root, pkg, root_package=pkg)
@@ -468,7 +482,7 @@ def _compute_breakages(
         deprecated = (
             _find_deprecated_symbols(source_root)
             if source_root
-            else DeprecatedSymbols(top_level=set(), qualified=set())
+            else DeprecatedSymbols()
         )
 
         # Check deprecation-before-removal policy (exports)
