@@ -184,14 +184,21 @@ class Agent(CriticMixin, AgentBase):
                 f"prefix_event_types={event_types}."
             )
 
-        # Prepare system message
+        # Prepare system message with separate static and dynamic content.
+        # The dynamic_context is included as a second content block in the
+        # system message (without a cache marker) to enable cross-conversation
+        # prompt caching of the static system prompt.
+        dynamic_context = self.dynamic_context
         event = SystemPromptEvent(
             source="agent",
-            system_prompt=TextContent(text=self.system_message),
+            system_prompt=TextContent(text=self.static_system_message),
             # Tools are stored as ToolDefinition objects and converted to
             # OpenAI format with security_risk parameter during LLM completion.
             # See make_llm_completion() in agent/utils.py for details.
             tools=list(self.tools_map.values()),
+            dynamic_context=TextContent(text=dynamic_context)
+            if dynamic_context
+            else None,
         )
         on_event(event)
 
@@ -225,14 +232,17 @@ class Agent(CriticMixin, AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        for event in reversed(list(state.events)):
-            if isinstance(event, MessageEvent) and event.source == "user":
-                reason = state.pop_blocked_message(event.id)
-                if reason is not None:
-                    logger.info(f"User message blocked by hook: {reason}")
-                    state.execution_status = ConversationExecutionStatus.FINISHED
-                    return
-                break  # Only check the most recent user message
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
@@ -616,6 +626,7 @@ class Agent(CriticMixin, AgentBase):
                 tool_name=action_event.tool_name,
                 tool_call_id=action_event.tool_call_id,
                 rejection_reason=reason,
+                rejection_source="hook",
             )
             on_event(rejection)
             return rejection

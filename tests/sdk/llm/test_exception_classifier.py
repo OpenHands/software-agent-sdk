@@ -1,4 +1,8 @@
-from litellm.exceptions import BadRequestError, ContextWindowExceededError
+from litellm.exceptions import (
+    APIConnectionError,
+    BadRequestError,
+    ContextWindowExceededError,
+)
 
 from openhands.sdk.llm.exceptions import (
     is_context_window_exceeded,
@@ -32,6 +36,19 @@ def test_is_context_window_exceeded_via_text():
     )
     assert is_context_window_exceeded(e1) is True
     assert is_context_window_exceeded(e2) is True
+
+
+def test_is_context_window_exceeded_minimax_api_connection_error():
+    """Minimax provider wraps context window errors in APIConnectionError."""
+    minimax_error = APIConnectionError(
+        message=(
+            'MinimaxException - {"type":"error","error":{"type":"bad_request_error",'
+            '"message":"invalid params, context window exceeds limit (2013)"}}'
+        ),
+        model=MODEL,
+        llm_provider=PROVIDER,
+    )
+    assert is_context_window_exceeded(minimax_error) is True
 
 
 def test_is_context_window_exceeded_negative():

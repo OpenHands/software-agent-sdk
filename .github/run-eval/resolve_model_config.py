@@ -97,6 +97,11 @@ MODELS = {
         "display_name": "MiniMax M2",
         "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
     },
+    "minimax-m2.5": {
+        "id": "minimax-m2.5",
+        "display_name": "MiniMax M2.5",
+        "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.5"},
+    },
     "minimax-m2.1": {
         "id": "minimax-m2.1",
         "display_name": "MiniMax M2.1",
@@ -138,6 +143,13 @@ MODELS = {
             "model": "litellm_proxy/openrouter/z-ai/glm-4.7",
             # OpenRouter glm-4.7 is text-only despite LiteLLM reporting vision support
             "disable_vision": True,
+        },
+    },
+    "glm-5": {
+        "id": "glm-5",
+        "display_name": "GLM-5",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5",
         },
     },
     "qwen3-coder-next": {

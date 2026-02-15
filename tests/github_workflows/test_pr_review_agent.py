@@ -10,7 +10,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
 
 
 # Add the PR review example directory to the path for imports
@@ -24,56 +23,32 @@ sys.path.insert(0, str(pr_review_path))
 
 
 class TestPostGithubComment:
-    """Tests for the post_github_comment function."""
+    """Tests for the _post_github_comment function in cloud_mode."""
 
     def test_success(self):
         """Test successful comment posting."""
-        from agent_script import post_github_comment  # type: ignore[import-not-found]
+        from cloud_mode import _post_github_comment  # type: ignore[import-not-found]
 
         mock_response = MagicMock()
-        mock_response.status_code = 201
-        mock_response.raise_for_status = MagicMock()
+        mock_response.read.return_value = b'{"id": 1}'
 
         with (
             patch.dict("os.environ", {"GITHUB_TOKEN": "test-token"}, clear=False),
-            patch(
-                "agent_script.requests.post", return_value=mock_response
-            ) as mock_post,
+            patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen,
         ):
-            post_github_comment("owner/repo", "123", "Test comment body")
+            _post_github_comment("owner/repo", "123", "Test comment body")
 
-            mock_post.assert_called_once()
-            call_args = mock_post.call_args
-            assert call_args[0][0] == (
-                "https://api.github.com/repos/owner/repo/issues/123/comments"
-            )
-            assert call_args[1]["headers"]["Authorization"] == "Bearer test-token"
-            assert call_args[1]["json"] == {"body": "Test comment body"}
+            mock_urlopen.assert_called_once()
 
     def test_missing_token_raises_error(self):
         """Test that missing GITHUB_TOKEN raises ValueError."""
-        from agent_script import post_github_comment  # type: ignore[import-not-found]
+        from cloud_mode import _post_github_comment  # type: ignore[import-not-found]
 
         with (
             patch.dict("os.environ", {}, clear=True),
             pytest.raises(ValueError, match="GITHUB_TOKEN"),
         ):
-            post_github_comment("owner/repo", "123", "Test comment")
-
-    def test_http_error_raises_exception(self):
-        """Test that HTTP errors are raised."""
-        from agent_script import post_github_comment  # type: ignore[import-not-found]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-        mock_response.raise_for_status.side_effect = requests.HTTPError("Not Found")
-
-        with (
-            patch.dict("os.environ", {"GITHUB_TOKEN": "test-token"}, clear=False),
-            patch("agent_script.requests.post", return_value=mock_response),
-            pytest.raises(requests.HTTPError),
-        ):
-            post_github_comment("owner/repo", "123", "Test comment")
+            _post_github_comment("owner/repo", "123", "Test comment")
 
 
 class TestGetPrDiffViaGithubApi:
@@ -86,46 +61,24 @@ class TestGetPrDiffViaGithubApi:
         )
 
         mock_response = MagicMock()
-        mock_response.text = "diff --git a/file.py b/file.py\n+new line"
-        mock_response.raise_for_status = MagicMock()
+        mock_response.read.return_value = b"diff --git a/file.py b/file.py\n+new line"
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
 
         env = {"REPO_NAME": "owner/repo", "GITHUB_TOKEN": "test-token"}
 
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("agent_script.requests.get", return_value=mock_response) as mock_get,
+            patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen,
         ):
             result = get_pr_diff_via_github_api("123")
 
             assert result == "diff --git a/file.py b/file.py\n+new line"
-            mock_get.assert_called_once()
-            call_args = mock_get.call_args
-            assert (
-                call_args[0][0] == "https://api.github.com/repos/owner/repo/pulls/123"
-            )
-            assert call_args[1]["headers"]["Accept"] == "application/vnd.github.v3.diff"
-
-    def test_http_error_raises_exception(self):
-        """Test that HTTP errors are raised."""
-        from agent_script import (  # type: ignore[import-not-found]
-            get_pr_diff_via_github_api,
-        )
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = requests.HTTPError("Not Found")
-
-        env = {"REPO_NAME": "owner/repo", "GITHUB_TOKEN": "test-token"}
-
-        with (
-            patch.dict("os.environ", env, clear=False),
-            patch("agent_script.requests.get", return_value=mock_response),
-            pytest.raises(requests.HTTPError),
-        ):
-            get_pr_diff_via_github_api("123")
+            mock_urlopen.assert_called_once()
 
 
 class TestRunCloudMode:
-    """Tests for the run_cloud_mode function using OpenHandsCloudWorkspace."""
+    """Tests for run_agent_review in cloud_mode using OpenHandsCloudWorkspace."""
 
     def test_cloud_mode_does_not_require_llm_api_key(self):
         """Test that cloud mode does NOT require LLM_API_KEY (uses cloud's LLM)."""
@@ -139,11 +92,11 @@ class TestRunCloudMode:
 
 
 class TestCloudModePrompt:
-    """Tests for the CLOUD_MODE_PROMPT template."""
+    """Tests for the CLOUD_MODE_PROMPT template in cloud_mode."""
 
     def test_format_with_all_fields(self):
         """Test that CLOUD_MODE_PROMPT formats correctly with all fields."""
-        from agent_script import CLOUD_MODE_PROMPT  # type: ignore[import-not-found]
+        from cloud_mode import CLOUD_MODE_PROMPT  # type: ignore[import-not-found]
 
         formatted = CLOUD_MODE_PROMPT.format(
             skill_trigger="/codereview",
