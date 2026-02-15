@@ -175,7 +175,16 @@ class LocalConversation(BaseConversation):
 
         # Default callback: persist every event to state
         def _default_callback(e):
+            # This callback runs while holding the conversation state's lock
+            # (see BaseConversation.compose_callbacks usage inside `with self._state:`
+            # regions), so updating state here is thread-safe.
             self._state.events.append(e)
+            # Track user MessageEvent IDs here so hook callbacks (which may
+            # synthesize or alter user messages) are captured in one place.
+            if isinstance(e, MessageEvent) and e.source == "user":
+                # Track the latest real user message ID for hook-blocked checks.
+                # Stop-hook feedback is emitted with source="environment".
+                self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
         composed_list = callback_list + [_default_callback]
@@ -532,7 +541,7 @@ class LocalConversation(BaseConversation):
                                 if feedback:
                                     prefixed = f"[Stop hook feedback] {feedback}"
                                     feedback_msg = MessageEvent(
-                                        source="user",
+                                        source="environment",
                                         llm_message=Message(
                                             role="user",
                                             content=[TextContent(text=prefixed)],
