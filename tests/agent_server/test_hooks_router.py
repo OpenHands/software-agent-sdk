@@ -54,3 +54,20 @@ def test_hooks_endpoint_respects_load_project_false(tmp_path):
     )
     assert resp.status_code == 200
     assert resp.json()["hook_config"] is None
+
+
+def test_hooks_endpoint_accepts_relative_project_dir_and_returns_none(tmp_path):
+    app = create_app(Config(session_api_keys=[]))
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/hooks",
+        json={
+            "load_project": True,
+            "load_user": False,
+            "project_dir": "relative/path",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["hook_config"] is None

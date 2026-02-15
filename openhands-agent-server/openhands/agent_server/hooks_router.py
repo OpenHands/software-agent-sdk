@@ -4,6 +4,8 @@ This module defines the HTTP API endpoints for hook operations.
 Business logic is delegated to hooks_service.py.
 """
 
+from pathlib import Path
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -12,6 +14,10 @@ from openhands.sdk.hooks import HookConfig
 
 
 hooks_router = APIRouter(prefix="/hooks", tags=["Hooks"])
+
+
+def _validate_project_dir(project_dir: str) -> bool:
+    return Path(project_dir).is_absolute()
 
 
 class HooksRequest(BaseModel):
@@ -47,9 +53,20 @@ class HooksResponse(BaseModel):
 def get_hooks(request: HooksRequest) -> HooksResponse:
     """Load hooks from the workspace .openhands/hooks.json file."""
 
-    hook_config = load_hooks(
-        load_project=request.load_project,
-        load_user=request.load_user,
-        project_dir=request.project_dir,
-    )
+    hook_config = None
+    if request.project_dir is not None:
+        if not _validate_project_dir(request.project_dir):
+            return HooksResponse(hook_config=None)
+
+        hook_config = load_hooks(
+            load_project=request.load_project,
+            load_user=request.load_user,
+            project_dir=request.project_dir,
+        )
+    else:
+        hook_config = load_hooks(
+            load_project=request.load_project,
+            load_user=request.load_user,
+            project_dir=None,
+        )
     return HooksResponse(hook_config=hook_config)
