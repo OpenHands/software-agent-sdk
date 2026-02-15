@@ -2,13 +2,20 @@
 """API breakage detection for published OpenHands packages using Griffe.
 
 This script compares current workspace packages against their previous PyPI
-releases to detect breaking changes in the public API.  It focuses on symbols
-exported via ``__all__`` and enforces two policies:
+releases to detect breaking changes in the public API.
 
-1. **Deprecation-before-removal** – any symbol removed from ``__all__`` must
-   have been marked deprecated in the *previous* release using the canonical
-   deprecation helpers (``@deprecated`` decorator or ``warn_deprecated()``
-   call from ``openhands.sdk.utils.deprecation``).
+It focuses on the curated public surface:
+- symbols exported via ``__all__``
+- public members removed from classes exported via ``__all__``
+
+It enforces two policies:
+
+1. **Deprecation-before-removal** – any removed export or removed public class
+   member must have been marked deprecated in the *previous* release using the
+   canonical deprecation helpers (``@deprecated`` decorator or
+   ``warn_deprecated()`` call from ``openhands.sdk.utils.deprecation``). For
+   members, the recommended ``warn_deprecated`` feature name is qualified (e.g.
+   ``"LLM.some_method"``).
 
 2. **MINOR version bump** – any breaking change (removal or structural) requires
    at least a MINOR version bump according to SemVer.
@@ -40,6 +47,18 @@ class PackageConfig:
     package: str  # dotted module path, e.g. "openhands.sdk"
     distribution: str  # PyPI distribution name, e.g. "openhands-sdk"
     source_dir: str  # repo-relative directory, e.g. "openhands-sdk"
+
+
+@dataclass(frozen=True, slots=True)
+class DeprecatedSymbols:
+    """Deprecated SDK symbols detected in a source tree.
+
+    ``top_level`` tracks module-level symbols (exports) like ``LLM``.
+    ``qualified`` tracks class members like ``LLM.some_method``.
+    """
+
+    top_level: set[str] = frozenset()  # type: ignore[assignment]
+    qualified: set[str] = frozenset()  # type: ignore[assignment]
 
 
 PACKAGES: tuple[PackageConfig, ...] = (
@@ -128,23 +147,55 @@ def ensure_griffe() -> None:
         raise SystemExit(1)
 
 
-def _collect_breakages_pairs(objs: Iterable[tuple[object, object]]) -> list:
+def _collect_breakages_pairs(
+    objs: Iterable[tuple[object, object]],
+    *,
+    deprecated: DeprecatedSymbols,
+    title: str,
+) -> tuple[list[object], int]:
     """Find breaking changes between pairs of old/new API objects.
 
     Only reports breakages for public API members.
+
+    Returns:
+        (breakages, undeprecated_removals)
     """
     import griffe
-    from griffe import ExplanationStyle
+    from griffe import BreakageKind, ExplanationStyle, Kind
 
     breakages = []
+    undeprecated_removals = 0
+
     for old, new in objs:
         for br in griffe.find_breaking_changes(old, new):
             obj = getattr(br, "obj", None)
-            is_public = getattr(obj, "is_public", True)
-            if is_public:
-                print(br.explain(style=ExplanationStyle.GITHUB))
-                breakages.append(br)
-    return breakages
+            if not getattr(obj, "is_public", True):
+                continue
+
+            print(br.explain(style=ExplanationStyle.GITHUB))
+            breakages.append(br)
+
+            if br.kind != BreakageKind.OBJECT_REMOVED:
+                continue
+
+            parent = getattr(obj, "parent", None)
+            if getattr(parent, "kind", None) != Kind.CLASS:
+                continue
+
+            feature = f"{parent.name}.{obj.name}"
+            if (
+                feature not in deprecated.qualified
+                and parent.name not in deprecated.top_level
+            ):
+                print(
+                    f"::error title={title}::Removed '{feature}' without prior "
+                    "deprecation. Mark it with @deprecated(...) or "
+                    f"warn_deprecated('{feature}', ...) for at least one release "
+                    "before removing."
+                )
+                undeprecated_removals += 1
+
+    return breakages, undeprecated_removals
 
 
 def _extract_exported_names(module) -> set[str]:
@@ -222,7 +273,11 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
     return 0
 
 
-def _resolve_griffe_object(root, dotted: str, root_package: str = ""):
+def _resolve_griffe_object(
+    root: object,
+    dotted: str,
+    root_package: str = "",
+) -> object:
     """Resolve a dotted path to a griffe object."""
     root_path = getattr(root, "path", None)
     if root_path == dotted:
@@ -252,7 +307,9 @@ def _resolve_griffe_object(root, dotted: str, root_package: str = ""):
     return obj
 
 
-def _load_current(griffe_module, repo_root: str, cfg: PackageConfig):
+def _load_current(
+    griffe_module: object, repo_root: str, cfg: PackageConfig
+) -> object | None:
     try:
         return griffe_module.load(
             cfg.package,
@@ -266,7 +323,11 @@ def _load_current(griffe_module, repo_root: str, cfg: PackageConfig):
         return None
 
 
-def _load_prev_from_pypi(griffe_module, prev: str, cfg: PackageConfig):
+def _load_prev_from_pypi(
+    griffe_module: object,
+    prev: str,
+    cfg: PackageConfig,
+) -> object | None:
     griffe_cache = os.path.expanduser("~/.cache/griffe")
     os.makedirs(griffe_cache, exist_ok=True)
 
@@ -284,53 +345,96 @@ def _load_prev_from_pypi(griffe_module, prev: str, cfg: PackageConfig):
         return None
 
 
-def _find_deprecated_symbols(source_root: Path) -> set[str]:
+def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
     """Scan source files for symbols marked with the SDK deprecation helpers.
 
     Detects two forms:
-    - ``@deprecated(...)`` decorator on a class or function
-    - ``warn_deprecated('SymbolName', ...)`` call (top-level names only)
+    - ``@deprecated(...)`` decorator on a class/function/method
+    - ``warn_deprecated('SomeFeature', ...)`` call
 
-    Returns the set of top-level symbol names that were deprecated.
+    Returns:
+        DeprecatedSymbols(top_level=..., qualified=...)
     """
-    names: set[str] = set()
+
+    def _is_deprecated_decorator(deco: ast.AST) -> bool:
+        if not isinstance(deco, ast.Call):
+            return False
+        target = deco.func
+        if isinstance(target, ast.Name):
+            return target.id == "deprecated"
+        if isinstance(target, ast.Attribute):
+            return target.attr == "deprecated"
+        return False
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.top_level: set[str] = set()
+            self.qualified: set[str] = set()
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            if any(_is_deprecated_decorator(deco) for deco in node.decorator_list):
+                self.top_level.add(node.name)
+                self.qualified.add(node.name)
+
+            self.class_stack.append(node.name)
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+        def _visit_function_like(
+            self,
+            node: ast.FunctionDef | ast.AsyncFunctionDef,
+        ) -> None:
+            if any(_is_deprecated_decorator(deco) for deco in node.decorator_list):
+                if self.class_stack:
+                    self.qualified.add(".".join([*self.class_stack, node.name]))
+                else:
+                    self.top_level.add(node.name)
+                    self.qualified.add(node.name)
+
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            self._visit_function_like(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+            self._visit_function_like(node)
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+            target = node.func
+            func_name = None
+            if isinstance(target, ast.Name):
+                func_name = target.id
+            elif isinstance(target, ast.Attribute):
+                func_name = target.attr
+
+            if func_name == "warn_deprecated" and node.args:
+                feature = _extract_string_literal(node.args[0])
+                if feature is not None:
+                    self.qualified.add(feature)
+                    self.top_level.add(feature.split(".")[0])
+
+            self.generic_visit(node)
+
+    top_level: set[str] = set()
+    qualified: set[str] = set()
+
     for pyfile in source_root.rglob("*.py"):
         try:
             tree = ast.parse(pyfile.read_text())
-        except SyntaxError:
+        except SyntaxError as e:
+            print(
+                f"::warning title=SDK API::Skipping {pyfile}: "
+                f"failed to parse (SyntaxError: {e})"
+            )
             continue
 
-        for node in ast.walk(tree):
-            # @deprecated(...) decorator on class/function
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                for deco in node.decorator_list:
-                    if not isinstance(deco, ast.Call):
-                        continue
-                    target = deco.func
-                    deco_name = None
-                    if isinstance(target, ast.Name):
-                        deco_name = target.id
-                    elif isinstance(target, ast.Attribute):
-                        deco_name = target.attr
-                    if deco_name == "deprecated":
-                        names.add(node.name)
+        visitor = _Visitor()
+        visitor.visit(tree)
+        top_level |= visitor.top_level
+        qualified |= visitor.qualified
 
-            # warn_deprecated("SymbolName", ...) call
-            elif isinstance(node, ast.Call):
-                target = node.func
-                func_name = None
-                if isinstance(target, ast.Name):
-                    func_name = target.id
-                elif isinstance(target, ast.Attribute):
-                    func_name = target.attr
-                if func_name != "warn_deprecated" or not node.args:
-                    continue
-                feature = _extract_string_literal(node.args[0])
-                if feature is not None:
-                    # "Foo.bar" → "Foo"; plain "Foo" → "Foo"
-                    names.add(feature.split(".")[0])
-
-    return names
+    return DeprecatedSymbols(top_level=top_level, qualified=qualified)
 
 
 def _extract_string_literal(node: ast.AST) -> str | None:
@@ -356,13 +460,15 @@ def _compute_breakages(
     Returns:
         ``(total_breaks, undeprecated_removals)`` — *total_breaks* counts all
         structural breakages (for the version-bump policy), while
-        *undeprecated_removals* counts exports removed without a prior
-        deprecation marker (a separate hard failure).
+        *undeprecated_removals* counts public API removals (exports and class
+        members) without a prior deprecation marker (a separate hard failure).
     """
     pkg = cfg.package
     title = f"{cfg.distribution} API"
     total_breaks = 0
     undeprecated_removals = 0
+
+    deprecated = DeprecatedSymbols()
 
     try:
         old_mod = _resolve_griffe_object(old_root, pkg, root_package=pkg)
@@ -372,21 +478,23 @@ def _compute_breakages(
 
         removed = sorted(old_exports - new_exports)
 
-        # Check deprecation-before-removal policy
-        if removed:
-            source_root = _get_source_root(old_root)
-            deprecated_names = (
-                _find_deprecated_symbols(source_root) if source_root else set()
-            )
+        source_root = _get_source_root(old_root)
+        deprecated = (
+            _find_deprecated_symbols(source_root)
+            if source_root
+            else DeprecatedSymbols()
+        )
 
+        # Check deprecation-before-removal policy (exports)
+        if removed:
             for name in removed:
                 total_breaks += 1  # every removal is a structural break
-                if name not in deprecated_names:
+                if name not in deprecated.top_level:
                     print(
                         f"::error title={title}::Removed '{name}' from "
                         f"{pkg}.__all__ without prior deprecation. "
-                        f"Mark it with @deprecated or warn_deprecated() "
-                        f"for at least one release before removing."
+                        "Mark it with @deprecated or warn_deprecated() "
+                        "for at least one release before removing."
                     )
                     undeprecated_removals += 1
                 else:
@@ -403,7 +511,14 @@ def _compute_breakages(
                 pairs.append((old_mod[name], new_mod[name]))
             except Exception as e:
                 print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
-        total_breaks += len(_collect_breakages_pairs(pairs))
+
+        breakages, undeprecated_members = _collect_breakages_pairs(
+            pairs,
+            deprecated=deprecated,
+            title=title,
+        )
+        total_breaks += len(breakages)
+        undeprecated_removals += undeprecated_members
     except Exception as e:
         print(f"::warning title={title}::Failed to process top-level exports: {e}")
 
@@ -419,7 +534,13 @@ def _compute_breakages(
             print(f"::warning title={title}::Path {path} not found: {e}")
 
     if extra_pairs:
-        total_breaks += len(_collect_breakages_pairs(extra_pairs))
+        breakages, undeprecated_members = _collect_breakages_pairs(
+            extra_pairs,
+            deprecated=deprecated,
+            title=title,
+        )
+        total_breaks += len(breakages)
+        undeprecated_removals += undeprecated_members
 
     return total_breaks, undeprecated_removals
 

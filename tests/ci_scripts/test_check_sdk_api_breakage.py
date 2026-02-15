@@ -155,6 +155,57 @@ def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
     assert undeprecated == 0
 
 
+def test_removed_public_method_requires_deprecation(tmp_path):
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Foo"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\n\nclass Foo:\n"
+        + "    def bar(self) -> int:\n"
+        + "        return 1\n"
+    )
+    new_init.write_text(new_init.read_text() + "\n\nclass Foo:\n    pass\n")
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+    )
+    assert total_breaks > 0
+    assert undeprecated == 1
+
+
+def test_removed_public_method_with_deprecation_is_not_undeprecated(tmp_path):
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Foo"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\n\nclass Foo:\n"
+        + "    @deprecated(deprecated_in='1.0', removed_in='2.0')\n"
+        + "    def bar(self) -> int:\n"
+        + "        return 1\n"
+    )
+    new_init.write_text(new_init.read_text() + "\n\nclass Foo:\n    pass\n")
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+    )
+    assert total_breaks > 0
+    assert undeprecated == 0
+
+
 def test_parse_version_simple():
     v = _parse_version("1.2.3")
     assert v.major == 1
@@ -219,7 +270,8 @@ def test_find_deprecated_symbols_decorator(tmp_path):
         "    pass\n"
     )
     result = _find_deprecated_symbols(tmp_path)
-    assert result == {"Foo", "bar"}
+    assert result.top_level == {"Foo", "bar"}
+    assert result.qualified == {"Foo", "bar"}
 
 
 def test_find_deprecated_symbols_warn_deprecated(tmp_path):
@@ -229,7 +281,8 @@ def test_find_deprecated_symbols_warn_deprecated(tmp_path):
         "warn_deprecated('Beta.attr', deprecated_in='1.0', removed_in='2.0')\n"
     )
     result = _find_deprecated_symbols(tmp_path)
-    assert result == {"Alpha", "Beta"}
+    assert result.top_level == {"Alpha", "Beta"}
+    assert result.qualified == {"Alpha", "Beta.attr"}
 
 
 def test_find_deprecated_symbols_ignores_syntax_errors(tmp_path):
@@ -239,7 +292,8 @@ def test_find_deprecated_symbols_ignores_syntax_errors(tmp_path):
         "@deprecated(deprecated_in='1.0', removed_in='2.0')\ndef ok(): pass\n"
     )
     result = _find_deprecated_symbols(tmp_path)
-    assert result == {"ok"}
+    assert result.top_level == {"ok"}
+    assert result.qualified == {"ok"}
 
 
 def test_workspace_removed_export_is_breaking(tmp_path):
