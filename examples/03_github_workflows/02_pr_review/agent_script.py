@@ -751,9 +751,9 @@ def main() -> None:
 
         # Import and run the appropriate mode
         if mode == "cloud":
-            from cloud_mode import run_agent_review
+            from utils.cloud_mode import run_agent_review
         else:
-            from sdk_mode import run_agent_review
+            from utils.sdk_mode import run_agent_review
 
         run_agent_review(
             prompt=prompt,

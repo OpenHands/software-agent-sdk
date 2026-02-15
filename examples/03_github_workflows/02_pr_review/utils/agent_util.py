@@ -1,70 +1,73 @@
-"""SDK Mode - Run PR review locally using the OpenHands SDK.
+"""Shared agent utilities for PR review.
 
-This module provides the SDK implementation for PR review, running the agent
-locally with full control over the LLM configuration.
+This module provides shared abstractions for creating and configuring the
+OpenHands agent used in PR review, including LLM configuration, AgentContext,
+and conversation management.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from lmnr import Laminar
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.context.skills import load_project_skills
-from openhands.sdk.conversation import get_agent_final_response
+from openhands.sdk.conversation.base import BaseConversation
 from openhands.tools.preset.default import get_default_condenser, get_default_tools
 
-
-if TYPE_CHECKING:
-    from openhands.sdk.conversation.base import BaseConversation
 
 logger = get_logger(__name__)
 
 
-def run_agent_review(
-    prompt: str,
-    pr_info: dict[str, Any],
-    commit_id: str,
-    review_style: str,
-) -> None:
-    """Run PR review using the SDK (local execution).
+def create_llm(
+    api_key: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> LLM:
+    """Create an LLM instance with the given configuration.
 
     Args:
-        prompt: The formatted review prompt
-        pr_info: PR information dict with keys: number, title, body, repo_name,
-                 base_branch, head_branch
-        commit_id: The HEAD commit SHA
-        review_style: Review style ('standard' or 'roasted')
+        api_key: LLM API key (defaults to LLM_API_KEY env var)
+        model: Model name (defaults to LLM_MODEL env var or claude-sonnet-4-5)
+        base_url: Base URL for LLM API (defaults to LLM_BASE_URL env var)
+
+    Returns:
+        Configured LLM instance
     """
-    api_key = os.getenv("LLM_API_KEY")
-    if not api_key:
-        raise ValueError("LLM_API_KEY environment variable is required for SDK mode")
-
-    github_token = os.getenv("GITHUB_TOKEN")
-    if not github_token:
-        raise ValueError("GITHUB_TOKEN environment variable is required")
-
-    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-    base_url = os.getenv("LLM_BASE_URL")
+    api_key = api_key or os.getenv("LLM_API_KEY")
+    model = model or os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+    base_url = base_url or os.getenv("LLM_BASE_URL")
 
     llm_config: dict[str, Any] = {
         "model": model,
-        "api_key": api_key,
         "usage_id": "pr_review_agent",
         "drop_params": True,
     }
+    if api_key:
+        llm_config["api_key"] = api_key
     if base_url:
         llm_config["base_url"] = base_url
 
-    llm = LLM(**llm_config)
+    return LLM(**llm_config)
 
-    cwd = os.getcwd()
+
+def create_agent(llm: LLM, workspace_path: str | None = None) -> Agent:
+    """Create an Agent instance with default tools and project skills.
+
+    Args:
+        llm: LLM instance to use
+        workspace_path: Path to workspace for loading project skills (defaults to cwd)
+
+    Returns:
+        Configured Agent instance
+    """
+    workspace_path = workspace_path or os.getcwd()
 
     # Load project-specific skills from the repository being reviewed
-    project_skills = load_project_skills(cwd)
+    project_skills = load_project_skills(workspace_path)
     logger.info(
         f"Loaded {len(project_skills)} project skills: "
         f"{[s.name for s in project_skills]}"
@@ -77,7 +80,7 @@ def run_agent_review(
     )
 
     # Create agent with default tools and agent context
-    agent = Agent(
+    return Agent(
         llm=llm,
         tools=get_default_tools(enable_browser=False),
         agent_context=agent_context,
@@ -87,39 +90,33 @@ def run_agent_review(
         ),
     )
 
-    # Create conversation with secrets for masking
-    secrets: dict[str, str] = {}
-    if api_key:
-        secrets["LLM_API_KEY"] = api_key
-    if github_token:
-        secrets["GITHUB_TOKEN"] = github_token
 
-    conversation = Conversation(
+def create_conversation(
+    agent: Agent,
+    workspace: Any,
+    secrets: dict[str, str] | None = None,
+) -> BaseConversation:
+    """Create a Conversation instance.
+
+    Args:
+        agent: Agent instance to use
+        workspace: Workspace path (str) or Workspace instance
+        secrets: Secrets to mask in agent output
+
+    Returns:
+        Configured Conversation instance (LocalConversation or RemoteConversation)
+    """
+    # Conversation is a factory that returns LocalConversation or RemoteConversation
+    # based on the workspace type
+    conv: BaseConversation = Conversation(  # type: ignore[assignment]
         agent=agent,
-        workspace=cwd,
-        secrets=secrets,
+        workspace=workspace,
+        secrets=secrets or {},
     )
-
-    logger.info("Starting PR review analysis...")
-    logger.info("Agent received the PR diff in the initial message")
-    logger.info("Agent will post inline review comments directly via GitHub API")
-
-    # Send the prompt and run the agent
-    conversation.send_message(prompt)
-    conversation.run()
-
-    # Log the final response for debugging purposes
-    review_content = get_agent_final_response(conversation.state.events)
-    if review_content:
-        logger.info(f"Agent final response: {len(review_content)} characters")
-
-    _print_cost_summary(conversation)
-    _save_laminar_trace(pr_info, commit_id, review_style)
-
-    logger.info("PR review completed successfully")
+    return conv
 
 
-def _print_cost_summary(conversation: BaseConversation) -> None:
+def print_cost_summary(conversation: BaseConversation) -> None:
     """Print cost information for CI output."""
     metrics = conversation.conversation_stats.get_combined_metrics()
     print("\n=== PR Review Cost Summary ===")
@@ -134,8 +131,10 @@ def _print_cost_summary(conversation: BaseConversation) -> None:
             print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
 
 
-def _save_laminar_trace(
-    pr_info: dict[str, Any], commit_id: str, review_style: str
+def save_laminar_trace(
+    pr_info: dict[str, Any],
+    commit_id: str,
+    review_style: str,
 ) -> None:
     """Save Laminar trace info for delayed evaluation."""
     trace_id = Laminar.get_trace_id()

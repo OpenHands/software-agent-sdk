@@ -7,16 +7,17 @@ after starting the review, and users can track progress in the OpenHands Cloud U
 
 from __future__ import annotations
 
+import json
 import os
 import urllib.error
 import urllib.request
 from typing import Any
 
-from pydantic import SecretStr
-
-from openhands.sdk import LLM, Conversation, get_logger
-from openhands.tools.preset.default import get_default_agent
+from openhands.sdk import get_logger
+from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.workspace import OpenHandsCloudWorkspace
+
+from .agent_util import create_agent, create_conversation, create_llm
 
 
 logger = get_logger(__name__)
@@ -64,7 +65,7 @@ def run_agent_review(
     prompt: str,  # noqa: ARG001 - unused, cloud mode uses its own prompt
     pr_info: dict[str, Any],
     commit_id: str,  # noqa: ARG001 - unused in cloud mode
-    review_style: str,  # noqa: ARG001 - unused, skill_trigger is derived from it
+    review_style: str,
 ) -> None:
     """Run PR review in OpenHands Cloud using OpenHandsCloudWorkspace.
 
@@ -97,8 +98,6 @@ def run_agent_review(
 
     # LLM_API_KEY is optional for cloud mode - the cloud uses user's configured LLM
     llm_api_key = os.getenv("LLM_API_KEY")
-    llm_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-    llm_base_url = os.getenv("LLM_BASE_URL")
 
     # Derive skill trigger from review style
     skill_trigger = (
@@ -119,13 +118,8 @@ def run_agent_review(
     logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
     logger.info(f"Using skill trigger: {skill_trigger}")
 
-    # Create LLM configuration - api_key is optional for cloud mode
-    llm = LLM(
-        usage_id="pr_review_agent",
-        model=llm_model,
-        api_key=SecretStr(llm_api_key) if llm_api_key else None,
-        base_url=llm_base_url or None,
-    )
+    # Create LLM using shared utility (api_key is optional for cloud mode)
+    llm = create_llm(api_key=llm_api_key)
 
     # Create cloud workspace with keep_alive=True so the sandbox continues
     # running after we exit
@@ -134,23 +128,18 @@ def run_agent_review(
         cloud_api_key=cloud_api_key,
         keep_alive=True,
     ) as workspace:
-        # Create agent with default tools
-        agent = get_default_agent(llm=llm, cli_mode=True)
+        # Create agent using shared utility
+        agent = create_agent(llm=llm)
 
         # Build secrets dict - only include LLM_API_KEY if provided
         secrets: dict[str, str] = {"GITHUB_TOKEN": github_token}
         if llm_api_key:
             secrets["LLM_API_KEY"] = llm_api_key
 
-        # Create conversation
-        conversation = Conversation(
-            agent=agent,
-            workspace=workspace,
-            secrets=secrets,
+        # Create conversation using shared utility
+        conversation = create_conversation(
+            agent=agent, workspace=workspace, secrets=secrets
         )
-
-        # Send the initial message
-        conversation.send_message(cloud_prompt)
 
         # Get conversation ID and construct URL
         conversation_id = str(conversation.id)
@@ -167,10 +156,14 @@ def run_agent_review(
         )
         _post_github_comment(pr_info["repo_name"], pr_info["number"], comment_body)
 
-        # Trigger the run with blocking=False so we exit immediately.
-        # With keep_alive=True, the cloud sandbox continues running the review
-        # asynchronously while this workflow exits.
-        conversation.run(blocking=False)
+        # Send message and run non-blocking - with keep_alive=True, the cloud
+        # sandbox continues running the review asynchronously
+        conversation.send_message(cloud_prompt)
+        # RemoteConversation.run() supports blocking parameter
+        if isinstance(conversation, RemoteConversation):
+            conversation.run(blocking=False)
+        else:
+            conversation.run()
         logger.info(f"Cloud review started (non-blocking): {conversation_url}")
 
 
@@ -181,8 +174,6 @@ def _post_github_comment(repo_name: str, pr_number: str, body: str) -> None:
         raise ValueError("GITHUB_TOKEN environment variable is required")
 
     url = f"https://api.github.com/repos/{repo_name}/issues/{pr_number}/comments"
-
-    import json
 
     data = json.dumps({"body": body}).encode("utf-8")
 

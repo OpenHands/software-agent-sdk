@@ -27,7 +27,9 @@ class TestPostGithubComment:
 
     def test_success(self):
         """Test successful comment posting."""
-        from cloud_mode import _post_github_comment  # type: ignore[import-not-found]
+        from utils.cloud_mode import (  # type: ignore[import-not-found]
+            _post_github_comment,
+        )
 
         mock_response = MagicMock()
         mock_response.read.return_value = b'{"id": 1}'
@@ -42,7 +44,9 @@ class TestPostGithubComment:
 
     def test_missing_token_raises_error(self):
         """Test that missing GITHUB_TOKEN raises ValueError."""
-        from cloud_mode import _post_github_comment  # type: ignore[import-not-found]
+        from utils.cloud_mode import (  # type: ignore[import-not-found]
+            _post_github_comment,
+        )
 
         with (
             patch.dict("os.environ", {}, clear=True),
@@ -96,7 +100,9 @@ class TestCloudModePrompt:
 
     def test_format_with_all_fields(self):
         """Test that CLOUD_MODE_PROMPT formats correctly with all fields."""
-        from cloud_mode import CLOUD_MODE_PROMPT  # type: ignore[import-not-found]
+        from utils.cloud_mode import (  # type: ignore[import-not-found]
+            CLOUD_MODE_PROMPT,
+        )
 
         formatted = CLOUD_MODE_PROMPT.format(
             skill_trigger="/codereview",
