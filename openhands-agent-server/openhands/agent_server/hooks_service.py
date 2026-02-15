@@ -27,23 +27,26 @@ def load_hooks(
 ) -> HookConfig | None:
     hook_configs: list[HookConfig] = []
 
-    if load_project and project_dir:
+    def _safe_load(loader, *args, log_message: str):
         try:
-            project_hooks = load_project_hooks(project_dir)
+            return loader(*args)
         except Exception:
-            logger.exception("Failed to load project hooks")
-            project_hooks = None
+            logger.exception(log_message)
+            return None
 
+    if load_project and project_dir:
+        project_hooks = _safe_load(
+            load_project_hooks,
+            project_dir,
+            log_message="Failed to load project hooks",
+        )
         if project_hooks is not None:
             hook_configs.append(project_hooks)
 
     if load_user:
-        try:
-            user_hooks = load_user_hooks()
-        except Exception:
-            logger.exception("Failed to load user hooks")
-            user_hooks = None
-
+        user_hooks = _safe_load(
+            load_user_hooks, log_message="Failed to load user hooks"
+        )
         if user_hooks is not None:
             hook_configs.append(user_hooks)
 

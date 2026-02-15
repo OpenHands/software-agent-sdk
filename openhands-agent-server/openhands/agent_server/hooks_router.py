@@ -16,8 +16,16 @@ from openhands.sdk.hooks import HookConfig
 hooks_router = APIRouter(prefix="/hooks", tags=["Hooks"])
 
 
-def _validate_project_dir(project_dir: str) -> bool:
-    return Path(project_dir).is_absolute()
+def _validate_project_dir(project_dir: str) -> str | None:
+    try:
+        resolved = Path(project_dir).expanduser().resolve(strict=False)
+    except Exception:
+        return None
+
+    if not resolved.is_absolute():
+        return None
+
+    return str(resolved)
 
 
 class HooksRequest(BaseModel):
@@ -53,20 +61,15 @@ class HooksResponse(BaseModel):
 def get_hooks(request: HooksRequest) -> HooksResponse:
     """Load hooks from the workspace .openhands/hooks.json file."""
 
-    hook_config = None
+    project_dir = None
     if request.project_dir is not None:
-        if not _validate_project_dir(request.project_dir):
+        project_dir = _validate_project_dir(request.project_dir)
+        if project_dir is None:
             return HooksResponse(hook_config=None)
 
-        hook_config = load_hooks(
-            load_project=request.load_project,
-            load_user=request.load_user,
-            project_dir=request.project_dir,
-        )
-    else:
-        hook_config = load_hooks(
-            load_project=request.load_project,
-            load_user=request.load_user,
-            project_dir=None,
-        )
+    hook_config = load_hooks(
+        load_project=request.load_project,
+        load_user=request.load_user,
+        project_dir=project_dir,
+    )
     return HooksResponse(hook_config=hook_config)
