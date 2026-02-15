@@ -486,7 +486,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             dumped["tools"] = list(dumped["tools"].keys())
         return dumped
 
-    def get_all_llms(self) -> Generator[LLM, None, None]:
+    def get_all_llms(self) -> Generator[LLM]:
         """Recursively yield unique *base-class* LLM objects reachable from `self`.
 
         - Returns actual object references (not copies).

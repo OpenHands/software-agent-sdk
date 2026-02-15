@@ -1,5 +1,6 @@
 """Tmux-based terminal backend implementation."""
 
+import subprocess
 import time
 import uuid
 
@@ -13,6 +14,46 @@ from openhands.tools.terminal.terminal import TerminalInterface
 
 
 logger = get_logger(__name__)
+
+
+def _get_session_id_directly(session_name: str) -> str | None:
+    """Get session_id directly from tmux using a simple format string.
+
+    This is a fallback for when libtmux's complex format parsing fails.
+    The issue is that libtmux's new_session() uses a format string with 125+
+    fields, and if tmux doesn't output all fields correctly, the session_id
+    (at index 92) may be missing from the parsed output.
+
+    This function uses a simple tmux command to get just the session_id.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-sessions",
+                "-F",
+                "#{session_id}:#{session_name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            logger.debug(f"tmux list-sessions failed: {result.stderr}")
+            return None
+
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split(":", 1)
+            if len(parts) == 2 and parts[1] == session_name:
+                session_id = parts[0]
+                if session_id.startswith("$"):
+                    return session_id
+        return None
+    except Exception as e:
+        logger.debug(f"Failed to get session_id directly: {e}")
+        return None
 
 
 class TmuxTerminal(TerminalInterface):
@@ -52,13 +93,74 @@ class TmuxTerminal(TerminalInterface):
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
-        self.session = self.server.new_session(
-            session_name=session_name,
-            start_directory=self.work_dir,
-            kill_session=True,
-            x=1000,
-            y=1000,
-        )
+
+        # Workaround for libtmux race condition (https://github.com/tmux-python/libtmux/issues/624):
+        # The fix in neubig's PR #625 tries to parse 125+ fields from tmux output,
+        # but tmux may not output all fields, causing session_id to be missing.
+        # We create the session and retry getting session data if session_id is None.
+        max_retries = 5
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                self.session = self.server.new_session(
+                    session_name=session_name,
+                    start_directory=self.work_dir,
+                    kill_session=True,
+                    x=1000,
+                    y=1000,
+                )
+
+                if self.session.session_id is not None:
+                    break
+
+                # session_id is None - try multiple fallback approaches
+                # Add a small delay to let tmux register the session
+                time.sleep(0.1 * (attempt + 1))
+
+                # Fallback 1: Try to get session_id directly via simple tmux command
+                # This bypasses libtmux's complex format parsing
+                direct_session_id = _get_session_id_directly(session_name)
+                if direct_session_id:
+                    self.session.session_id = direct_session_id
+                    logger.debug(
+                        f"Session ID resolved via direct tmux command after "
+                        f"{attempt + 1} attempts: {direct_session_id}"
+                    )
+                    break
+
+                # Fallback 2: Try to get it from server.sessions (uses same parsing)
+                sessions = self.server.sessions.filter(session_name=session_name)
+                if sessions and sessions[0].session_id is not None:
+                    self.session = sessions[0]
+                    logger.debug(
+                        f"Session ID resolved via list-sessions after "
+                        f"{attempt + 1} attempts"
+                    )
+                    break
+
+            except Exception as e:
+                last_error = e
+                # If session was created but we couldn't get session_id,
+                # try to kill it before retrying
+                try:
+                    for s in self.server.sessions.filter(session_name=session_name):
+                        s.kill()
+                except Exception:
+                    pass
+                time.sleep(0.2 * (attempt + 1))
+                continue
+
+        if self.session.session_id is None:
+            error_msg = (
+                f"Failed to get session_id for session '{session_name}' "
+                f"after {max_retries} attempts. "
+            )
+            if last_error:
+                error_msg += f"Last error: {last_error}. "
+            error_msg += "See https://github.com/tmux-python/libtmux/issues/624"
+            raise RuntimeError(error_msg)
+
         for k, v in env.items():
             self.session.set_environment(k, v)
 
