@@ -219,7 +219,7 @@ jobs:
                   echo "Available files:"
                   ls -la
 
-                  # Run the agent with comprehensive logging
+                  # Run the agent with detailed logging
                   echo "Starting agent execution..."
                   set +e  # Don't exit on error, we want to capture it
                   uv run python agent.py "$TODO_JSON" 2>&1 | tee agent_output.log

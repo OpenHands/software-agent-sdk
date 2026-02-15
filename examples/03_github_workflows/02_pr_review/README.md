@@ -20,6 +20,12 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - See exactly which lines the feedback refers to
   - Address issues one by one
   - Have focused discussions on specific code sections
+- **Review Context Awareness**: The agent considers previous review history:
+  - **Previous reviews**: Sees all past review decisions (APPROVED, CHANGES_REQUESTED, etc.)
+  - **Review threads**: Fetches all review threads including their resolution status
+  - **Smart commenting**: Avoids repeating issues that have already been raised and addressed
+  - **Unresolved focus**: Prioritizes unresolved threads that may still need attention
+  - **Pagination limits**: Fetches up to 100 threads per page (with pagination) and up to 50 comments per thread. For PRs with extensive review history exceeding these limits, older threads/comments may be omitted.
 - **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
@@ -109,19 +115,19 @@ There are two ways to trigger an automated review of a pull request:
 4. The workflow will automatically start and analyze the changes
 5. Review comments will be posted to the PR when complete
 
-**Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
+**Note**: Adding labels or requesting a *new* reviewer requires write access. GitHub may still allow PR authors to use "Re-request review" for a reviewer who has already reviewed.
 
 ## Customizing the Code Review
 
-Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.openhands/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
+Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.agents/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
 
 ### How It Works
 
-The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.openhands/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
+The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.agents/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
 
 ### Example: Custom Code Review Skill
 
-Create `.openhands/skills/code-review.md` in your repository:
+Create `.agents/skills/code-review.md` in your repository:
 
 ```markdown
 ---
@@ -163,7 +169,7 @@ You are a code reviewer for this project. Follow these guidelines:
 
 ### Reference Example
 
-See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.openhands/skills/code-review.md) for a complete example of a custom code review skill.
+See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.agents/skills/code-review.md) for a complete example of a custom code review skill.
 
 ## Composite Action
 

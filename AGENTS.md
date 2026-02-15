@@ -116,6 +116,10 @@ When reviewing code, provide constructive feedback:
 - If it is a single-line string, you can break it into a multi-line string by doing "ABC" -> ("A"\n"B"\n"C")
 - If it is a long multi-line string (e.g., docstring), you should just add type ignore AFTER the ending """. You should NEVER ADD IT INSIDE the docstring.
 
+# PyInstaller Data Files
+
+When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
+
 </DEV_SETUP>
 
 <PR_ARTIFACTS>
@@ -158,10 +162,71 @@ mkdir -p .pr
 </PR_ARTIFACTS>
 
 <REVIEW_HANDLING>
-- After addressing inline review comments, mark the corresponding review threads as resolved.
+- Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
+  - Does it fix a real bug or improve clarity significantly?
+  - Does it align with the project's engineering principles (simplicity, maintainability)?
+  - Is the suggested change proportional to the benefit, or does it add unnecessary complexity?
+- It's acceptable to respectfully decline suggestions that add verbosity without clear benefit, over-engineer for hypothetical edge cases, or contradict the project's pragmatic approach.
+- After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
 - Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
 - Prefer resolving threads only once fixes are pushed or a clear decision is documented.
-- Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+- Use the GitHub GraphQL API to reply to and resolve review threads (see below).
+
+## Resolving Review Threads via GraphQL
+
+The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
+
+1. Get the thread IDs (replace `<OWNER>`, `<REPO>`, `<PR_NUMBER>`):
+```bash
+gh api graphql -f query='
+{
+  repository(owner: "<OWNER>", name: "<REPO>") {
+    pullRequest(number: <PR_NUMBER>) {
+      reviewThreads(first: 20) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+2. Reply to the thread explaining how the feedback was addressed:
+```bash
+gh api graphql -f query='
+mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: "<THREAD_ID>"
+    body: "Fixed in <COMMIT_SHA>"
+  }) {
+    comment { id }
+  }
+}'
+```
+
+3. Resolve the thread:
+```bash
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+    thread { isResolved }
+  }
+}'
+```
+
+4. Get the failed workflow run ID and rerun it:
+```bash
+# Find the run ID from the failed check URL, or use:
+gh run list --repo <OWNER>/<REPO> --branch <BRANCH> --limit 5
+
+# Rerun failed jobs
+gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
+```
 </REVIEW_HANDLING>
 
 
@@ -175,6 +240,75 @@ mkdir -p .pr
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+
+## Event Type Deprecation Policy
+
+When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic model used in event serialization), follow these guidelines to ensure backward compatibility:
+
+### Critical Requirement: Old Events Must Always Load
+
+**Old events should ALWAYS load without error.** Production systems may resume conversations that contain events serialized with older SDK versions. Breaking changes to event schemas will cause production failures.
+
+**Important**: Deprecated field handlers are **permanent** and should never be removed. They ensure old conversations can always be loaded, regardless of when they were created.
+
+### When Removing a Field from an Event Type
+
+1. **Never use `extra="forbid"` without a deprecation handler** - This will reject old events that contain removed fields.
+
+2. **Add a model validator to handle deprecated fields** using the `handle_deprecated_model_fields` utility:
+   ```python
+   from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
+
+   class MyModel(BaseModel):
+       model_config = ConfigDict(extra="forbid")
+
+       # Deprecated fields that are silently removed for backward compatibility
+       # when loading old events. These are kept permanently.
+       _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("old_field_name",)
+
+       @model_validator(mode="before")
+       @classmethod
+       def _handle_deprecated_fields(cls, data: Any) -> Any:
+           """Remove deprecated fields for backward compatibility with old events."""
+           return handle_deprecated_model_fields(data, cls._DEPRECATED_FIELDS)
+   ```
+
+3. **Write tests that verify both old and new event formats load correctly**:
+   - Test that old format (with deprecated field) loads successfully
+   - Test that new format (without deprecated field) works
+   - Test that loading a sequence of mixed old/new events works
+
+### Test Naming Convention for Event Backward Compatibility Tests
+
+**The version in the test name should be the LAST version where a particular event structure exists.**
+
+For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field).
+
+This convention:
+- Makes it clear which version's format is being tested
+- Avoids duplicate tests for the same structure across multiple versions
+- Documents when a field was last present in the schema
+
+Example test names:
+- `test_v1_10_0_text_content_with_enable_truncation` - Tests the last version with `enable_truncation`
+- `test_v1_9_0_message_with_deprecated_fields` - Tests the last version with Message deprecated fields
+- `test_text_content_current_format` - Tests the current format (no version needed)
+
+### Example: See `TextContent` and `Message` in `openhands/sdk/llm/message.py`
+
+These classes demonstrate the proper pattern for handling deprecated fields while maintaining backward compatibility with persisted events.
+
+## Public API Removal Policy
+
+Symbols exported via `openhands.sdk.__all__` are the SDK's public surface. Two CI policies govern changes:
+
+1. **Deprecation before removal** – before removing a symbol from `__all__`, mark it as deprecated for at least one release using the canonical helpers in `openhands.sdk.utils.deprecation`:
+   - `@deprecated(deprecated_in=..., removed_in=...)` decorator for functions/classes
+   - `warn_deprecated(feature, deprecated_in=..., removed_in=...)` for runtime paths (e.g., property accessors)
+
+2. **MINOR version bump** – any breaking change (removal or structural) requires at least a MINOR version bump.
+
+These are enforced by `check_sdk_api_breakage.py` (runs on release PRs). Deprecation deadlines are separately enforced by `check_deprecations.py` (runs on every PR).
 </CODE>
 
 <TESTING>
@@ -218,6 +352,21 @@ Co-authored-by: openhands <openhands@all-hands.dev>"
 git push -u origin <feature-name>
 ```
 </DOCUMENTATION_WORKFLOW>
+
+<AGENT_TMP_DIRECTORY>
+# Agent Temporary Directory Convention
+
+When tools need to store observation files (e.g., browser session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
+
+The browser session recording tool saves recordings to `.agent_tmp/observations/recording-{timestamp}/`.
+
+This convention ensures tool-generated observation files are stored in a predictable location that can be easily:
+- Added to `.gitignore`
+- Cleaned up after agent sessions
+- Identified as agent-generated artifacts
+
+Note: This is separate from `persistence_dir` which is used for conversation state persistence.
+</AGENT_TMP_DIRECTORY>
 
 <REPO>
 <PROJECT_STRUCTURE>

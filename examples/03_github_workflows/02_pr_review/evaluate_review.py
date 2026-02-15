@@ -263,13 +263,21 @@ def main():
     # Read original trace info from artifact
     trace_info_path = Path("laminar_trace_info.json")
     original_trace_id = None
+    original_span_context = None
     original_trace_data = {}
 
     if trace_info_path.exists():
         with open(trace_info_path) as f:
             original_trace_data = json.load(f)
             original_trace_id = original_trace_data.get("trace_id")
+            original_span_context = original_trace_data.get("span_context")
             logger.info(f"Original trace ID: {original_trace_id}")
+            if original_span_context:
+                logger.info(
+                    "Found span context - will add evaluation to original trace"
+                )
+            else:
+                logger.info("No span context - evaluation will create standalone trace")
     else:
         logger.warning(
             "No trace info file found - evaluation will create standalone trace"
@@ -314,11 +322,16 @@ def main():
 
     # Create an evaluation span that can be processed by a Laminar signal
     # The signal will analyze the agent comments vs final diff to determine
-    # which suggestions were addressed
+    # which suggestions were addressed.
+    #
+    # IMPORTANT: If we have the original span context, we use parent_span_context
+    # to add this span as a child of the original trace. This allows Laminar
+    # signals to operate on the complete trace (review + evaluation) together.
     with Laminar.start_as_current_span(
         name="pr_review_evaluation",
         input=evaluation_context,
         tags=["pr-review-evaluation"],
+        parent_span_context=original_span_context,
     ):
         # Set trace metadata for filtering and linking
         Laminar.set_trace_metadata(
@@ -348,6 +361,10 @@ def main():
                 "ready_for_signal": True,
             }
         )
+
+        # Capture trace ID while inside the span context
+        # (get_trace_id() returns None outside a span context)
+        eval_trace_id = Laminar.get_trace_id()
 
     # Flush to ensure span is sent
     Laminar.flush()
@@ -403,8 +420,7 @@ def main():
             logger.warning(f"Failed to score original trace: {e}")
             # Don't fail the workflow if scoring fails
 
-    # Get and print the evaluation trace ID
-    eval_trace_id = Laminar.get_trace_id()
+    # Print evaluation summary
     print("\n=== PR Review Evaluation ===")
     print(f"PR: {repo_name}#{pr_number}")
     print(f"Merged: {pr_merged}")
