@@ -842,18 +842,26 @@ def main():
             else None
         )
 
-        if trace_id:
-            # Set trace metadata for later retrieval and filtering
-            # Include model for A/B testing analysis
-            Laminar.set_trace_metadata(
-                {
-                    "pr_number": pr_info["number"],
-                    "repo_name": pr_info["repo_name"],
-                    "workflow_phase": "review",
-                    "review_style": review_style,
-                    "model": model,
-                }
-            )
+        if trace_id and laminar_span_context:
+            # Set trace metadata within an active span context
+            # Using start_as_current_span with parent_span_context to continue the trace
+            with Laminar.start_as_current_span(
+                name="pr-review-metadata",
+                parent_span_context=laminar_span_context,
+            ) as _:
+                # Set trace metadata within this active span context
+                # Include model for A/B testing analysis
+                pr_url = f"https://github.com/{pr_info['repo_name']}/pull/{pr_info['number']}"
+                Laminar.set_trace_metadata(
+                    {
+                        "pr_number": pr_info["number"],
+                        "repo_name": pr_info["repo_name"],
+                        "pr_url": pr_url,
+                        "workflow_phase": "review",
+                        "review_style": review_style,
+                        "model": model,
+                    }
+                )
 
             # Store trace context in file for GitHub artifact upload
             # This allows the evaluation workflow to add its span to this trace
