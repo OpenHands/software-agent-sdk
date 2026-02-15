@@ -232,6 +232,17 @@ class Message(BaseModel):
         default=None,
         description="OpenAI Responses reasoning item from model output",
     )
+    # OpenAI Responses message id/status (required when reasoning item is present)
+    responses_message_id: str | None = Field(
+        default=None,
+        description="OpenAI Responses message id from model output",
+    )
+    responses_message_status: (
+        Literal["in_progress", "completed", "incomplete"] | None
+    ) = Field(
+        default=None,
+        description="OpenAI Responses message status from model output",
+    )
 
     # Deprecated fields that were moved to to_chat_dict() parameters.
     # These are silently removed for backward compatibility when loading old events.
@@ -513,13 +524,17 @@ class Message(BaseModel):
                 if isinstance(c, TextContent) and c.text:
                     content_items.append({"type": "output_text", "text": c.text})
             if content_items:
-                items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content_items,
-                    }
-                )
+                message_item: dict[str, Any] = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": content_items,
+                }
+                # Include id/status if available (required with reasoning item)
+                if self.responses_message_id:
+                    message_item["id"] = self.responses_message_id
+                if self.responses_message_status:
+                    message_item["status"] = self.responses_message_status
+                items.append(message_item)
             # Emit assistant tool calls so subsequent function_call_output
             # can match call_id
             if self.tool_calls:
@@ -649,12 +664,23 @@ class Message(BaseModel):
         assistant_text_parts: list[str] = []
         tool_calls: list[MessageToolCall] = []
         responses_reasoning_item: ReasoningItemModel | None = None
+        responses_message_id: str | None = None
+        responses_message_status: (
+            Literal["in_progress", "completed", "incomplete"] | None
+        ) = None
 
         for item in output or []:
             if (
                 isinstance(item, GenericResponseOutputItem)
                 or isinstance(item, ResponseOutputMessage)
             ) and item.type == "message":
+                # Capture message id and status for Responses API round-trip
+                if hasattr(item, "id") and item.id:
+                    responses_message_id = item.id
+                if hasattr(item, "status") and item.status:
+                    status_val = item.status
+                    if status_val in ("in_progress", "completed", "incomplete"):
+                        responses_message_status = status_val  # type: ignore[assignment]
                 for part in item.content or []:
                     if part.type == "output_text" and part.text:
                         assistant_text_parts.append(part.text)
@@ -691,6 +717,8 @@ class Message(BaseModel):
             content=[TextContent(text=assistant_text)] if assistant_text else [],
             tool_calls=tool_calls or None,
             responses_reasoning_item=responses_reasoning_item,
+            responses_message_id=responses_message_id,
+            responses_message_status=responses_message_status,
         )
 
 
