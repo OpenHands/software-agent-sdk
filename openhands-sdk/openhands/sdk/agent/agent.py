@@ -43,6 +43,7 @@ from openhands.sdk.llm import (
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContextWindowExceedError,
+    LLMError,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
@@ -262,8 +263,7 @@ class Agent(CriticMixin, AgentBase):
         )
 
         try:
-            llm_response = make_llm_completion(
-                self.llm,
+            llm_response = self._make_llm_completion_with_fallback(
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
@@ -380,6 +380,69 @@ class Agent(CriticMixin, AgentBase):
             logger.debug("LLM produced a message response - awaits user input")
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
+
+    def _make_llm_completion_with_fallback(
+        self,
+        messages: list[Message],
+        tools: list,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> LLMResponse:
+        """Try the primary LLM; if it fails, it calls the fallback LLMs."""
+        try:
+            return make_llm_completion(
+                self.llm, messages, tools=tools, on_token=on_token
+            )
+        except Exception as exc:
+            return self._try_fallbacks(exc, messages, tools, on_token)
+
+    def _try_fallbacks(
+        self,
+        primary_exc: Exception,
+        messages: list[Message],
+        tools: list,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> LLMResponse:
+        """Attempt fallback LLMs when primary fails.
+
+        Raises LLMError with aggregated failure details if all fallbacks fail,
+        preserving the original exception in the chain.
+        """
+        fallback_profiles = self.llm_fallback_strategy.resolve(primary_exc)
+        if not fallback_profiles:
+            raise primary_exc
+
+        logger.warning(
+            f"Primary LLM failed with {type(primary_exc).__name__}: {primary_exc}.\n"
+            f"Trying with fallback(s) {', '.join(fallback_profiles)}.",
+        )
+
+        failed: list[tuple[str, Exception]] = []
+        for name, fallback_llm in self.llm_fallback_strategy.get_fallback_llms(
+            primary_exc
+        ):
+            try:
+                return make_llm_completion(
+                    fallback_llm, messages, tools=tools, on_token=on_token
+                )
+            except Exception as exc:
+                failed.append((name, exc))
+                logger.warning(
+                    f"Fallback LLM {name} failed with {type(exc).__name__}: {exc}.",
+                )
+
+        # Build a summary of all failures
+        summary_lines = [
+            f"Primary LLM failed: {type(primary_exc).__name__}: {primary_exc}"
+        ]
+        profiles_failed_to_load = len(fallback_profiles) - len(failed)
+        if profiles_failed_to_load:
+            summary_lines.append(
+                f"- {profiles_failed_to_load} profile(s) failed to load"
+            )
+        summary_lines.extend(
+            f"- {name}: {type(exc).__name__}: {exc}" for name, exc in failed
+        )
+        raise LLMError("\n".join(summary_lines)) from primary_exc
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]

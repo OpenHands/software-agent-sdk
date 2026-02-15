@@ -427,6 +427,11 @@ class LocalConversation(BaseConversation):
             for llm in list(self.agent.get_all_llms()):
                 self.llm_registry.add(llm)
 
+            # Wire lazy-loading callback for agent-level FallbackStrategy
+            # so fallback LLMs loaded via get_fallback_llms() are also
+            # registered in the LLMRegistry and tracked by ConversationStats.
+            self.agent.llm_fallback_strategy.set_on_llm_created(self.llm_registry.add)
+
             self._agent_ready = True
 
     @observe(name="conversation.send_message")

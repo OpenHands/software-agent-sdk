@@ -4,8 +4,10 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import (
@@ -20,6 +22,7 @@ from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
@@ -42,6 +45,92 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+
+
+class FallbackStrategy(BaseModel):
+    """
+    Manages recovery logic for LLM failures by mapping errors to fallback models.
+
+    This strategy allows for granular control over how the SDK responds to different
+    failure modes. It can provide a generic list of fallback models or specific
+    models tailored for particular exception (e.g., switching to a model
+    with a larger context window when a ContextLengthError occurs).
+    """
+
+    default_fallbacks: list[str] = Field(
+        description="List of default fallbacks to try when the primary LLM fails.",
+        default_factory=list,
+    )
+    fallback_mapping: dict[type[Exception], list[str]] = Field(
+        description="Mapping from exception types to fallback profile names.",
+        default_factory=dict,
+    )
+
+    profile_store_dir: Path | str | None = None
+    """
+    Path to the directory where profiles are stored.
+    If None, the default profile directory is used.
+    """
+
+    _on_llm_created: Callable[[LLM], None] | None = PrivateAttr(default=None)
+    _llm_cache: dict[str, LLM] = PrivateAttr(default_factory=dict)
+
+    @cached_property
+    def profile_store(self) -> LLMProfileStore:
+        return LLMProfileStore(self.profile_store_dir)
+
+    def set_on_llm_created(self, callback: Callable[[LLM], None]) -> None:
+        """Set callback fired when a fallback LLM is first loaded.
+
+        Typically wired to ``llm_registry.add`` so the new LLM appears in
+        ``ConversationStats``.
+        """
+        self._on_llm_created = callback
+
+    def resolve(self, error: Exception | None = None) -> list[str]:
+        """
+        Retrieves the appropriate list of fallback models based on the provided error.
+
+        The method first checks if the error matches any type defined in the
+        `fallback_mapping`. If no specific error is provided, it returns the
+        `default_fallbacks`.
+
+        Args:
+            error (Exception | None): The exception raised during the LLM call.
+                Defaults to None.
+
+        Returns:
+            list[str]: A list of model identifiers to attempt. Returns an empty
+                list if the error type is not mapped and no defaults exist.
+        """
+        if error is None:
+            return self.default_fallbacks
+        return self.fallback_mapping.get(type(error), self.default_fallbacks)
+
+    def get_fallback_llms(
+        self, error: Exception
+    ) -> Generator[tuple[str, LLM], None, None]:
+        """Yield ``(profile_name, llm)`` pairs for fallbacks matching *error*.
+
+        Profiles that fail to load are logged and skipped.
+        LLMs are cached so repeated calls don't reload or re-register them.
+        """
+        for name in self.resolve(error):
+            # Return from cache if already loaded
+            if name in self._llm_cache:
+                yield name, self._llm_cache[name]
+                continue
+            try:
+                llm = self.profile_store.load(name)
+                self._llm_cache[name] = llm
+                if self._on_llm_created is not None:
+                    self._on_llm_created(llm)
+                yield name, llm
+            except Exception as exc:
+                logger.warning(
+                    f"[FallbackStrategy] Failed to load "
+                    f"fallback profile '{name}': {exc}"
+                )
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -67,6 +156,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "api_key": "your_api_key_here",
             }
         ],
+    )
+    llm_fallback_strategy: FallbackStrategy = Field(
+        default_factory=FallbackStrategy,
     )
     tools: list[Tool] = Field(
         default_factory=list,

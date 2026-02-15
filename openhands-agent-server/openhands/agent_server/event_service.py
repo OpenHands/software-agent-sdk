@@ -418,6 +418,19 @@ class EventService:
         for llm in agent.get_all_llms():
             llm.telemetry.set_stats_update_callback(stats_callback)
 
+        # Compose subscriber so lazily-loaded LLMs (e.g. from FallbackRouter
+        # profiles) also get stats streaming wired automatically.
+        if self._conversation:
+            registry = self._conversation.llm_registry
+            prev_subscriber = registry.subscriber
+
+            def composed_subscriber(event):
+                if prev_subscriber:
+                    prev_subscriber(event)
+                event.llm.telemetry.set_stats_update_callback(stats_callback)
+
+            registry.subscribe(composed_subscriber)
+
     async def start(self):
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
