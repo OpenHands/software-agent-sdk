@@ -2,8 +2,17 @@
 
 import json
 import tempfile
+from pathlib import Path
 
-from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+import pytest
+
+from openhands.sdk.hooks.config import (
+    HookConfig,
+    HookDefinition,
+    HookMatcher,
+    load_project_hooks,
+    load_user_hooks,
+)
 from openhands.sdk.hooks.types import HookEventType
 
 
@@ -211,8 +220,6 @@ class TestHookConfig:
 
     def test_duplicate_keys_raises_error(self):
         """Test that providing both PascalCase and snake_case raises error."""
-        import pytest
-
         with pytest.raises(ValueError, match="Duplicate hook event"):
             HookConfig.from_dict(
                 {
@@ -223,9 +230,128 @@ class TestHookConfig:
 
     def test_unknown_event_type_raises_error(self):
         """Test that typos in event types raise helpful errors."""
-        import pytest
-
         with pytest.raises(ValueError, match="Unknown event type.*PreToolExecute"):
             HookConfig.from_dict(
                 {"PreToolExecute": [{"hooks": [{"command": "test.sh"}]}]}
             )
+
+
+class TestLoadProjectHooks:
+    """Tests for load_project_hooks function."""
+
+    def test_load_project_hooks_from_working_dir(self, tmp_path):
+        """Test loading hooks from project's .openhands/hooks.json."""
+        hooks_dir = tmp_path / ".openhands"
+        hooks_dir.mkdir()
+        hooks_file = hooks_dir / "hooks.json"
+        hooks_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "*", "hooks": [{"command": "project-hook.sh"}]}
+                        ]
+                    }
+                }
+            )
+        )
+
+        config = load_project_hooks(tmp_path)
+        assert config is not None
+        assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+        hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "AnyTool")
+        assert len(hooks) == 1
+        assert hooks[0].command == "project-hook.sh"
+
+    def test_load_project_hooks_returns_none_when_missing(self, tmp_path):
+        """Test that load_project_hooks returns None when file doesn't exist."""
+        config = load_project_hooks(tmp_path)
+        assert config is None
+
+    def test_load_project_hooks_returns_none_for_empty_config(self, tmp_path):
+        """Test that load_project_hooks returns None for empty hooks config."""
+        hooks_dir = tmp_path / ".openhands"
+        hooks_dir.mkdir()
+        hooks_file = hooks_dir / "hooks.json"
+        hooks_file.write_text(json.dumps({"hooks": {}}))
+
+        config = load_project_hooks(tmp_path)
+        assert config is None
+
+    def test_load_project_hooks_returns_none_for_malformed_json(self, tmp_path):
+        """Test that load_project_hooks returns None for malformed JSON."""
+        hooks_dir = tmp_path / ".openhands"
+        hooks_dir.mkdir()
+        hooks_file = hooks_dir / "hooks.json"
+        hooks_file.write_text("{ invalid json }")
+
+        config = load_project_hooks(tmp_path)
+        assert config is None
+
+
+class TestLoadUserHooks:
+    """Tests for load_user_hooks function."""
+
+    def test_load_user_hooks_from_home_dir(self, tmp_path, monkeypatch):
+        """Test loading hooks from user's ~/.openhands/hooks.json."""
+        fake_home = tmp_path / "fake_home"
+        hooks_dir = fake_home / ".openhands"
+        hooks_dir.mkdir(parents=True)
+        hooks_file = hooks_dir / "hooks.json"
+        hooks_file.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "*", "hooks": [{"command": "user-hook.sh"}]}
+                        ]
+                    }
+                }
+            )
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        config = load_user_hooks()
+        assert config is not None
+        assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+        hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "AnyTool")
+        assert len(hooks) == 1
+        assert hooks[0].command == "user-hook.sh"
+
+    def test_load_user_hooks_returns_none_when_missing(self, tmp_path, monkeypatch):
+        """Test that load_user_hooks returns None when file doesn't exist."""
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        config = load_user_hooks()
+        assert config is None
+
+    def test_load_user_hooks_returns_none_for_empty_config(self, tmp_path, monkeypatch):
+        """Test that load_user_hooks returns None for empty hooks config."""
+        fake_home = tmp_path / "fake_home"
+        hooks_dir = fake_home / ".openhands"
+        hooks_dir.mkdir(parents=True)
+        hooks_file = hooks_dir / "hooks.json"
+        hooks_file.write_text(json.dumps({"hooks": {}}))
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        config = load_user_hooks()
+        assert config is None
+
+    def test_load_user_hooks_returns_none_for_malformed_json(
+        self, tmp_path, monkeypatch
+    ):
+        """Test that load_user_hooks returns None for malformed JSON."""
+        fake_home = tmp_path / "fake_home"
+        hooks_dir = fake_home / ".openhands"
+        hooks_dir.mkdir(parents=True)
+        hooks_file = hooks_dir / "hooks.json"
+        hooks_file.write_text("{ invalid json }")
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        config = load_user_hooks()
+        assert config is None

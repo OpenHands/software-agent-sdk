@@ -327,3 +327,46 @@ class HookConfig(BaseModel):
             return None
 
         return merged
+
+
+def load_project_hooks(working_dir: str | Path) -> HookConfig | None:
+    """Load hooks from the project's .openhands/hooks.json file.
+
+    Args:
+        working_dir: Path to the project/working directory.
+
+    Returns:
+        HookConfig if hooks.json exists and is valid, None otherwise.
+    """
+    hooks_path = Path(working_dir) / ".openhands" / "hooks.json"
+    if not hooks_path.exists():
+        return None
+
+    try:
+        with open(hooks_path) as f:
+            data = json.load(f)
+        config = HookConfig.model_validate(data)
+        return config if not config.is_empty() else None
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        logger.warning(f"Failed to load project hooks from {hooks_path}: {e}")
+        return None
+
+
+def load_user_hooks() -> HookConfig | None:
+    """Load hooks from the user's ~/.openhands/hooks.json file.
+
+    Returns:
+        HookConfig if hooks.json exists and is valid, None otherwise.
+    """
+    hooks_path = Path.home() / ".openhands" / "hooks.json"
+    if not hooks_path.exists():
+        return None
+
+    try:
+        with open(hooks_path) as f:
+            data = json.load(f)
+        config = HookConfig.model_validate(data)
+        return config if not config.is_empty() else None
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        logger.warning(f"Failed to load user hooks from {hooks_path}: {e}")
+        return None

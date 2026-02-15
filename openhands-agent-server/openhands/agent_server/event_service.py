@@ -1,11 +1,8 @@
 import asyncio
-import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
-
-from pydantic import ValidationError
 
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -25,7 +22,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import AgentErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
-from openhands.sdk.hooks import HookConfig
+from openhands.sdk.hooks import HookConfig, load_project_hooks, load_user_hooks
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -450,25 +447,16 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
+        # Merge hooks from multiple sources (request > project > user)
         request_hook_config = _normalize_hook_config(self.stored.hook_config)
+        project_hook_config = load_project_hooks(workspace.working_dir)
+        user_hook_config = load_user_hooks()
 
-        try:
-            file_hook_config = HookConfig.load(working_dir=workspace.working_dir)
-        except (json.JSONDecodeError, OSError, ValidationError, ValueError) as exc:
-            logger.warning(
-                "Failed to load hooks.json from %s: %s",
-                workspace.working_dir,
-                exc,
-            )
-            file_hook_config = None
-        file_hook_config = _normalize_hook_config(file_hook_config)
-
-        hook_configs: list[HookConfig] = []
-        if request_hook_config is not None:
-            hook_configs.append(request_hook_config)
-        if file_hook_config is not None:
-            hook_configs.append(file_hook_config)
-
+        hook_configs = [
+            c
+            for c in [request_hook_config, project_hook_config, user_hook_config]
+            if c is not None
+        ]
         merged_hook_config = HookConfig.merge(hook_configs) if hook_configs else None
 
         conversation = LocalConversation(
