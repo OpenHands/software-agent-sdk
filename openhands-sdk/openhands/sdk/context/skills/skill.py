@@ -796,7 +796,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
 
 # Public skills repository configuration
-PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
+PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 PUBLIC_SKILLS_BRANCH = "main"
 
 
@@ -807,7 +807,7 @@ def load_public_skills(
     """Load skills from the public OpenHands skills repository.
 
     This function maintains a local git clone of the public skills registry at
-    https://github.com/OpenHands/skills. On first run, it clones the repository
+    https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.

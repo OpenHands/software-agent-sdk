@@ -4,7 +4,7 @@ This module contains the business logic for skill loading and management,
 keeping the router clean and focused on HTTP concerns.
 
 Skill Sources:
-- Public skills: GitHub OpenHands/skills repository
+- Public skills: GitHub OpenHands/extensions repository
 - User skills: ~/.openhands/skills/ and ~/.openhands/microagents/
 - Project skills: {workspace}/.openhands/skills/, .cursorrules, agents.md
 - Organization skills: {org}/.openhands or {org}/openhands-config
@@ -292,13 +292,13 @@ def load_all_skills(
     Skills are loaded from multiple sources and merged with the following
     precedence (later overrides earlier for duplicate names):
     1. Sandbox skills (lowest) - Exposed URLs from sandbox
-    2. Public skills - From GitHub OpenHands/skills repository
+    2. Public skills - From GitHub OpenHands/extensions repository
     3. User skills - From ~/.openhands/skills/
     4. Organization skills - From {org}/.openhands or equivalent
     5. Project skills (highest) - From {workspace}/.openhands/skills/
 
     Args:
-        load_public: Whether to load public skills from OpenHands/skills repo.
+        load_public: Whether to load public skills from OpenHands/extensions repo.
         load_user: Whether to load user skills from ~/.openhands/skills/.
         load_project: Whether to load project skills from workspace.
         load_org: Whether to load organization-level skills.
@@ -383,7 +383,7 @@ def sync_public_skills() -> tuple[bool, str]:
     """Force refresh of public skills from GitHub repository.
 
     This triggers a git pull on the cached skills repository to get
-    the latest skills from the OpenHands/skills repository.
+    the latest skills from the OpenHands/extensions repository.
 
     Returns:
         Tuple of (success: bool, message: str).

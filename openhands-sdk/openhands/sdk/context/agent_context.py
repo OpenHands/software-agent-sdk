@@ -68,7 +68,7 @@ class AgentContext(BaseModel):
         default=False,
         description=(
             "Whether to automatically load skills from the public OpenHands "
-            "skills repository at https://github.com/OpenHands/skills. "
+            "skills repository at https://github.com/OpenHands/extensions. "
             "This allows you to get the latest skills without SDK updates."
         ),
     )

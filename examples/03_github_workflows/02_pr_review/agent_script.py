@@ -760,7 +760,7 @@ def main():
         )
 
         # Create AgentContext with public skills enabled and project skills
-        # Public skills from https://github.com/OpenHands/skills include:
+        # Public skills from https://github.com/OpenHands/extensions include:
         # - /codereview: Standard code review skill
         # - /codereview-roasted: Linus Torvalds style brutally honest review
         # Project skills include repo-specific guidance (AGENTS.md, etc.)
