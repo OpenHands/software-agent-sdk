@@ -31,6 +31,17 @@ on:
                 required: false
                 default: ''
                 type: string
+            tool_preset:
+                description: >-
+                    Tool preset for file editing (default, gemini, planning).
+                    'default' uses FileEditorTool, 'gemini' uses read_file/write_file/edit/list_directory.
+                required: false
+                default: default
+                type: choice
+                options:
+                    - default
+                    - gemini
+                    - planning
     schedule:
         - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
@@ -276,18 +287,20 @@ jobs:
                   LLM_CONFIG: ${{ toJson(matrix.job-config['llm-config']) }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+                  TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
               run: |
                   set -eo pipefail
 
                   AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
                   EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config['run-suffix'] }}"
 
-                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS'"
+                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS' TOOL_PRESET='$TOOL_PRESET'"
 
                   uv run python tests/integration/run_infer.py \
                     --llm-config "$LLM_CONFIG" \
                     --num-workers $N_PROCESSES \
                     --eval-note "$EVAL_NOTE" \
+                    --tool-preset "$TOOL_PRESET" \
                     $TEST_TYPE_ARGS
 
                   # get integration tests JSON results
