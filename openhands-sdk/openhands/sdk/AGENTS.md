@@ -1,6 +1,6 @@
-# Repository Guidelines
+# Package Guidelines
 
-## Project Structure & Module Organization
+## Package Structure & Module Organization
 
 - This directory (`openhands-sdk/openhands/sdk/`) contains the core Python SDK under the `openhands.sdk.*` namespace.
 - Keep new modules within the closest existing subpackage (e.g., `llm/`, `tool/`, `event/`, `agent/`) and follow local naming patterns.
