@@ -18,6 +18,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.secret_utils import (
+    filter_invalid_secrets_in_state,
+    preprocess_stored_conversation_json,
+)
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message
@@ -37,8 +41,14 @@ def _compose_conversation_info(
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
+    data = state.model_dump(mode="json")
+    # Filter null secret values that would cause ValidationError during
+    # re-validation (issue #12714). We target only the secrets dicts rather
+    # than using blanket exclude_none=True, which would drop legitimate None
+    # values from Optional fields that lack defaults.
+    filter_invalid_secrets_in_state(data)
     return ConversationInfo(
-        **state.model_dump(mode="json"),
+        **data,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -416,8 +426,9 @@ class ConversationService:
                 if not meta_file.exists():
                     continue
                 json_str = meta_file.read_text()
+                cleaned_json = preprocess_stored_conversation_json(json_str)
                 stored = StoredConversation.model_validate_json(
-                    json_str,
+                    cleaned_json,
                     context={
                         "cipher": self.cipher,
                     },
