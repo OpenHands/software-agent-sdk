@@ -181,10 +181,18 @@ def get_features(model: str) -> ModelFeatures:
 
 
 def get_default_temperature() -> float | None:
-    """Return the default temperature for a given model.
+    """Return the default temperature for LLM calls.
 
-    Returns None to use provider defaults.
-    Previously supported specific temperature overrides for certain models,
-    but now all models use provider defaults.
+    Returns None to let each provider use its own default temperature.
+    This is an intentional breaking change from the previous behavior
+    that returned 0.0 (deterministic) by default.
+
+    Rationale:
+    - Provider defaults are typically more suitable for general use
+    - Avoids errors from providers that don't accept certain temperature values
+    - Ensures new models work out of the box without needing explicit config
+
+    Note: Users who need deterministic outputs should explicitly set
+    temperature=0.0 in their configuration.
     """
     return None
