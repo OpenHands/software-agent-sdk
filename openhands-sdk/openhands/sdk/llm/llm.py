@@ -180,7 +180,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description=(
             "Sampling temperature for response generation. "
-            "Defaults to 0 for most models and provider default for reasoning models."
+            "Defaults to None (uses provider default temperature). "
+            "Set to 0.0 for deterministic outputs, "
+            "or higher values (0.7-1.0) for more creative responses."
         ),
     )
     top_p: float | None = Field(default=1.0, ge=0, le=1)
@@ -461,7 +463,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._init_model_info_and_caps()
 
         if self.temperature is None:
-            self.temperature = get_default_temperature(self.model)
+            self.temperature = get_default_temperature()
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "

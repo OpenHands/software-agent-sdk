@@ -637,7 +637,7 @@ def test_llm_local_detection_based_on_model_name(default_llm):
 
     # Test basic model configuration
     assert llm.model == "gpt-4o"
-    assert llm.temperature == 0.0
+    assert llm.temperature is None  # Uses provider default
 
     # Test with localhost base_url
     local_llm = default_llm.model_copy(update={"base_url": "http://localhost:8000"})
