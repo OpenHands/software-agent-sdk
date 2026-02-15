@@ -61,7 +61,7 @@ def test_gpt5_uses_reasoning_effort_and_strips_temp_top_p():
 
 
 def test_gemini_2_5_pro_defaults_reasoning_effort_low_when_none():
-    llm = DummyLLM(model="gemini-2.5-pro-experimental", reasoning_effort=None)
+    llm = DummyLLM(model="gemini-2.5-pro", reasoning_effort=None)
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
 
     assert out.get("reasoning_effort") == "low"
