@@ -75,6 +75,23 @@ def test_hooks_endpoint_accepts_relative_project_dir_and_returns_none(tmp_path):
     assert resp.json()["hook_config"] is None
 
 
+def test_hooks_endpoint_returns_none_on_malformed_project_hooks_json(tmp_path):
+    hooks_dir = tmp_path / ".openhands"
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "hooks.json").write_text("not json")
+
+    app = create_app(Config(session_api_keys=[]))
+    client = TestClient(app)
+
+    resp = client.post(
+        "/api/hooks",
+        json={"load_project": True, "load_user": False, "project_dir": str(tmp_path)},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["hook_config"] is None
+
+
 def test_hooks_endpoint_merges_project_and_user_hooks(tmp_path, monkeypatch):
     app = create_app(Config(session_api_keys=[]))
     client = TestClient(app)

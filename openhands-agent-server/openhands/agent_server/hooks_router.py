@@ -17,12 +17,13 @@ hooks_router = APIRouter(prefix="/hooks", tags=["Hooks"])
 
 
 def _validate_project_dir(project_dir: str) -> str | None:
-    try:
-        resolved = Path(project_dir).expanduser().resolve(strict=False)
-    except Exception:
+    expanded = Path(project_dir).expanduser()
+    if not expanded.is_absolute():
         return None
 
-    if not resolved.is_absolute():
+    try:
+        resolved = expanded.resolve(strict=False)
+    except Exception:
         return None
 
     return str(resolved)
