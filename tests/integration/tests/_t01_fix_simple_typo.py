@@ -3,9 +3,6 @@
 import os
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -33,16 +30,6 @@ class TypoFixTest(BaseIntegrationTest):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.document_path: str = os.path.join(self.workspace, "document.txt")
-
-    @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        register_tool("TerminalTool", TerminalTool)
-        register_tool("FileEditorTool", FileEditorTool)
-        return [
-            Tool(name="TerminalTool"),
-            Tool(name="FileEditorTool"),
-        ]
 
     def setup(self) -> None:
         """Create a text file with typos for the agent to fix."""

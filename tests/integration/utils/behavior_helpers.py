@@ -8,9 +8,8 @@ from textwrap import dedent
 from typing import Any
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
+from openhands.sdk.tool import Tool
+from openhands.tools.preset.default import get_default_tools
 from tests.integration.base import BaseIntegrationTest, SkipTest
 from tests.integration.early_stopper import EarlyStopperBase
 
@@ -83,11 +82,14 @@ def clone_pinned_software_agent_repo(workspace: str) -> Path:
     return repo_dir
 
 
-def default_behavior_tools() -> list[Tool]:
-    """Register and return the default tools for behavior tests."""
-    register_tool("TerminalTool", TerminalTool)
-    register_tool("FileEditorTool", FileEditorTool)
-    return [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+def default_behavior_tools(enable_browser: bool = False) -> list[Tool]:
+    """Return the default tools for behavior tests using the default preset.
+
+    Args:
+        enable_browser: Whether to include browser tools. Defaults to False
+            for behavior tests since they typically don't need browsing.
+    """
+    return get_default_tools(enable_browser=enable_browser)
 
 
 ENVIRONMENT_TIPS_BODY = """\
