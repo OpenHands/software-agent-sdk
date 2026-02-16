@@ -24,8 +24,7 @@ from openhands.tools.terminal import TerminalTool
 
 
 # Read configuration from environment
-api_key = os.getenv("LLM_API_KEY")
-api_key = "sk-CIFoH8V728O3bvN5bGnx0g"
+api_key = os.getenv("LLM_API_KEY", None)
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 base_url = os.getenv("LLM_BASE_URL")
 primary_model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
