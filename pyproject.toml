@@ -41,7 +41,7 @@ dev = [
 
 # Ruff configuration
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 88
 
 [tool.ruff.format]
@@ -112,7 +112,7 @@ extraPaths = [
 ]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.12"
+pythonVersion = "3.13"
 useLibraryCodeForTypes = true
 typeCheckingMode = "standard"
 
