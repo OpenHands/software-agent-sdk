@@ -126,7 +126,6 @@ When adding non-Python files (JS, templates, etc.) loaded at runtime, add them t
 <GH_API_NOTES>
 ## Replying to GitHub inline review threads (PR review comments)
 
-- There is no working `.../pulls/comments/{comment_id}/replies` endpoint for PR review comments.
 - To reply in an existing inline thread, use the REST API:
   - List comments (incl. inline threads):
     - `GET /repos/{owner}/{repo}/pulls/{pull_number}/comments?per_page=100`
