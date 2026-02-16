@@ -260,7 +260,7 @@ def test_update_skills_repository_clone_new(tmp_path):
         "openhands.sdk.git.utils.subprocess.run", return_value=mock_result
     ) as mock_run:
         repo_path = update_skills_repository(
-            "https://github.com/OpenHands/skills",
+            "https://github.com/OpenHands/extensions",
             "main",
             cache_dir,
         )
@@ -295,7 +295,7 @@ def test_update_skills_repository_update_existing(tmp_path):
         "openhands.sdk.git.utils.subprocess.run", return_value=mock_result
     ) as mock_run:
         result_path = update_skills_repository(
-            "https://github.com/OpenHands/skills",
+            "https://github.com/OpenHands/extensions",
             "main",
             cache_dir,
         )
@@ -321,7 +321,7 @@ def test_update_skills_repository_clone_timeout(tmp_path):
         side_effect=subprocess.TimeoutExpired("git", 60),
     ) as mock_run:
         repo_path = update_skills_repository(
-            "https://github.com/OpenHands/skills",
+            "https://github.com/OpenHands/extensions",
             "main",
             cache_dir,
         )
@@ -352,7 +352,7 @@ def test_update_skills_repository_update_fails_uses_cache(tmp_path):
         return_value=mock_result,
     ):
         result_path = update_skills_repository(
-            "https://github.com/OpenHands/skills",
+            "https://github.com/OpenHands/extensions",
             "main",
             cache_dir,
         )
