@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""
-Example: PR Review Agent
+"""PR Review Agent - Automated code review using OpenHands.
+
+Supports two modes:
+- 'sdk': Run locally using the SDK (default)
+- 'cloud': Run in OpenHands Cloud using OpenHandsCloudWorkspace
 
 This script runs OpenHands agent to review a pull request and provide
 fine-grained review comments. The agent has full repository access and uses
@@ -22,7 +25,8 @@ The agent also considers previous review context including:
 Designed for use with GitHub Actions workflows triggered by PR labels.
 
 Environment Variables:
-    LLM_API_KEY: API key for the LLM (required)
+    MODE: Review mode ('sdk' or 'cloud', default: 'sdk')
+    LLM_API_KEY: API key for the LLM (required for SDK mode)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for API access (required)
@@ -33,6 +37,8 @@ Environment Variables:
     PR_HEAD_BRANCH: Head branch name (required)
     REPO_NAME: Repository name in format owner/repo (required)
     REVIEW_STYLE: Review style ('standard' or 'roasted', default: 'standard')
+    OPENHANDS_CLOUD_API_KEY: API key for OpenHands Cloud (required for cloud mode)
+    OPENHANDS_CLOUD_API_URL: OpenHands Cloud API URL (default: https://app.all-hands.dev)
 
 For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
@@ -50,13 +56,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from lmnr import Laminar
-
-from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
-from openhands.sdk.context.skills import load_project_skills
-from openhands.sdk.conversation import get_agent_final_response
+from openhands.sdk import get_logger
 from openhands.sdk.git.utils import run_git_command
-from openhands.tools.preset.default import get_default_condenser, get_default_tools
 
 
 # Add the script directory to Python path so we can import prompt.py
@@ -78,6 +79,7 @@ MAX_PAGINATION_TIME = 120
 
 
 def _get_required_env(name: str) -> str:
+    """Get a required environment variable or raise ValueError."""
     value = os.getenv(name)
     if not value:
         raise ValueError(f"{name} environment variable is required")
@@ -617,6 +619,7 @@ def get_pr_diff_via_github_api(pr_number: str) -> str:
 
 
 def truncate_text(diff_text: str, max_total: int = MAX_TOTAL_DIFF) -> str:
+    """Truncate text to a maximum length."""
     if len(diff_text) <= max_total:
         return diff_text
 
@@ -641,8 +644,7 @@ def get_truncated_pr_diff() -> str:
 
 
 def get_head_commit_sha(repo_dir: Path | None = None) -> str:
-    """
-    Get the SHA of the HEAD commit.
+    """Get the SHA of the HEAD commit.
 
     Args:
         repo_dir: Path to the repository (defaults to cwd)
@@ -656,13 +658,9 @@ def get_head_commit_sha(repo_dir: Path | None = None) -> str:
     return run_git_command(["git", "rev-parse", "HEAD"], repo_dir).strip()
 
 
-def main():
-    """Run the PR review agent."""
-    logger.info("Starting PR review process...")
-
-    # Validate required environment variables
-    required_vars = [
-        "LLM_API_KEY",
+def _get_required_vars_for_mode(mode: str) -> list[str]:
+    """Get required environment variables for the given mode."""
+    common_vars = [
         "GITHUB_TOKEN",
         "PR_NUMBER",
         "PR_TITLE",
@@ -670,42 +668,64 @@ def main():
         "PR_HEAD_BRANCH",
         "REPO_NAME",
     ]
+    if mode == "cloud":
+        # Cloud mode only requires OPENHANDS_CLOUD_API_KEY
+        # LLM is configured in the user's OpenHands Cloud account
+        return ["OPENHANDS_CLOUD_API_KEY"] + common_vars
+    # SDK mode requires LLM_API_KEY for local LLM execution
+    return ["LLM_API_KEY"] + common_vars
 
+
+def _get_pr_info() -> dict[str, Any]:
+    """Get PR information from environment variables."""
+    return {
+        "number": os.getenv("PR_NUMBER", ""),
+        "title": os.getenv("PR_TITLE", ""),
+        "body": os.getenv("PR_BODY", ""),
+        "repo_name": os.getenv("REPO_NAME", ""),
+        "base_branch": os.getenv("PR_BASE_BRANCH", ""),
+        "head_branch": os.getenv("PR_HEAD_BRANCH", ""),
+    }
+
+
+def main() -> None:
+    """Run the PR review agent."""
+    logger.info("Starting PR review process...")
+
+    mode = os.getenv("MODE", "sdk").lower()
+    if mode not in ("sdk", "cloud"):
+        logger.warning(f"Unknown MODE '{mode}', using 'sdk'")
+        mode = "sdk"
+    logger.info(f"Mode: {mode}")
+
+    required_vars = _get_required_vars_for_mode(mode)
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     if missing_vars:
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
-    github_token = os.getenv("GITHUB_TOKEN")
+    pr_info = _get_pr_info()
+    logger.info(f"Reviewing PR #{pr_info['number']}: {pr_info['title']}")
 
-    # Get PR information
-    pr_info = {
-        "number": os.getenv("PR_NUMBER"),
-        "title": os.getenv("PR_TITLE"),
-        "body": os.getenv("PR_BODY", ""),
-        "repo_name": os.getenv("REPO_NAME"),
-        "base_branch": os.getenv("PR_BASE_BRANCH"),
-        "head_branch": os.getenv("PR_HEAD_BRANCH"),
-    }
-
-    # Get review style - default to standard
     review_style = os.getenv("REVIEW_STYLE", "standard").lower()
     if review_style not in ("standard", "roasted"):
         logger.warning(f"Unknown REVIEW_STYLE '{review_style}', using 'standard'")
         review_style = "standard"
-
-    logger.info(f"Reviewing PR #{pr_info['number']}: {pr_info['title']}")
     logger.info(f"Review style: {review_style}")
 
+    skill_trigger = (
+        "/codereview" if review_style == "standard" else "/codereview-roasted"
+    )
+
     try:
+        # Get PR diff and context (used by SDK mode, cloud mode fetches its own)
         pr_diff = get_truncated_pr_diff()
         logger.info(f"Got PR diff with {len(pr_diff)} characters")
 
-        # Get the HEAD commit SHA for inline comments
         commit_id = get_head_commit_sha()
         logger.info(f"HEAD commit SHA: {commit_id}")
 
-        # Fetch previous review context (comments, threads, resolution status)
+        # Fetch previous review context
         pr_number = pr_info.get("number", "")
         review_context = get_pr_review_context(pr_number)
         if review_context:
@@ -714,10 +734,6 @@ def main():
             logger.info("No previous review context found")
 
         # Create the review prompt using the template
-        # Include the skill trigger keyword to activate the appropriate skill
-        skill_trigger = (
-            "/codereview" if review_style == "standard" else "/codereview-roasted"
-        )
         prompt = format_prompt(
             skill_trigger=skill_trigger,
             title=pr_info.get("title", "N/A"),
@@ -731,164 +747,20 @@ def main():
             review_context=review_context,
         )
 
-        # Configure LLM
-        api_key = os.getenv("LLM_API_KEY")
-        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-        base_url = os.getenv("LLM_BASE_URL")
-
-        llm_config = {
-            "model": model,
-            "api_key": api_key,
-            "usage_id": "pr_review_agent",
-            "drop_params": True,
-        }
-
-        if base_url:
-            llm_config["base_url"] = base_url
-
-        llm = LLM(**llm_config)
-
-        # Get the current working directory as workspace
-        cwd = os.getcwd()
-
-        # Load project-specific skills from the repository being reviewed
-        # This includes AGENTS.md, .cursorrules, and skills from .agents/skills/
-        project_skills = load_project_skills(cwd)
-        logger.info(
-            f"Loaded {len(project_skills)} project skills: "
-            f"{[s.name for s in project_skills]}"
-        )
-
-        # Create AgentContext with public skills enabled and project skills
-        # Public skills from https://github.com/OpenHands/skills include:
-        # - /codereview: Standard code review skill
-        # - /codereview-roasted: Linus Torvalds style brutally honest review
-        # Project skills include repo-specific guidance (AGENTS.md, etc.)
-        agent_context = AgentContext(
-            load_public_skills=True,
-            skills=project_skills,
-        )
-
-        # Create agent with default tools and agent context
-        # Note: agent_context must be passed at initialization since Agent is frozen
-        agent = Agent(
-            llm=llm,
-            tools=get_default_tools(enable_browser=False),  # CLI mode - no browser
-            agent_context=agent_context,
-            system_prompt_kwargs={"cli_mode": True},
-            condenser=get_default_condenser(
-                llm=llm.model_copy(update={"usage_id": "condenser"})
-            ),
-        )
-
-        # Create conversation with secrets for masking
-        # These secrets will be masked in agent output to prevent accidental exposure
-        secrets = {}
-        if api_key:
-            secrets["LLM_API_KEY"] = api_key
-        if github_token:
-            secrets["GITHUB_TOKEN"] = github_token
-
-        conversation = Conversation(
-            agent=agent,
-            workspace=cwd,
-            secrets=secrets,
-        )
-
-        logger.info("Starting PR review analysis...")
-        logger.info("Agent received the PR diff in the initial message")
         logger.info(f"Using skill trigger: {skill_trigger}")
-        logger.info("Agent will post inline review comments directly via GitHub API")
 
-        # Send the prompt and run the agent
-        # The agent will analyze the code and post inline review comments
-        # directly to the PR using the GitHub API
-        conversation.send_message(prompt)
-        conversation.run()
-
-        # The agent should have posted review comments via GitHub API
-        # Log the final response for debugging purposes
-        review_content = get_agent_final_response(conversation.state.events)
-        if review_content:
-            logger.info(f"Agent final response: {len(review_content)} characters")
-
-        # Print cost information for CI output
-        metrics = conversation.conversation_stats.get_combined_metrics()
-        print("\n=== PR Review Cost Summary ===")
-        print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
-        if metrics.accumulated_token_usage:
-            token_usage = metrics.accumulated_token_usage
-            print(f"Prompt Tokens: {token_usage.prompt_tokens}")
-            print(f"Completion Tokens: {token_usage.completion_tokens}")
-            if token_usage.cache_read_tokens > 0:
-                print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
-            if token_usage.cache_write_tokens > 0:
-                print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
-
-        # Capture and store trace context for delayed evaluation
-        # When the PR is merged/closed, we can use this context to add the
-        # evaluation span to the same trace, enabling signals to analyze both
-        # the original review and evaluation together.
-        # Note: Laminar methods gracefully handle the uninitialized case by
-        # returning None or early-returning, so no try/except needed.
-        trace_id = Laminar.get_trace_id()
-        # Use model_dump(mode='json') to ensure UUIDs are serialized as strings
-        # for JSON compatibility. get_laminar_span_context_dict() returns UUID
-        # objects which are not JSON serializable.
-        laminar_span_context = Laminar.get_laminar_span_context()
-        span_context = (
-            laminar_span_context.model_dump(mode="json")
-            if laminar_span_context
-            else None
-        )
-
-        if trace_id and laminar_span_context:
-            # Set trace metadata within an active span context
-            # Using start_as_current_span with parent_span_context to continue the trace
-            with Laminar.start_as_current_span(
-                name="pr-review-metadata",
-                parent_span_context=laminar_span_context,
-            ) as _:
-                # Set trace metadata within this active span context
-                pr_url = f"https://github.com/{pr_info['repo_name']}/pull/{pr_info['number']}"
-                Laminar.set_trace_metadata(
-                    {
-                        "pr_number": pr_info["number"],
-                        "repo_name": pr_info["repo_name"],
-                        "pr_url": pr_url,
-                        "workflow_phase": "review",
-                        "review_style": review_style,
-                    }
-                )
-
-            # Store trace context in file for GitHub artifact upload
-            # This allows the evaluation workflow to add its span to this trace
-            # The span_context includes trace_id, span_id, and span_path needed
-            # to continue the trace across separate workflow runs.
-            trace_data = {
-                "trace_id": str(trace_id),
-                "span_context": span_context,
-                "pr_number": pr_info["number"],
-                "repo_name": pr_info["repo_name"],
-                "commit_id": commit_id,
-                "review_style": review_style,
-            }
-            with open("laminar_trace_info.json", "w") as f:
-                json.dump(trace_data, f, indent=2)
-            logger.info(f"Laminar trace ID: {trace_id}")
-            if span_context:
-                logger.info("Laminar span context captured for trace continuation")
-            print("\n=== Laminar Trace ===")
-            print(f"Trace ID: {trace_id}")
-
-            # Ensure trace is flushed to Laminar before workflow ends
-            Laminar.flush()
+        # Import and run the appropriate mode
+        if mode == "cloud":
+            from utils.cloud_mode import run_agent_review
         else:
-            logger.warning(
-                "No Laminar trace ID found - observability may not be enabled"
-            )
+            from utils.sdk_mode import run_agent_review
 
-        logger.info("PR review completed successfully")
+        run_agent_review(
+            prompt=prompt,
+            pr_info=pr_info,
+            commit_id=commit_id,
+            review_style=review_style,
+        )
 
     except Exception as e:
         logger.error(f"PR review failed: {e}")
