@@ -56,15 +56,23 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "claude-4.6-opus": {
+        "id": "claude-4.6-opus",
+        "display_name": "Claude 4.6 Opus",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-6",
+            "temperature": 0.0,
+        },
+    },
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
-        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-pro-preview"},
+        "llm_config": {"model": "litellm_proxy/gemini-3-pro-preview"},
     },
     "gemini-3-flash": {
         "id": "gemini-3-flash",
         "display_name": "Gemini 3 Flash",
-        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-flash-preview"},
+        "llm_config": {"model": "litellm_proxy/gemini-3-flash-preview"},
     },
     "gpt-5.2": {
         "id": "gpt-5.2",
@@ -89,10 +97,24 @@ MODELS = {
         "display_name": "MiniMax M2",
         "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
     },
+    "minimax-m2.5": {
+        "id": "minimax-m2.5",
+        "display_name": "MiniMax M2.5",
+        "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.5"},
+    },
     "minimax-m2.1": {
         "id": "minimax-m2.1",
         "display_name": "MiniMax M2.1",
         "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
+    },
+    "jade-spark-2862": {
+        "id": "jade-spark-2862",
+        "display_name": "Jade Spark 2862",
+        "llm_config": {
+            "model": "litellm_proxy/jade-spark-2862",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
     },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
@@ -117,7 +139,33 @@ MODELS = {
     "glm-4.7": {
         "id": "glm-4.7",
         "display_name": "GLM-4.7",
-        "llm_config": {"model": "litellm_proxy/openrouter/z-ai/glm-4.7"},
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-4.7",
+            # OpenRouter glm-4.7 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
+    },
+    "glm-5": {
+        "id": "glm-5",
+        "display_name": "GLM-5",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5",
+        },
+    },
+    "qwen3-coder-next": {
+        "id": "qwen3-coder-next",
+        "display_name": "Qwen3 Coder Next",
+        "llm_config": {"model": "litellm_proxy/openrouter/qwen/qwen3-coder-next"},
+    },
+    "qwen3-coder-30b-a3b-instruct": {
+        "id": "qwen3-coder-30b-a3b-instruct",
+        "display_name": "Qwen3 Coder 30B A3B Instruct",
+        "llm_config": {"model": "litellm_proxy/Qwen3-Coder-30B-A3B-Instruct"},
+    },
+    "gpt-oss-20b": {
+        "id": "gpt-oss-20b",
+        "display_name": "GPT OSS 20B",
+        "llm_config": {"model": "litellm_proxy/gpt-oss-20b"},
     },
 }
 

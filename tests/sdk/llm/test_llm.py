@@ -950,4 +950,98 @@ def test_unmapped_model_with_logging_enabled(mock_transport):
         assert token_usage["context_window"] == 0
 
 
+# Context Window Validation Tests
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_llm_raises_error_on_small_context_window(mock_get_model_info):
+    """Test that LLM raises error when context window is too small."""
+    from openhands.sdk.llm.exceptions import LLMContextWindowTooSmallError
+    from openhands.sdk.llm.llm import MIN_CONTEXT_WINDOW_TOKENS
+
+    mock_get_model_info.return_value = {"max_input_tokens": 2048}
+
+    with pytest.raises(LLMContextWindowTooSmallError) as exc_info:
+        LLM(
+            model="ollama/test-model",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        )
+
+    assert exc_info.value.context_window == 2048
+    assert exc_info.value.min_required == MIN_CONTEXT_WINDOW_TOKENS
+    assert "docs.openhands.dev" in str(exc_info.value)
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
+    """Test that ALLOW_SHORT_CONTEXT_WINDOWS env var bypasses validation."""
+    import os
+
+    from openhands.sdk.llm.llm import ENV_ALLOW_SHORT_CONTEXT_WINDOWS
+
+    mock_get_model_info.return_value = {"max_input_tokens": 2048}
+
+    # Set the environment variable
+    with patch.dict(os.environ, {ENV_ALLOW_SHORT_CONTEXT_WINDOWS: "true"}):
+        # Should not raise
+        llm = LLM(
+            model="ollama/test-model",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        )
+        assert llm.max_input_tokens == 2048
+
+
+# LLM model_copy Tests
+
+
+def test_llm_model_copy_preserves_configuration():
+    """Test that model_copy preserves the LLM configuration."""
+    # Create original LLM with custom configuration
+    original = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="original-llm",
+        temperature=0.5,
+        max_output_tokens=1000,
+        caching_prompt=False,
+    )
+
+    # Copy with updated usage_id
+    copied = original.model_copy(update={"usage_id": "copied-llm"})
+
+    # Verify configuration is preserved
+    assert copied.model == original.model
+    assert copied.temperature == original.temperature
+    assert copied.max_output_tokens == original.max_output_tokens
+    assert copied.caching_prompt == original.caching_prompt
+
+    # Verify usage_id was updated
+    assert copied.usage_id == "copied-llm"
+    assert original.usage_id == "original-llm"
+
+
+def test_llm_reset_metrics():
+    """Test that reset_metrics creates fresh metrics and telemetry instances."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Access metrics to trigger lazy initialization
+    original_metrics = llm.metrics
+    original_telemetry = llm.telemetry
+    original_metrics.add_cost(1.0)
+
+    # Reset metrics
+    llm.reset_metrics()
+
+    # Verify new metrics are created
+    assert llm.metrics is not original_metrics
+    assert llm.telemetry is not original_telemetry
+    assert llm.metrics.accumulated_cost == 0.0
+
+
 # LLM Registry Tests

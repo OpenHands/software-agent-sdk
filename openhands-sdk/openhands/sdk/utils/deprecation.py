@@ -159,8 +159,51 @@ def warn_cleanup(
         warnings.warn(message, UserWarning, stacklevel=stacklevel)
 
 
+def handle_deprecated_model_fields(
+    data: Any,
+    deprecated_fields: tuple[str, ...],
+) -> Any:
+    """Remove deprecated fields from Pydantic model input data.
+
+    This function silently removes deprecated fields from the input data so that
+    Pydantic models with extra="forbid" don't reject them. This is used for
+    permanent backward compatibility when loading old serialized data (e.g., events
+    from older SDK versions).
+
+    Unlike warn_deprecated(), this function does NOT emit warnings because these
+    fields are kept permanently for backward compatibility and will never be removed.
+    This ensures old conversations and events can always be loaded without errors.
+
+    Args:
+        data: The input data (typically a dict from deserialization)
+        deprecated_fields: Tuple of field names that are deprecated
+
+    Returns:
+        The data with deprecated fields removed
+
+    Example:
+        class MyModel(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+
+            @model_validator(mode="before")
+            @classmethod
+            def _handle_deprecated(cls, data: Any) -> Any:
+                return handle_deprecated_model_fields(
+                    data, ("old_field", "another_old_field")
+                )
+    """  # noqa: E501
+    if not isinstance(data, dict):
+        return data
+
+    for field in deprecated_fields:
+        data.pop(field, None)
+
+    return data
+
+
 __all__ = [
     "deprecated",
     "warn_deprecated",
     "warn_cleanup",
+    "handle_deprecated_model_fields",
 ]
