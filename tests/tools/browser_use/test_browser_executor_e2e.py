@@ -674,7 +674,7 @@ class TestBrowserExecutorE2E:
                         pass
 
     def test_start_recording(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test starting a recording session."""
         # Navigate to the test page first
@@ -689,7 +689,7 @@ class TestBrowserExecutorE2E:
         assert "Recording started" in result.text
 
     def test_stop_recording_without_start(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test stopping recording when not started returns appropriate message."""
         # Navigate to the test page
@@ -708,7 +708,7 @@ class TestBrowserExecutorE2E:
         assert "Error" in result.text or "Not recording" in result.text
 
     def test_recording_captures_events(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test that recording captures browser events."""
         # Navigate to the test page
