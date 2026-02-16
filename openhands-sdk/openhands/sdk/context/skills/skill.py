@@ -656,6 +656,7 @@ def load_skills_from_dir(
 
 # Default user skills directories (in order of priority)
 USER_SKILLS_DIRS = [
+    Path.home() / ".agents" / "skills",
     Path.home() / ".openhands" / "skills",
     Path.home() / ".openhands" / "microagents",  # Legacy support
 ]
@@ -664,9 +665,10 @@ USER_SKILLS_DIRS = [
 def load_user_skills() -> list[Skill]:
     """Load skills from user's home directory.
 
-    Searches for skills in ~/.openhands/skills/ and ~/.openhands/microagents/
-    (legacy). Skills from both directories are merged, with skills/ taking
-    precedence for duplicate names.
+    Searches for skills in ~/.agents/skills/, ~/.openhands/skills/, and
+    ~/.openhands/microagents/ (legacy). Skills from all directories are merged,
+    with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
+    names.
 
     Returns:
         List of Skill objects loaded from user directories.
