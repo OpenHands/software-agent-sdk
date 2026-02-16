@@ -69,7 +69,8 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
 - name: Run PR Review
   uses: ./.github/actions/pr-review
   with:
-      # LLM configuration
+      # LLM model(s) to use. Can be comma-separated for A/B testing
+      # - one model will be randomly selected per review
       llm-model: anthropic/claude-sonnet-4-5-20250929
       llm-base-url: ''
       # Review style: roasted (other option: standard)
@@ -184,7 +185,7 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `llm-model` | LLM model to use | No | `anthropic/claude-sonnet-4-5-20250929` |
+| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | No | `anthropic/claude-sonnet-4-5-20250929` |
 | `llm-base-url` | LLM base URL (optional) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
@@ -192,6 +193,34 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |
 | `lmnr-api-key` | Laminar API key for observability (optional) | No | - |
+
+## A/B Testing with Multiple Models
+
+The PR review workflow supports A/B testing different LLM models. When multiple models are specified, one is randomly selected for each review.
+
+### Configuration
+
+Specify multiple models as a comma-separated list in the `llm-model` parameter:
+
+```yaml
+- name: Run PR Review
+  uses: ./.github/actions/pr-review
+  with:
+      # Multiple models for A/B testing - one will be randomly selected
+      llm-model: 'litellm_proxy/claude-sonnet-4-5-20250929,litellm_proxy/gpt-4.1-2025-04-14'
+      llm-api-key: ${{ secrets.LLM_API_KEY }}
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Observability
+
+When Laminar observability is enabled, the selected model is automatically logged to the trace metadata:
+
+- **Trace metadata**: The `model` field is added to Laminar trace metadata
+- **Trace JSON**: The selected model is recorded in `laminar_trace_info.json`
+- **GitHub logs**: The selected model is printed to workflow logs
+
+This enables filtering and comparing review effectiveness across different models in Laminar dashboards.
 
 ## Review Evaluation (Observability)
 
