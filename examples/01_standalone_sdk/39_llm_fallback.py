@@ -29,7 +29,8 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 base_url = os.getenv("LLM_BASE_URL")
 primary_model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
 
-# Persist fallback profiles
+profile_dir = Path("~/.openhands/profiles").expanduser()
+profile_dir.mkdir(parents=True, exist_ok=True)
 profile_dir = Path("~/.openhands/profiles").mkdir(parents=True, exist_ok=True)
 store = LLMProfileStore(base_dir=profile_dir)
 
