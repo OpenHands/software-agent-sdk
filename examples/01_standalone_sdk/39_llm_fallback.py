@@ -13,7 +13,7 @@ This example:
 """
 
 import os
-from pathlib import Path
+import tempfile
 
 from pydantic import SecretStr
 
@@ -29,10 +29,10 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 base_url = os.getenv("LLM_BASE_URL")
 primary_model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
 
-profile_dir = Path("~/.openhands/profiles").expanduser()
-profile_dir.mkdir(parents=True, exist_ok=True)
-profile_dir = Path("~/.openhands/profiles").mkdir(parents=True, exist_ok=True)
-store = LLMProfileStore(base_dir=profile_dir)
+# Use a temporary directory so this example doesn't pollute your home folder.
+# In real usage you can omit base_dir to use the default (~/.openhands/profiles).
+profile_store_dir = tempfile.mkdtemp()
+store = LLMProfileStore(base_dir=profile_store_dir)
 
 fallback_1 = LLM(
     usage_id="fallback-1",
@@ -61,7 +61,7 @@ primary_llm = LLM(
     base_url=base_url,
     fallback_strategy=FallbackStrategy(
         fallback_llms=["fallback-1", "fallback-2"],
-        profile_store_dir=profile_dir,
+        profile_store_dir=profile_store_dir,
     ),
 )
 
