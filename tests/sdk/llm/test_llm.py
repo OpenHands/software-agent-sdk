@@ -96,6 +96,67 @@ def test_base_url_for_openhands_provider_with_custom_url(mock_get):
     mock_get.assert_called_once()
 
 
+def test_base_url_for_zai_coding_provider():
+    """Test that zai_coding/ prefix automatically sets base_url to coding API endpoint."""
+    llm = LLM(
+        model="zai_coding/glm-4.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-zai-coding-llm",
+    )
+    # Model should be rewritten to zai/ prefix for LiteLLM compatibility
+    assert llm.model == "zai/glm-4.5"
+    # Base URL should be set to the coding API endpoint
+    assert llm.base_url == "https://api.z.ai/api/coding/paas/v4"
+
+
+def test_base_url_for_zai_coding_provider_with_explicit_none():
+    """Test that zai_coding/ provider defaults base_url when explicitly set to None.
+
+    This simulates the CLI behavior where settings are saved to JSON with
+    base_url=null and then reloaded, ensuring the coding API URL is used.
+    """
+    llm = LLM(
+        model="zai_coding/glm-4.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-zai-coding-llm",
+        base_url=None,  # Explicitly set to None (like CLI saves to JSON)
+    )
+    assert llm.model == "zai/glm-4.5"
+    assert llm.base_url == "https://api.z.ai/api/coding/paas/v4"
+
+
+def test_base_url_for_zai_coding_provider_with_custom_url():
+    """Test that zai_coding/ provider respects custom base_url when provided."""
+    custom_url = "https://custom-api.example.com/"
+    llm = LLM(
+        model="zai_coding/glm-4.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-zai-coding-llm",
+        base_url=custom_url,
+    )
+    # Model should still be rewritten
+    assert llm.model == "zai/glm-4.5"
+    # Custom base_url should be respected
+    assert llm.base_url == custom_url
+
+
+def test_zai_coding_provider_model_rewrite():
+    """Test that zai_coding/ prefix is correctly rewritten to zai/ for LiteLLM."""
+    # Test with different model names
+    test_cases = [
+        ("zai_coding/glm-4.5", "zai/glm-4.5"),
+        ("zai_coding/glm-4-plus", "zai/glm-4-plus"),
+        ("zai_coding/codegeex-4", "zai/codegeex-4"),
+    ]
+    for input_model, expected_model in test_cases:
+        llm = LLM(
+            model=input_model,
+            api_key=SecretStr("test-key"),
+            usage_id="test-zai-coding-llm",
+        )
+        assert llm.model == expected_model, f"Expected {expected_model}, got {llm.model}"
+
+
 def test_token_usage_add():
     """Test that TokenUsage instances can be added together."""
     # Create two TokenUsage instances

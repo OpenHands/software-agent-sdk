@@ -416,6 +416,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
+        # Provider rewrite: zai_coding/* -> zai/* with coding API endpoint
+        # Z.AI has two different API endpoints:
+        # - General API: https://api.z.ai/api/paas/v4 (for standard subscriptions)
+        # - Coding Plan API: https://api.z.ai/api/coding/paas/v4 (for coding plan subscriptions)
+        # LiteLLM's zai/ prefix uses the general API by default, but coding plan users
+        # need the dedicated endpoint. See: https://github.com/All-Hands-AI/OpenHands/issues/12268
+        if model_val.startswith("zai_coding/"):
+            model_name = model_val.removeprefix("zai_coding/")
+            d["model"] = f"zai/{model_name}"
+            d["base_url"] = d.get("base_url") or "https://api.z.ai/api/coding/paas/v4"
+
         # HF doesn't support the OpenAI default value for top_p (1)
         if model_val.startswith("huggingface"):
             if d.get("top_p", 1.0) == 1.0:
