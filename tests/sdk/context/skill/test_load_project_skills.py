@@ -257,12 +257,7 @@ def test_load_project_skills_one_bad_skill_does_not_break_others(tmp_path):
     # Create a valid skill
     valid_skill = skills_dir / "valid-skill.md"
     valid_skill.write_text(
-        "---\n"
-        "name: valid-skill\n"
-        "triggers:\n"
-        "  - valid\n"
-        "---\n"
-        "This is a valid skill."
+        "---\nname: valid-skill\ntriggers:\n  - valid\n---\nThis is a valid skill."
     )
 
     # Create an invalid skill (name doesn't match filename)
@@ -278,12 +273,7 @@ def test_load_project_skills_one_bad_skill_does_not_break_others(tmp_path):
     # Create another valid skill
     another_valid = skills_dir / "another-valid.md"
     another_valid.write_text(
-        "---\n"
-        "name: another-valid\n"
-        "triggers:\n"
-        "  - another\n"
-        "---\n"
-        "Another valid skill."
+        "---\nname: another-valid\ntriggers:\n  - another\n---\nAnother valid skill."
     )
 
     # Should load valid skills despite the invalid one
