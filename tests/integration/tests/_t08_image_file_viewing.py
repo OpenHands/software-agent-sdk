@@ -5,9 +5,6 @@ import urllib.request
 
 from openhands.sdk import get_logger
 from openhands.sdk.conversation.response_utils import get_agent_final_response
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 
 
@@ -37,16 +34,6 @@ class ImageFileViewingTest(BaseIntegrationTest):
                 "This test requires a vision-capable LLM model. "
                 "Please use a model that supports image input."
             )
-
-    @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        register_tool("TerminalTool", TerminalTool)
-        register_tool("FileEditorTool", FileEditorTool)
-        return [
-            Tool(name="TerminalTool"),
-            Tool(name="FileEditorTool"),
-        ]
 
     def setup(self) -> None:
         """Download the OpenHands logo for the agent to analyze."""
