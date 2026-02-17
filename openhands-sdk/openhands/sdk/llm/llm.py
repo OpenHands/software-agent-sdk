@@ -351,6 +351,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description=(
             "Optional fallback strategy for trying alternate LLMs on transient "
             "failure. Construct with FallbackStrategy(fallback_llms=[...])."
+            "Excluded from serialization; must be reconfigured after load."
         ),
         exclude=True,
     )
