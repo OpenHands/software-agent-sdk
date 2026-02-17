@@ -88,13 +88,15 @@ on:
             tool_preset:
                 description: >-
                     Tool preset for file editing. 'default' uses FileEditorTool,
-                    'gemini' uses read_file/write_file/edit/list_directory.
+                    'gemini' uses read_file/write_file/edit/list_directory,
+                    'gpt5' uses apply_patch tool.
                 required: false
                 default: default
                 type: choice
                 options:
                     - default
                     - gemini
+                    - gpt5
                     - planning
 
 

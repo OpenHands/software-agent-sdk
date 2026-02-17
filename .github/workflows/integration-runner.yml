@@ -33,14 +33,16 @@ on:
                 type: string
             tool_preset:
                 description: >-
-                    Tool preset for file editing (default, gemini, planning).
-                    'default' uses FileEditorTool, 'gemini' uses read_file/write_file/edit/list_directory.
+                    Tool preset for file editing (default, gemini, gpt5, planning).
+                    'default' uses FileEditorTool, 'gemini' uses read_file/write_file/edit/list_directory,
+                    'gpt5' uses apply_patch tool.
                 required: false
                 default: default
                 type: choice
                 options:
                     - default
                     - gemini
+                    - gpt5
                     - planning
     schedule:
         - cron: 30 22 * * * # Runs at 10:30pm UTC every day
