@@ -316,3 +316,78 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     )
     assert total_breaks == 1
     assert undeprecated == 1
+
+
+def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
+    """Unresolvable aliases should not abort checking other exports.
+
+    This mirrors a real-world scenario for packages that re-export SDK symbols.
+    """
+
+    ws_cfg = PackageConfig(
+        package="openhands.workspace",
+        distribution="openhands-workspace",
+        source_dir="openhands-workspace",
+    )
+
+    def _write_workspace(root: str, *, include_method: bool) -> None:
+        pkg = tmp_path / root / "openhands" / "workspace"
+        pkg.mkdir(parents=True)
+        (tmp_path / root / "openhands" / "__init__.py").write_text("")
+
+        content = (
+            "from openhands.sdk.workspace import PlatformType\n\n"
+            "__all__ = [\n"
+            "    'PlatformType',\n"
+            "    'Foo',\n"
+            "]\n\n"
+            "class Foo:\n"
+        )
+        if include_method:
+            content += "    def bar(self) -> int:\n        return 1\n"
+        else:
+            content += "    pass\n"
+
+        (pkg / "__init__.py").write_text(content)
+
+    _write_workspace("old", include_method=True)
+    _write_workspace("new", include_method=False)
+
+    old_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, ws_cfg, include=["openhands.workspace"]
+    )
+
+    assert total_breaks >= 1
+    assert undeprecated == 1
+
+
+def test_old_release_without_all_is_baselined(tmp_path, capsys):
+    """If the previous release lacks __all__, we should skip export diffs."""
+
+    tools_cfg = PackageConfig(
+        package="openhands.tools",
+        distribution="openhands-tools",
+        source_dir="openhands-tools",
+    )
+
+    old_pkg = tmp_path / "old" / "openhands" / "tools"
+    old_pkg.mkdir(parents=True)
+    (tmp_path / "old" / "openhands" / "__init__.py").write_text("")
+    (old_pkg / "__init__.py").write_text("class Foo: ...\n")
+
+    _write_pkg_init(tmp_path, "new", ["Foo"], module_parts=("openhands", "tools"))
+
+    old_root = griffe.load("openhands.tools", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.tools", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, tools_cfg, include=["openhands.tools"]
+    )
+    assert total_breaks == 0
+    assert undeprecated == 0
+
+    out = capsys.readouterr().out
+    assert "Previous release does not define a static openhands.tools.__all__" in out

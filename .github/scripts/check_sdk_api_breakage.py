@@ -160,40 +160,69 @@ def _collect_breakages_pairs(
     Returns:
         (breakages, undeprecated_removals)
     """
-    import griffe
-    from griffe import BreakageKind, ExplanationStyle, Kind
 
-    breakages = []
+    import griffe
+    from griffe import Alias, AliasResolutionError, BreakageKind, ExplanationStyle, Kind
+
+    breakages: list[object] = []
     undeprecated_removals = 0
 
     for old, new in objs:
-        for br in griffe.find_breaking_changes(old, new):
-            obj = getattr(br, "obj", None)
-            if not getattr(obj, "is_public", True):
-                continue
+        try:
+            for br in griffe.find_breaking_changes(old, new):
+                obj = getattr(br, "obj", None)
+                if not getattr(obj, "is_public", True):
+                    continue
 
-            print(br.explain(style=ExplanationStyle.GITHUB))
-            breakages.append(br)
+                print(br.explain(style=ExplanationStyle.GITHUB))
+                breakages.append(br)
 
-            if br.kind != BreakageKind.OBJECT_REMOVED:
-                continue
+                if br.kind != BreakageKind.OBJECT_REMOVED:
+                    continue
 
-            parent = getattr(obj, "parent", None)
-            if getattr(parent, "kind", None) != Kind.CLASS:
-                continue
+                parent = getattr(obj, "parent", None)
+                if getattr(parent, "kind", None) != Kind.CLASS:
+                    continue
 
-            feature = f"{parent.name}.{obj.name}"
-            if (
-                feature not in deprecated.qualified
-                and parent.name not in deprecated.top_level
-            ):
+                feature = f"{parent.name}.{obj.name}"
+                if (
+                    feature not in deprecated.qualified
+                    and parent.name not in deprecated.top_level
+                ):
+                    print(
+                        f"::error title={title}::Removed '{feature}' without prior "
+                        "deprecation. Mark it with @deprecated(...) or "
+                        f"warn_deprecated('{feature}', ...) for at least one release "
+                        "before removing."
+                    )
+                    undeprecated_removals += 1
+        except AliasResolutionError as e:
+            if isinstance(old, Alias) or isinstance(new, Alias):
+                old_target = old.target_path if isinstance(old, Alias) else None
+                new_target = new.target_path if isinstance(new, Alias) else None
+                if old_target != new_target:
+                    name = getattr(old, "name", None) or getattr(
+                        new, "name", "<unknown>"
+                    )
+                    print(
+                        f"::warning title={title}::Alias target changed for '{name}': "
+                        f"{old_target!r} -> {new_target!r}"
+                    )
+                    breakages.append(
+                        {
+                            "kind": "ALIAS_TARGET_CHANGED",
+                            "name": name,
+                            "old": old_target,
+                            "new": new_target,
+                        }
+                    )
+            else:
                 print(
-                    f"::error title={title}::Removed '{feature}' without prior "
-                    "deprecation. Mark it with @deprecated(...) or "
-                    f"warn_deprecated('{feature}', ...) for at least one release "
-                    "before removing."
+                    f"::notice title={title}::Skipping symbol comparison due to "
+                    f"unresolved alias: {e}"
                 )
-                undeprecated_removals += 1
+        except Exception as e:
+            print(f"::warning title={title}::Failed to compute breakages: {e}")
 
     return breakages, undeprecated_removals
 
@@ -468,22 +497,40 @@ def _compute_breakages(
     total_breaks = 0
     undeprecated_removals = 0
 
-    deprecated = DeprecatedSymbols()
+    source_root = _get_source_root(old_root)
+    deprecated = (
+        _find_deprecated_symbols(source_root) if source_root else DeprecatedSymbols()
+    )
+
+    old_exports: set[str] = set()
+    new_exports: set[str] = set()
 
     try:
         old_mod = _resolve_griffe_object(old_root, pkg, root_package=pkg)
         new_mod = _resolve_griffe_object(new_root, pkg, root_package=pkg)
-        old_exports = _extract_exported_names(old_mod)
-        new_exports = _extract_exported_names(new_mod)
+    except Exception as e:
+        print(f"::warning title={title}::Failed to resolve root module '{pkg}': {e}")
+        old_mod = None
+        new_mod = None
 
+    if old_mod is not None and new_mod is not None:
+        try:
+            old_exports = _extract_exported_names(old_mod)
+        except ValueError as e:
+            print(
+                f"::notice title={title}::Previous release does not define a "
+                f"static {pkg}.__all__; export-based checks will be skipped: {e}"
+            )
+        except Exception as e:
+            print(f"::warning title={title}::Failed to read previous __all__: {e}")
+
+        try:
+            new_exports = _extract_exported_names(new_mod)
+        except Exception as e:
+            print(f"::warning title={title}::Failed to read current __all__: {e}")
+
+    if old_exports and new_exports:
         removed = sorted(old_exports - new_exports)
-
-        source_root = _get_source_root(old_root)
-        deprecated = (
-            _find_deprecated_symbols(source_root)
-            if source_root
-            else DeprecatedSymbols()
-        )
 
         # Check deprecation-before-removal policy (exports)
         if removed:
@@ -519,8 +566,6 @@ def _compute_breakages(
         )
         total_breaks += len(breakages)
         undeprecated_removals += undeprecated_members
-    except Exception as e:
-        print(f"::warning title={title}::Failed to process top-level exports: {e}")
 
     extra_pairs: list[tuple[object, object]] = []
     for path in include:
