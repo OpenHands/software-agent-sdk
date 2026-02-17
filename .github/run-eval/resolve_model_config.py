@@ -17,11 +17,7 @@ import os
 import sys
 from typing import Any
 
-try:
-    import litellm
-    HAS_LITELLM = True
-except ImportError:
-    HAS_LITELLM = False
+import litellm
 
 
 # Model configurations dictionary
@@ -239,9 +235,6 @@ def test_model(
     Returns:
         Tuple of (success: bool, message: str)
     """
-    if not HAS_LITELLM:
-        return True, "⚠ Skipped (litellm not installed)"
-
     llm_config = model_config.get("llm_config", {})
     model_name = llm_config.get("model", "unknown")
     display_name = model_config.get("display_name", model_name)
@@ -249,7 +242,7 @@ def test_model(
     try:
         # Build kwargs from llm_config, excluding 'model' which is passed separately
         kwargs = {k: v for k, v in llm_config.items() if k != "model"}
-        
+
         response = litellm.completion(
             model=model_name,
             messages=[{"role": "user", "content": "Say 'OK' if you can read this."}],
@@ -299,10 +292,6 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
         print("Preflight check: SKIPPED (LLM_API_KEY not set)")
         return True
 
-    if not HAS_LITELLM:
-        print("Preflight check: SKIPPED (litellm not installed)")
-        return True
-
     print(f"\nPreflight LLM check for {len(models)} model(s)...")
     print("-" * 50)
 
@@ -318,7 +307,7 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
     if all_passed:
         print(f"✓ All {len(models)} model(s) passed preflight check\n")
     else:
-        print(f"✗ Some models failed preflight check")
+        print("✗ Some models failed preflight check")
         print("Evaluation aborted to avoid wasting compute resources.\n")
 
     return all_passed
