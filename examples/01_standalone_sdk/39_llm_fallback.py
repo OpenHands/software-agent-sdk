@@ -27,7 +27,7 @@ from openhands.tools.terminal import TerminalTool
 api_key = os.getenv("LLM_API_KEY", None)
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 base_url = os.getenv("LLM_BASE_URL")
-primary_model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+primary_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 
 # Use a temporary directory so this example doesn't pollute your home folder.
 # In real usage you can omit base_dir to use the default (~/.openhands/profiles).
