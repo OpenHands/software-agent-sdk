@@ -364,8 +364,8 @@ def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
     assert undeprecated == 1
 
 
-def test_old_release_without_all_is_baselined(tmp_path, capsys):
-    """If the previous release lacks __all__, we should skip export diffs."""
+def test_old_release_without_all_emits_warning_and_is_skipped(tmp_path, capsys):
+    """If the previous release lacks __all__, we should warn and skip export diffs."""
 
     tools_cfg = PackageConfig(
         package="openhands.tools",
@@ -390,4 +390,7 @@ def test_old_release_without_all_is_baselined(tmp_path, capsys):
     assert undeprecated == 0
 
     out = capsys.readouterr().out
-    assert "Previous release does not define a static openhands.tools.__all__" in out
+    assert (
+        "::warning title=openhands-tools API::Previous release does not define a "
+        "static openhands.tools.__all__" in out
+    )

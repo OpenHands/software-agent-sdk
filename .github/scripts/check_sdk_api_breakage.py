@@ -518,7 +518,7 @@ def _compute_breakages(
             old_exports = _extract_exported_names(old_mod)
         except ValueError as e:
             print(
-                f"::notice title={title}::Previous release does not define a "
+                f"::warning title={title}::Previous release does not define a "
                 f"static {pkg}.__all__; export-based checks will be skipped: {e}"
             )
         except Exception as e:
