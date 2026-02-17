@@ -44,19 +44,22 @@ def get_tools_for_preset(
     Returns:
         List of Tool instances for the given preset.
     """
-    if preset == "gemini":
-        from openhands.tools.preset.gemini import get_gemini_tools
-
-        return get_gemini_tools(enable_browser=enable_browser)
-    elif preset == "planning":
-        from openhands.tools.preset.planning import get_planning_tools
-
-        # Planning preset doesn't support browser tools
-        return get_planning_tools()
-    else:  # default
-        from openhands.tools.preset.default import get_default_tools
-
-        return get_default_tools(enable_browser=enable_browser)
+    match preset:
+        case "gemini":
+            from openhands.tools.preset.gemini import get_gemini_tools
+            
+            return get_gemini_tools(enable_browser=enable_browser)
+        case "planning":
+            from openhands.tools.preset.planning import get_planning_tools
+            
+            # Planning preset doesn't support browser tools
+            return get_planning_tools()
+        case "default":
+            from openhands.tools.preset.default import get_default_tools
+            
+            return get_default_tools(enable_browser=enable_browser)
+        case _:
+            raise ValueError(f"Unknown `preset` parameter: {preset}")
 
 
 class SkipTest(Exception):
