@@ -100,15 +100,9 @@ class TaskState:
             self.status = TaskStatus.ERROR
 
     def stop(self) -> None:
-    def stop(self) -> None:
         """Stop the task."""
         with self._lock:
             if self.status == TaskStatus.RUNNING:
-                self.status = TaskStatus.STOPPED
-                self.result = None
-                self.error = None
-        if self.status == TaskStatus.RUNNING:
-            with self._lock:
                 self.status = TaskStatus.STOPPED
                 self.result = None
                 self.error = None
@@ -124,12 +118,12 @@ class DelegationManager:
     TaskStopExecutor to coordinate task state.
 
     Args:
-        max_children: Maximum number of child tasks to create.
+        max_tasks: Maximum number of child tasks to create.
     """
 
-    def __init__(self, max_children: int = 5):
-        assert max_children > 0, "max_children must be > 0"
-        self._max_children: int = max_children
+    def __init__(self, max_tasks: int = 10):
+        assert max_tasks > 0, "max_tasks must be > 0"
+        self._max_tasks: int = max_tasks
         self._parent_conversation: LocalConversation | None = None
         self._tasks: dict[str, TaskState] = {}
         self._lock = threading.RLock()
@@ -189,13 +183,12 @@ class DelegationManager:
             task = self._resume_task(prompt, resume, run_in_background)
             return task
 
-        # Check capacity
         with self._lock:
-            active_count = sum(1 for t in self._tasks.values() if t.status == "running")
-            if active_count >= self._max_children:
+            active_count = len(self._tasks)
+            if active_count >= self._max_tasks:
                 raise ValueError(
                     f"Cannot start new task. Already have {active_count} "
-                    f"running tasks, maximum is {self._max_children}"
+                    f"tasks, maximum is {self._max_tasks}"
                 )
 
         # create a new agent assigned with the given task
