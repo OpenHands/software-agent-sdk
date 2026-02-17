@@ -54,7 +54,7 @@ class SkillsRequest(BaseModel):
     """Request body for loading skills."""
 
     load_public: bool = Field(
-        default=True, description="Load public skills from OpenHands/skills repo"
+        default=True, description="Load public skills from OpenHands/extensions repo"
     )
     load_user: bool = Field(
         default=True, description="Load user skills from ~/.openhands/skills/"
@@ -110,7 +110,7 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
     Skills are loaded from multiple sources and merged with the following
     precedence (later overrides earlier for duplicate names):
     1. Sandbox skills (lowest) - Exposed URLs from sandbox
-    2. Public skills - From GitHub OpenHands/skills repository
+    2. Public skills - From GitHub OpenHands/extensions repository
     3. User skills - From ~/.openhands/skills/
     4. Organization skills - From {org}/.openhands or equivalent
     5. Project skills (highest) - From {workspace}/.openhands/skills/
@@ -169,7 +169,7 @@ def sync_skills() -> SyncResponse:
     """Force refresh of public skills from GitHub repository.
 
     This triggers a git pull on the cached skills repository to get
-    the latest skills from the OpenHands/skills repository.
+    the latest skills from the OpenHands/extensions repository.
 
     Returns:
         SyncResponse indicating success or failure.

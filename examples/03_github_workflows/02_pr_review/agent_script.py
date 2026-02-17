@@ -760,7 +760,7 @@ def main():
         )
 
         # Create AgentContext with public skills enabled and project skills
-        # Public skills from https://github.com/OpenHands/skills include:
+        # Public skills from https://github.com/OpenHands/extensions include:
         # - /codereview: Standard code review skill
         # - /codereview-roasted: Linus Torvalds style brutally honest review
         # Project skills include repo-specific guidance (AGENTS.md, etc.)
@@ -850,12 +850,16 @@ def main():
                 parent_span_context=laminar_span_context,
             ) as _:
                 # Set trace metadata within this active span context
+                # Include model for A/B testing analysis
+                pr_url = f"https://github.com/{pr_info['repo_name']}/pull/{pr_info['number']}"
                 Laminar.set_trace_metadata(
                     {
                         "pr_number": pr_info["number"],
                         "repo_name": pr_info["repo_name"],
+                        "pr_url": pr_url,
                         "workflow_phase": "review",
                         "review_style": review_style,
+                        "model": model,
                     }
                 )
 
@@ -870,10 +874,12 @@ def main():
                 "repo_name": pr_info["repo_name"],
                 "commit_id": commit_id,
                 "review_style": review_style,
+                "model": model,
             }
             with open("laminar_trace_info.json", "w") as f:
                 json.dump(trace_data, f, indent=2)
             logger.info(f"Laminar trace ID: {trace_id}")
+            logger.info(f"Model used: {model}")
             if span_context:
                 logger.info("Laminar span context captured for trace continuation")
             print("\n=== Laminar Trace ===")

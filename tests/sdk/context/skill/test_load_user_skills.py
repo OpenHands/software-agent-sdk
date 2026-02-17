@@ -19,11 +19,15 @@ def temp_user_skills_dir():
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
 
+        # Create .agents/skills directory
+        agents_dir = root / ".agents" / "skills"
+        agents_dir.mkdir(parents=True)
+
         # Create .openhands/skills directory
         skills_dir = root / ".openhands" / "skills"
         skills_dir.mkdir(parents=True)
 
-        yield root, skills_dir
+        yield root, agents_dir, skills_dir
 
 
 @pytest.fixture
@@ -56,9 +60,33 @@ def test_load_user_skills_no_directories(tmp_path):
         skill.USER_SKILLS_DIRS = original_dirs
 
 
+def test_load_user_skills_with_agents_directory(temp_user_skills_dir):
+    """Test load_user_skills loads from .agents/skills directory."""
+    root, agents_dir, _ = temp_user_skills_dir
+
+    # Create a test skill file
+    skill_file = agents_dir / "agent_skill.md"
+    skill_file.write_text(
+        "---\nname: agent_skill\ntriggers:\n  - agent\n---\nAgent skill content."
+    )
+
+    from openhands.sdk.context.skills import skill
+
+    original_dirs = skill.USER_SKILLS_DIRS
+    try:
+        skill.USER_SKILLS_DIRS = [agents_dir]
+        skills = load_user_skills()
+        assert len(skills) == 1
+        assert skills[0].name == "agent_skill"
+        assert skills[0].content == "Agent skill content."
+        assert isinstance(skills[0].trigger, KeywordTrigger)
+    finally:
+        skill.USER_SKILLS_DIRS = original_dirs
+
+
 def test_load_user_skills_with_skills_directory(temp_user_skills_dir):
-    """Test load_user_skills loads from skills directory."""
-    root, skills_dir = temp_user_skills_dir
+    """Test load_user_skills loads from .openhands/skills directory."""
+    root, _, skills_dir = temp_user_skills_dir
 
     # Create a test skill file
     skill_file = skills_dir / "test_skill.md"
@@ -109,45 +137,51 @@ def test_load_user_skills_with_microagents_directory(temp_microagents_dir):
 
 
 def test_load_user_skills_priority_order(tmp_path):
-    """Test that skills/ directory takes precedence over microagents/."""
-    # Create both directories
+    """Test precedence .agents/skills > .openhands/skills > microagents."""
+    agents_dir = tmp_path / ".agents" / "skills"
     skills_dir = tmp_path / ".openhands" / "skills"
     microagents_dir = tmp_path / ".openhands" / "microagents"
+    agents_dir.mkdir(parents=True)
     skills_dir.mkdir(parents=True)
     microagents_dir.mkdir(parents=True)
 
-    # Create duplicate skill in both directories
-    (skills_dir / "duplicate.md").write_text(
-        "---\nname: duplicate\n---\nFrom skills directory."
+    (agents_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom .agents/skills."
     )
-
+    (skills_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom .openhands/skills."
+    )
     (microagents_dir / "duplicate.md").write_text(
-        "---\nname: duplicate\n---\nFrom microagents directory."
+        "---\nname: duplicate\n---\nFrom .openhands/microagents."
     )
 
     from openhands.sdk.context.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
-        skill.USER_SKILLS_DIRS = [skills_dir, microagents_dir]
+        skill.USER_SKILLS_DIRS = [agents_dir, skills_dir, microagents_dir]
         skills = load_user_skills()
         assert len(skills) == 1
         assert skills[0].name == "duplicate"
-        # Should be from skills directory (takes precedence)
-        assert skills[0].content == "From skills directory."
+        assert skills[0].content == "From .agents/skills."
     finally:
         skill.USER_SKILLS_DIRS = original_dirs
 
 
-def test_load_user_skills_both_directories(tmp_path):
-    """Test loading unique skills from both directories."""
-    # Create both directories
+def test_load_user_skills_merges_all_directories(tmp_path):
+    """Test loading unique skills from .agents/skills, .openhands/skills,
+    microagents.
+    """
+    agents_dir = tmp_path / ".agents" / "skills"
     skills_dir = tmp_path / ".openhands" / "skills"
     microagents_dir = tmp_path / ".openhands" / "microagents"
+    agents_dir.mkdir(parents=True)
     skills_dir.mkdir(parents=True)
     microagents_dir.mkdir(parents=True)
 
-    # Create different skills in each directory
+    (agents_dir / "agent_skill.md").write_text(
+        "---\nname: agent_skill\n---\nAgent skill content."
+    )
     (skills_dir / "skill1.md").write_text("---\nname: skill1\n---\nSkill 1 content.")
     (microagents_dir / "skill2.md").write_text(
         "---\nname: skill2\n---\nSkill 2 content."
@@ -157,18 +191,18 @@ def test_load_user_skills_both_directories(tmp_path):
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
-        skill.USER_SKILLS_DIRS = [skills_dir, microagents_dir]
+        skill.USER_SKILLS_DIRS = [agents_dir, skills_dir, microagents_dir]
         skills = load_user_skills()
-        assert len(skills) == 2
+        assert len(skills) == 3
         skill_names = {s.name for s in skills}
-        assert skill_names == {"skill1", "skill2"}
+        assert skill_names == {"agent_skill", "skill1", "skill2"}
     finally:
         skill.USER_SKILLS_DIRS = original_dirs
 
 
 def test_load_user_skills_handles_errors_gracefully(temp_user_skills_dir):
     """Test that errors in loading are handled gracefully."""
-    root, skills_dir = temp_user_skills_dir
+    root, _, skills_dir = temp_user_skills_dir
 
     # Create an invalid skill file
     invalid_file = skills_dir / "invalid.md"
@@ -193,7 +227,7 @@ def test_load_user_skills_handles_errors_gracefully(temp_user_skills_dir):
 
 def test_agent_context_loads_user_skills_by_default(temp_user_skills_dir):
     """Test that AgentContext loads user skills when enabled."""
-    root, skills_dir = temp_user_skills_dir
+    root, _, skills_dir = temp_user_skills_dir
 
     # Create a test skill
     skill_file = skills_dir / "auto_skill.md"
@@ -219,7 +253,7 @@ def test_agent_context_can_disable_user_skills_loading():
 
 def test_agent_context_merges_explicit_and_user_skills(temp_user_skills_dir):
     """Test that explicit skills and user skills are merged correctly."""
-    root, skills_dir = temp_user_skills_dir
+    root, _, skills_dir = temp_user_skills_dir
 
     # Create user skill
     user_skill_file = skills_dir / "user_skill.md"
@@ -248,7 +282,7 @@ def test_agent_context_merges_explicit_and_user_skills(temp_user_skills_dir):
 
 def test_agent_context_explicit_skill_takes_precedence(temp_user_skills_dir):
     """Test that explicitly provided skills take precedence over user skills."""
-    root, skills_dir = temp_user_skills_dir
+    root, _, skills_dir = temp_user_skills_dir
 
     # Create user skill with same name
     user_skill_file = skills_dir / "duplicate.md"
