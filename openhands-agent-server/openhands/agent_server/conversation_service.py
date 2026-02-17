@@ -249,9 +249,18 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
+        request_dump = request.model_dump(mode="json", context={"expose_secrets": True})
+        logger.info(
+            f"Creating StoredConversation - request has hook_config: "
+            f"{request_dump.get('hook_config') is not None}, "
+            f"hook_config value: {request_dump.get('hook_config')}"
+        )
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(mode="json", context={"expose_secrets": True}),
+            **request_dump,
+        )
+        logger.info(
+            f"StoredConversation created - stored.hook_config: {stored.hook_config}"
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message

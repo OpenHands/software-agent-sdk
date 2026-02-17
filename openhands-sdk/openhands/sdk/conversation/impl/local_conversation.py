@@ -363,6 +363,9 @@ class LocalConversation(BaseConversation):
 
         # Combine explicit hook_config with plugin hooks
         # Explicit hooks run first (before plugin hooks)
+        logger.info(
+            f"_ensure_plugins_loaded: _pending_hook_config={self._pending_hook_config}"
+        )
         final_hook_config = self._pending_hook_config
         if all_plugin_hooks:
             plugin_hooks = HookConfig.merge(all_plugin_hooks)
@@ -374,6 +377,8 @@ class LocalConversation(BaseConversation):
                 else:
                     final_hook_config = plugin_hooks
 
+        logger.info(f"_ensure_plugins_loaded: final_hook_config={final_hook_config}")
+
         # Set up hook processor with the combined config
         if final_hook_config is not None:
             self._hook_processor, self._on_event = create_hook_callback(
@@ -384,6 +389,14 @@ class LocalConversation(BaseConversation):
             )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
+            has_stop = (
+                final_hook_config.stop is not None and len(final_hook_config.stop) > 0
+            )
+            logger.info(
+                f"Hook processor created successfully, has_stop_hooks={has_stop}"
+            )
+        else:
+            logger.info("No hook_config provided, _hook_processor will be None")
 
         self._plugins_loaded = True
 
@@ -532,9 +545,18 @@ class LocalConversation(BaseConversation):
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
+                        logger.info(
+                            f"Agent FINISHED - checking stop hooks. "
+                            f"_hook_processor={self._hook_processor is not None}"
+                        )
                         if self._hook_processor is not None:
+                            logger.info("Running stop hooks...")
                             should_stop, feedback = self._hook_processor.run_stop(
                                 reason="agent_finished"
+                            )
+                            logger.info(
+                                f"Stop hook result: should_stop={should_stop}, "
+                                f"feedback={feedback}"
                             )
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
@@ -552,6 +574,8 @@ class LocalConversation(BaseConversation):
                                     ConversationExecutionStatus.RUNNING
                                 )
                                 continue
+                        else:
+                            logger.info("No hook_processor - skipping stop hooks")
                         # No hooks or hooks allowed stopping
                         break
 
