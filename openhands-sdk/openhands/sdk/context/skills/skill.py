@@ -656,6 +656,7 @@ def load_skills_from_dir(
 
 # Default user skills directories (in order of priority)
 USER_SKILLS_DIRS = [
+    Path.home() / ".agents" / "skills",
     Path.home() / ".openhands" / "skills",
     Path.home() / ".openhands" / "microagents",  # Legacy support
 ]
@@ -664,9 +665,10 @@ USER_SKILLS_DIRS = [
 def load_user_skills() -> list[Skill]:
     """Load skills from user's home directory.
 
-    Searches for skills in ~/.openhands/skills/ and ~/.openhands/microagents/
-    (legacy). Skills from both directories are merged, with skills/ taking
-    precedence for duplicate names.
+    Searches for skills in ~/.agents/skills/, ~/.openhands/skills/, and
+    ~/.openhands/microagents/ (legacy). Skills from all directories are merged,
+    with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
+    names.
 
     Returns:
         List of Skill objects loaded from user directories.
@@ -796,7 +798,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
 
 # Public skills repository configuration
-PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
+PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 PUBLIC_SKILLS_BRANCH = "main"
 
 
@@ -807,7 +809,7 @@ def load_public_skills(
     """Load skills from the public OpenHands skills repository.
 
     This function maintains a local git clone of the public skills registry at
-    https://github.com/OpenHands/skills. On first run, it clones the repository
+    https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
