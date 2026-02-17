@@ -94,19 +94,19 @@ class TestTaskState:
 
 
 class TestClaudeDelegationManager:
-    """Tests for ClaudeDelegationManager."""
+    """Tests for DelegationManager."""
 
     def test_init_defaults(self):
         """Manager should initialize with correct defaults."""
         manager = DelegationManager()
-        assert manager._max_children == 5
+        assert manager._max_tasks == 5
         assert len(manager._tasks) == 0
         assert manager._parent_conversation is None
 
     def test_init_custom_max_children(self):
-        """Manager should accept custom max_children."""
-        manager = DelegationManager(max_children=3)
-        assert manager._max_children == 3
+        """Manager should accept custom max_tasks argument."""
+        manager = DelegationManager(max_tasks=3)
+        assert manager._max_tasks == 3
 
     def test_generate_task_id(self):
         """Generated task IDs should be unique and prefixed."""

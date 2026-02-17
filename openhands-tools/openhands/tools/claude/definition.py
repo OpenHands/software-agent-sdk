@@ -338,7 +338,7 @@ class ClaudeDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
         # Create a manager that will be shared between the 3 tools
         # the tools are actually a way for the main agent to
         # communicate with the manager
-        manager = DelegationManager(max_children=max_children)
+        manager = DelegationManager(max_tasks=max_children)
         task_executor = TaskExecutor(manager=manager)
         task_output_executor = TaskOutputExecutor(manager=manager)
         task_stop_executor = TaskStopExecutor(manager=manager)
