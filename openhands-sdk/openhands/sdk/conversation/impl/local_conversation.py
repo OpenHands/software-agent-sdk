@@ -379,8 +379,8 @@ class LocalConversation(BaseConversation):
             # Use project_dir from hook_config if set (for hooks loaded from a
             # repository subdirectory), otherwise fall back to workspace.working_dir.
             # This ensures relative paths in hook commands resolve correctly.
-            hook_working_dir = (
-                final_hook_config.project_dir or str(self.workspace.working_dir)
+            hook_working_dir = final_hook_config.project_dir or str(
+                self.workspace.working_dir
             )
             logger.info(
                 f"Setting up hooks with working_dir={hook_working_dir} "
