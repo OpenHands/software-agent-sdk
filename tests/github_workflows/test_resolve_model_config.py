@@ -253,3 +253,4 @@ def test_glm_5_config():
     assert model["id"] == "glm-5"
     assert model["display_name"] == "GLM-5"
     assert model["llm_config"]["model"] == "litellm_proxy/openrouter/z-ai/glm-5"
+    assert model["llm_config"]["disable_vision"] is True
