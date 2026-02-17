@@ -231,10 +231,16 @@ jobs:
                   printf 'pr_number=%s\n' "$PR_NUMBER" >> "$GITHUB_OUTPUT"
                   printf 'trigger_desc=%s\n' "$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
 
-            - name: Resolve model configurations
+            - name: Install dependencies
+              run: |
+                  pip install litellm
+
+            - name: Resolve model configurations and verify availability
               id: resolve-models
               env:
                   MODEL_IDS: ${{ steps.params.outputs.models }}
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
               run: |
                   python3 .github/run-eval/resolve_model_config.py
 
