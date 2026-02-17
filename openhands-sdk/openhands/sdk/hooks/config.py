@@ -323,12 +323,14 @@ class HookConfig(BaseModel):
             return None
 
         # Collect all matchers by event type using the canonical field list
-        collected: dict[str, list] = {field: [] for field in HOOK_EVENT_FIELDS}
+        collected: dict[str, list[HookMatcher]] = {
+            field: [] for field in HOOK_EVENT_FIELDS
+        }
         for config in configs:
             for field in HOOK_EVENT_FIELDS:
                 collected[field].extend(getattr(config, field))
 
-        merged = cls(**collected)
+        merged = cls(**collected)  # type: ignore[arg-type]
 
         # Return None if the merged config is empty
         if merged.is_empty():
