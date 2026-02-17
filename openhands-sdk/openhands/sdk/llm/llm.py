@@ -21,6 +21,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
@@ -37,7 +38,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     import litellm
 
-from typing import cast
+from typing import Final, cast
 
 from litellm import (
     ChatCompletionToolParam,
@@ -103,7 +104,7 @@ __all__ = ["LLM"]
 
 
 # Exceptions we retry on
-LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
+LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     APIConnectionError,
     RateLimitError,
     ServiceUnavailableError,
@@ -115,10 +116,10 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
 # Minimum context window size required for OpenHands to function properly.
 # Based on typical usage: system prompt (~2k) + conversation history (~4k)
 # + tool definitions (~2k) + working memory (~8k) = ~16k minimum.
-MIN_CONTEXT_WINDOW_TOKENS = 16384
+MIN_CONTEXT_WINDOW_TOKENS: Final[int] = 16384
 
 # Environment variable to override the minimum context window check
-ENV_ALLOW_SHORT_CONTEXT_WINDOWS = "ALLOW_SHORT_CONTEXT_WINDOWS"
+ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -345,6 +346,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ),
     )
 
+    fallback_strategy: FallbackStrategy | None = Field(
+        default=None,
+        description=(
+            "Optional fallback strategy for trying alternate LLMs on transient "
+            "failure. Construct with FallbackStrategy(fallback_llms=[...])."
+            "Excluded from serialization; must be reconfigured after load."
+        ),
+        exclude=True,
+    )
+
     # =========================================================================
     # Internal fields (excluded from dumps)
     # =========================================================================
@@ -562,6 +573,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._metrics = None
         self._telemetry = None
 
+    def _handle_error(
+        self,
+        error: Exception,
+        fallback_call_fn: Callable[[LLM], LLMResponse],
+    ) -> LLMResponse:
+        """Handle an error from completion/responses: try fallback, then map and raise.
+
+        Must be called from within an except block. Either returns an
+        LLMResponse (fallback succeeded) or re-raises (mapped or original).
+        """
+        assert self._telemetry is not None
+        self._telemetry.on_error(error)
+        if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
+            result = self.fallback_strategy.try_fallback(
+                primary_model=self.model,
+                primary_error=error,
+                primary_metrics=self.metrics,
+                call_fn=fallback_call_fn,
+            )
+            if result is not None:
+                return result
+        mapped = map_provider_exception(error)
+        if mapped is not error:
+            raise mapped from error
+        raise
+
     def completion(
         self,
         messages: list[Message],
@@ -714,11 +751,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=resp
             )
         except Exception as e:
-            self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            return self._handle_error(
+                e,
+                lambda fb: fb.completion(
+                    messages,
+                    tools,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    on_token,
+                ),
+            )
 
     # =========================================================================
     # Responses API (v1)
@@ -915,11 +957,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=resp
             )
         except Exception as e:
-            self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            return self._handle_error(
+                e,
+                lambda fb: fb.responses(
+                    messages,
+                    tools,
+                    include,
+                    store,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    on_token,
+                ),
+            )
 
     # =========================================================================
     # Transport + helpers
