@@ -376,9 +376,19 @@ class LocalConversation(BaseConversation):
 
         # Set up hook processor with the combined config
         if final_hook_config is not None:
+            # Use project_dir from hook_config if set (for hooks loaded from a
+            # repository subdirectory), otherwise fall back to workspace.working_dir.
+            # This ensures relative paths in hook commands resolve correctly.
+            hook_working_dir = (
+                final_hook_config.project_dir or str(self.workspace.working_dir)
+            )
+            logger.info(
+                f"Setting up hooks with working_dir={hook_working_dir} "
+                f"(project_dir={final_hook_config.project_dir})"
+            )
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
-                working_dir=str(self.workspace.working_dir),
+                working_dir=hook_working_dir,
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
             )

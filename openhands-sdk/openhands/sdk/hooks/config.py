@@ -145,6 +145,14 @@ class HookConfig(BaseModel):
         default_factory=list,
         description="Hooks that run when the agent attempts to stop",
     )
+    project_dir: str | None = Field(
+        default=None,
+        description=(
+            "Project directory where hooks are located. When set, hook commands "
+            "are executed with this directory as the working directory. This is "
+            "automatically set when loading hooks from a workspace subdirectory."
+        ),
+    )
 
     def is_empty(self) -> bool:
         """Check if this config has no hooks configured."""
