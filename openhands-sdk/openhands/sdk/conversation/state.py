@@ -16,6 +16,7 @@ from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.types import EventID
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -24,6 +25,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -129,6 +131,17 @@ class ConversationState(OpenHandsModel):
         description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
     )
 
+    # Track the most recent user MessageEvent ID to avoid event log scans.
+    last_user_message_id: EventID | None = Field(
+        default=None,
+        description=(
+            "Most recent user MessageEvent id for hook block checks. "
+            "Updated when user messages are emitted so Agent.step can pop "
+            "blocked_messages without scanning the event log. If None, "
+            "hook-blocked checks are skipped (legacy conversations)."
+        ),
+    )
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -139,6 +152,16 @@ class ConversationState(OpenHandsModel):
     secret_registry: SecretRegistry = Field(
         default_factory=SecretRegistry,
         description="Registry for handling secrets and sensitive data",
+    )
+
+    # Agent-specific runtime state (simple dict for flexibility)
+    agent_state: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary for agent-specific runtime state that persists across "
+        "iterations. Agents can store feature-specific state using string keys. "
+        "To trigger autosave, always reassign: "
+        "state.agent_state = {**state.agent_state, key: value}. "
+        "See https://docs.openhands.dev/sdk/guides/convo-persistence#how-state-persistence-works",
     )
 
     # ===== Private attrs (NOT Fields) =====
@@ -157,9 +180,24 @@ class ConversationState(OpenHandsModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
-        """Handle legacy 'secrets_manager' field name for backward compatibility."""
-        if isinstance(data, dict) and "secrets_manager" in data:
+    def _handle_legacy_fields(cls, data: Any) -> Any:
+        """Handle legacy field names for backward compatibility."""
+        if not isinstance(data, dict):
+            return data
+
+        # Handle legacy 'secrets_manager' field name
+        if "secrets_manager" in data:
+            warn_deprecated(
+                "ConversationState.secrets_manager",
+                deprecated_in="1.12.0",
+                removed_in="1.15.0",
+                details=(
+                    "The 'secrets_manager' field has been renamed to "
+                    "'secret_registry'. Please update your code to use "
+                    "'secret_registry' instead."
+                ),
+                stacklevel=4,
+            )
             data["secret_registry"] = data.pop("secrets_manager")
         return data
 

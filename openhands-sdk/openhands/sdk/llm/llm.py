@@ -74,6 +74,7 @@ from litellm.utils import (
 )
 
 from openhands.sdk.llm.exceptions import (
+    LLMContextWindowTooSmallError,
     LLMNoResponseError,
     map_provider_exception,
 )
@@ -110,6 +111,14 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     InternalServerError,
     LLMNoResponseError,
 )
+
+# Minimum context window size required for OpenHands to function properly.
+# Based on typical usage: system prompt (~2k) + conversation history (~4k)
+# + tool definitions (~2k) + working memory (~8k) = ~16k minimum.
+MIN_CONTEXT_WINDOW_TOKENS = 16384
+
+# Environment variable to override the minimum context window check
+ENV_ALLOW_SHORT_CONTEXT_WINDOWS = "ALLOW_SHORT_CONTEXT_WINDOWS"
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -495,9 +504,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> cost = llm.metrics.accumulated_cost
             >>> print(f"Total cost: ${cost}")
         """
-        assert self._metrics is not None, (
-            "Metrics should be initialized after model validation"
-        )
+        if self._metrics is None:
+            self._metrics = Metrics(model_name=self.model)
         return self._metrics
 
     @property
@@ -510,9 +518,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Example:
             >>> llm.telemetry.set_log_completions_callback(my_callback)
         """
-        assert self._telemetry is not None, (
-            "Telemetry should be initialized after model validation"
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self.metrics,
+            )
         return self._telemetry
 
     @property
@@ -531,6 +545,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+
+    def reset_metrics(self) -> None:
+        """Reset metrics and telemetry to fresh instances.
+
+        This is used by the LLMRegistry to ensure each registered LLM has
+        independent metrics, preventing metrics from being shared between
+        LLMs that were created via model_copy().
+
+        When an LLM is copied (e.g., to create a condenser LLM from an agent LLM),
+        Pydantic's model_copy() does a shallow copy of private attributes by default,
+        causing the original and copied LLM to share the same Metrics object.
+        This method allows the registry to fix this by resetting metrics to None,
+        which will be lazily recreated when accessed.
+        """
+        self._metrics = None
+        self._telemetry = None
 
     def completion(
         self,
@@ -989,6 +1019,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ):
             self.max_input_tokens = self._model_info.get("max_input_tokens")
 
+        # Validate context window size
+        self._validate_context_window_size()
+
         if self.max_output_tokens is None:
             if any(
                 m in self.model
@@ -1020,6 +1053,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     self.max_output_tokens,
                     self.model,
                 )
+
+    def _validate_context_window_size(self) -> None:
+        """Validate that the context window is large enough for OpenHands."""
+        # Allow override via environment variable
+        if os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower() in (
+            "true",
+            "1",
+            "yes",
+        ):
+            return
+
+        # Unknown context window - cannot validate
+        if self.max_input_tokens is None:
+            return
+
+        # Check minimum requirement
+        if self.max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
+            raise LLMContextWindowTooSmallError(
+                self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
+            )
 
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
@@ -1082,11 +1135,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _apply_prompt_caching(self, messages: list[Message]) -> None:
         """Applies caching breakpoints to the messages.
 
-        For new Anthropic API, we only need to mark the last user or
-          tool message as cacheable.
+        For Anthropic's prefix caching, we mark specific content blocks:
+        1. System message: Mark the first block (static prompt) for caching.
+           If there are two blocks (static + dynamic), only the first is marked
+           to enable cross-conversation cache sharing.
+        2. Last user/tool message: Mark for caching to extend the cache prefix.
         """
         if len(messages) > 0 and messages[0].role == "system":
-            messages[0].content[-1].cache_prompt = True
+            sys_content = messages[0].content
+            if len(sys_content) >= 2:
+                # Two-block structure: static (index 0) + dynamic (index 1)
+                # Mark only the static block; ensure dynamic is unmarked
+                sys_content[0].cache_prompt = True
+                sys_content[1].cache_prompt = False
+            elif len(sys_content) == 1:
+                # Single block: mark it for caching
+                sys_content[0].cache_prompt = True
+
         # NOTE: this is only needed for anthropic
         for message in reversed(messages):
             if message.role in ("user", "tool"):

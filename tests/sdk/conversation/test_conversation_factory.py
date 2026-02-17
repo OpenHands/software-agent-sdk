@@ -16,7 +16,7 @@ from openhands.sdk.workspace import RemoteWorkspace
 @pytest.fixture
 def agent():
     """Create test agent."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("test-key"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
     return Agent(llm=llm, tools=[])
 
 

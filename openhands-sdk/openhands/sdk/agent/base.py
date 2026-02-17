@@ -30,6 +30,7 @@ from openhands.sdk.tool import (
     ToolDefinition,
     resolve_tool,
 )
+from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -205,8 +206,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return self.__class__.__name__
 
     @property
-    def system_message(self) -> str:
-        """Compute system message on-demand to maintain statelessness."""
+    def static_system_message(self) -> str:
+        """Compute the static portion of the system message.
+
+        This returns only the base system prompt template without any dynamic
+        per-conversation context. This static portion can be cached and reused
+        across conversations for better prompt caching efficiency.
+
+        Returns:
+            The rendered system prompt template without dynamic context.
+        """
         template_kwargs = dict(self.system_prompt_kwargs)
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
@@ -222,18 +231,69 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:
                 template_kwargs["model_variant"] = spec.variant
-        system_message = render_template(
+        return render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
             **template_kwargs,
         )
-        if self.agent_context:
-            _system_message_suffix = self.agent_context.get_system_message_suffix(
-                llm_model=self.llm.model,
-                llm_model_canonical=self.llm.model_canonical_name,
-            )
-            if _system_message_suffix:
-                system_message += "\n\n" + _system_message_suffix
+
+    @property
+    def dynamic_context(self) -> str | None:
+        """Get the dynamic per-conversation context.
+
+        This returns the context that varies between conversations, such as:
+        - Repository information and skills
+        - Runtime information (hosts, working directory)
+        - User-specific secrets and settings
+        - Conversation instructions
+
+        This content should NOT be included in the cached system prompt to enable
+        cross-conversation cache sharing. Instead, it is sent as a second content
+        block (without a cache marker) inside the system message.
+
+        Returns:
+            The dynamic context string, or None if no context is configured.
+        """
+        if not self.agent_context:
+            return None
+        return self.agent_context.get_system_message_suffix(
+            llm_model=self.llm.model,
+            llm_model_canonical=self.llm.model_canonical_name,
+        )
+
+    @property
+    @deprecated(
+        deprecated_in="1.11.0",
+        removed_in="1.16.0",
+        details=(
+            "Use static_system_message for the cacheable system prompt and "
+            "dynamic_context for per-conversation content. Using system_message "
+            "DISABLES cross-conversation prompt caching because it combines static "
+            "and dynamic content into a single string."
+        ),
+    )
+    def system_message(self) -> str:
+        """Return the combined system message (static + dynamic).
+
+        .. deprecated:: 1.11.0
+            Use :attr:`static_system_message` for the cacheable system prompt and
+            :attr:`dynamic_context` for per-conversation content. This separation
+            enables cross-conversation prompt caching. Will be removed in 1.16.0.
+
+        .. warning::
+            Using this property DISABLES cross-conversation prompt caching because
+            it combines static and dynamic content into a single string. Use
+            :attr:`static_system_message` and :attr:`dynamic_context` separately
+            to enable caching.
+        """
+        logger.warning(
+            "Accessing system_message property disables cross-conversation prompt "
+            "caching. Use static_system_message and dynamic_context separately."
+        )
+        system_message = self.static_system_message
+        dynamic = self.dynamic_context
+        if dynamic:
+            system_message += "\n\n" + dynamic
         return system_message
 
     def init_state(

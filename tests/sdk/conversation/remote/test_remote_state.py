@@ -29,7 +29,7 @@ def conversation_id():
 @pytest.fixture
 def mock_agent():
     """Create a test agent."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("test-key"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
     return Agent(llm=llm, tools=[])
 
 
