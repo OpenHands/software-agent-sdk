@@ -1,0 +1,387 @@
+import threading
+import time
+from unittest.mock import MagicMock
+
+import pytest
+
+from openhands.tools.claude.definition import (
+    TaskAction,
+    TaskOutputAction,
+    TaskOutputObservation,
+    TaskStopAction,
+    TaskStopObservation,
+)
+from openhands.tools.claude.impl import (
+    DelegationManager,
+    TaskOutputExecutor,
+    TaskState,
+    TaskStatus,
+    TaskStopExecutor,
+)
+
+
+class TestTaskState:
+    """Tests for TaskState dataclass."""
+
+    def test_initial_state(self):
+        """TaskState should start with 'running' status."""
+        state = TaskState(
+            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
+        )
+        assert state.status == "running"
+        assert state.result is None
+        assert state.error is None
+        assert state.thread is None
+
+    def test_set_completed(self):
+        """set_completed should update status and result."""
+        state = TaskState(
+            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
+        )
+        state.set_completed("Done!")
+        assert state.status == "succeeded"
+        assert state.result == "Done!"
+        assert state.error is None
+
+    def test_set_error(self):
+        """set_error should update status, error, and result."""
+        state = TaskState(
+            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
+        )
+        state.set_error("Something went wrong")
+        assert state.status == "error"
+        assert state.error == "Something went wrong"
+        assert state.result is None
+
+    def test_thread_safety(self):
+        """set_completed and set_error should be thread-safe."""
+        state = TaskState(
+            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
+        )
+        errors = []
+
+        def set_completed():
+            try:
+                for _ in range(100):
+                    state.set_completed("result")
+            except Exception as e:
+                errors.append(e)
+
+        def set_error():
+            try:
+                for _ in range(100):
+                    state.set_error("error")
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=set_completed)
+        t2 = threading.Thread(target=set_error)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # check that the final task is not corrupted
+        assert len(errors) == 0
+        assert state.status in ("completed", "error")
+
+        if state.status == "error":
+            assert state.error == "error"
+            assert state.result is None
+        else:
+            assert state.error is None
+            assert state.result == "result"
+
+
+class TestClaudeDelegationManager:
+    """Tests for ClaudeDelegationManager."""
+
+    def test_init_defaults(self):
+        """Manager should initialize with correct defaults."""
+        manager = DelegationManager()
+        assert manager._max_children == 5
+        assert len(manager._tasks) == 0
+        assert manager._parent_conversation is None
+
+    def test_init_custom_max_children(self):
+        """Manager should accept custom max_children."""
+        manager = DelegationManager(max_children=3)
+        assert manager._max_children == 3
+
+    def test_generate_task_id(self):
+        """Generated task IDs should be unique and prefixed."""
+        manager = DelegationManager()
+        id1 = manager._generate_task_id()
+        id2 = manager._generate_task_id()
+
+        assert id1.startswith("task_")
+        assert id2.startswith("task_")
+        assert id1 != id2
+
+    def test_parent_conversation_raises_before_set(self):
+        """Accessing parent_conversation before first call should raise."""
+        manager = DelegationManager()
+        with pytest.raises(RuntimeError, match="Parent conversation not set"):
+            _ = manager.parent_conversation
+
+    def test_ensure_parent_sets_once(self):
+        """_ensure_parent should only set the parent on the first call."""
+        manager = DelegationManager()
+        conv1 = MagicMock()
+        conv2 = MagicMock()
+
+        manager._ensure_parent(conv1)
+        assert manager._parent_conversation is conv1
+
+        manager._ensure_parent(conv2)
+        assert manager._parent_conversation is conv1  # Still the first one
+
+    def test_get_task_output_unknown_task_raises(self):
+        """Getting output for unknown task should raise ValueError."""
+        manager = DelegationManager()
+        with pytest.raises(ValueError, match="not found"):
+            _ = manager.get_task_output("nonexistent_task")
+
+    def test_stop_task_unknown_returns_none(self):
+        """Stopping unknown task should return None."""
+        manager = DelegationManager()
+        result = manager.stop_task("nonexistent_task")
+        assert result is None
+
+    def test_stop_task_running(self):
+        """Stopping a running task should set status to 'stopped'."""
+        manager = DelegationManager()
+        task = TaskState(
+            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
+        )
+        manager._tasks["test_1"] = task
+
+        result = manager.stop_task("test_1")
+        assert result is not None
+        assert result.status == "stopped"
+
+    def test_stop_task_already_completed(self):
+        """Stopping an already completed task should not change status."""
+        manager = DelegationManager()
+        task = TaskState(
+            id="test_1",
+            conversation=MagicMock(),
+            status=TaskStatus.RUNNING,
+        )
+        task.set_completed("Done")
+
+        assert task.result == "Done"
+        assert task.status == "succeeded"
+
+        # add task to manager and stop it
+        manager._tasks["test_1"] = task
+        stopped_task = manager.stop_task(task.id)
+        assert stopped_task is not None
+        assert stopped_task.result == "Done"
+        assert stopped_task.status == "succeeded"
+        assert stopped_task is task
+
+    def test_get_task_output_completed(self):
+        """Getting output for a completed task should return its result."""
+        manager = DelegationManager()
+        task = TaskState(
+            id="test_1",
+            conversation=MagicMock(),
+            status=TaskStatus.RUNNING,
+        )
+        task.set_completed("The result")
+        assert task.status == "succeeded"
+        assert task.result == "The result"
+
+        # add task to manager and ask for result
+        manager._tasks["test_1"] = task
+        result = manager.get_task_output("test_1")
+        assert result.status == "succeeded"
+        assert result.result == "The result"
+        assert result is task
+
+    def test_get_task_output_nonblocking_running(self):
+        """
+        Non-blocking output check should
+        return immediately for running task.
+        """
+        manager = DelegationManager()
+        task = TaskState(
+            id="test_1",
+            conversation=MagicMock(),
+            status=TaskStatus.RUNNING,
+        )
+        # Leave it as running
+        manager._tasks["test_1"] = task
+
+        result = manager.get_task_output("test_1", block=False)
+        assert result.status == "running"
+        assert result.result is None
+
+
+class TestTaskStopExecutor:
+    """Tests for TaskStopExecutor."""
+
+    def test_stop_unknown_task(self):
+        """Stopping unknown task should return error observation."""
+        manager = DelegationManager()
+        executor = TaskStopExecutor(manager=manager)
+
+        action = TaskStopAction(task_id="nonexistent")
+        result = executor(action)
+
+        assert isinstance(result, TaskStopObservation)
+        assert result.is_error is True
+        assert result.status == "not_found"
+
+    def test_stop_existing_task(self):
+        """Stopping an existing running task should succeed."""
+        manager = DelegationManager()
+        task = TaskState(
+            id="test_1",
+            conversation=MagicMock(),
+            status=TaskStatus.RUNNING,
+        )
+        manager._tasks["test_1"] = task
+
+        executor = TaskStopExecutor(manager=manager)
+        action = TaskStopAction(task_id="test_1")
+        result = executor(action)
+
+        assert isinstance(result, TaskStopObservation)
+        assert result.is_error is False
+        assert result.status == "stopped"
+        assert result.task_id == "test_1"
+
+
+class TestTaskOutputExecutor:
+    """Tests for TaskOutputExecutor."""
+
+    def test_output_unknown_task(self):
+        """Getting output for unknown task should return error."""
+        manager = DelegationManager()
+        executor = TaskOutputExecutor(manager=manager)
+
+        action = TaskOutputAction(task_id="nonexistent")
+        result = executor(action)
+
+        assert isinstance(result, TaskOutputObservation)
+        assert result.is_error is True
+        assert result.status == "error"
+
+    def test_output_completed_task(self):
+        """Getting output for completed task should return result."""
+        manager = DelegationManager()
+        task = TaskState(
+            id="test_1",
+            conversation=MagicMock(),
+            status=TaskStatus.RUNNING,
+        )
+        task.set_completed("The answer is 42")
+        manager._tasks["test_1"] = task
+
+        executor = TaskOutputExecutor(manager=manager)
+        action = TaskOutputAction(task_id="test_1", block=False)
+        result = executor(action)
+
+        assert isinstance(result, TaskOutputObservation)
+        assert result.is_error is False
+        assert result.status == "completed"
+        assert result.text == "The answer is 42"
+
+    def test_output_running_task_nonblocking(self):
+        """
+        Non-blocking output check for running
+        task should return immediately.
+        """
+        manager = DelegationManager()
+        task = TaskState(
+            id="test_1",
+            conversation=MagicMock(),
+            status=TaskStatus.RUNNING,
+        )
+        manager._tasks["test_1"] = task
+
+        executor = TaskOutputExecutor(manager=manager)
+        action = TaskOutputAction(task_id="test_1", block=False)
+
+        start = time.monotonic()
+        result = executor(action)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 1.0  # Should be near-instant
+        assert result.status == "running"
+
+
+class TestTaskAction:
+    """Tests for TaskAction schema."""
+
+    def test_required_prompt(self):
+        """TaskAction should require a prompt."""
+        action = TaskAction(prompt="Do something")
+        assert action.prompt == "Do something"
+
+    def test_defaults(self):
+        """TaskAction should have sensible defaults."""
+        action = TaskAction(prompt="test")
+        assert action.subagent_type == "default"
+        assert action.description is None
+        assert action.model is None
+        assert action.run_in_background is False
+        assert action.resume is None
+        assert action.max_turns is None
+
+    def test_all_params(self):
+        """TaskAction should accept all parameters."""
+        action = TaskAction(
+            prompt="Run tests",
+            subagent_type="researcher",
+            description="Run unit tests",
+            model="gpt-4o",
+            run_in_background=True,
+            resume="task_abc123",
+            max_turns=10,
+        )
+        assert action.prompt == "Run tests"
+        assert action.subagent_type == "researcher"
+        assert action.description == "Run unit tests"
+        assert action.model == "gpt-4o"
+        assert action.run_in_background is True
+        assert action.resume == "task_abc123"
+        assert action.max_turns == 10
+
+    def test_max_turns_validation(self):
+        """max_turns should be at least 1."""
+        with pytest.raises(Exception):
+            _ = TaskAction(prompt="test", max_turns=0)
+
+
+class TestTaskOutputAction:
+    """Tests for TaskOutputAction schema."""
+
+    def test_required_task_id(self):
+        """TaskOutputAction should require task_id."""
+        action = TaskOutputAction(task_id="task_123")
+        assert action.task_id == "task_123"
+
+    def test_defaults(self):
+        """TaskOutputAction should have sensible defaults."""
+        action = TaskOutputAction(task_id="task_123")
+        assert action.block is True
+        assert action.timeout == 30000
+
+    def test_timeout_validation(self):
+        """timeout should be within bounds."""
+        with pytest.raises(Exception):
+            _ = TaskOutputAction(task_id="t", timeout=-1)
+        with pytest.raises(Exception):
+            _ = TaskOutputAction(task_id="t", timeout=700000)
+
+
+class TestTaskStopAction:
+    """Tests for TaskStopAction schema."""
+
+    def test_required_task_id(self):
+        """TaskStopAction should require task_id."""
+        action = TaskStopAction(task_id="task_123")
+        assert action.task_id == "task_123"
