@@ -53,6 +53,10 @@ class LLMSummarizingCondenser(RollingCondenser):
     """
 
     minimum_progress: float = Field(default=0.1, gt=0.0, lt=1.0)
+    """Minimum fraction of events that must be condensed (0.0-1.0). If fewer than
+    this proportion of events would be forgotten, condensation is treated as an error.
+    Default 0.1 means at least 10% of events must be condensed.
+    """
     """Minimum ratio of the view to be condensed. Condensations below this threshold
     are treated as errors.
     """
