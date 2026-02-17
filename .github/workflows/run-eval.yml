@@ -233,7 +233,7 @@ jobs:
 
             - name: Install dependencies
               run: |
-                  pip install litellm
+                  pip install 'litellm>=1.81.0'
 
             - name: Resolve model configurations and verify availability
               id: resolve-models
