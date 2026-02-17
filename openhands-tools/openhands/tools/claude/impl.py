@@ -100,7 +100,13 @@ class TaskState:
             self.status = TaskStatus.ERROR
 
     def stop(self) -> None:
+    def stop(self) -> None:
         """Stop the task."""
+        with self._lock:
+            if self.status == TaskStatus.RUNNING:
+                self.status = TaskStatus.STOPPED
+                self.result = None
+                self.error = None
         if self.status == TaskStatus.RUNNING:
             with self._lock:
                 self.status = TaskStatus.STOPPED
