@@ -7,7 +7,6 @@ tools with shared state, matching the BrowserToolSet pattern.
 import tempfile
 from uuid import uuid4
 
-import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
@@ -189,17 +188,6 @@ def test_toolset_tools_generate_valid_mcp_schemas():
             input_schema = mcp_tool["inputSchema"]
             assert input_schema["type"] == "object"
             assert "properties" in input_schema
-
-
-@pytest.mark.skip
-def test_toolset_task_tool_description_includes_workspace():
-    """TaskTool description should include the workspace path."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
-
-        task_tool = next(t for t in tools if t.name == "task")
-        assert temp_dir in task_tool.description
 
 
 def test_toolset_inheritance():

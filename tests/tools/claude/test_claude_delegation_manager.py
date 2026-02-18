@@ -1,5 +1,6 @@
 import threading
 import time
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,9 +26,7 @@ class TestTaskState:
 
     def test_initial_state(self):
         """TaskState should start with 'running' status."""
-        state = TaskState(
-            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
-        )
+        state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
         assert state.status == "running"
         assert state.result is None
         assert state.error is None
@@ -35,9 +34,7 @@ class TestTaskState:
 
     def test_set_completed(self):
         """set_completed should update status and result."""
-        state = TaskState(
-            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
-        )
+        state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
         state.set_completed("Done!")
         assert state.status == "succeeded"
         assert state.result == "Done!"
@@ -45,9 +42,7 @@ class TestTaskState:
 
     def test_set_error(self):
         """set_error should update status, error, and result."""
-        state = TaskState(
-            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
-        )
+        state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
         state.set_error("Something went wrong")
         assert state.status == "error"
         assert state.error == "Something went wrong"
@@ -55,9 +50,7 @@ class TestTaskState:
 
     def test_thread_safety(self):
         """set_completed and set_error should be thread-safe."""
-        state = TaskState(
-            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
-        )
+        state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
         errors = []
 
         def set_completed():
@@ -99,8 +92,8 @@ class TestClaudeDelegationManager:
     def test_init_defaults(self):
         """Manager should initialize with correct defaults."""
         manager = DelegationManager()
-        assert manager._max_tasks == 5
-        assert len(manager._tasks) == 0
+        assert manager._max_tasks == 10
+        assert len(manager._active_tasks) == 0
         assert manager._parent_conversation is None
 
     def test_init_custom_max_children(self):
@@ -151,10 +144,9 @@ class TestClaudeDelegationManager:
     def test_stop_task_running(self):
         """Stopping a running task should set status to 'stopped'."""
         manager = DelegationManager()
-        task = TaskState(
-            id="test_1", conversation=MagicMock(), status=TaskStatus.RUNNING
-        )
-        manager._tasks["test_1"] = task
+        task = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
+        manager._active_tasks["test_1"] = task
+        manager._task_id_to_uuid["test_1"] = uuid.uuid4()
 
         result = manager.stop_task("test_1")
         assert result is not None
@@ -165,7 +157,7 @@ class TestClaudeDelegationManager:
         manager = DelegationManager()
         task = TaskState(
             id="test_1",
-            conversation=MagicMock(),
+            conversation=None,
             status=TaskStatus.RUNNING,
         )
         task.set_completed("Done")
@@ -174,7 +166,7 @@ class TestClaudeDelegationManager:
         assert task.status == "succeeded"
 
         # add task to manager and stop it
-        manager._tasks["test_1"] = task
+        manager._active_tasks["test_1"] = task
         stopped_task = manager.stop_task(task.id)
         assert stopped_task is not None
         assert stopped_task.result == "Done"
@@ -186,7 +178,7 @@ class TestClaudeDelegationManager:
         manager = DelegationManager()
         task = TaskState(
             id="test_1",
-            conversation=MagicMock(),
+            conversation=None,
             status=TaskStatus.RUNNING,
         )
         task.set_completed("The result")
@@ -194,7 +186,7 @@ class TestClaudeDelegationManager:
         assert task.result == "The result"
 
         # add task to manager and ask for result
-        manager._tasks["test_1"] = task
+        manager._active_tasks["test_1"] = task
         result = manager.get_task_output("test_1")
         assert result.status == "succeeded"
         assert result.result == "The result"
@@ -208,11 +200,11 @@ class TestClaudeDelegationManager:
         manager = DelegationManager()
         task = TaskState(
             id="test_1",
-            conversation=MagicMock(),
+            conversation=None,
             status=TaskStatus.RUNNING,
         )
         # Leave it as running
-        manager._tasks["test_1"] = task
+        manager._active_tasks["test_1"] = task
 
         result = manager.get_task_output("test_1", block=False)
         assert result.status == "running"
@@ -239,10 +231,11 @@ class TestTaskStopExecutor:
         manager = DelegationManager()
         task = TaskState(
             id="test_1",
-            conversation=MagicMock(),
+            conversation=None,
             status=TaskStatus.RUNNING,
         )
-        manager._tasks["test_1"] = task
+        manager._active_tasks["test_1"] = task
+        manager._task_id_to_uuid["test_1"] = uuid.uuid4()
 
         executor = TaskStopExecutor(manager=manager)
         action = TaskStopAction(task_id="test_1")
@@ -274,11 +267,11 @@ class TestTaskOutputExecutor:
         manager = DelegationManager()
         task = TaskState(
             id="test_1",
-            conversation=MagicMock(),
+            conversation=None,
             status=TaskStatus.RUNNING,
         )
         task.set_completed("The answer is 42")
-        manager._tasks["test_1"] = task
+        manager._active_tasks["test_1"] = task
 
         executor = TaskOutputExecutor(manager=manager)
         action = TaskOutputAction(task_id="test_1", block=False)
@@ -297,10 +290,10 @@ class TestTaskOutputExecutor:
         manager = DelegationManager()
         task = TaskState(
             id="test_1",
-            conversation=MagicMock(),
+            conversation=None,
             status=TaskStatus.RUNNING,
         )
-        manager._tasks["test_1"] = task
+        manager._active_tasks["test_1"] = task
 
         executor = TaskOutputExecutor(manager=manager)
         action = TaskOutputAction(task_id="test_1", block=False)

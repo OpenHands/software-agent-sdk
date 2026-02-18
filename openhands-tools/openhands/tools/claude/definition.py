@@ -301,13 +301,13 @@ class ClaudeDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
     def create(
         cls,
         conv_state: "ConversationState",  # noqa: ARG003
-        max_children: int = 5,
+        max_tasks: int = 5,
     ) -> list[ToolDefinition]:
         """Create all Claude delegation tools with shared state.
 
         Args:
             conv_state: Conversation state for workspace info.
-            max_children: Maximum number of concurrent sub-agent tasks.
+            max_tasks: Maximum number of concurrent sub-agent tasks.
 
         Returns:
             List of [TaskTool, TaskOutputTool, TaskStopTool] sharing a
@@ -338,7 +338,7 @@ class ClaudeDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
         # Create a manager that will be shared between the 3 tools
         # the tools are actually a way for the main agent to
         # communicate with the manager
-        manager = DelegationManager(max_tasks=max_children)
+        manager = DelegationManager(max_tasks=max_tasks)
         task_executor = TaskExecutor(manager=manager)
         task_output_executor = TaskOutputExecutor(manager=manager)
         task_stop_executor = TaskStopExecutor(manager=manager)
