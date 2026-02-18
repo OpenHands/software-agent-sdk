@@ -12,16 +12,10 @@ Outputs to GITHUB_OUTPUT:
 - models_json: JSON array of full model configs with display names
 """
 
-from __future__ import annotations
-
 import json
 import os
 import sys
-from typing import TYPE_CHECKING, Any
-
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 
 # Model configurations dictionary
