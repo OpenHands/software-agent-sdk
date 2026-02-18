@@ -54,6 +54,16 @@ env:
 
 jobs:
     setup-matrix:
+        if: |
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk') ||
+            (
+                github.event_name == 'pull_request_target' && (
+                    github.event.label.name == 'integration-test' ||
+                    github.event.label.name == 'behavior-test'
+                )
+            )
+
         runs-on: ubuntu-latest
         outputs:
             matrix: ${{ steps.resolve-models.outputs.matrix }}
@@ -218,7 +228,6 @@ jobs:
         runs-on: ubuntu-22.04
         permissions:
             contents: read
-            id-token: write
             pull-requests: write
             issues: write
         strategy:
