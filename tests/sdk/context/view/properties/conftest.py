@@ -73,3 +73,33 @@ def message_event(content: str) -> MessageEvent:
         llm_message=Message(role="user", content=[TextContent(text=content)]),
         source="user",
     )
+
+
+def create_action_event_with_none_action(
+    event_id: str,
+    llm_response_id: str,
+    tool_call_id: str,
+    tool_name: str = "missing_tool",
+) -> ActionEvent:
+    """Helper to create an ActionEvent with action=None (action not executed).
+
+    This is used to test the case where an action was not executed (e.g., tool
+    was not found) but still has a matching observation (e.g., AgentErrorEvent).
+    """
+    tool_call = MessageToolCall(
+        id=tool_call_id,
+        name=tool_name,
+        arguments="{}",
+        origin="completion",
+    )
+
+    return ActionEvent(
+        id=event_id,
+        thought=[TextContent(text="Test thought")],
+        action=None,  # Action was not executed
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_call=tool_call,
+        llm_response_id=llm_response_id,
+        source="agent",
+    )

@@ -17,7 +17,10 @@ from openhands.sdk.event.llm_convertible import (
     ObservationEvent,
     UserRejectObservation,
 )
-from tests.sdk.context.view.properties.conftest import message_event
+from tests.sdk.context.view.properties.conftest import (
+    create_action_event_with_none_action,
+    message_event,
+)
 
 
 class TestToolCallMatchingBase:
@@ -318,6 +321,40 @@ class TestToolCallMatchingPropertyEnforcement(TestToolCallMatchingBase):
 
         # All matched pairs should be kept
         assert len(result) == 0
+
+    def test_action_with_none_action_matched_by_agent_error(self) -> None:
+        """Test that ActionEvent with action=None is kept when matched by
+        AgentErrorEvent.
+
+        This tests the case where an action was not executed (e.g., tool was
+        missing) but still has a matching AgentErrorEvent - both should be
+        retained.
+        """
+        # ActionEvent with action=None (action was not executed)
+        action_event = create_action_event_with_none_action(
+            "action_1", "resp_1", "call_keep_me"
+        )
+
+        # Matching AgentErrorEvent (observation path)
+        agent_error = AgentErrorEvent(
+            source="agent",
+            error="not found",
+            tool_name="missing_tool",
+            tool_call_id="call_keep_me",
+        )
+
+        # Noise message events
+        m1 = message_event("hi")
+        m2 = message_event("bye")
+
+        events: list[LLMConvertibleEvent] = [m1, action_event, agent_error, m2]
+
+        result = self.property.enforce(events, events)
+
+        # Both ActionEvent(action=None) and matching AgentErrorEvent must be kept
+        assert len(result) == 0
+        assert action_event.id not in result
+        assert agent_error.id not in result
 
 
 class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
