@@ -7,7 +7,7 @@ import sys
 from abc import ABC, abstractmethod
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, SecretStr
 
@@ -26,6 +26,44 @@ from openhands.sdk.event.llm_convertible import (
 )
 from openhands.sdk.tool import Tool
 from tests.integration.early_stopper import EarlyStopperBase, EarlyStopResult
+
+
+# Tool preset type for selecting which file editing toolset to use
+ToolPresetType = Literal["default", "gemini", "gpt5", "planning"]
+
+
+def get_tools_for_preset(
+    preset: ToolPresetType, enable_browser: bool = False
+) -> list[Tool]:
+    """Get the list of tools for the given preset.
+
+    Args:
+        preset: The tool preset to use (default, gemini, gpt5, or planning).
+        enable_browser: Whether to include browser tools.
+
+    Returns:
+        List of Tool instances for the given preset.
+    """
+    match preset:
+        case "gemini":
+            from openhands.tools.preset.gemini import get_gemini_tools
+
+            return get_gemini_tools(enable_browser=enable_browser)
+        case "gpt5":
+            from openhands.tools.preset.gpt5 import get_gpt5_tools
+
+            return get_gpt5_tools(enable_browser=enable_browser)
+        case "planning":
+            from openhands.tools.preset.planning import get_planning_tools
+
+            # Planning preset is read-only and doesn't support browser tools
+            return get_planning_tools()
+        case "default":
+            from openhands.tools.preset.default import get_default_tools
+
+            return get_default_tools(enable_browser=enable_browser)
+        case _:
+            raise ValueError(f"Unknown `preset` parameter: {preset}")
 
 
 class SkipTest(Exception):
@@ -57,6 +95,9 @@ class BaseIntegrationTest(ABC):
 
     Unlike the OpenHands approach which uses a Runtime, this uses tools
     directly with temporary directories for isolation.
+
+    Tool presets are passed via the tool_preset constructor parameter to select
+    which file editing toolset to use (default, gemini, gpt5, or planning).
     """
 
     INSTRUCTION: str
@@ -67,11 +108,13 @@ class BaseIntegrationTest(ABC):
         llm_config: dict[str, Any],
         instance_id: str,
         workspace: str,
+        tool_preset: ToolPresetType = "default",
     ):
         self.instruction: str = instruction
         self.llm_config: dict[str, Any] = llm_config
         self.workspace: str = workspace
         self.instance_id: str = instance_id
+        self.tool_preset: ToolPresetType = tool_preset
         api_key = os.getenv("LLM_API_KEY")
         if not api_key:
             raise ValueError(
