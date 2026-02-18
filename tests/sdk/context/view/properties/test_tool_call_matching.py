@@ -14,19 +14,10 @@ from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     AgentErrorEvent,
-    MessageEvent,
     ObservationEvent,
     UserRejectObservation,
 )
-from openhands.sdk.llm import Message, TextContent
-
-
-def message_event(content: str) -> MessageEvent:
-    """Helper to create a MessageEvent."""
-    return MessageEvent(
-        llm_message=Message(role="user", content=[TextContent(text=content)]),
-        source="user",
-    )
+from tests.sdk.context.view.properties.conftest import message_event
 
 
 class TestToolCallMatchingBase:

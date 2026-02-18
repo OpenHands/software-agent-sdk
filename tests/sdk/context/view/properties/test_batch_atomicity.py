@@ -9,37 +9,7 @@ from collections.abc import Sequence
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.batch_atomicity import BatchAtomicityProperty
 from openhands.sdk.event import LLMConvertibleEvent
-from openhands.sdk.event.llm_convertible import ActionEvent
-from openhands.sdk.llm import MessageToolCall, TextContent
-from openhands.sdk.mcp.definition import MCPToolAction
-
-
-def create_action_event(
-    event_id: str,
-    llm_response_id: str,
-    tool_call_id: str,
-    tool_name: str = "test_tool",
-) -> ActionEvent:
-    """Helper to create an ActionEvent with specified IDs."""
-    action = MCPToolAction(data={})
-
-    tool_call = MessageToolCall(
-        id=tool_call_id,
-        name=tool_name,
-        arguments="{}",
-        origin="completion",
-    )
-
-    return ActionEvent(
-        id=event_id,
-        thought=[TextContent(text="Test thought")],
-        action=action,
-        tool_name=tool_name,
-        tool_call_id=tool_call_id,
-        tool_call=tool_call,
-        llm_response_id=llm_response_id,
-        source="agent",
-    )
+from tests.sdk.context.view.properties.conftest import create_action_event
 
 
 class TestBatchAtomicityPropertyBase:
