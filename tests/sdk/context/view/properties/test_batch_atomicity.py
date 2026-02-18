@@ -6,6 +6,7 @@ from the same batch (sharing the same llm_response_id) form an atomic unit.
 
 from collections.abc import Sequence
 
+from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.batch_atomicity import BatchAtomicityProperty
 from openhands.sdk.event import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import ActionEvent
@@ -75,11 +76,8 @@ class TestBatchAtomicityProperty:
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
 
-        # action4 should also be forgotten due to batch atomicity
-        assert action4.id in events_to_remove, (
-            "action4 should be forgotten due to batch atomicity, "
-            "even though it wasn't explicitly forgotten"
-        )
+        # action4 should be forgotten due to batch atomicity
+        assert action4.id in events_to_remove
 
     def test_complete_batch_forgotten(self) -> None:
         """Test that when all events in a batch are forgotten, they're all removed."""
@@ -155,18 +153,12 @@ class TestBatchAtomicityProperty:
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
 
-        # First batch should be completely removed (partial batch)
-        assert action1_1.id in events_to_remove, (
-            "action1_1 should be forgotten due to batch atomicity (partial batch)"
-        )
+        # First batch should be removed since we're missing the second action
+        assert action1_1.id in events_to_remove
 
-        # Second batch should be preserved (complete batch)
-        assert action2_1.id not in events_to_remove, (
-            "action2_1 should be preserved - it's a different batch"
-        )
-        assert action2_2.id not in events_to_remove, (
-            "action2_2 should be preserved - it's a different batch"
-        )
+        # Second batch should be preserved entirely
+        assert action2_1.id not in events_to_remove
+        assert action2_2.id not in events_to_remove
 
     def test_first_action_of_batch_forgotten(self) -> None:
         """Test that forgetting only the first action of a batch causes entire batch
@@ -188,12 +180,8 @@ class TestBatchAtomicityProperty:
         events_to_remove = self.property.enforce(current_view_events, all_events)
 
         # Both action2 and action3 should be forgotten
-        assert action2.id in events_to_remove, (
-            "action2 should be forgotten due to batch atomicity"
-        )
-        assert action3.id in events_to_remove, (
-            "action3 should be forgotten due to batch atomicity"
-        )
+        assert action2.id in events_to_remove
+        assert action3.id in events_to_remove
 
     def test_middle_action_of_batch_forgotten(self) -> None:
         """Test that forgetting a middle action causes entire batch to be forgotten."""
@@ -213,12 +201,8 @@ class TestBatchAtomicityProperty:
         events_to_remove = self.property.enforce(current_view_events, all_events)
 
         # Both action1 and action3 should be forgotten
-        assert action1.id in events_to_remove, (
-            "action1 should be forgotten due to batch atomicity"
-        )
-        assert action3.id in events_to_remove, (
-            "action3 should be forgotten due to batch atomicity"
-        )
+        assert action1.id in events_to_remove
+        assert action3.id in events_to_remove
 
     def test_different_batches_independent(self) -> None:
         """Test that batch atomicity only affects events in the same batch."""
@@ -314,14 +298,10 @@ class TestBatchAtomicityProperty:
         events_to_remove = self.property.enforce(current_view_events, all_events)
 
         # action1_2 should be removed due to batch atomicity
-        assert action1_2.id in events_to_remove, (
-            "action1_2 should be forgotten due to batch atomicity"
-        )
+        assert action1_2.id in events_to_remove
 
         # action2_1 should NOT be removed (its batch is complete)
-        assert action2_1.id not in events_to_remove, (
-            "action2_1 should NOT be forgotten - its batch is complete"
-        )
+        assert action2_1.id not in events_to_remove,
 
 
 class TestBatchAtomicityPropertyManipulationIndices:
@@ -341,7 +321,9 @@ class TestBatchAtomicityPropertyManipulationIndices:
 
         current_view_events: list[LLMConvertibleEvent] = [action1, action2, action3]
 
-        indices = self.property.manipulation_indices(current_view_events, [])
+        indices = self.property.manipulation_indices(
+            current_view_events, current_view_events
+        )
 
         # Index 1 (between action1 and action2) should not be manipulatable
         assert 1 not in indices
@@ -358,7 +340,9 @@ class TestBatchAtomicityPropertyManipulationIndices:
 
         current_view_events: list[LLMConvertibleEvent] = [action1, action2]
 
-        indices = self.property.manipulation_indices(current_view_events, [])
+        indices = self.property.manipulation_indices(
+            current_view_events, current_view_events
+        )
 
         # Index 1 (between action1 and action2) should be manipulatable
         # since they're in different batches
@@ -366,29 +350,20 @@ class TestBatchAtomicityPropertyManipulationIndices:
 
     def test_single_event_complete_indices(self) -> None:
         """Test that a single event has complete manipulation indices."""
-        llm_response_id = "response_1"
+        current_view_events: list[LLMConvertibleEvent] = [
+            create_action_event("action_1", "response_1", "tool_call_1")
+        ]
 
-        action = create_action_event("action_1", llm_response_id, "tool_call_1")
+        indices = self.property.manipulation_indices(
+            current_view_events, current_view_events
+        )
+        assert indices == ManipulationIndices.complete(current_view_events)
 
-        current_view_events: list[LLMConvertibleEvent] = [action]
+    def test_empty_events_complete_indices(self) -> None:
+        """Test that an empty event list has complete manipulation indices."""
+        current_view_events: list[LLMConvertibleEvent] = []
 
-        indices = self.property.manipulation_indices(current_view_events, [])
-
-        # Single event: ManipulationIndices.complete returns {0, 2}
-        # Index 0 is valid (start position)
-        # Index 1 is between events but there's only one event,
-        # so it gets removed (same batch)
-        # Index 2 is valid (end position)
-        assert 0 in indices  # start position is valid
-        assert 2 in indices  # end position is valid
-
-    def test_empty_events(self) -> None:
-        """Test that empty events list handles correctly."""
-        current_view_events: Sequence[LLMConvertibleEvent] = []
-
-        indices = self.property.manipulation_indices(current_view_events, [])
-
-        # Empty events: ManipulationIndices.complete returns {1}
-        # This represents the "end" position
-        assert len(indices) == 1
-        assert 1 in indices
+        indices = self.property.manipulation_indices(
+            current_view_events, current_view_events
+        )
+        assert indices == ManipulationIndices.complete(current_view_events)
