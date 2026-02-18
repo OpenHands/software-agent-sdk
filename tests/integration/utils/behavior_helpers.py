@@ -8,10 +8,13 @@ from textwrap import dedent
 from typing import Any
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
-from tests.integration.base import BaseIntegrationTest, SkipTest
+from openhands.sdk.tool import Tool
+from tests.integration.base import (
+    BaseIntegrationTest,
+    SkipTest,
+    ToolPresetType,
+    get_tools_for_preset,
+)
 from tests.integration.early_stopper import EarlyStopperBase
 
 
@@ -83,11 +86,9 @@ def clone_pinned_software_agent_repo(workspace: str) -> Path:
     return repo_dir
 
 
-def default_behavior_tools() -> list[Tool]:
-    """Register and return the default tools for behavior tests."""
-    register_tool("TerminalTool", TerminalTool)
-    register_tool("FileEditorTool", FileEditorTool)
-    return [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+def default_behavior_tools(tool_preset: ToolPresetType = "default") -> list[Tool]:
+    """Register and return tools for behavior tests based on the tool preset."""
+    return get_tools_for_preset(tool_preset, enable_browser=False)
 
 
 ENVIRONMENT_TIPS_BODY = """\
@@ -117,13 +118,14 @@ class SoftwareAgentSDKBehaviorTest(BaseIntegrationTest):
         llm_config: dict[str, Any],
         instance_id: str,
         workspace: str,
+        tool_preset: ToolPresetType = "default",
     ):
-        super().__init__(instruction, llm_config, instance_id, workspace)
+        super().__init__(instruction, llm_config, instance_id, workspace, tool_preset)
         self.repo_dir = None
 
     @property
     def tools(self) -> list[Tool]:
-        return default_behavior_tools()
+        return default_behavior_tools(self.tool_preset)
 
     def get_early_stopper(self) -> EarlyStopperBase | None:
         """Override in subclasses to provide an early stopper for this test.
