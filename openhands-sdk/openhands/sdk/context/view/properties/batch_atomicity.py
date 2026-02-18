@@ -2,10 +2,9 @@ from collections import defaultdict
 from collections.abc import Sequence
 from itertools import pairwise
 
-from openhands.sdk import LLMConvertibleEvent
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.base import ViewPropertyBase
-from openhands.sdk.event import ActionEvent, Event, EventID
+from openhands.sdk.event import ActionEvent, Event, EventID, LLMConvertibleEvent
 
 
 class BatchAtomicityProperty(ViewPropertyBase):

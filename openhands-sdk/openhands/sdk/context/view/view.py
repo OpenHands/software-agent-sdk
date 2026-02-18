@@ -8,6 +8,7 @@ from typing import overload
 
 from pydantic import BaseModel, computed_field
 
+from openhands.sdk.context.view.properties import ALL_PROPERTIES
 from openhands.sdk.event import (
     Condensation,
     CondensationRequest,
@@ -440,6 +441,36 @@ class View(BaseModel):
         return False
 
     @staticmethod
+    def enforce_properties(
+        current_view_events: list[LLMConvertibleEvent], all_events: Sequence[Event]
+    ) -> list[LLMConvertibleEvent]:
+        """Enforce all properties on the list of current view events.
+
+        Repeatedly applies each property's enforcement mechanism until the list of view
+        events reaches a stable state.
+
+        Since enforcement is intended as a fallback to inductively maintaining the
+        properties via the associated manipulation indices, any time a property must be
+        enforced a warning is logged.
+        """
+        for property in ALL_PROPERTIES:
+            events_to_forget = property.enforce(current_view_events, all_events)
+            if events_to_forget:
+                logger.warning(
+                    f"Property {property.__class__} enforced, "
+                    f"{len(events_to_forget)} events dropped."
+                )
+                return View.enforce_properties(
+                    [
+                        event
+                        for event in current_view_events
+                        if event.id not in events_to_forget
+                    ],
+                    all_events,
+                )
+        return current_view_events
+
+    @staticmethod
     def from_events(events: Sequence[Event]) -> View:
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
@@ -471,11 +502,7 @@ class View(BaseModel):
                     f"in View.from_events"
                 )
 
-        # Enforce batch atomicity: if any event in a multi-action batch is removed,
-        # remove all events in that batch to prevent partial batches with thinking
-        # blocks separated from their tool calls
-        output = View._enforce_batch_atomicity(output, events)
-        output = View._filter_unmatched_tool_calls(output, events)
+        output = View.enforce_properties(output, events)
 
         return View(
             events=output,

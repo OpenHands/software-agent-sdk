@@ -1,9 +1,8 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
-from openhands.sdk import LLMConvertibleEvent
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
-from openhands.sdk.event import Event, EventID
+from openhands.sdk.event import Event, EventID, LLMConvertibleEvent
 
 
 class ViewPropertyBase(ABC):
