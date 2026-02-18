@@ -14,7 +14,7 @@ changes.
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.tools.browser_use import BrowserToolSet
-from openhands.tools.claude import ClaudeDelegationToolSet
+from openhands.tools.claude import TaskDelegationToolSet
 from openhands.tools.delegate import DelegationVisualizer, register_agent
 from openhands.tools.delegate.registration import get_agent_factory
 from openhands.tools.file_editor import FileEditorTool
@@ -36,7 +36,7 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "BrowserToolSet",
-    "ClaudeDelegationToolSet",
+    "TaskDelegationToolSet",
     "DelegationVisualizer",
     "FileEditorTool",
     "TaskTrackerTool",

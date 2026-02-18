@@ -1,8 +1,7 @@
 """Claude Code-style delegation tools.
 
 This module provides Claude Code-style delegation tools as an alternative to
-the default DelegateTool. These tools match the Task/TaskOutput/TaskStop
-interface used by Claude Code.
+the default DelegateTool.
 
 Tools:
     - task: Launch and run a sub-agent task (sync or background)
@@ -10,33 +9,19 @@ Tools:
     - task_stop: Stop a running background task
 
 Usage:
-    To use Claude-style delegation tools, add the tool set to your agent::
 
-        from openhands.tools.claude import CLAUDE_DELEGATION_TOOLS
+    from openhands.tools.claude import TaskDelegationToolSet
 
-        agent = Agent(
-            llm=llm,
-            tools=[
-                Tool(name=TerminalTool.name),
-                Tool(name=FileEditorTool.name),
-                *CLAUDE_DELEGATION_TOOLS,
-            ],
-        )
-
-    Or reference the tool set directly::
-
-        from openhands.tools.claude import ClaudeDelegationToolSet
-
-        agent = Agent(
-            llm=llm,
-            tools=[
-                Tool(name=TerminalTool.name),
-                Tool(name=ClaudeDelegationToolSet.name),
-            ],
-        )
+    agent = Agent(
+        llm=llm,
+        tools=[
+            Tool(name=TerminalTool.name),
+            Tool(name=TaskDelegationToolSet.name),
+        ],
+    )
 """
 
-from openhands.tools.claude.definition import ClaudeDelegationToolSet
+from openhands.tools.claude.definition import TaskDelegationToolSet
 
 
-__all__ = ["ClaudeDelegationToolSet"]
+__all__ = ["TaskDelegationToolSet"]

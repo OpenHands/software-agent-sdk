@@ -4,9 +4,8 @@ This module provides the shared state manager and executors for the
 Claude Code-style delegation tools (Task, TaskOutput, TaskStop).
 
 Architecture:
-    ClaudeDelegationManager holds the shared state (sub-agent conversations,
+    DelegationManager holds the shared state (sub-agent conversations,
     background threads, results) and is shared between all three executors.
-    This mirrors how BrowserToolExecutor is shared across all browser tools.
 """
 
 import json

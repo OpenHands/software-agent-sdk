@@ -4,9 +4,8 @@ This module defines the Task, TaskOutput, and TaskStop tools that match
 Claude Code's delegation API. Under the hood, these tools use the existing
 OpenHands delegation infrastructure (agent factories, LocalConversation, etc.).
 
-The ClaudeDelegationToolSet is registered as a single tool spec that creates
-all three tools sharing a ClaudeDelegationManager for coordinated state.
-This follows the same pattern as BrowserToolSet.
+The TaskDelegationToolSet is registered as a single tool spec that creates
+all three tools sharing a TaskDelegationToolSet for coordinated state.
 """
 
 from collections.abc import Sequence
@@ -154,9 +153,7 @@ class TaskOutputObservation(Observation):
     """Observation from task output retrieval."""
 
     task_id: str = Field(description="The task ID.")
-    status: str = Field(
-        description=("The status of the task: 'completed', 'running', or 'error'."),
-    )
+    status: str = Field(description="The status of the task.")
 
     @property
     def visualize(self) -> Text:
@@ -278,11 +275,11 @@ class TaskStopTool(ToolDefinition[TaskStopAction, TaskStopObservation]):
         ]
 
 
-class ClaudeDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
+class TaskDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
     """Claude Code-style delegation tool set.
 
     Creates Task, TaskOutput, and TaskStop tools that share a
-    ClaudeDelegationManager for coordinated sub-agent management.
+    DelegationManager for coordinated sub-agent management.
 
     Usage:
         from openhands.tools.claude import CLAUDE_DELEGATION_TOOLS
@@ -357,7 +354,7 @@ class ClaudeDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
 
 
 # Automatically register when this module is imported
-register_tool(ClaudeDelegationToolSet.name, ClaudeDelegationToolSet)
+register_tool(TaskDelegationToolSet.name, TaskDelegationToolSet)
 register_tool(TaskTool.name, TaskTool)
 register_tool(TaskStopTool.name, TaskStopTool)
 register_tool(TaskOutputTool.name, TaskOutputTool)
