@@ -301,7 +301,7 @@ class TestBatchAtomicityProperty:
         assert action1_2.id in events_to_remove
 
         # action2_1 should NOT be removed (its batch is complete)
-        assert action2_1.id not in events_to_remove,
+        assert action2_1.id not in events_to_remove
 
 
 class TestBatchAtomicityPropertyManipulationIndices:
