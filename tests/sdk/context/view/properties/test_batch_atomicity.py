@@ -321,9 +321,7 @@ class TestBatchAtomicityPropertyManipulationIndices(TestBatchAtomicityPropertyBa
 
         current_view_events: list[LLMConvertibleEvent] = [action1, action2, action3]
 
-        indices = self.property.manipulation_indices(
-            current_view_events, current_view_events
-        )
+        indices = self.property.manipulation_indices(current_view_events)
 
         # Index 1 (between action1 and action2) should not be manipulatable
         assert 1 not in indices
@@ -340,9 +338,7 @@ class TestBatchAtomicityPropertyManipulationIndices(TestBatchAtomicityPropertyBa
 
         current_view_events: list[LLMConvertibleEvent] = [action1, action2]
 
-        indices = self.property.manipulation_indices(
-            current_view_events, current_view_events
-        )
+        indices = self.property.manipulation_indices(current_view_events)
 
         # Index 1 (between action1 and action2) should be manipulatable
         # since they're in different batches
@@ -354,16 +350,12 @@ class TestBatchAtomicityPropertyManipulationIndices(TestBatchAtomicityPropertyBa
             create_action_event("action_1", "response_1", "tool_call_1")
         ]
 
-        indices = self.property.manipulation_indices(
-            current_view_events, current_view_events
-        )
+        indices = self.property.manipulation_indices(current_view_events)
         assert indices == ManipulationIndices.complete(current_view_events)
 
     def test_empty_events_complete_indices(self) -> None:
         """Test that an empty event list has complete manipulation indices."""
         current_view_events: list[LLMConvertibleEvent] = []
 
-        indices = self.property.manipulation_indices(
-            current_view_events, current_view_events
-        )
+        indices = self.property.manipulation_indices(current_view_events)
         assert indices == ManipulationIndices.complete(current_view_events)

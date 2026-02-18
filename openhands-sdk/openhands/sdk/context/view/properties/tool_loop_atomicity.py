@@ -113,7 +113,6 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
     def manipulation_indices(
         self,
         current_view_events: list[LLMConvertibleEvent],
-        all_events: Sequence[Event],  # noqa: ARG002
     ) -> ManipulationIndices:
         """Calculate manipulation indices that respect tool loop atomicity.
 

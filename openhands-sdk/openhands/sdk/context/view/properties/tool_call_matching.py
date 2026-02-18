@@ -54,7 +54,6 @@ class ToolCallMatchingProperty(ViewPropertyBase):
     def manipulation_indices(
         self,
         current_view_events: list[LLMConvertibleEvent],
-        all_events: Sequence[Event],  # noqa: ARG002
     ) -> ManipulationIndices:
         """Calculate manipulation indices for tool call matching.
 

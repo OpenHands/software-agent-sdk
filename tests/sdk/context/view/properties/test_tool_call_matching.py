@@ -337,7 +337,7 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
         message = message_event("Test")
         events: list[LLMConvertibleEvent] = [message]
 
-        result = self.property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events)
 
         assert result == ManipulationIndices.complete(events)
 
@@ -354,7 +354,7 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
 
         events: list[LLMConvertibleEvent] = [action, observation]
 
-        result = self.property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events)
 
         # Index 1 (between action and observation) should not be allowed
         assert 1 not in result
@@ -388,7 +388,7 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
             observation2,
         ]
 
-        result = self.property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events)
 
         # Index 2 (between the two pairs) should be allowed
         assert 2 in result
@@ -399,5 +399,5 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
         """Test manipulation indices for empty events are complete."""
         events: list[LLMConvertibleEvent] = []
 
-        result = self.property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events)
         assert result == ManipulationIndices.complete(events)
