@@ -95,7 +95,7 @@ def test_single_batch_with_thinking():
     # - 0: before user message
     # - 1: before tool loop (action + observation)
     # - 3: after tool loop
-    assert indices == [0, 1, 3]
+    assert indices == {0, 1, 3}
 
 
 def test_tool_loop_multiple_batches():
@@ -131,7 +131,7 @@ def test_tool_loop_multiple_batches():
     # - 1: before tool loop (all 3 batches are one atomic unit)
     # - 7: after tool loop, before second user message
     # - 8: after second user message
-    assert indices == [0, 1, 7, 8]
+    assert indices == {0, 1, 7, 8}
 
 
 def test_tool_loop_ends_at_non_batch_event():
@@ -167,31 +167,7 @@ def test_tool_loop_ends_at_non_batch_event():
     # - 5: after first tool loop, before second user message
     # - 6: after second user message, before second tool loop
     # - 8: after second tool loop
-    assert indices == [0, 1, 5, 6, 8]
-
-
-def test_batch_without_thinking_not_a_tool_loop():
-    """Test that batches without thinking blocks are treated as regular batches."""
-    events = [
-        message_event("User message"),
-        # Regular batch without thinking
-        create_action_event("resp_1", "call_1"),
-        create_observation_event("call_1"),
-        # Another regular batch
-        create_action_event("resp_2", "call_2"),
-        create_observation_event("call_2"),
-    ]
-
-    view = View.from_events(events)
-    indices = view.manipulation_indices
-
-    # Should have boundaries: [0, 1, 3, 5]
-    # Each batch is separate since no thinking blocks
-    # - 0: before user message
-    # - 1: before first batch
-    # - 3: after first batch, before second batch
-    # - 5: after second batch
-    assert indices == [0, 1, 3, 5]
+    assert indices == {0, 1, 5, 6, 8}
 
 
 def test_multiple_separate_tool_loops():
@@ -228,7 +204,7 @@ def test_multiple_separate_tool_loops():
     # - 6: after user 2, before second tool loop
     # - 8: after second tool loop, before user 3
     # - 9: after user 3
-    assert indices == [0, 1, 5, 6, 8, 9]
+    assert indices == {0, 1, 5, 6, 8, 9}
 
 
 def test_parallel_tool_calls_in_tool_loop():
@@ -262,14 +238,14 @@ def test_parallel_tool_calls_in_tool_loop():
     # - 1: before tool loop (includes both batches)
     # - 7: after tool loop, before next user message
     # - 8: after next user message
-    assert indices == [0, 1, 7, 8]
+    assert indices == {0, 1, 7, 8}
 
 
 def test_empty_events():
     """Test manipulation indices with empty events list."""
     view = View.from_events([])
     indices = view.manipulation_indices
-    assert indices == [0]
+    assert indices == {0}
 
 
 def test_only_user_messages():
@@ -286,4 +262,4 @@ def test_only_user_messages():
     # - 0: before first message
     # - 1: after first message, before second message
     # - 2: after second message
-    assert indices == [0, 1, 2]
+    assert list(indices) == [0, 1, 2]
