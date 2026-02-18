@@ -10,13 +10,19 @@ from typing import (
     overload,
 )
 
-from openhands.sdk.context.condenser.base import CondenserBase
+from openhands.sdk.context.condenser.base import (
+    CondenserBase,
+    NoCondensationAvailableException,
+)
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.types import ConversationTokenCallbackType
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
+from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Action, ToolDefinition
+
+logger = get_logger(__name__)
 
 
 def fix_malformed_tool_arguments(
@@ -165,7 +171,22 @@ def prepare_llm_messages(
     # produce a list of events, exactly as expected, or a
     # new condensation that needs to be processed
     if condenser is not None:
-        condensation_result = condenser.condense(view, agent_llm=llm)
+        try:
+            condensation_result = condenser.condense(view, agent_llm=llm)
+        except NoCondensationAvailableException as e:
+            # Log warning and continue without condensation
+            logger.warning(
+                f"Condensation required but no events available to condense: {e}. "
+                "Continuing without condensation. This may lead to context window "
+                "issues. Consider increasing condenser max_size (current: "
+                f"{getattr(condenser, 'max_size', 'N/A')}) or reducing keep_first "
+                f"(current: {getattr(condenser, 'keep_first', 'N/A')}). "
+                "See: https://docs.openhands.dev/sdk/guides/context-condenser"
+            )
+            # Continue with original view without condensation
+            # This allows the conversation to proceed, though it may eventually
+            # hit hard context limits
+            condensation_result = view
 
         match condensation_result:
             case View():
