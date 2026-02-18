@@ -363,3 +363,23 @@ def test_get_default_temperature_case_insensitive():
     assert get_default_temperature("KIMI-K2-THINKING") == 1.0
     assert get_default_temperature("Kimi-K2-Thinking") == 1.0
     assert get_default_temperature("KiMi-k2-ThInKiNg") == 1.0
+
+
+@pytest.mark.parametrize(
+    "model,expected_supports_top_p",
+    [
+        # Claude Sonnet 4.6 doesn't support top_p with temperature
+        ("claude-sonnet-4-6", False),
+        ("anthropic/claude-sonnet-4-6", False),
+        ("litellm_proxy/anthropic/claude-sonnet-4-6", False),
+        # Other models should support top_p
+        ("gpt-4o", True),
+        ("claude-sonnet-4-5", True),
+        ("claude-3-5-sonnet", True),
+        ("unknown-model", True),
+    ],
+)
+def test_supports_top_p(model, expected_supports_top_p):
+    """Test that models correctly report top_p support."""
+    features = get_features(model)
+    assert features.supports_top_p is expected_supports_top_p

@@ -79,10 +79,7 @@ MODELS = {
         "display_name": "Claude Sonnet 4.6",
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-sonnet-4-6",
-            # Note: claude-sonnet-4-6 doesn't support both temperature and top_p
-            # so we only set temperature (SDK default top_p is 1.0)
             "temperature": 0.0,
-            "top_p": None,
         },
     },
     "gemini-3-pro": {
