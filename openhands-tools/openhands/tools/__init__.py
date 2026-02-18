@@ -17,6 +17,7 @@ from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.delegate import DelegationVisualizer, register_agent
 from openhands.tools.delegate.registration import get_agent_factory
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.git import GitTool
 from openhands.tools.preset.default import (
     get_default_agent,
     get_default_tools,
@@ -37,6 +38,7 @@ __all__ = [
     "BrowserToolSet",
     "DelegationVisualizer",
     "FileEditorTool",
+    "GitTool",
     "TaskTrackerTool",
     "TerminalTool",
     "get_agent_factory",
