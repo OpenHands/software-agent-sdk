@@ -317,7 +317,9 @@ class View(BaseModel):
         Removes ActionEvents and ObservationEvents that have tool_call_ids
         but don't have matching pairs. Also enforces batch atomicity - if any
         ActionEvent in a batch is filtered out, all ActionEvents in that batch
-        are also filtered out.
+        are also filtered out. Additionally, deduplicates observations that share
+        the same tool_call_id (e.g., when both AgentErrorEvent and ObservationEvent
+        exist for the same tool call due to a restart).
 
         Args:
             view_events: The list of events to filter
@@ -365,6 +367,94 @@ class View(BaseModel):
                 and event.tool_call_id in tool_call_ids_to_remove
             )
         ]
+
+        # Fourth pass: deduplicate observations with the same tool_call_id
+        # This handles cases where multiple observation types (e.g., AgentErrorEvent
+        # and ObservationEvent) exist for the same tool call, such as when a restart
+        # occurs during tool execution.
+        result = View._deduplicate_observations(result)
+
+        return result
+
+    @staticmethod
+    def _deduplicate_observations(
+        events: list[LLMConvertibleEvent],
+    ) -> list[LLMConvertibleEvent]:
+        """Deduplicate observations that share the same tool_call_id.
+
+        When multiple ObservationBaseEvent instances have the same tool_call_id,
+        keep only one. This can happen when:
+        - A restart creates an AgentErrorEvent for an unmatched action
+        - The tool then completes, creating an ObservationEvent
+        - Both events share the same tool_call_id
+
+        Priority order (highest priority wins):
+        1. ObservationEvent (contains actual tool result)
+        2. UserRejectObservation (explicit user action)
+        3. AgentErrorEvent (error notification)
+
+        The kept observation is placed at the position of the highest-priority
+        duplicate to preserve event order.
+
+        Args:
+            events: List of events to deduplicate
+
+        Returns:
+            List with duplicate observations removed, preserving order
+        """
+        from openhands.sdk.event.llm_convertible.observation import (
+            AgentErrorEvent,
+            ObservationEvent,
+            UserRejectObservation,
+        )
+
+        def observation_priority(event: LLMConvertibleEvent) -> int:
+            """Return priority for observation types (lower = better)."""
+            if isinstance(event, ObservationEvent):
+                return 0  # Highest priority - contains actual result
+            elif isinstance(event, UserRejectObservation):
+                return 1  # User rejection
+            elif isinstance(event, AgentErrorEvent):
+                return 2  # Error notification
+            return 3  # Unknown type
+
+        # First pass: identify the best observation for each tool_call_id
+        best_observation: dict[ToolCallID, LLMConvertibleEvent] = {}
+        for event in events:
+            if isinstance(event, ObservationBaseEvent) and event.tool_call_id:
+                tool_call_id = event.tool_call_id
+                if tool_call_id in best_observation:
+                    existing = best_observation[tool_call_id]
+                    if observation_priority(event) < observation_priority(existing):
+                        best_observation[tool_call_id] = event
+                        logger.debug(
+                            f"Found better observation for "
+                            f"tool_call_id={tool_call_id}: "
+                            f"{type(existing).__name__} -> {type(event).__name__}"
+                        )
+                else:
+                    best_observation[tool_call_id] = event
+
+        # Second pass: build result preserving order, skipping duplicate observations
+        result: list[LLMConvertibleEvent] = []
+        emitted_tool_call_ids: set[ToolCallID] = set()
+
+        for event in events:
+            if isinstance(event, ObservationBaseEvent) and event.tool_call_id:
+                tool_call_id = event.tool_call_id
+                if tool_call_id in emitted_tool_call_ids:
+                    # Already emitted an observation for this tool_call_id
+                    logger.debug(
+                        f"Skipping duplicate observation for "
+                        f"tool_call_id={tool_call_id}: {type(event).__name__}"
+                    )
+                    continue
+                # Emit the best observation at first occurrence
+                best = best_observation[tool_call_id]
+                result.append(best)
+                emitted_tool_call_ids.add(tool_call_id)
+            else:
+                result.append(event)
 
         return result
 
