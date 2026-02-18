@@ -315,12 +315,9 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
 
         indices = self.property.manipulation_indices(current_view_events)
 
-        # Index 1 (between action_1 and obs_1) should not be manipulatable
-        assert 1 not in indices
-        # Index 2 (between obs_1 and action_2) should not be manipulatable
-        assert 2 not in indices
-        # Index 3 (between action_2 and obs_2) should not be manipulatable
-        assert 3 not in indices
+        # The entire set of events is a tool loop, so the only indices are at the start
+        # and end.
+        assert list(indices) == [0, 4]
 
     def test_manipulation_allowed_between_tool_loops(self) -> None:
         """Test that manipulation is allowed between separate tool loops."""
@@ -334,10 +331,9 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
 
         indices = self.property.manipulation_indices(current_view_events)
 
-        # Index 2 (between first tool loop and message) should be manipulatable
-        assert 2 in indices
-        # Index 5 (between second tool loop and end) should be manipulatable
-        assert 5 in indices
+        # Indices at start, end, and wrapping the user message. No indicies inside the
+        # tool loops.
+        assert list(indices) == [0, 2, 3, 5]
 
     def test_manipulation_allowed_before_first_tool_loop(self) -> None:
         """Test that manipulation is allowed before the first tool loop."""
@@ -349,10 +345,8 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
 
         indices = self.property.manipulation_indices(current_view_events)
 
-        # Index 0 (before message) should be manipulatable
-        assert 0 in indices
-        # Note: Index 1 is removed because entering a tool loop -
-        # cannot manipulate at the start
+        # Should not have an index in between the action and observation.
+        assert list(indices) == [0, 1, 3]
 
     def test_single_event_complete_indices(self) -> None:
         """Test that a single event has complete manipulation indices."""
@@ -382,12 +376,8 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
 
         indices = self.property.manipulation_indices(current_view_events)
 
-        # Indices within first tool loop should not be manipulatable
-        assert 1 not in indices
-        # Index at the boundary (between obs_1 and msg_1) should be manipulatable
-        assert 2 in indices
-        # Indices within second tool loop should not be manipulatable
-        assert 3 in indices
+        # All indices except 1 and 4, as those are between actions and observations.
+        assert list(indices) == [0, 2, 3, 5]
 
     def test_parallel_actions_in_tool_loop(self) -> None:
         """Test that parallel actions (same response) are in the same tool loop."""
@@ -401,7 +391,5 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
 
         indices = self.property.manipulation_indices(current_view_events)
 
-        # No indices within the tool loop should be manipulatable
-        assert 1 not in indices
-        assert 2 not in indices
-        assert 3 not in indices
+        # It's one big tool loop, so only the start and end are manipulable.
+        assert list(indices) == [0, 4]
