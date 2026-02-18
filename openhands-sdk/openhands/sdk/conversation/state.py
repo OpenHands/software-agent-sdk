@@ -17,6 +17,7 @@ from openhands.sdk.conversation.types import ConversationCallbackType, Conversat
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -162,6 +163,17 @@ class ConversationState(OpenHandsModel):
         "To trigger autosave, always reassign: "
         "state.agent_state = {**state.agent_state, key: value}. "
         "See https://docs.openhands.dev/sdk/guides/convo-persistence#how-state-persistence-works",
+    )
+
+    # Hook configuration for the conversation
+    hook_config: HookConfig | None = Field(
+        default=None,
+        description=(
+            "Hook configuration for this conversation. Includes definitions for "
+            "PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd, "
+            "and Stop hooks. When set, these hooks are executed at the appropriate "
+            "points during conversation execution."
+        ),
     )
 
     # ===== Private attrs (NOT Fields) =====

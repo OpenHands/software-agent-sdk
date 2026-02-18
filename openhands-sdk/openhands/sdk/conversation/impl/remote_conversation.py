@@ -530,6 +530,15 @@ class RemoteState(ConversationStateProtocol):
         stats_data = info.get("stats", {})
         return ConversationStats.model_validate(stats_data)
 
+    @property
+    def hook_config(self) -> HookConfig | None:
+        """Get hook configuration (fetched from remote)."""
+        info = self._get_conversation_info()
+        hook_config_data = info.get("hook_config")
+        if hook_config_data is not None:
+            return HookConfig.model_validate(hook_config_data)
+        return None
+
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
         info = self._get_conversation_info()
