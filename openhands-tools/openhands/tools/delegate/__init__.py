@@ -6,7 +6,10 @@ from openhands.tools.delegate.definition import (
     DelegateTool,
 )
 from openhands.tools.delegate.impl import DelegateExecutor
-from openhands.tools.delegate.registration import register_agent
+from openhands.tools.delegate.registration import (
+    register_agent,
+    register_agent_if_absent,
+)
 from openhands.tools.delegate.visualizer import DelegationVisualizer
 
 
@@ -17,4 +20,5 @@ __all__ = [
     "DelegateTool",
     "DelegationVisualizer",
     "register_agent",
+    "register_agent_if_absent",
 ]

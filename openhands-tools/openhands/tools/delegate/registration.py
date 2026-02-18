@@ -76,6 +76,37 @@ def register_agent(
         )
 
 
+def register_agent_if_absent(
+    name: str,
+    factory_func: Callable[[LLM], Agent],
+    description: str,
+) -> bool:
+    """
+    Register a custom agent if no agent with that name exists yet.
+
+    Unlike register_agent(), this does not raise on duplicates. This is used
+    by file-based and plugin-based agent loading to gracefully skip conflicts
+    with programmatically registered agents.
+
+    Args:
+        name: Unique name for the agent
+        factory_func: Function that takes an LLM and returns an Agent
+        description: Human-readable description of what this agent does
+
+    Returns:
+        True if the agent was registered, False if an agent with that name
+        already existed.
+    """
+    with _registry_lock:
+        if name in _agent_factories:
+            return False
+
+        _agent_factories[name] = AgentFactory(
+            factory_func=factory_func, description=description
+        )
+        return True
+
+
 def get_agent_factory(name: str | None) -> AgentFactory:
     """
     Get a registered agent factory by name.

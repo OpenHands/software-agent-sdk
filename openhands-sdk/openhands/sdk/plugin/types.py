@@ -201,6 +201,10 @@ class AgentDefinition(BaseModel):
         default_factory=list, description="List of allowed tools for this agent"
     )
     system_prompt: str = Field(default="", description="System prompt content")
+    allowed_commands: list[str] = Field(
+        default_factory=list,
+        description="List of allowed shell commands for this agent",
+    )
     source: str | None = Field(
         default=None, description="Source file path for this agent"
     )
@@ -256,11 +260,31 @@ class AgentDefinition(BaseModel):
         else:
             tools = []
 
+        # Parse allowed_commands (supports both snake_case and kebab-case)
+        allowed_commands_raw = (
+            fm.get("allowed_commands") or fm.get("allowed-commands") or []
+        )
+        allowed_commands: list[str]
+        if isinstance(allowed_commands_raw, str):
+            allowed_commands = [allowed_commands_raw]
+        elif isinstance(allowed_commands_raw, list):
+            allowed_commands = [str(c) for c in allowed_commands_raw]
+        else:
+            allowed_commands = []
+
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
 
         # Remove known fields from metadata to get extras
-        known_fields = {"name", "description", "model", "color", "tools"}
+        known_fields = {
+            "name",
+            "description",
+            "model",
+            "color",
+            "tools",
+            "allowed_commands",
+            "allowed-commands",
+        }
         metadata = {k: v for k, v in fm.items() if k not in known_fields}
 
         return cls(
@@ -269,6 +293,7 @@ class AgentDefinition(BaseModel):
             model=model,
             color=color,
             tools=tools,
+            allowed_commands=allowed_commands,
             system_prompt=content,
             source=str(agent_path),
             when_to_use_examples=when_to_use_examples,

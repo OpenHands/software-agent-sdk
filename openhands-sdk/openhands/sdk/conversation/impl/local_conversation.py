@@ -310,6 +310,7 @@ class LocalConversation(BaseConversation):
             return
 
         all_plugin_hooks: list[HookConfig] = []
+        all_plugin_agents: list = []  # AgentDefinition instances from plugins
 
         # Load plugins if specified
         if self._plugin_specs:
@@ -347,6 +348,10 @@ class LocalConversation(BaseConversation):
                 if plugin.hooks and not plugin.hooks.is_empty():
                     all_plugin_hooks.append(plugin.hooks)
 
+                # Collect agent definitions
+                if plugin.agents:
+                    all_plugin_agents.extend(plugin.agents)
+
             # Update agent with merged content
             self.agent = self.agent.model_copy(
                 update={
@@ -360,6 +365,19 @@ class LocalConversation(BaseConversation):
                 self._state.agent = self.agent
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Register plugin and file-based agent definitions into delegate registry
+        # Import deferred to avoid circular import
+        from openhands.sdk.agent.agent_loader import (
+            register_file_agents,
+            register_plugin_agents,
+        )
+
+        if all_plugin_agents:
+            register_plugin_agents(all_plugin_agents)
+
+        # Register file-based agents from .agents/ directories
+        register_file_agents(self.workspace.working_dir)
 
         # Combine explicit hook_config with plugin hooks
         # Explicit hooks run first (before plugin hooks)
