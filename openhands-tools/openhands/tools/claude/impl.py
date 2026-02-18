@@ -501,8 +501,13 @@ class DelegationManager:
                 task.thread.join(timeout=5.0)
 
         # Clean up temporary directory
+        # and in-memory stores
         if self._tmp_dir.exists():
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+        self._active_tasks.clear()
+        self._inactive_tasks.clear()
+        self._task_id_to_uuid.clear()
 
 
 T = TypeVar("T", bound=Observation)
