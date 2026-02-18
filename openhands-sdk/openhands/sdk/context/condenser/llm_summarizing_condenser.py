@@ -310,10 +310,16 @@ class LLMSummarizingCondenser(RollingCondenser):
         self, view: View, agent_llm: LLM | None = None
     ) -> Condensation:
         # The condensation is dependent on the events we want to drop and the previous
-        # summary.
-        forgotten_events, summary_offset = self._get_forgotten_events(
-            view, agent_llm=agent_llm
-        )
+        # summary. If we fail to find an appropriate set of events to forget raise an
+        # exception so the conversation can keep going until conditions change.
+        try:
+            forgotten_events, summary_offset = self._get_forgotten_events(
+                view, agent_llm=agent_llm
+            )
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                "Unable to compute forgotten events"
+            ) from e
 
         if not forgotten_events:
             raise NoCondensationAvailableException(
