@@ -17,7 +17,12 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.logger import get_logger
-from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
+from tests.integration.base import (
+    BaseIntegrationTest,
+    SkipTest,
+    TestResult,
+    ToolPresetType,
+)
 from tests.integration.schemas import ModelTestResults, TokenUsageData
 from tests.integration.utils.format_costs import format_cost
 
@@ -117,9 +122,15 @@ def load_test_class(file_path: str) -> type[BaseIntegrationTest]:
     raise ImportError(f"No BaseIntegrationTest subclass found in {file_path}")
 
 
-def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> EvalOutput:
+def process_instance(
+    instance: TestInstance,
+    llm_config: dict[str, Any],
+    tool_preset: ToolPresetType = "default",
+) -> EvalOutput:
     """Process a single test instance."""
-    logger.info("Processing test: %s", instance.instance_id)
+    logger.info(
+        "Processing test: %s (tool_preset: %s)", instance.instance_id, tool_preset
+    )
 
     # Load the test class
     test_class_type = load_test_class(instance.file_path)
@@ -148,6 +159,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             llm_config=llm_config,  # Use the provided config
             workspace=temp_dir,  # Pass the workspace directory
             instance_id=instance.instance_id,  # Pass the instance ID for logging
+            tool_preset=tool_preset,  # Pass the tool preset
         )
 
         # Run the test
@@ -267,22 +279,30 @@ def run_evaluation(
     instances: list[TestInstance],
     llm_config: dict[str, Any],
     num_workers: int,
+    tool_preset: ToolPresetType = "default",
 ) -> list[EvalOutput]:
     """Run evaluation on all test instances and return results directly."""
-    logger.info("Running %d tests with %d workers", len(instances), num_workers)
+    logger.info(
+        "Running %d tests with %d workers (tool_preset: %s)",
+        len(instances),
+        num_workers,
+        tool_preset,
+    )
 
     results = []
 
     if num_workers == 1:
         # Sequential execution
         for instance in instances:
-            result = process_instance(instance, llm_config)
+            result = process_instance(instance, llm_config, tool_preset)
             results.append(result)
     else:
         # Parallel execution
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             future_to_instance = {
-                executor.submit(process_instance, instance, llm_config): instance
+                executor.submit(
+                    process_instance, instance, llm_config, tool_preset
+                ): instance
                 for instance in instances
             }
 
@@ -432,10 +452,23 @@ def main():
         default="tests/integration/outputs",
         help="Output directory for results",
     )
+    parser.add_argument(
+        "--tool-preset",
+        type=str,
+        choices=["default", "gemini", "planning"],
+        default="default",
+        help=(
+            "Tool preset to use for file editing (default: 'default'). "
+            "'default' uses FileEditorTool (claude-style), "
+            "'gemini' uses read_file/write_file/edit/list_directory tools, "
+            "'planning' uses planning-specific tools."
+        ),
+    )
 
     args = parser.parse_args()
 
     llm_config = args.llm_config
+    tool_preset: ToolPresetType = args.tool_preset
 
     # Log configuration details
     logger.info("INTEGRATION TEST CONFIGURATION")
@@ -443,6 +476,7 @@ def main():
     logger.info("NUM_WORKERS: %s", args.num_workers)
     logger.info("EVAL_NOTE: %s", args.eval_note)
     logger.info("TEST_TYPE: %s", args.test_type)
+    logger.info("TOOL_PRESET: %s", tool_preset)
     if args.eval_ids:
         logger.info("EVAL_IDS: %s", args.eval_ids)
 
@@ -472,7 +506,7 @@ def main():
 
     logger.info("Output directory: %s", output_dir)
 
-    eval_outputs = run_evaluation(instances, llm_config, args.num_workers)
+    eval_outputs = run_evaluation(instances, llm_config, args.num_workers, tool_preset)
 
     generate_structured_results(
         eval_outputs=eval_outputs,

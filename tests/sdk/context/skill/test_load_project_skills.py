@@ -244,6 +244,50 @@ def test_load_project_skills_handles_errors_gracefully(tmp_path):
     assert skills == []
 
 
+def test_load_project_skills_one_bad_skill_does_not_break_others(tmp_path):
+    """Test that one invalid skill doesn't prevent other valid skills from loading.
+
+    This is a regression test for the bug where a single skill validation error
+    would cause ALL skills in the directory to fail loading.
+    """
+    # Create .openhands/skills directory
+    skills_dir = tmp_path / ".openhands" / "skills"
+    skills_dir.mkdir(parents=True)
+
+    # Create a valid skill
+    valid_skill = skills_dir / "valid-skill.md"
+    valid_skill.write_text(
+        "---\nname: valid-skill\ntriggers:\n  - valid\n---\nThis is a valid skill."
+    )
+
+    # Create an invalid skill (name doesn't match filename)
+    invalid_skill_dir = skills_dir / "bad-skill"
+    invalid_skill_dir.mkdir()
+    (invalid_skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: wrong_name\n"  # Name has underscore, doesn't match dir
+        "---\n"
+        "This skill has a mismatched name."
+    )
+
+    # Create another valid skill
+    another_valid = skills_dir / "another-valid.md"
+    another_valid.write_text(
+        "---\nname: another-valid\ntriggers:\n  - another\n---\nAnother valid skill."
+    )
+
+    # Should load valid skills despite the invalid one
+    skills = load_project_skills(tmp_path)
+
+    # Both valid skills should be loaded
+    skill_names = {s.name for s in skills}
+    assert "valid-skill" in skill_names
+    assert "another-valid" in skill_names
+    # Invalid skill should NOT be loaded
+    assert "wrong_name" not in skill_names
+    assert "bad-skill" not in skill_names
+
+
 def test_load_project_skills_with_string_path(tmp_path):
     """Test that load_project_skills accepts string paths."""
     # Create .openhands/skills directory
