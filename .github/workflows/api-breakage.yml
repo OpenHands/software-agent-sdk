@@ -1,0 +1,32 @@
+---
+name: API breakage checks
+
+on:
+    pull_request:
+        branches: [main]
+        # Only run on release PRs created by prepare-release.yml (rel-X.Y.Z branches)
+        # We enforce version-bump policy here, which does not apply to everyday PRs.
+        head-branches: [rel-*]
+
+jobs:
+    sdk-api:
+        name: SDK programmatic API (Griffe)
+        runs-on: ubuntu-latest
+        # Non-blocking for now — report failures but don't gate releases.
+        # Remove continue-on-error once validated in production.
+        continue-on-error: true
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+            - name: Install workspace deps (dev)
+              run: uv sync --frozen --group dev
+            - name: Run SDK API breakage check
+              env:
+                  SDK_INCLUDE_PATHS: openhands.sdk
+              run: uv run python .github/scripts/check_sdk_api_breakage.py
