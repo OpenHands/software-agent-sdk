@@ -70,7 +70,7 @@ class TestBatchAtomicityProperty:
         # Current view has action1, action2, action3 forgotten but action4 kept
         # This simulates what might happen if the condenser uses event indices
         # without considering batch boundaries
-        current_view_events: Sequence[LLMConvertibleEvent] = [action4]
+        current_view_events: list[LLMConvertibleEvent] = [action4]
 
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
@@ -112,7 +112,7 @@ class TestBatchAtomicityProperty:
         all_events: Sequence[LLMConvertibleEvent] = [action1, action2, action3]
 
         # Current view has all actions
-        current_view_events: Sequence[LLMConvertibleEvent] = [action1, action2, action3]
+        current_view_events: list[LLMConvertibleEvent] = [action1, action2, action3]
 
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
@@ -146,7 +146,7 @@ class TestBatchAtomicityProperty:
 
         # Current view has action1_2 forgotten but action1_1 kept (partial batch1)
         # and action2_1, action2_2 kept (complete batch2)
-        current_view_events: Sequence[LLMConvertibleEvent] = [
+        current_view_events: list[LLMConvertibleEvent] = [
             action1_1,
             action2_1,
             action2_2,
@@ -182,7 +182,7 @@ class TestBatchAtomicityProperty:
         all_events: Sequence[LLMConvertibleEvent] = [action1, action2, action3]
 
         # Current view has action2 and action3 (action1 forgotten)
-        current_view_events: Sequence[LLMConvertibleEvent] = [action2, action3]
+        current_view_events: list[LLMConvertibleEvent] = [action2, action3]
 
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
@@ -207,7 +207,7 @@ class TestBatchAtomicityProperty:
         all_events: Sequence[LLMConvertibleEvent] = [action1, action2, action3]
 
         # Current view has action1 and action3 (action2 forgotten)
-        current_view_events: Sequence[LLMConvertibleEvent] = [action1, action3]
+        current_view_events: list[LLMConvertibleEvent] = [action1, action3]
 
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
@@ -242,7 +242,7 @@ class TestBatchAtomicityProperty:
         ]
 
         # Current view has all events from both batches
-        current_view_events: Sequence[LLMConvertibleEvent] = [
+        current_view_events: list[LLMConvertibleEvent] = [
             action1_1,
             action1_2,
             action2_1,
@@ -265,7 +265,7 @@ class TestBatchAtomicityProperty:
         all_events: Sequence[LLMConvertibleEvent] = [action]
 
         # Current view has the action
-        current_view_events: Sequence[LLMConvertibleEvent] = [action]
+        current_view_events: list[LLMConvertibleEvent] = [action]
 
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
@@ -308,7 +308,7 @@ class TestBatchAtomicityProperty:
         all_events: Sequence[LLMConvertibleEvent] = [action1_1, action1_2, action2_1]
 
         # Current view has action1_2 and action2_1 (action1_1 forgotten)
-        current_view_events: Sequence[LLMConvertibleEvent] = [action1_2, action2_1]
+        current_view_events: list[LLMConvertibleEvent] = [action1_2, action2_1]
 
         # Enforce batch atomicity
         events_to_remove = self.property.enforce(current_view_events, all_events)
@@ -339,7 +339,7 @@ class TestBatchAtomicityPropertyManipulationIndices:
         action2 = create_action_event("action_2", llm_response_id, "tool_call_2")
         action3 = create_action_event("action_3", llm_response_id, "tool_call_3")
 
-        current_view_events: Sequence[LLMConvertibleEvent] = [action1, action2, action3]
+        current_view_events: list[LLMConvertibleEvent] = [action1, action2, action3]
 
         indices = self.property.manipulation_indices(current_view_events, [])
 
@@ -356,7 +356,7 @@ class TestBatchAtomicityPropertyManipulationIndices:
         action1 = create_action_event("action_1", batch1_id, "tool_call_1")
         action2 = create_action_event("action_2", batch2_id, "tool_call_2")
 
-        current_view_events: Sequence[LLMConvertibleEvent] = [action1, action2]
+        current_view_events: list[LLMConvertibleEvent] = [action1, action2]
 
         indices = self.property.manipulation_indices(current_view_events, [])
 
@@ -370,7 +370,7 @@ class TestBatchAtomicityPropertyManipulationIndices:
 
         action = create_action_event("action_1", llm_response_id, "tool_call_1")
 
-        current_view_events: Sequence[LLMConvertibleEvent] = [action]
+        current_view_events: list[LLMConvertibleEvent] = [action]
 
         indices = self.property.manipulation_indices(current_view_events, [])
 
