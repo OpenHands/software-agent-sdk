@@ -28,7 +28,7 @@ class ManipulationIndices(set[int]):
             The smallest manipulation index greater than or equal to the threshold.
 
         Raises:
-            ValueError: if no valid manipulatin index exists past the threshold.
+            ValueError: if no valid manipulation index exists past the threshold.
         """
         valid_indices = {idx for idx in self if idx >= threshold}
 
