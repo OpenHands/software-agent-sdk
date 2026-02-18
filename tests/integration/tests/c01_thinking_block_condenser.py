@@ -49,7 +49,7 @@ class FirstToolLoopCondenser(CondenserBase):
         3. Later thinking blocks are preserved
         """
         # Get manipulation indices which define boundaries of atomic units
-        indices = view.manipulation_indices
+        indices = list(view.manipulation_indices)
 
         # Find atomic units (ranges between consecutive indices) with thinking blocks
         units_with_thinking = []
