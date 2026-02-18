@@ -1,0 +1,12 @@
+{
+  "t0": 5367.789225039,
+  "stop_at_action_count": 2,
+  "min_post_stop_actions": 2,
+  "t_stop_request": 5403.437473825,
+  "action_count_at_stop": 3,
+  "first_post_stop_action_count": 4,
+  "t_first_post_stop_action": 5404.536200907,
+  "action_count_at_end": 30,
+  "post_stop_tick_exec_count": 27,
+  "t_thread_exit": 5441.910416988
+}
