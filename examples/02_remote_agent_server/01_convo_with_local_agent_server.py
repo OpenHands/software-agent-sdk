@@ -175,7 +175,10 @@ with ManagedAPIServer(port=8001) as server:
     # Configure hooks - demonstrating the hooks system with RemoteConversation
     # Note: RemoteConversation only supports SessionStart/SessionEnd hooks;
     # other hook types (PreToolUse, PostToolUse, etc.) will be logged as warnings
-    # since they run on the server side.
+    # Configure hooks - demonstrating the hooks system with RemoteConversation
+    # Server-side hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop) are
+    # executed by the agent server. Client-side hooks (SessionStart, SessionEnd)
+    # are executed locally.
     log_file = Path("/tmp/tool_usage.log")
 
     hook_config = HookConfig(
