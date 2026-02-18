@@ -413,4 +413,11 @@ For examples that use the critic model (e.g., `34_critic_example.py`), the criti
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
 - Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
+
+<EXAMPLES_STYLE>
+- Examples in `examples/01_standalone_sdk/` should be written as direct scripts, NOT wrapped in a `main()` function.
+- The script code should run at module level (after imports and helper function definitions).
+- Keep examples concise: avoid excessive print statements that make the code long and less readable.
+- See `examples/01_standalone_sdk/01_hello_world.py` for the canonical pattern.
+</EXAMPLES_STYLE>
 </REPO>

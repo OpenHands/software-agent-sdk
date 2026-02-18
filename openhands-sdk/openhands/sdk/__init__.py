@@ -68,6 +68,18 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0"  # fallback for editable/unbuilt environments
 
+
+# Rebuild models that have forward references now that all imports are done
+def _rebuild_forward_refs() -> None:
+    """Rebuild Pydantic models with forward references."""
+    from openhands.sdk.critic.impl.agent_review import AgentReviewCritic
+
+    # Pass Agent to the model_rebuild so it can resolve the forward reference
+    AgentReviewCritic.model_rebuild(_types_namespace={"Agent": Agent})
+
+
+_rebuild_forward_refs()
+
 __all__ = [
     "LLM",
     "LLMRegistry",

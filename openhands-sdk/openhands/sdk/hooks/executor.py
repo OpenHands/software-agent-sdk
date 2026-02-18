@@ -1,4 +1,4 @@
-"""Hook executor - runs shell commands with JSON I/O."""
+"""Hook executor - runs shell commands or Python callbacks."""
 
 import json
 import os
@@ -6,7 +6,7 @@ import subprocess
 
 from pydantic import BaseModel
 
-from openhands.sdk.hooks.config import HookDefinition
+from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.types import HookDecision, HookEvent
 from openhands.sdk.utils import sanitized_env
 
@@ -38,7 +38,7 @@ class HookResult(BaseModel):
 
 
 class HookExecutor:
-    """Executes hook commands with JSON I/O."""
+    """Executes hook commands or callbacks."""
 
     def __init__(self, working_dir: str | None = None):
         self.working_dir = working_dir or os.getcwd()
@@ -49,7 +49,56 @@ class HookExecutor:
         event: HookEvent,
         env: dict[str, str] | None = None,
     ) -> HookResult:
-        """Execute a single hook."""
+        """Execute a single hook (command or callback)."""
+        if hook.type == HookType.CALLBACK:
+            return self._execute_callback(hook, event)
+        else:
+            return self._execute_command(hook, event, env)
+
+    def _execute_callback(
+        self,
+        hook: HookDefinition,
+        event: HookEvent,
+    ) -> HookResult:
+        """Execute a Python callback hook."""
+        if hook.callback is None:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error="Callback hook has no callback function",
+            )
+
+        try:
+            result = hook.callback(event)
+            if isinstance(result, HookResult):
+                return result
+            else:
+                # If callback returns something else, treat as success
+                return HookResult(
+                    success=True,
+                    stdout=str(result) if result else "",
+                )
+        except Exception as e:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error=f"Callback execution failed: {e}",
+            )
+
+    def _execute_command(
+        self,
+        hook: HookDefinition,
+        event: HookEvent,
+        env: dict[str, str] | None = None,
+    ) -> HookResult:
+        """Execute a shell command hook."""
+        if not hook.command:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error="Command hook has no command",
+            )
+
         # Prepare environment
         hook_env = sanitized_env()
         hook_env["OPENHANDS_PROJECT_DIR"] = self.working_dir
