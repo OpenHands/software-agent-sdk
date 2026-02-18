@@ -22,7 +22,7 @@ from openhands.sdk.conversation import (
     RemoteConversation,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.event import Event, LLMConvertibleEvent
+from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
@@ -92,6 +92,7 @@ __all__ = [
     "MCPToolDefinition",
     "MCPToolObservation",
     "MessageEvent",
+    "HookExecutionEvent",
     "create_mcp_tools",
     "get_logger",
     "Conversation",
