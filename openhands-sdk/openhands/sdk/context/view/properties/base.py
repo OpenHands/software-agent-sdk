@@ -26,7 +26,7 @@ class ViewPropertyBase(ABC):
     @abstractmethod
     def enforce(
         self,
-        current_view_events: Sequence[LLMConvertibleEvent],
+        current_view_events: list[LLMConvertibleEvent],
         all_events: Sequence[Event],
     ) -> set[EventID]:
         """Enforce the property on a list of events.
@@ -44,7 +44,7 @@ class ViewPropertyBase(ABC):
     @abstractmethod
     def manipulation_indices(
         self,
-        current_view_events: Sequence[LLMConvertibleEvent],
+        current_view_events: list[LLMConvertibleEvent],
         all_events: Sequence[Event],
     ) -> ManipulationIndices:
         """Get manipulation indices for the property on a list of events.
