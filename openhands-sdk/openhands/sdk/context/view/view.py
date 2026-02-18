@@ -5,7 +5,7 @@ from functools import cached_property
 from logging import getLogger
 from typing import overload
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel
 
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties import ALL_PROPERTIES
@@ -39,9 +39,11 @@ class View(BaseModel):
     def __len__(self) -> int:
         return len(self.events)
 
-    @computed_field  # type: ignore[prop-decorator]
     @cached_property
     def manipulation_indices(self) -> ManipulationIndices:
+        """The indices where the view events can be manipulated without violating the
+        properties expected by LLM APIs.
+        """
         results: ManipulationIndices = ManipulationIndices.complete(self.events)
         for property in ALL_PROPERTIES:
             results &= property.manipulation_indices(self.events)
