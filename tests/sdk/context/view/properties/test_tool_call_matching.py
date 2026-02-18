@@ -29,31 +29,35 @@ def message_event(content: str) -> MessageEvent:
     )
 
 
-class TestToolCallMatchingPropertyEnforce:
+class TestToolCallMatchingBase:
+    """Base class for ToolCallMatchingProperty test suites."""
+
+    def setup_method(self) -> None:
+        """Set up test fixtures."""
+        self.property = ToolCallMatchingProperty()
+
+
+class TestToolCallMatchingPropertyEnforcement(TestToolCallMatchingBase):
     """Tests for the enforce method of ToolCallMatchingProperty."""
 
     def test_empty_list(self) -> None:
         """Test enforce with empty event list."""
-        property = ToolCallMatchingProperty()
-        result = property.enforce([], [])
+        result = self.property.enforce([], [])
         assert result == set()
 
     def test_no_tool_events(self) -> None:
         """Test enforce with no tool events."""
-        property = ToolCallMatchingProperty()
         message1 = message_event("First message")
         message2 = message_event("Second message")
 
         events: list[LLMConvertibleEvent] = [message1, message2]
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # No tool events, nothing to remove
         assert result == set()
 
     def test_matched_pairs(self) -> None:
         """Test enforce with matched tool call pairs."""
-        property = ToolCallMatchingProperty()
-
         message = message_event("Test message")
 
         # Matched pair 1
@@ -84,7 +88,7 @@ class TestToolCallMatchingPropertyEnforce:
             observation_event_2,
         ]
 
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # All events should be kept (all tool calls are matched)
         assert result == set()
@@ -93,8 +97,6 @@ class TestToolCallMatchingPropertyEnforce:
 
     def test_unmatched_action(self) -> None:
         """Test enforce with unmatched ActionEvent."""
-        property = ToolCallMatchingProperty()
-
         message = message_event("Test message")
 
         # Matched pair
@@ -120,7 +122,7 @@ class TestToolCallMatchingPropertyEnforce:
             action_event_unmatched,
         ]
 
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # Should keep: message, matched pair
         # Should remove: unmatched ActionEvent
@@ -128,8 +130,6 @@ class TestToolCallMatchingPropertyEnforce:
 
     def test_unmatched_observation(self) -> None:
         """Test enforce with unmatched ObservationEvent."""
-        property = ToolCallMatchingProperty()
-
         message = message_event("Test message")
 
         # Matched pair
@@ -154,7 +154,7 @@ class TestToolCallMatchingPropertyEnforce:
             observation_event_unmatched,
         ]
 
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # Should keep: message, matched pair
         # Should remove: unmatched ObservationEvent
@@ -162,8 +162,6 @@ class TestToolCallMatchingPropertyEnforce:
 
     def test_mixed_scenario(self) -> None:
         """Test enforce with complex mixed scenario."""
-        property = ToolCallMatchingProperty()
-
         message_event_1 = message_event("Message 1")
         message_event_2 = message_event("Message 2")
 
@@ -209,7 +207,7 @@ class TestToolCallMatchingPropertyEnforce:
             observation_event_2,
         ]
 
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # Should remove: unmatched action and observation events
         assert action_event_unmatched.id in result
@@ -221,8 +219,6 @@ class TestToolCallMatchingPropertyEnforce:
 
     def test_with_user_reject_observation(self) -> None:
         """Test that ActionEvent with UserRejectObservation is not filtered out."""
-        property = ToolCallMatchingProperty()
-
         action_event = create_autospec(ActionEvent, instance=True)
         action_event.tool_call_id = "call_1"
         action_event.id = "action_1"
@@ -245,15 +241,13 @@ class TestToolCallMatchingPropertyEnforce:
             message2,
         ]
 
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # Both the ActionEvent and UserRejectObservation should be kept
         assert len(result) == 0
 
     def test_with_agent_error_event(self) -> None:
         """Test that ActionEvent paired with AgentErrorEvent is not filtered out."""
-        property = ToolCallMatchingProperty()
-
         action_event = create_autospec(ActionEvent, instance=True)
         action_event.tool_call_id = "call_1"
         action_event.id = "action_1"
@@ -275,15 +269,13 @@ class TestToolCallMatchingPropertyEnforce:
             message2,
         ]
 
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # Both the ActionEvent and AgentErrorEvent should be kept
         assert len(result) == 0
 
     def test_mixed_observation_types(self) -> None:
         """Test filtering with mixed observation types."""
-        property = ToolCallMatchingProperty()
-
         # ActionEvents
         action_event_1 = create_autospec(ActionEvent, instance=True)
         action_event_1.tool_call_id = "call_1"
@@ -331,30 +323,26 @@ class TestToolCallMatchingPropertyEnforce:
             message_event("End"),
         ]
 
-        result = property.enforce(events, events)
+        result = self.property.enforce(events, events)
 
         # All matched pairs should be kept
         assert len(result) == 0
 
 
-class TestToolCallMatchingPropertyManipulationIndices:
+class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
     """Tests for the manipulation_indices method of ToolCallMatchingProperty."""
 
     def test_single_event_complete_indices(self) -> None:
         """Test manipulation indices for a single unpairable event are complete."""
-        property = ToolCallMatchingProperty()
-
         message = message_event("Test")
         events: list[LLMConvertibleEvent] = [message]
 
-        result = property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events, events)
 
         assert result == ManipulationIndices.complete(events)
 
     def test_matched_pair_no_index_between(self) -> None:
         """Test no manipulation index between matched action and observation."""
-        property = ToolCallMatchingProperty()
-
         action = create_autospec(ActionEvent, instance=True)
         action.tool_call_id = "call_1"
         action.id = "action_1"
@@ -366,15 +354,13 @@ class TestToolCallMatchingPropertyManipulationIndices:
 
         events: list[LLMConvertibleEvent] = [action, observation]
 
-        result = property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events, events)
 
         # Index 1 (between action and observation) should not be allowed
         assert 1 not in result
 
     def test_allow_index_between_pairs(self) -> None:
         """Test that manipulation is allowed between separate matched pairs."""
-        property = ToolCallMatchingProperty()
-
         # First pair
         action1 = create_autospec(ActionEvent, instance=True)
         action1.tool_call_id = "call_1"
@@ -402,7 +388,7 @@ class TestToolCallMatchingPropertyManipulationIndices:
             observation2,
         ]
 
-        result = property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events, events)
 
         # Index 2 (between the two pairs) should be allowed
         assert 2 in result
@@ -411,9 +397,7 @@ class TestToolCallMatchingPropertyManipulationIndices:
 
     def test_empty_events(self) -> None:
         """Test manipulation indices for empty events are complete."""
-        property = ToolCallMatchingProperty()
-
         events: list[LLMConvertibleEvent] = []
 
-        result = property.manipulation_indices(events, events)
+        result = self.property.manipulation_indices(events, events)
         assert result == ManipulationIndices.complete(events)

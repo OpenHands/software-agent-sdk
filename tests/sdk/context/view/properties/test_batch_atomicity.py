@@ -42,12 +42,16 @@ def create_action_event(
     )
 
 
-class TestBatchAtomicityProperty:
-    """Tests for BatchAtomicityProperty."""
+class TestBatchAtomicityPropertyBase:
+    """Base class for BatchAtomicityProperty test suites."""
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
         self.property = BatchAtomicityProperty()
+
+
+class TestBatchAtomicityPropertyEnforcement(TestBatchAtomicityPropertyBase):
+    """Tests for BatchAtomicityProperty enforcement."""
 
     def test_partial_batch_forgotten(self) -> None:
         """Test that if one event in a batch is forgotten, all events in that batch
@@ -304,12 +308,8 @@ class TestBatchAtomicityProperty:
         assert action2_1.id not in events_to_remove
 
 
-class TestBatchAtomicityPropertyManipulationIndices:
-    """Tests for BatchAtomicityProperty.manipulation_indices."""
-
-    def setup_method(self) -> None:
-        """Set up test fixtures."""
-        self.property = BatchAtomicityProperty()
+class TestBatchAtomicityPropertyManipulationIndices(TestBatchAtomicityPropertyBase):
+    """Tests for BatchAtomicityProperty manipulation indices."""
 
     def test_same_batch_no_manipulation_index(self) -> None:
         """Test that events in the same batch cannot be split by manipulation."""
