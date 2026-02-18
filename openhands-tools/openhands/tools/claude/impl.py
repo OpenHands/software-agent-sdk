@@ -208,7 +208,7 @@ class DelegationManager:
         self,
         prompt: str,
         subagent_type: str = "default",
-        model: str | None = None,  # noqa: ARG002
+        model: str | None = None,
         run_in_background: bool = False,
         resume: str | None = None,
         max_turns: int | None = None,
@@ -233,6 +233,11 @@ class DelegationManager:
         Raises:
             ValueError: If resume ID not found or capacity exceeded.
         """
+        if model is not None:
+            logger.warning(
+                "Custom model selection is not yet supported. "
+                "The parent conversation's model will be used instead."
+            )
         if conversation:
             self._ensure_parent(conversation)
 

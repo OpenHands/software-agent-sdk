@@ -14,7 +14,7 @@ from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.workspace import LocalWorkspace
-from openhands.tools.claude import ClaudeDelegationToolSet
+from openhands.tools.claude import TaskDelegationToolSet
 from openhands.tools.claude.definition import (
     TaskAction,
     TaskObservation,
@@ -53,7 +53,7 @@ def test_toolset_create_returns_three_tools():
     """ClaudeDelegationToolSet.create() should return exactly 3 tools."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         assert isinstance(tools, list)
         assert len(tools) == 3
@@ -66,7 +66,7 @@ def test_toolset_creates_correct_tool_types():
     """The three tools should be TaskTool, TaskOutputTool, and TaskStopTool."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         tool_names = [tool.name for tool in tools]
         assert "task" in tool_names
@@ -78,7 +78,7 @@ def test_toolset_tools_have_correct_types():
     """Each tool should be the correct ToolDefinition subclass."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         tool_by_name = {tool.name: tool for tool in tools}
 
@@ -91,7 +91,7 @@ def test_toolset_tools_share_manager():
     """All three tools' executors should share the same ClaudeDelegationManager."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         executors = [tool.executor for tool in tools]
         assert all(e is not None for e in executors)
@@ -112,8 +112,8 @@ def test_toolset_multiple_creates_have_separate_managers():
     """Multiple calls to create() should produce separate manager instances."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools1 = ClaudeDelegationToolSet.create(conv_state=conv_state)
-        tools2 = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools1 = TaskDelegationToolSet.create(conv_state=conv_state)
+        tools2 = TaskDelegationToolSet.create(conv_state=conv_state)
 
         executor1 = tools1[0].executor
         executor2 = tools2[0].executor
@@ -129,7 +129,7 @@ def test_toolset_tools_are_properly_configured():
     """Each tool should have description, action/observation types, and executor."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         for tool in tools:
             assert tool.description is not None
@@ -142,7 +142,7 @@ def test_task_tool_has_correct_schema():
     """TaskTool should have the correct action and observation types."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         task_tool = next(t for t in tools if t.name == "task")
         assert task_tool.action_type is TaskAction
@@ -153,7 +153,7 @@ def test_task_output_tool_has_correct_schema():
     """TaskOutputTool should have the correct action and observation types."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         task_output_tool = next(t for t in tools if t.name == "task_output")
         assert task_output_tool.action_type is TaskOutputAction
@@ -164,7 +164,7 @@ def test_task_stop_tool_has_correct_schema():
     """TaskStopTool should have the correct action and observation types."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         task_stop_tool = next(t for t in tools if t.name == "task_stop")
         assert task_stop_tool.action_type is TaskStopAction
@@ -175,7 +175,7 @@ def test_toolset_tools_generate_valid_mcp_schemas():
     """All tools should generate valid MCP schemas."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         for tool in tools:
             mcp_tool = tool.to_mcp_tool()
@@ -192,20 +192,20 @@ def test_toolset_tools_generate_valid_mcp_schemas():
 
 def test_toolset_inheritance():
     """ClaudeDelegationToolSet should inherit from ToolDefinition."""
-    assert issubclass(ClaudeDelegationToolSet, ToolDefinition)
+    assert issubclass(TaskDelegationToolSet, ToolDefinition)
 
     # The individual tools should NOT be instances of the ToolSet
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
         for tool in tools:
-            assert not isinstance(tool, ClaudeDelegationToolSet)
+            assert not isinstance(tool, TaskDelegationToolSet)
             assert isinstance(tool, ToolDefinition)
 
 
 def test_toolset_name():
     """ClaudeDelegationToolSet should have the correct auto-derived name."""
-    assert ClaudeDelegationToolSet.name == "claude_delegation_tool_set"
+    assert TaskDelegationToolSet.name == "task_delegation_tool_set"
 
 
 def test_tool_names():
@@ -219,7 +219,7 @@ def test_task_tool_executor_type():
     """TaskTool should use TaskExecutor."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         task_tool = next(t for t in tools if t.name == "task")
         assert isinstance(task_tool.executor, TaskExecutor)
@@ -229,7 +229,7 @@ def test_task_output_tool_executor_type():
     """TaskOutputTool should use TaskOutputExecutor."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         tool = next(t for t in tools if t.name == "task_output")
         assert isinstance(tool.executor, TaskOutputExecutor)
@@ -239,7 +239,7 @@ def test_task_stop_tool_executor_type():
     """TaskStopTool should use TaskStopExecutor."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = ClaudeDelegationToolSet.create(conv_state=conv_state)
+        tools = TaskDelegationToolSet.create(conv_state=conv_state)
 
         tool = next(t for t in tools if t.name == "task_stop")
         assert isinstance(tool.executor, TaskStopExecutor)
@@ -249,7 +249,7 @@ def test_toolset_registered_in_registry():
     """ClaudeDelegationToolSet should be automatically registered."""
     from openhands.sdk.tool.registry import _REG
 
-    assert "claude_delegation_tool_set" in _REG
+    assert "task_delegation_tool_set" in _REG
 
 
 def test_existing_delegate_tool_not_affected():
