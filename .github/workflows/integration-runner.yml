@@ -287,6 +287,9 @@ jobs:
                   elif [ "${{ github.event_name }}" = "schedule" ]; then
                     TEST_TYPE_ARGS="--test-type integration"
                     echo "Scheduled run; running integration tests only."
+                  elif [ "${{ github.event_name }}" = "push" ]; then
+                    TEST_TYPE_ARGS="--test-type integration"
+                    echo "Push trigger; running integration tests only."
                   else
                     echo "Running full integration test suite."
                   fi
