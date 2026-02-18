@@ -467,6 +467,9 @@ class DelegationManager:
     def stop_task(self, task_id: str) -> TaskState | None:
         """Stop a running task.
 
+        This both marks the task as STOPPED and pauses the underlying
+        conversation so the run() loop breaks at the next iteration.
+
         Args:
             task_id: The ID of the task to stop.
 
@@ -480,6 +483,12 @@ class DelegationManager:
                 task = None
 
         if task:
+            # Pause the conversation's run loop so it actually stops executing.
+            # This sets execution_status to PAUSED, which the run() loop checks
+            # at each iteration and breaks on.
+            if task.conversation is not None:
+                task.conversation.pause()
+
             task.stop()
             # Evict stopped tasks from running to inactive
             if task.status == TaskStatus.STOPPED:
@@ -494,6 +503,8 @@ class DelegationManager:
 
         for task in tasks:
             if task.thread and task.thread.is_alive():
+                if task.conversation is not None:
+                    task.conversation.pause()
                 task.set_error("Manager closing.")
 
         for task in tasks:
