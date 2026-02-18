@@ -71,7 +71,7 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
                 # We're just entering a tool loop. Start tracking a new tool loop with
                 # the current event ID.
                 case (False, True):
-                    current_tool_loop = set(event.id)
+                    current_tool_loop = {event.id}
 
                 # We're stuck in a tool loop. Add the event ID and keep going.
                 case (True, True):
@@ -84,6 +84,10 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
                     assert current_tool_loop is not None
                     tool_loops.append(current_tool_loop)
                     current_tool_loop = None
+
+        # If the events end while we're still in a tool loop, append it to the output.
+        if current_tool_loop is not None:
+            tool_loops.append(current_tool_loop)
 
         return tool_loops
 
