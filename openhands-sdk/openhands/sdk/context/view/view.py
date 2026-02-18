@@ -43,6 +43,10 @@ class View(BaseModel):
     def manipulation_indices(self) -> ManipulationIndices:
         """The indices where the view events can be manipulated without violating the
         properties expected by LLM APIs.
+
+        Each property generates an independent set of manipulation indices. An index is
+        in the returned set of manipulation indices if it exists in _all_ the sets of
+        property-derived indices.
         """
         results: ManipulationIndices = ManipulationIndices.complete(self.events)
         for property in ALL_PROPERTIES:
