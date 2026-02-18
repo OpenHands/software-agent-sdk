@@ -316,7 +316,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             forgotten_events, summary_offset = self._get_forgotten_events(
                 view, agent_llm=agent_llm
             )
-        except Exception as e:
+        except ValueError as e:
             raise NoCondensationAvailableException(
                 "Unable to compute forgotten events"
             ) from e
