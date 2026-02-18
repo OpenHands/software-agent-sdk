@@ -1,17 +1,5 @@
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
-from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.llm import (
-    Message,
-    TextContent,
-)
-
-
-def message_event(content: str) -> MessageEvent:
-    """Helper to create a MessageEvent."""
-    return MessageEvent(
-        llm_message=Message(role="user", content=[TextContent(text=content)]),
-        source="user",
-    )
+from tests.sdk.context.view.conftest import message_event  # noqa: F401
 
 
 def test_complete_empty_list() -> None:

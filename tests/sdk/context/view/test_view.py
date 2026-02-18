@@ -8,14 +8,8 @@ from openhands.sdk.event.condenser import (
 from openhands.sdk.event.llm_convertible import (
     MessageEvent,
 )
-from openhands.sdk.llm import Message, TextContent
-
-
-def message_event(content: str) -> MessageEvent:
-    return MessageEvent(
-        llm_message=Message(role="user", content=[TextContent(text=content)]),
-        source="user",
-    )
+from openhands.sdk.llm import TextContent
+from tests.sdk.context.view.conftest import message_event  # noqa: F401
 
 
 def test_view_preserves_uncondensed_lists() -> None:
