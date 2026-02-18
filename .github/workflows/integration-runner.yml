@@ -9,6 +9,10 @@ on:
     pull_request_target:
         types:
             - labeled
+    # TODO: Remove this push trigger after PR #2113 is merged
+    push:
+        branches:
+            - update-integration-test-model-to-sonnet-4-6
     workflow_dispatch:
         inputs:
             reason:
@@ -215,6 +219,7 @@ jobs:
                     )
                 ) ||
                 github.event_name == 'workflow_dispatch' ||
+                github.event_name == 'push' ||
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             ) && needs.setup-matrix.result == 'success'
         needs: [setup-matrix, post-label-comment, post-dispatch-comment]
@@ -368,6 +373,7 @@ jobs:
                     )
                 ) ||
                 github.event_name == 'workflow_dispatch' ||
+                github.event_name == 'push' ||
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             )
         runs-on: ubuntu-24.04
