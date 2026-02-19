@@ -33,6 +33,7 @@ def create_action_event(
     tool_call_id: str,
     tool_name: str = "test_tool",
     thinking_blocks: Sequence[ThinkingBlock | RedactedThinkingBlock] | None = None,
+    thinking: str | None = None,
 ) -> ActionEvent:
     """Helper to create an ActionEvent with specified IDs."""
     action = MCPToolAction(data={})
@@ -44,9 +45,15 @@ def create_action_event(
         origin="completion",
     )
 
+    resolved_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
+    if thinking_blocks:
+        resolved_blocks = list(thinking_blocks)
+    elif thinking is not None:
+        resolved_blocks = [ThinkingBlock(thinking=thinking)]
+
     return ActionEvent(
         thought=[TextContent(text="Test thought")],
-        thinking_blocks=list(thinking_blocks) if thinking_blocks else [],
+        thinking_blocks=resolved_blocks,
         action=action,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
