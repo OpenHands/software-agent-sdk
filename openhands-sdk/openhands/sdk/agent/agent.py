@@ -447,7 +447,13 @@ class Agent(CriticMixin, AgentBase):
                 f"Failed to provide security_risk field in tool '{tool_name}'"
             )
 
-        # When using weaker models without security analyzer
+        # When no security analyzer is configured, ignore any security_risk field
+        # from LLM and return UNKNOWN. This ensures that security_risk is only
+        # evaluated when a security analyzer is explicitly set.
+        if security_analyzer is None:
+            return risk.SecurityRisk.UNKNOWN
+
+        # When using non-LLM security analyzer without security risk field
         # safely ignore missing security risk fields
         if not requires_sr and raw is None:
             return risk.SecurityRisk.UNKNOWN
