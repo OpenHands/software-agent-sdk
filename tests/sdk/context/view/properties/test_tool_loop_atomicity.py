@@ -255,7 +255,7 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
 
         # The entire set of events is a tool loop, so the only indices are at the start
         # and end.
-        assert list(indices) == [0, 4]
+        assert indices == {0, 4}
 
     def test_manipulation_allowed_between_tool_loops(self) -> None:
         """Test that manipulation is allowed between separate tool loops."""
@@ -271,7 +271,7 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
 
         # Indices at start, end, and wrapping the user message. No indicies inside the
         # tool loops.
-        assert list(indices) == [0, 2, 3, 5]
+        assert indices == {0, 2, 3, 5}
 
     def test_manipulation_allowed_before_first_tool_loop(self) -> None:
         """Test that manipulation is allowed before the first tool loop."""
@@ -284,7 +284,7 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
         indices = self.property.manipulation_indices(current_view_events)
 
         # Should not have an index in between the action and observation.
-        assert list(indices) == [0, 1, 3]
+        assert indices == {0, 1, 3}
 
     def test_single_event_complete_indices(self) -> None:
         """Test that a single event has complete manipulation indices."""
@@ -315,7 +315,7 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
         indices = self.property.manipulation_indices(current_view_events)
 
         # All indices except 1 and 4, as those are between actions and observations.
-        assert list(indices) == [0, 2, 3, 5]
+        assert indices == {0, 2, 3, 5}
 
     def test_parallel_actions_in_tool_loop(self) -> None:
         """Test that parallel actions (same response) are in the same tool loop."""
@@ -330,4 +330,4 @@ class TestToolLoopAtomicityPropertyManipulationIndices(
         indices = self.property.manipulation_indices(current_view_events)
 
         # It's one big tool loop, so only the start and end are manipulable.
-        assert list(indices) == [0, 4]
+        assert indices == {0, 4}
