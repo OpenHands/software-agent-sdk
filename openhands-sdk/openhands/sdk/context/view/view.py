@@ -150,7 +150,7 @@ class View(BaseModel):
             else:
                 logger.debug(
                     f"Skipping non-LLMConvertibleEvent of type {type(event)} "
-                    f"in View.from_events"
+                    "in View.from_events"
                 )
 
         output = View.enforce_properties(output, events)
