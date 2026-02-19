@@ -52,6 +52,15 @@ class LLMSummarizingCondenser(RollingCondenser):
     `keep_first` events in the conversation will never be condensed or summarized.
     """
 
+    minimum_progress: float = Field(default=0.1, gt=0.0, lt=1.0)
+    """Minimum fraction of events that must be condensed (0.0-1.0). If fewer than
+    this proportion of events would be forgotten, condensation is treated as an error.
+    Default 0.1 means at least 10% of events must be condensed.
+    """
+    """Minimum ratio of the view to be condensed. Condensations below this threshold
+    are treated as errors.
+    """
+
     hard_context_reset_max_retries: int = Field(default=5, gt=0)
     """Number of attempts to perform hard context reset before raising an error."""
 
@@ -311,6 +320,12 @@ class LLMSummarizingCondenser(RollingCondenser):
                 "Cannot condense 0 events. This typically occurs when a tool loop "
                 "spans almost the entire view, leaving no valid range for forgetting "
                 "events. Consider adjusting keep_first or max_size parameters."
+            )
+
+        if len(forgotten_events) < len(view) * self.minimum_progress:
+            raise NoCondensationAvailableException(
+                "Cannot apply condensation: events forgotten below minimum progress "
+                "threshold."
             )
 
         return self._generate_condensation(

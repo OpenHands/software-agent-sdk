@@ -27,6 +27,7 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    FallbackStrategy,
     ImageContent,
     LLMProfileStore,
     LLMRegistry,
@@ -72,6 +73,7 @@ __all__ = [
     "LLMRegistry",
     "LLMProfileStore",
     "LLMStreamChunk",
+    "FallbackStrategy",
     "TokenCallbackType",
     "ConversationStats",
     "RegistryEvent",

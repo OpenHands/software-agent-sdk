@@ -20,7 +20,13 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - See exactly which lines the feedback refers to
   - Address issues one by one
   - Have focused discussions on specific code sections
-- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
+- **Review Context Awareness**: The agent considers previous review history:
+  - **Previous reviews**: Sees all past review decisions (APPROVED, CHANGES_REQUESTED, etc.)
+  - **Review threads**: Fetches all review threads including their resolution status
+  - **Smart commenting**: Avoids repeating issues that have already been raised and addressed
+  - **Unresolved focus**: Prioritizes unresolved threads that may still need attention
+  - **Pagination limits**: Fetches up to 100 threads per page (with pagination) and up to 50 comments per thread. For PRs with extensive review history exceeding these limits, older threads/comments may be omitted.
+- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/extensions>:
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
 - **Complete Diff Upfront**: The agent receives the complete git diff in the initial message for efficient review
@@ -63,7 +69,8 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
 - name: Run PR Review
   uses: ./.github/actions/pr-review
   with:
-      # LLM configuration
+      # LLM model(s) to use. Can be comma-separated for A/B testing
+      # - one model will be randomly selected per review
       llm-model: anthropic/claude-sonnet-4-5-20250929
       llm-base-url: ''
       # Review style: roasted (other option: standard)
@@ -109,19 +116,19 @@ There are two ways to trigger an automated review of a pull request:
 4. The workflow will automatically start and analyze the changes
 5. Review comments will be posted to the PR when complete
 
-**Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
+**Note**: Adding labels or requesting a *new* reviewer requires write access. GitHub may still allow PR authors to use "Re-request review" for a reviewer who has already reviewed.
 
 ## Customizing the Code Review
 
-Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.openhands/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
+Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.agents/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
 
 ### How It Works
 
-The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.openhands/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
+The PR review agent uses skills from the [OpenHands/extensions](https://github.com/OpenHands/extensions) repository by default. When you add a `.agents/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
 
 ### Example: Custom Code Review Skill
 
-Create `.openhands/skills/code-review.md` in your repository:
+Create `.agents/skills/code-review.md` in your repository:
 
 ```markdown
 ---
@@ -163,7 +170,7 @@ You are a code reviewer for this project. Follow these guidelines:
 
 ### Reference Example
 
-See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.openhands/skills/code-review.md) for a complete example of a custom code review skill.
+See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.agents/skills/code-review.md) for a complete example of a custom code review skill.
 
 ## Composite Action
 
@@ -178,7 +185,7 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `llm-model` | LLM model to use | No | `anthropic/claude-sonnet-4-5-20250929` |
+| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | No | `anthropic/claude-sonnet-4-5-20250929` |
 | `llm-base-url` | LLM base URL (optional) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
@@ -186,6 +193,34 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |
 | `lmnr-api-key` | Laminar API key for observability (optional) | No | - |
+
+## A/B Testing with Multiple Models
+
+The PR review workflow supports A/B testing different LLM models. When multiple models are specified, one is randomly selected for each review.
+
+### Configuration
+
+Specify multiple models as a comma-separated list in the `llm-model` parameter:
+
+```yaml
+- name: Run PR Review
+  uses: ./.github/actions/pr-review
+  with:
+      # Multiple models for A/B testing - one will be randomly selected
+      llm-model: 'litellm_proxy/claude-sonnet-4-5-20250929,litellm_proxy/gpt-4.1-2025-04-14'
+      llm-api-key: ${{ secrets.LLM_API_KEY }}
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Observability
+
+When Laminar observability is enabled, the selected model is automatically logged to the trace metadata:
+
+- **Trace metadata**: The `model` field is added to Laminar trace metadata
+- **Trace JSON**: The selected model is recorded in `laminar_trace_info.json`
+- **GitHub logs**: The selected model is printed to workflow logs
+
+This enables filtering and comparing review effectiveness across different models in Laminar dashboards.
 
 ## Review Evaluation (Observability)
 

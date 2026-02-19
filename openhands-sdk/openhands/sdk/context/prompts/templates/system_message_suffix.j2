@@ -1,3 +1,8 @@
+{% if current_datetime %}
+<CURRENT_DATETIME>
+The current date and time is: {{ current_datetime }}
+</CURRENT_DATETIME>
+{% endif %}
 {% if repo_skills %}
 <REPO_CONTEXT>
 The following information has been included based on several files defined in user's repository.

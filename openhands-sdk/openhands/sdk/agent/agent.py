@@ -232,14 +232,17 @@ class Agent(CriticMixin, AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        for event in reversed(list(state.events)):
-            if isinstance(event, MessageEvent) and event.source == "user":
-                reason = state.pop_blocked_message(event.id)
-                if reason is not None:
-                    logger.info(f"User message blocked by hook: {reason}")
-                    state.execution_status = ConversationExecutionStatus.FINISHED
-                    return
-                break  # Only check the most recent user message
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
@@ -623,6 +626,7 @@ class Agent(CriticMixin, AgentBase):
                 tool_name=action_event.tool_name,
                 tool_call_id=action_event.tool_call_id,
                 rejection_reason=reason,
+                rejection_source="hook",
             )
             on_event(rejection)
             return rejection
