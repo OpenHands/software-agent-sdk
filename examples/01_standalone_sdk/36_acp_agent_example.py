@@ -17,18 +17,20 @@ import os
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
 
+
 agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
 
-cwd = os.getcwd()
-conversation = Conversation(agent=agent, workspace=cwd)
+try:
+    cwd = os.getcwd()
+    conversation = Conversation(agent=agent, workspace=cwd)
 
-conversation.send_message(
-    "List the Python source files under openhands-sdk/openhands/sdk/agent/, "
-    "then read the __init__.py and summarize what agent classes are exported."
-)
-conversation.run()
-
-# Clean up the ACP server subprocess
-agent.close()
+    conversation.send_message(
+        "List the Python source files under openhands-sdk/openhands/sdk/agent/, "
+        "then read the __init__.py and summarize what agent classes are exported."
+    )
+    conversation.run()
+finally:
+    # Clean up the ACP server subprocess
+    agent.close()
 
 print("Done!")

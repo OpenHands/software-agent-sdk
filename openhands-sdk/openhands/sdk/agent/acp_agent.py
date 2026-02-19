@@ -35,6 +35,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Seconds to wait after prompt() for pending session_update notifications
+# to be processed.  Increase if using a slow or remote ACP server.
+_NOTIFICATION_DRAIN_DELAY: float = 0.1
+
 
 def _make_sentinel_llm() -> LLM:
     """Create a sentinel LLM that should never be called."""
@@ -90,11 +94,17 @@ class _OpenHandsACPClient:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
+        # Telemetry state from UsageUpdate (persists across turns)
+        self._last_cost: float = 0.0  # last cumulative cost seen
+        self._context_window: int = 0  # context window size from ACP
+        self._llm_ref: Any = None  # reference to the sentinel LLM
 
     def reset(self) -> None:
         self.accumulated_text.clear()
         self.accumulated_thoughts.clear()
         self.on_token = None
+        # Note: telemetry state (_last_cost, _context_window, etc.)
+        # is intentionally NOT cleared — it accumulates across turns.
 
     # -- Client protocol methods ------------------------------------------
 
@@ -110,6 +120,7 @@ class _OpenHandsACPClient:
             TextContentBlock,
             ToolCallProgress,
             ToolCallStart,
+            UsageUpdate,
         )
 
         if isinstance(update, AgentMessageChunk):
@@ -124,6 +135,15 @@ class _OpenHandsACPClient:
         elif isinstance(update, AgentThoughtChunk):
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(update.content.text)
+        elif isinstance(update, UsageUpdate):
+            # Update context window size
+            self._context_window = update.size
+            # Record incremental cost
+            if update.cost is not None and self._llm_ref is not None:
+                delta = update.cost.amount - self._last_cost
+                if delta > 0:
+                    self._llm_ref.metrics.add_cost(delta)
+                self._last_cost = update.cost.amount
         elif isinstance(update, (ToolCallStart, ToolCallProgress)):
             logger.debug("ACP tool call event: %s", type(update).__name__)
         else:
@@ -133,7 +153,7 @@ class _OpenHandsACPClient:
         self,
         options: list[Any],
         session_id: str,  # noqa: ARG002
-        tool_call: Any,  # noqa: ARG002
+        tool_call: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> Any:
         """Auto-approve all permission requests from the ACP server."""
@@ -141,6 +161,11 @@ class _OpenHandsACPClient:
 
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
+        logger.info(
+            "ACP auto-approving permission: %s (option: %s)",
+            tool_call,
+            option_id,
+        )
         return RequestPermissionResponse(
             result=AllowedOutcome(outcome="selected", option_id=option_id),
         )
@@ -247,7 +272,7 @@ class ACPAgent(AgentBase):
         return "ACP-managed agent"
 
     def get_all_llms(self) -> Generator[LLM, None, None]:
-        yield from ()
+        yield self.llm
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -322,6 +347,7 @@ class ACPAgent(AgentBase):
         from acp.transports import default_environment
 
         client = _OpenHandsACPClient()
+        client._llm_ref = self.llm
         self._client = client
 
         # Build environment: inherit current env + ACP extras
@@ -410,8 +436,8 @@ class ACPAgent(AgentBase):
 
             from acp.helpers import text_block
 
-            async def _prompt() -> None:
-                await self._conn.prompt(
+            async def _prompt() -> Any:
+                response = await self._conn.prompt(
                     [text_block(user_message)],
                     self._session_id,
                 )
@@ -420,10 +446,35 @@ class ACPAgent(AgentBase):
                 # server sends notifications and responses through the
                 # same connection, but notification handlers run as
                 # tasks and may not have completed when prompt() returns.
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
+                return response
 
             # Send prompt to ACP server
-            self._executor.run_async(_prompt)
+            response = self._executor.run_async(_prompt)
+
+            # Record per-turn token usage from PromptResponse
+            if (
+                response is not None
+                and hasattr(response, "usage")
+                and response.usage is not None
+            ):
+                usage = response.usage
+                self.llm.metrics.add_token_usage(
+                    prompt_tokens=usage.input_tokens,
+                    completion_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cached_read_tokens or 0,
+                    cache_write_tokens=usage.cached_write_tokens or 0,
+                    reasoning_tokens=usage.thought_tokens or 0,
+                    context_window=self._client._context_window,
+                    response_id=self._session_id or "",
+                )
+
+            # Notify stats callback
+            if self.llm.telemetry._stats_update_callback is not None:
+                try:
+                    self.llm.telemetry._stats_update_callback()
+                except Exception:
+                    pass
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
@@ -481,19 +532,19 @@ class ACPAgent(AgentBase):
         if self._process is not None:
             try:
                 self._process.terminate()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Error terminating ACP process: %s", e)
             try:
                 self._process.kill()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Error killing ACP process: %s", e)
             self._process = None
 
         if self._executor is not None:
             try:
                 self._executor.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Error closing executor: %s", e)
             self._executor = None
 
     def __del__(self) -> None:
