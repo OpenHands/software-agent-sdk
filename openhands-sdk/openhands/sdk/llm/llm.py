@@ -92,7 +92,10 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
+from openhands.sdk.llm.utils.model_features import (
+    get_default_top_p,
+    get_features,
+)
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -429,10 +432,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
-        # HF doesn't support the OpenAI default value for top_p (1)
-        if model_val.startswith("huggingface"):
-            if d.get("top_p", 1.0) == 1.0:
-                d["top_p"] = 0.9
+        if d.get("top_p", 1.0) == 1.0:
+            default_top_p = get_default_top_p(model_val)
+            if default_top_p is not None:
+                d["top_p"] = default_top_p
 
         return d
 
@@ -472,9 +475,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Capabilities + model info
         self._init_model_info_and_caps()
-
-        if self.temperature is None:
-            self.temperature = get_default_temperature()
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "

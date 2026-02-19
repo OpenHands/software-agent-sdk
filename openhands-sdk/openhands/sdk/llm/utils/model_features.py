@@ -162,6 +162,21 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-reasoner",
 ]
 
+# Model-specific defaults for top_p.
+# Only applied when the caller leaves top_p at the OpenAI default (1.0).
+DEFAULT_TOP_P_MODELS: list[tuple[str, float]] = [
+    ("huggingface", 0.9),
+    # Moonshot Kimi-K2.5 rejects top_p=1.0 (API error); use 0.95 instead.
+    ("kimi-k2.5", 0.95),
+]
+
+
+def get_default_top_p(model: str) -> float | None:
+    for pattern, value in DEFAULT_TOP_P_MODELS:
+        if model_matches(model, [pattern]):
+            return value
+    return None
+
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
@@ -178,21 +193,3 @@ def get_features(model: str) -> ModelFeatures:
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
     )
-
-
-def get_default_temperature() -> float | None:
-    """Return the default temperature for LLM calls.
-
-    Returns None to let each provider use its own default temperature.
-    This is an intentional breaking change from the previous behavior
-    that returned 0.0 (deterministic) by default.
-
-    Rationale:
-    - Provider defaults are typically more suitable for general use
-    - Avoids errors from providers that don't accept certain temperature values
-    - Ensures new models work out of the box without needing explicit config
-
-    Note: Users who need deterministic outputs should explicitly set
-    temperature=0.0 in their configuration.
-    """
-    return None
