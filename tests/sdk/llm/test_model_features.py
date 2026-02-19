@@ -317,12 +317,11 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
 @pytest.mark.parametrize(
     "model,expected_top_p",
     [
-        # Positive matches
+        # Positive matches - only HuggingFace needs specific top_p
         ("huggingface/model", 0.9),
-        ("moonshot/kimi-k2.5", 0.95),
-        ("kimi-k2.5", 0.95),
-        ("Kimi-K2.5", 0.95),  # Case insensitive
-        # Negative matches
+        # All other models use provider defaults (None)
+        ("moonshot/kimi-k2.5", None),
+        ("kimi-k2.5", None),
         ("gpt-4o", None),
         ("gpt-4o-mini", None),
         ("claude-3-5-sonnet", None),
