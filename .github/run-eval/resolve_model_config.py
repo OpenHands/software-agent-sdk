@@ -74,6 +74,7 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-sonnet-4-6",
             "temperature": 0.0,
+            "max_tokens": 8192,
         },
     },
     "gemini-3-pro": {
