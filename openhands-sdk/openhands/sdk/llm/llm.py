@@ -191,7 +191,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         le=1,
         description=(
-            "Nucleus sampling parameter. Defaults to None (uses provider default)."
+            "Nucleus sampling parameter. "
+            "Defaults to None (uses provider default). "
+            "Set to a value between 0 and 1 to control diversity of outputs."
         ),
     )
     top_k: float | None = Field(default=None, ge=0)
