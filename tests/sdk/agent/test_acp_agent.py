@@ -166,9 +166,7 @@ class TestACPAgentInitState:
         events: list = []
 
         with (
-            patch(
-                "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"
-            ),
+            patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"),
         ):
             agent.init_state(state, on_event=events.append)
 
@@ -235,23 +233,23 @@ class TestOpenHandsACPClient:
     async def test_fs_methods_raise(self):
         client = _OpenHandsACPClient()
         with pytest.raises(NotImplementedError):
-            await client.write_text_file()
+            await client.write_text_file("c", "/f", "s1")
         with pytest.raises(NotImplementedError):
-            await client.read_text_file()
+            await client.read_text_file("/f", "s1")
 
     @pytest.mark.asyncio
     async def test_terminal_methods_raise(self):
         client = _OpenHandsACPClient()
         with pytest.raises(NotImplementedError):
-            await client.create_terminal()
+            await client.create_terminal("bash", "s1")
         with pytest.raises(NotImplementedError):
-            await client.terminal_output()
+            await client.terminal_output("s1", "t1")
         with pytest.raises(NotImplementedError):
-            await client.release_terminal()
+            await client.release_terminal("s1", "t1")
         with pytest.raises(NotImplementedError):
-            await client.wait_for_terminal_exit()
+            await client.wait_for_terminal_exit("s1", "t1")
         with pytest.raises(NotImplementedError):
-            await client.kill_terminal()
+            await client.kill_terminal("s1", "t1")
 
     @pytest.mark.asyncio
     async def test_ext_method_returns_empty_dict(self):
@@ -284,9 +282,7 @@ class TestACPAgentStep:
         state.events.append(
             MessageEvent(
                 source="user",
-                llm_message=Message(
-                    role="user", content=[TextContent(text=text)]
-                ),
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
             )
         )
 
@@ -318,7 +314,9 @@ class TestACPAgentStep:
         assert len(events) == 1
         assert isinstance(events[0], MessageEvent)
         assert events[0].source == "agent"
-        assert events[0].llm_message.content[0].text == "The answer is 4"
+        content_block = events[0].llm_message.content[0]
+        assert isinstance(content_block, TextContent)
+        assert content_block.text == "The answer is 4"
 
     def test_step_includes_reasoning(self, tmp_path):
         agent = _make_agent()
@@ -362,8 +360,7 @@ class TestACPAgentStep:
         agent.step(conversation, on_event=lambda _: None)
 
         assert (
-            conversation.state.execution_status
-            == ConversationExecutionStatus.FINISHED
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
 
     def test_step_no_user_message_finishes(self, tmp_path):
@@ -396,12 +393,11 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        assert (
-            conversation.state.execution_status
-            == ConversationExecutionStatus.ERROR
-        )
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
         assert len(events) == 1
-        assert "ACP error: boom" in events[0].llm_message.content[0].text
+        content_block = events[0].llm_message.content[0]
+        assert isinstance(content_block, TextContent)
+        assert "ACP error: boom" in content_block.text
 
     def test_step_no_response_text_fallback(self, tmp_path):
         agent = _make_agent()
@@ -420,7 +416,9 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        assert "(No response from ACP server)" in events[0].llm_message.content[0].text
+        content_block = events[0].llm_message.content[0]
+        assert isinstance(content_block, TextContent)
+        assert "(No response from ACP server)" in content_block.text
 
     def test_step_passes_on_token(self, tmp_path):
         agent = _make_agent()
@@ -583,9 +581,7 @@ class TestACPAgentTelemetry:
         state.events.append(
             MessageEvent(
                 source="user",
-                llm_message=Message(
-                    role="user", content=[TextContent(text=text)]
-                ),
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
             )
         )
 
@@ -775,10 +771,12 @@ class TestACPAgentTelemetry:
         with patch(
             "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"
         ) as mock_start:
+
             def fake_start(s):
                 client = _OpenHandsACPClient()
                 client._llm_ref = agent.llm
                 agent._client = client
+
             mock_start.side_effect = fake_start
             agent.init_state(state, on_event=lambda _: None)
 

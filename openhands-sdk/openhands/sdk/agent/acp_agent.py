@@ -58,9 +58,7 @@ def _make_sentinel_llm() -> LLM:
 # ---------------------------------------------------------------------------
 
 
-async def _filter_jsonrpc_lines(
-    source: Any, dest: Any
-) -> None:
+async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     """Read lines from *source* and forward only JSON-RPC lines to *dest*.
 
     Some ACP servers (e.g. ``claude-code-acp`` v0.1.x) emit log messages
@@ -175,29 +173,55 @@ class _OpenHandsACPClient:
             option_id,
         )
         return RequestPermissionResponse(
-            result=AllowedOutcome(outcome="selected", option_id=option_id),
+            outcome=AllowedOutcome(outcome="selected", option_id=option_id),
         )
 
     # fs/terminal methods — raise NotImplementedError; ACP server handles its own
-    async def write_text_file(self, **kwargs: Any) -> None:
+    async def write_text_file(
+        self, content: str, path: str, session_id: str, **kwargs: Any
+    ) -> None:
         raise NotImplementedError("ACP server handles file operations")
 
-    async def read_text_file(self, **kwargs: Any) -> Any:
+    async def read_text_file(
+        self,
+        path: str,
+        session_id: str,
+        limit: int | None = None,
+        line: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
         raise NotImplementedError("ACP server handles file operations")
 
-    async def create_terminal(self, **kwargs: Any) -> Any:
+    async def create_terminal(
+        self,
+        command: str,
+        session_id: str,
+        args: list[str] | None = None,
+        cwd: str | None = None,
+        env: Any = None,
+        output_byte_limit: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
         raise NotImplementedError("ACP server handles terminal operations")
 
-    async def terminal_output(self, **kwargs: Any) -> Any:
+    async def terminal_output(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> Any:
         raise NotImplementedError("ACP server handles terminal operations")
 
-    async def release_terminal(self, **kwargs: Any) -> None:
+    async def release_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> None:
         raise NotImplementedError("ACP server handles terminal operations")
 
-    async def wait_for_terminal_exit(self, **kwargs: Any) -> Any:
+    async def wait_for_terminal_exit(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> Any:
         raise NotImplementedError("ACP server handles terminal operations")
 
-    async def kill_terminal(self, **kwargs: Any) -> None:
+    async def kill_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> None:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def ext_method(
@@ -251,8 +275,7 @@ class ACPAgent(AgentBase):
     acp_command: list[str] = Field(
         ...,
         description=(
-            "Command to start the ACP server, "
-            "e.g. ['npx', '-y', 'claude-code-acp']"
+            "Command to start the ACP server, e.g. ['npx', '-y', 'claude-code-acp']"
         ),
     )
     acp_args: list[str] = Field(
@@ -393,7 +416,7 @@ class ACPAgent(AgentBase):
 
             conn = ClientSideConnection(
                 client,
-                process.stdin,   # write to subprocess
+                process.stdin,  # write to subprocess
                 filtered_reader,  # read filtered output
             )
 
