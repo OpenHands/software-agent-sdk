@@ -178,8 +178,7 @@ class LocalConversation(BaseConversation):
             # This callback runs while holding the conversation state's lock
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
-            self._state.events.append(e)
-            self._state._view.add_event(e)
+            self._state.add_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":

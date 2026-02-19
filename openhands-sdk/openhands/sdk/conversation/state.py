@@ -211,6 +211,11 @@ class ConversationState(OpenHandsModel):
     def view(self) -> View:
         return self._view
 
+    def add_event(self, event: Event) -> None:
+        """Append an event to the event log and update the view."""
+        self._events.append(event)
+        self._view.add_event(event)
+
     @property
     def env_observation_persistence_dir(self) -> str | None:
         """Directory for persisting environment observation files."""
