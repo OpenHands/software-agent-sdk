@@ -30,11 +30,15 @@ def select_chat_options(
 
     # Databricks -> uses max_tokens (not max_completion_tokens) and caps at 25000
     if llm.model.startswith("databricks/"):
-        if "max_completion_tokens" in out:
-            out["max_tokens"] = out.pop("max_completion_tokens")
-        # Ensure we don't exceed the 25000 limit (already capped in model init, but verify)
-        if "max_tokens" in out and out["max_tokens"] > 25000:
-            out["max_tokens"] = 25000
+        # Get the effective max tokens value
+        effective_max = out.get("max_tokens") or out.get("max_completion_tokens")
+        if effective_max and effective_max > 25000:
+            # Note: Cannot use logger here as it's not available in this context
+            # The capping happens silently as in other parameter normalizations
+            effective_max = 25000
+        # Databricks uses max_tokens parameter (not max_completion_tokens)
+        out["max_tokens"] = effective_max or 25000
+        out.pop("max_completion_tokens", None)
 
     # If user didn't set extra_headers, propagate from llm config
     if llm.extra_headers is not None and "extra_headers" not in out:
