@@ -189,7 +189,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "or higher values (0.7-1.0) for more creative responses."
         ),
     )
-    top_p: float | None = Field(default=1.0, ge=0, le=1)
+    top_p: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Nucleus sampling parameter. Defaults to None (uses provider default). "
+            "Some models like Kimi K2.5 require specific values and are "
+            "auto-configured."
+        ),
+    )
     top_k: float | None = Field(default=None, ge=0)
 
     max_input_tokens: int | None = Field(
@@ -432,7 +441,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
-        if d.get("top_p", 1.0) == 1.0:
+        # Only override top_p for models that require specific values (e.g., Kimi K2.5)
+        if d.get("top_p") is None:
             default_top_p = get_default_top_p(model_val)
             if default_top_p is not None:
                 d["top_p"] = default_top_p
