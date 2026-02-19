@@ -92,10 +92,7 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import (
-    get_default_top_p,
-    get_features,
-)
+from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -438,12 +435,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Set base_url (default to the app proxy when base_url is unset or None)
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
-
-        # Only override top_p for models that require specific values (e.g., Kimi K2.5)
-        if d.get("top_p") is None:
-            default_top_p = get_default_top_p(model_val)
-            if default_top_p is not None:
-                d["top_p"] = default_top_p
 
         return d
 

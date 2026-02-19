@@ -162,17 +162,6 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-reasoner",
 ]
 
-# Model-specific defaults for top_p.
-# Only applied when the caller leaves top_p unset (None).
-DEFAULT_TOP_P_MODELS: list[tuple[str, float]] = []
-
-
-def get_default_top_p(model: str) -> float | None:
-    for pattern, value in DEFAULT_TOP_P_MODELS:
-        if model_matches(model, [pattern]):
-            return value
-    return None
-
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
