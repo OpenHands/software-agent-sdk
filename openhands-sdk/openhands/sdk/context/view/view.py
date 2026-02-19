@@ -118,6 +118,30 @@ class View(BaseModel):
                 )
         return current_view_events
 
+    def add_event(self, event: Event) -> None:
+        """Add an event to the view.
+
+        Updates the view in-place.
+
+        LLMConvertibleEvent objects are appended to the end of the view's events.
+        Condensation-related events will update the unhandled_condensation_request flag
+        and apply any condensations to the view's events by forgetting marked events and
+        inserting summaries.
+
+        Args:
+            event: An event to add to the view.
+        """
+        match event:
+            case CondensationRequest():
+                self.unhandled_condensation_request = True
+
+            case Condensation():
+                self.unhandled_condensation_request = False
+                self.events = event.apply(self.events)
+
+            case LLMConvertibleEvent():
+                self.events.append(event)
+
     @staticmethod
     def from_events(events: Sequence[Event]) -> View:
         """Create a view from a list of events, respecting the semantics of any
