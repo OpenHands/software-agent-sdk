@@ -76,9 +76,9 @@ on:
                 default: ''
                 type: string
             enable_conversation_event_logging:
-                description: 'Enable Datadog persistence for conversation events (default: false)'
+                description: 'Enable Datadog persistence for conversation events (default: true)'
                 required: false
-                default: false
+                default: true
                 type: boolean
             max_retries:
                 description: Max retries per instance (passed to benchmarks)
