@@ -14,7 +14,6 @@ changes.
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.tools.browser_use import BrowserToolSet
-from openhands.tools.claude import TaskDelegationToolSet
 from openhands.tools.delegate import DelegationVisualizer, register_agent
 from openhands.tools.delegate.registration import get_agent_factory
 from openhands.tools.file_editor import FileEditorTool
@@ -23,6 +22,7 @@ from openhands.tools.preset.default import (
     get_default_tools,
     register_default_tools,
 )
+from openhands.tools.task import TaskToolSet
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 
@@ -36,7 +36,7 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "BrowserToolSet",
-    "TaskDelegationToolSet",
+    "TaskToolSet",
     "DelegationVisualizer",
     "FileEditorTool",
     "TaskTrackerTool",

@@ -1,4 +1,4 @@
-"""Claude Code-style delegation tools.
+"""TaskToolSet.
 
 This module provides Claude Code-style delegation tools as an alternative to
 the default DelegateTool.
@@ -10,18 +10,18 @@ Tools:
 
 Usage:
 
-    from openhands.tools.claude import TaskDelegationToolSet
+    from openhands.tools.task import TaskToolSet
 
     agent = Agent(
         llm=llm,
         tools=[
             Tool(name=TerminalTool.name),
-            Tool(name=TaskDelegationToolSet.name),
+            Tool(name=TaskToolSet.name),
         ],
     )
 """
 
-from openhands.tools.claude.definition import TaskDelegationToolSet
+from openhands.tools.task.definition import TaskToolSet
 
 
-__all__ = ["TaskDelegationToolSet"]
+__all__ = ["TaskToolSet"]

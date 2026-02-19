@@ -1,9 +1,9 @@
-"""Integration tests for DelegationManager with real LocalConversation.
+"""Integration tests for TaskManager with real LocalConversation.
 
 These tests use real LocalConversation instances (with real persistence)
-and only mock the LLM calls via ``litellm_completion``.  They verify that
+and only mock the LLM calls.  They verify that
 conversations are fully persisted to disk (base_state.json, events) and
-that the DelegationManager can retrieve task results after eviction.
+that the TaskManager can retrieve task results after eviction.
 """
 
 import json
@@ -27,12 +27,12 @@ from pydantic import SecretStr
 from openhands.sdk import LocalConversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.llm import LLM
-from openhands.tools.claude.impl import (
-    DelegationManager,
+from openhands.tools.delegate.registration import AgentFactory
+from openhands.tools.task.impl import (
+    TaskManager,
     TaskState,
     TaskStatus,
 )
-from openhands.tools.delegate.registration import AgentFactory
 
 
 def _make_finish_response(
@@ -152,8 +152,8 @@ def parent_conversation(tmp_path: Path) -> LocalConversation:
 
 
 @pytest.fixture()
-def manager() -> Generator[DelegationManager, None, None]:
-    mgr = DelegationManager(max_tasks=5)
+def manager() -> Generator[TaskManager, None, None]:
+    mgr = TaskManager(max_tasks=5)
     yield mgr
     mgr.close()
 
@@ -164,7 +164,7 @@ class TestRealConversationPersistence:
     def test_sync_task_persists_conversation_state(
         self,
         parent_conversation: LocalConversation,
-        manager: DelegationManager,
+        manager: TaskManager,
         tmp_path: Path,
     ):
         """A synchronous task using a real child conversation should
@@ -174,7 +174,7 @@ class TestRealConversationPersistence:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -234,7 +234,7 @@ class TestRealConversationPersistence:
         assert output.result == "sync answer"
 
     def test_sync_task_events_contain_user_message_and_finish(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """After a sync task finishes, the persisted events should contain
         the user message, the agent's finish action, and the finish observation."""
@@ -242,7 +242,7 @@ class TestRealConversationPersistence:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -272,7 +272,7 @@ class TestRealConversationPersistence:
         assert "ActionEvent" in event_kinds
 
     def test_sync_task_plain_text_response(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """When the LLM returns a plain text message (no tool calls),
         the conversation finishes and the text is extracted as the result."""
@@ -280,7 +280,7 @@ class TestRealConversationPersistence:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -302,7 +302,7 @@ class TestRealConversationPersistence:
         assert output.result == "plain text answer"
 
     def test_background_task_persists_after_thread_finishes(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """A background task should persist its conversation to disk
         once the background thread completes."""
@@ -310,7 +310,7 @@ class TestRealConversationPersistence:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -352,7 +352,7 @@ class TestRealConversationPersistence:
         assert output.result == "bg answer"
 
     def test_multiple_tasks_each_get_separate_persistence(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """Two sequential tasks should each have their own persistence
         directory with independent events and task state."""
@@ -362,7 +362,7 @@ class TestRealConversationPersistence:
         for i in range(2):
             with (
                 patch(
-                    "openhands.tools.claude.impl.get_agent_factory",
+                    "openhands.tools.task.impl.get_agent_factory",
                     return_value=_TEST_FACTORY,
                 ),
                 patch(
@@ -393,7 +393,7 @@ class TestRealConversationPersistence:
         assert len(base_state_files) >= 2
 
     def test_stopped_background_task_does_not_overwrite_status(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """If we stop a background task while it's blocked in the LLM call,
         the stopped status should be preserved after the thread exits."""
@@ -408,7 +408,7 @@ class TestRealConversationPersistence:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -436,7 +436,7 @@ class TestRealConversationPersistence:
         assert task.status == TaskStatus.STOPPED
 
     def test_task_with_llm_error_persists_error_state(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """If the LLM call raises an exception, the task should end up
         in ERROR state with the error persisted to disk."""
@@ -444,7 +444,7 @@ class TestRealConversationPersistence:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -475,7 +475,7 @@ class TestBackgroundTaskExecution:
     """Integration tests for background task execution, polling, and blocking."""
 
     def test_get_task_output_blocks_until_completion(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """get_task_output(block=True) should wait for a background task
         to finish and return the completed result."""
@@ -490,7 +490,7 @@ class TestBackgroundTaskExecution:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -516,7 +516,7 @@ class TestBackgroundTaskExecution:
         assert output.result == "blocking result"
 
     def test_get_task_output_nonblocking_returns_running(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """get_task_output(block=False) on a still-running background task
         should return immediately with status=running."""
@@ -530,7 +530,7 @@ class TestBackgroundTaskExecution:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -555,7 +555,7 @@ class TestBackgroundTaskExecution:
             task.thread.join(timeout=10)
 
     def test_get_task_output_timeout_expires(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """get_task_output with a short timeout should return while the
         task is still running if the timeout expires."""
@@ -569,7 +569,7 @@ class TestBackgroundTaskExecution:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -598,7 +598,7 @@ class TestBackgroundTaskExecution:
             task.thread.join(timeout=10)
 
     def test_background_task_error_retrievable_via_get_task_output(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """A background task that fails should have its error retrievable
         via get_task_output after the thread completes."""
@@ -606,7 +606,7 @@ class TestBackgroundTaskExecution:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -628,7 +628,7 @@ class TestBackgroundTaskExecution:
         assert "background crash" in output.error
 
     def test_background_task_stop_then_get_output(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+        self, parent_conversation: LocalConversation, manager: TaskManager
     ):
         """Stopping a background task and then getting its output should
         return the stopped state."""
@@ -642,7 +642,7 @@ class TestBackgroundTaskExecution:
 
         with (
             patch(
-                "openhands.tools.claude.impl.get_agent_factory",
+                "openhands.tools.task.impl.get_agent_factory",
                 return_value=_TEST_FACTORY,
             ),
             patch(
@@ -673,7 +673,7 @@ class TestBackgroundTaskExecution:
 
 def test_stop_allows_in_flight_step_to_complete(
     parent_conversation: LocalConversation,
-    manager: DelegationManager,
+    manager: TaskManager,
 ):
     """
     The test verify that:
@@ -720,7 +720,7 @@ def test_stop_allows_in_flight_step_to_complete(
 
     with (
         patch(
-            "openhands.tools.claude.impl.get_agent_factory",
+            "openhands.tools.task.impl.get_agent_factory",
             return_value=_TEST_FACTORY,
         ),
         patch(

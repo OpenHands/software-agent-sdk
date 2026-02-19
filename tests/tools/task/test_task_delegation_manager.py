@@ -6,15 +6,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from openhands.tools.claude.definition import (
+from openhands.tools.task.definition import (
     TaskAction,
     TaskOutputAction,
     TaskOutputObservation,
     TaskStopAction,
     TaskStopObservation,
 )
-from openhands.tools.claude.impl import (
-    DelegationManager,
+from openhands.tools.task.impl import (
+    TaskManager,
     TaskOutputExecutor,
     TaskState,
     TaskStatus,
@@ -214,30 +214,30 @@ class TestClaudeDelegationManager:
 
     def test_init_defaults(self):
         """Manager should initialize with correct defaults."""
-        manager = DelegationManager()
+        manager = TaskManager()
         assert manager._max_tasks == 10
         assert len(manager._active_tasks) == 0
         assert manager._parent_conversation is None
 
     def test_init_custom_max_children(self):
         """Manager should accept custom max_tasks argument."""
-        manager = DelegationManager(max_tasks=3)
+        manager = TaskManager(max_tasks=3)
         assert manager._max_tasks == 3
 
     @pytest.mark.parametrize("max_tasks", [0, -1])
     def test_invalid_max_tasks_zero(self, max_tasks: int):
         with pytest.raises(AssertionError):
-            DelegationManager(max_tasks=max_tasks)
+            TaskManager(max_tasks=max_tasks)
 
     def test_tmp_dir_created(self):
-        manager = DelegationManager()
+        manager = TaskManager()
         assert manager._tmp_dir.exists()
         manager.close()
         assert not manager._tmp_dir.exists()
 
     def test_generate_task_id(self):
         """Generated task IDs should be unique and prefixed."""
-        manager = DelegationManager()
+        manager = TaskManager()
         id1 = manager._generate_task_id()
         id2 = manager._generate_task_id()
 
@@ -247,13 +247,13 @@ class TestClaudeDelegationManager:
 
     def test_parent_conversation_raises_before_set(self):
         """Accessing parent_conversation before first call should raise."""
-        manager = DelegationManager()
+        manager = TaskManager()
         with pytest.raises(RuntimeError, match="Parent conversation not set"):
             _ = manager.parent_conversation
 
     def test_ensure_parent_sets_once(self):
         """_ensure_parent should only set the parent on the first call."""
-        manager = DelegationManager()
+        manager = TaskManager()
         conv1 = MagicMock()
         conv2 = MagicMock()
 
@@ -265,19 +265,19 @@ class TestClaudeDelegationManager:
 
     def test_get_task_output_unknown_task_raises(self):
         """Getting output for unknown task should raise ValueError."""
-        manager = DelegationManager()
+        manager = TaskManager()
         with pytest.raises(ValueError, match="not found"):
             _ = manager.get_task_output("nonexistent_task")
 
     def test_stop_task_unknown_returns_none(self):
         """Stopping unknown task should return None."""
-        manager = DelegationManager()
+        manager = TaskManager()
         result = manager.stop_task("nonexistent_task")
         assert result is None
 
     def test_stop_task_running(self):
         """Stopping a running task should set status to 'stopped'."""
-        manager = DelegationManager()
+        manager = TaskManager()
         task = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
         manager._active_tasks["test_1"] = task
         manager._task_id_to_uuid["test_1"] = uuid.uuid4()
@@ -288,7 +288,7 @@ class TestClaudeDelegationManager:
 
     def test_get_task_output_completed(self):
         """Getting output for a completed task should return its result."""
-        manager = DelegationManager()
+        manager = TaskManager()
         task = TaskState(
             id="test_1",
             conversation=None,
@@ -310,7 +310,7 @@ class TestClaudeDelegationManager:
         Non-blocking output check should
         return immediately for running task.
         """
-        manager = DelegationManager()
+        manager = TaskManager()
         task = TaskState(
             id="test_1",
             conversation=None,
@@ -329,7 +329,7 @@ class TestTaskStopExecutor:
 
     def test_stop_unknown_task(self):
         """Stopping unknown task should return error observation."""
-        manager = DelegationManager()
+        manager = TaskManager()
         executor = TaskStopExecutor(manager=manager)
 
         action = TaskStopAction(task_id="nonexistent")
@@ -341,7 +341,7 @@ class TestTaskStopExecutor:
 
     def test_stop_existing_task(self):
         """Stopping an existing running task should succeed."""
-        manager = DelegationManager()
+        manager = TaskManager()
         task = TaskState(
             id="test_1",
             conversation=None,
@@ -365,7 +365,7 @@ class TestTaskOutputExecutor:
 
     def test_output_unknown_task(self):
         """Getting output for unknown task should return error."""
-        manager = DelegationManager()
+        manager = TaskManager()
         executor = TaskOutputExecutor(manager=manager)
 
         action = TaskOutputAction(task_id="nonexistent")
@@ -377,7 +377,7 @@ class TestTaskOutputExecutor:
 
     def test_output_completed_task(self):
         """Getting output for completed task should return result."""
-        manager = DelegationManager()
+        manager = TaskManager()
         task = TaskState(
             id="test_1",
             conversation=None,
@@ -400,7 +400,7 @@ class TestTaskOutputExecutor:
         Non-blocking output check for running
         task should return immediately.
         """
-        manager = DelegationManager()
+        manager = TaskManager()
         task = TaskState(
             id="test_1",
             conversation=None,

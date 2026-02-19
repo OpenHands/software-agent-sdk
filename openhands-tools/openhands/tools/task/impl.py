@@ -4,7 +4,7 @@ This module provides the shared state manager and executors for the
 Claude Code-style delegation tools (Task, TaskOutput, TaskStop).
 
 Architecture:
-    DelegationManager holds the shared state (sub-agent conversations,
+    TaskManager holds the shared state (sub-agent conversations,
     background threads, results) and is shared between all three executors.
 """
 
@@ -24,7 +24,8 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
-from openhands.tools.claude.definition import (
+from openhands.tools.delegate.registration import get_agent_factory
+from openhands.tools.task.definition import (
     TaskAction,
     TaskObservation,
     TaskOutputAction,
@@ -32,7 +33,6 @@ from openhands.tools.claude.definition import (
     TaskStopAction,
     TaskStopObservation,
 )
-from openhands.tools.delegate.registration import get_agent_factory
 
 
 logger = get_logger(__name__)
@@ -135,8 +135,8 @@ class TaskState(BaseModel):
         return cls.model_validate_json(file_path.read_text())
 
 
-class DelegationManager:
-    """Shared state manager for Claude-style delegation tools.
+class TaskManager:
+    """Manage task and sub-agents.
 
     Manages the lifecycle of sub-agent tasks, including creation, execution
     (synchronous and background), output retrieval, and stopping.
@@ -583,7 +583,7 @@ class TaskExecutor(ToolExecutor):
     and background.
     """
 
-    def __init__(self, manager: DelegationManager):
+    def __init__(self, manager: TaskManager):
         self._manager = manager
 
     def __call__(
@@ -626,7 +626,7 @@ class TaskOutputExecutor(ToolExecutor):
     until completion.
     """
 
-    def __init__(self, manager: DelegationManager):
+    def __init__(self, manager: TaskManager):
         self._manager = manager
 
     def __call__(
@@ -658,7 +658,7 @@ class TaskStopExecutor(ToolExecutor):
     Stops running background tasks.
     """
 
-    def __init__(self, manager: DelegationManager):
+    def __init__(self, manager: TaskManager):
         self._manager = manager
 
     def __call__(

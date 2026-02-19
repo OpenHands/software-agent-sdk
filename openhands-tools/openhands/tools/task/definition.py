@@ -1,10 +1,10 @@
-"""Claude Code-style delegation tool definitions.
+"""Task tool kit definitions.
 
 This module defines the Task, TaskOutput, and TaskStop tools that match
 Claude Code's delegation API. Under the hood, these tools use the existing
 OpenHands delegation infrastructure (agent factories, LocalConversation, etc.).
 
-The TaskDelegationToolSet is registered as a single tool spec that creates
+The TaskToolSet is registered as a single tool spec that creates
 all three tools sharing a TaskDelegationToolSet for coordinated state.
 """
 
@@ -27,7 +27,7 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
-    from openhands.tools.claude.impl import (
+    from openhands.tools.task.impl import (
         TaskExecutor,
         TaskOutputExecutor,
         TaskStopExecutor,
@@ -271,21 +271,21 @@ class TaskStopTool(ToolDefinition[TaskStopAction, TaskStopObservation]):
         ]
 
 
-class TaskDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
-    """Claude Code-style delegation tool set.
+class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
+    """Task tool set.
 
     Creates Task, TaskOutput, and TaskStop tools that share a
-    DelegationManager for coordinated sub-agent management.
+    TaskManager for coordinated sub-agent management.
 
     Usage:
-        from openhands.tools.claude import CLAUDE_DELEGATION_TOOLS
+        from openhands.tools.task import TaskToolSet
 
         agent = Agent(
             llm=llm,
             tools=[
                 Tool(name=TerminalTool.name),
                 Tool(name=FileEditorTool.name),
-                *CLAUDE_DELEGATION_TOOLS,
+                Tool(name=TaskToolSet.name),
             ],
         )
     """
@@ -296,7 +296,7 @@ class TaskDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
         conv_state: "ConversationState",  # noqa: ARG003
         max_tasks: int = 5,
     ) -> list[ToolDefinition]:
-        """Create all Claude delegation tools with shared state.
+        """Create a task tool set tool with shared state.
 
         Args:
             conv_state: Conversation state for workspace info.
@@ -306,13 +306,13 @@ class TaskDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
             List of [TaskTool, TaskOutputTool, TaskStopTool] sharing a
             ClaudeDelegationManager.
         """
-        from openhands.tools.claude.impl import (
-            DelegationManager,
+        from openhands.tools.delegate.registration import get_factory_info
+        from openhands.tools.task.impl import (
             TaskExecutor,
+            TaskManager,
             TaskOutputExecutor,
             TaskStopExecutor,
         )
-        from openhands.tools.delegate.registration import get_factory_info
 
         # Build dynamic description with agent type info
         # to be consistent with claude code description for the
@@ -331,7 +331,7 @@ class TaskDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
         # Create a manager that will be shared between the 3 tools
         # the tools are actually a way for the main agent to
         # communicate with the manager
-        manager = DelegationManager(max_tasks=max_tasks)
+        manager = TaskManager(max_tasks=max_tasks)
         task_executor = TaskExecutor(manager=manager)
         task_output_executor = TaskOutputExecutor(manager=manager)
         task_stop_executor = TaskStopExecutor(manager=manager)
@@ -350,7 +350,7 @@ class TaskDelegationToolSet(ToolDefinition[TaskAction, TaskObservation]):
 
 
 # Automatically register when this module is imported
-register_tool(TaskDelegationToolSet.name, TaskDelegationToolSet)
+register_tool(TaskToolSet.name, TaskToolSet)
 register_tool(TaskTool.name, TaskTool)
 register_tool(TaskStopTool.name, TaskStopTool)
 register_tool(TaskOutputTool.name, TaskOutputTool)
