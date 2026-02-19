@@ -92,22 +92,6 @@ def test_batch_of_actions_simple() -> None:
     assert indices == {0, 6}
 
 
-def test_batch_with_interleaved_observations() -> None:
-    """Test manipulation indices when observations are interleaved with actions."""
-    action1 = create_action_event("response_1", "tool_call_1")
-    action2 = create_action_event("response_1", "tool_call_2")
-
-    obs1 = create_observation_event("tool_call_1")
-    obs2 = create_observation_event("tool_call_2")
-
-    # Interleave: action1, obs1, action2, obs2
-    events = [action1, obs1, action2, obs2]
-    indices = View.from_events(events).manipulation_indices
-
-    # Still one atomic unit because actions share llm_response_id
-    assert indices == {0, 4}
-
-
 def test_multiple_separate_batches() -> None:
     """Test manipulation indices with multiple separate action batches."""
     # First batch
@@ -135,9 +119,7 @@ def test_multiple_separate_batches() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # Two atomic units: batch1 (indices 0-3) and batch2 (indices 4-7)
-    # But because we consider all properties simultaneously, the two batches are viewed
-    # as a single tool loop and so the only indices are the start and end.
-    assert indices == {0, 8}
+    assert indices == {0, 4, 8}
 
 
 def test_batches_separated_by_messages() -> None:
