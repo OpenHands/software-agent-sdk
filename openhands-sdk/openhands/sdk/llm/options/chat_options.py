@@ -94,9 +94,4 @@ def select_chat_options(
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 
-    # Remove top_p for models that don't support it (e.g., claude-sonnet-4-6 doesn't
-    # support having both temperature and top_p specified)
-    if not get_features(llm.model).supports_top_p:
-        out.pop("top_p", None)
-
     return out

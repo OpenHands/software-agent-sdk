@@ -47,7 +47,6 @@ class ModelFeatures:
     force_string_serializer: bool
     send_reasoning_content: bool
     supports_prompt_cache_retention: bool
-    supports_top_p: bool
 
 
 # Model lists capturing current behavior. Keep entries lowercase.
@@ -163,13 +162,6 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-reasoner",
 ]
 
-# Models that do NOT support top_p parameter (or don't support both temperature
-# and top_p). When specified, these models will have top_p removed from API calls.
-SUPPORTS_TOP_P_FALSE_MODELS: list[str] = [
-    # Claude Sonnet 4.6 rejects requests with both temperature and top_p specified
-    "claude-sonnet-4-6",
-]
-
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
@@ -185,7 +177,6 @@ def get_features(model: str) -> ModelFeatures:
         supports_prompt_cache_retention=apply_ordered_model_rules(
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
-        supports_top_p=not model_matches(model, SUPPORTS_TOP_P_FALSE_MODELS),
     )
 
 

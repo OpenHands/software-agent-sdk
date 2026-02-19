@@ -76,20 +76,6 @@ def test_non_reasoning_model_preserves_temp_and_top_p():
     assert out.get("top_p") == 0.7
 
 
-def test_claude_sonnet_4_6_strips_top_p():
-    """Claude Sonnet 4.6 doesn't support both temperature and top_p."""
-    llm = DummyLLM(
-        model="litellm_proxy/anthropic/claude-sonnet-4-6",
-        temperature=0.0,
-        top_p=1.0,
-    )
-    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
-
-    # temperature should be preserved, top_p should be removed
-    assert out.get("temperature") == 0.0
-    assert "top_p" not in out
-
-
 def test_azure_renames_max_completion_tokens_to_max_tokens():
     llm = DummyLLM(model="azure/gpt-4o")
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
