@@ -179,7 +179,7 @@ class LocalConversation(BaseConversation):
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
             self._state.events.append(e)
-            self._state.view.add_event(e)
+            self._state._view.add_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -776,7 +776,7 @@ class LocalConversation(BaseConversation):
         )
 
         messages = prepare_llm_messages(
-            self.state.events, additional_messages=[user_message]
+            self.state.view, additional_messages=[user_message]
         )
 
         # Get or create the specialized ask-agent LLM

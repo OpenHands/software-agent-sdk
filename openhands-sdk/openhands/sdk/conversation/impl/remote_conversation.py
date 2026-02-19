@@ -14,7 +14,6 @@ import httpx
 import websockets
 
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.context.view import View
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
 
 
@@ -440,11 +439,6 @@ class RemoteState(ConversationStateProtocol):
     def events(self) -> RemoteEventsList:
         """Access to the events list."""
         return self._events
-
-    @property
-    def view(self) -> View:
-        """The current view of events."""
-        return View.from_events(self._events)
 
     @property
     def id(self) -> ConversationID:

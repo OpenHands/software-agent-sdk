@@ -4,7 +4,7 @@ This module tests the prepare_llm_messages and make_llm_completion utility
 functions that are used by the agent for message preparation and LLM calls.
 """
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 from pydantic import Field
@@ -126,40 +126,18 @@ def sample_tools():
 # ---------------------------------------------------------------------------
 
 
-@patch("openhands.sdk.agent.utils.View.from_events")
-@patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
-def test_prepare_llm_messages_without_condenser(
-    mock_events_to_messages, mock_from_events, sample_events, sample_messages
-):
+def test_prepare_llm_messages_without_condenser(sample_events):
     """Test prepare_llm_messages without condenser."""
-    # Setup mocks
-    mock_view = Mock(spec=View)
-    mock_view.events = sample_events
-    mock_from_events.return_value = mock_view
-    mock_events_to_messages.return_value = sample_messages
+    view = View(events=sample_events)
 
-    # Call function
-    result = prepare_llm_messages(sample_events)
+    result = prepare_llm_messages(view)
 
-    # Verify results
-    assert result == sample_messages
-    mock_from_events.assert_called_once_with(sample_events)
-    mock_events_to_messages.assert_called_once_with(sample_events)
+    assert len(result) == len(sample_events)
 
 
-@patch("openhands.sdk.agent.utils.View.from_events")
-@patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
-def test_prepare_llm_messages_with_additional_messages(
-    mock_events_to_messages, mock_from_events, sample_events, sample_messages
-):
+def test_prepare_llm_messages_with_additional_messages(sample_events):
     """Test prepare_llm_messages with additional messages."""
-    # Setup mocks
-    mock_view = Mock(spec=View)
-    mock_view.events = sample_events
-    mock_from_events.return_value = mock_view
-    # Create a copy to avoid mutation issues
-    mock_events_to_messages.return_value = sample_messages.copy()
-
+    view = View(events=sample_events)
     additional_messages = [
         Message(
             role="user",
@@ -167,93 +145,53 @@ def test_prepare_llm_messages_with_additional_messages(
         )
     ]
 
-    # Call function
-    result = prepare_llm_messages(
-        sample_events, additional_messages=additional_messages
-    )
+    result = prepare_llm_messages(view, additional_messages=additional_messages)
 
-    # Verify results
-    expected_messages = sample_messages + additional_messages
-    assert result == expected_messages
-    mock_from_events.assert_called_once_with(sample_events)
-    mock_events_to_messages.assert_called_once_with(sample_events)
+    # The result should have messages from the view events + the additional one
+    assert len(result) == len(sample_events) + 1
+    assert result[-1] == additional_messages[0]
 
 
-@patch("openhands.sdk.agent.utils.View.from_events")
-@patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
 def test_prepare_llm_messages_with_condenser_returns_view(
-    mock_events_to_messages,
-    mock_from_events,
-    sample_events,
-    sample_messages,
-    mock_condenser,
+    sample_events, mock_condenser
 ):
     """Test prepare_llm_messages with condenser that returns a View."""
-    # Setup mocks
-    mock_view = Mock(spec=View)
-    mock_view.events = sample_events
-    mock_from_events.return_value = mock_view
+    view = View(events=sample_events)
 
-    condensed_events = sample_events[:2]  # Simulate condensation reducing events
-    condensed_view = Mock(spec=View)
-    condensed_view.events = condensed_events
+    condensed_view = View(events=sample_events[:2])
     mock_condenser.condense.return_value = condensed_view
 
-    condensed_messages = sample_messages[:2]
-    mock_events_to_messages.return_value = condensed_messages
+    result = prepare_llm_messages(view, condenser=mock_condenser)
 
-    # Call function
-    result = prepare_llm_messages(sample_events, condenser=mock_condenser)
-
-    # Verify results
-    assert result == condensed_messages
-    mock_from_events.assert_called_once_with(sample_events)
-    mock_condenser.condense.assert_called_once_with(mock_view, agent_llm=None)
-    mock_events_to_messages.assert_called_once_with(condensed_events)
+    assert isinstance(result, list)
+    assert len(result) == 2
+    mock_condenser.condense.assert_called_once_with(view, agent_llm=None)
 
 
-@patch("openhands.sdk.agent.utils.View.from_events")
 def test_prepare_llm_messages_with_condenser_returns_condensation(
-    mock_from_events, sample_events, mock_condenser
+    sample_events, mock_condenser
 ):
     """Test prepare_llm_messages with condenser that returns a Condensation."""
-    # Setup mocks
-    mock_view = Mock(spec=View)
-    mock_view.events = sample_events
-    mock_from_events.return_value = mock_view
-
+    view = View(events=sample_events)
     condensation = Condensation(
         summary="Test condensation summary",
         llm_response_id="test-response-id",
     )
     mock_condenser.condense.return_value = condensation
 
-    # Call function
-    result = prepare_llm_messages(sample_events, condenser=mock_condenser)
+    result = prepare_llm_messages(view, condenser=mock_condenser)
 
-    # Verify results
     assert result == condensation
-    mock_from_events.assert_called_once_with(sample_events)
-    mock_condenser.condense.assert_called_once_with(mock_view, agent_llm=None)
+    mock_condenser.condense.assert_called_once_with(view, agent_llm=None)
 
 
-@patch("openhands.sdk.agent.utils.View.from_events")
-@patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
-def test_prepare_llm_messages_empty_events(mock_events_to_messages, mock_from_events):
-    """Test prepare_llm_messages with empty events list."""
-    # Setup mocks
-    mock_view = Mock(spec=View)
-    mock_view.events = []
-    mock_from_events.return_value = mock_view
-    mock_events_to_messages.return_value = []
+def test_prepare_llm_messages_empty_view():
+    """Test prepare_llm_messages with empty view."""
+    view = View()
 
-    # Call function
-    result = prepare_llm_messages([])
+    result = prepare_llm_messages(view)
 
-    # Verify results
     assert result == []
-    mock_from_events.assert_called_once_with([])
-    mock_events_to_messages.assert_called_once_with([])
 
 
 # ---------------------------------------------------------------------------
@@ -420,17 +358,11 @@ def test_make_llm_completion_empty_messages(mock_llm):
 # ---------------------------------------------------------------------------
 
 
-@patch("openhands.sdk.agent.utils.View.from_events")
-@patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
 def test_prepare_llm_messages_and_make_llm_completion_integration(
-    mock_events_to_messages, mock_from_events, sample_events, sample_messages, mock_llm
+    sample_events, mock_llm
 ):
     """Test integration between prepare_llm_messages and make_llm_completion."""
-    # Setup mocks for prepare_llm_messages
-    mock_view = Mock(spec=View)
-    mock_view.events = sample_events
-    mock_from_events.return_value = mock_view
-    mock_events_to_messages.return_value = sample_messages
+    view = View(events=sample_events)
 
     # Setup mocks for make_llm_completion
     mock_llm.uses_responses_api.return_value = False
@@ -438,14 +370,13 @@ def test_prepare_llm_messages_and_make_llm_completion_integration(
     mock_llm.completion.return_value = mock_response
 
     # Call functions in sequence (simulating real usage)
-    messages = prepare_llm_messages(sample_events)
+    messages = prepare_llm_messages(view)
     result = make_llm_completion(mock_llm, messages)
 
-    # Verify results
-    assert messages == sample_messages
+    assert len(messages) == len(sample_events)
     assert result == mock_response
     mock_llm.completion.assert_called_once_with(
-        messages=sample_messages,
+        messages=messages,
         tools=[],
         add_security_risk_prediction=True,
         on_token=None,

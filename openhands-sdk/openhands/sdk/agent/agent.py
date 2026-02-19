@@ -246,7 +246,7 @@ class Agent(CriticMixin, AgentBase):
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
-            state.events, condenser=self.condenser, llm=self.llm
+            state.view, condenser=self.condenser, llm=self.llm
         )
 
         # Process condensation event before agent sampels another action
