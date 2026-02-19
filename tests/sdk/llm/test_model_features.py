@@ -317,9 +317,8 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
 @pytest.mark.parametrize(
     "model,expected_top_p",
     [
-        # Positive matches - only HuggingFace needs specific top_p
-        ("huggingface/model", 0.9),
-        # All other models use provider defaults (None)
+        # All models use provider defaults (None)
+        ("huggingface/model", None),
         ("moonshot/kimi-k2.5", None),
         ("kimi-k2.5", None),
         ("gpt-4o", None),

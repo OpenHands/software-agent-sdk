@@ -164,9 +164,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 
 # Model-specific defaults for top_p.
 # Only applied when the caller leaves top_p unset (None).
-DEFAULT_TOP_P_MODELS: list[tuple[str, float]] = [
-    ("huggingface", 0.9),
-]
+DEFAULT_TOP_P_MODELS: list[tuple[str, float]] = []
 
 
 def get_default_top_p(model: str) -> float | None:

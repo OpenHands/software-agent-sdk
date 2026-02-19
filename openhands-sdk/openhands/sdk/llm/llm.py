@@ -194,9 +194,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         le=1,
         description=(
-            "Nucleus sampling parameter. Defaults to None (uses provider default). "
-            "Some models like Kimi K2.5 require specific values and are "
-            "auto-configured."
+            "Nucleus sampling parameter. Defaults to None (uses provider default)."
         ),
     )
     top_k: float | None = Field(default=None, ge=0)
