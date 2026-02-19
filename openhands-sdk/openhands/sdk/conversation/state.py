@@ -8,6 +8,7 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -167,6 +168,7 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    _view: View = PrivateAttr(default_factory=View)  # maintained view of events
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -204,6 +206,10 @@ class ConversationState(OpenHandsModel):
     @property
     def events(self) -> EventLog:
         return self._events
+
+    @property
+    def view(self) -> View:
+        return self._view
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
@@ -315,6 +321,9 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+
+            # Repopulate the view from persisted events
+            state._view = View.from_events(state._events)
 
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)

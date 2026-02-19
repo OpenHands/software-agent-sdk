@@ -3,6 +3,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -50,6 +51,11 @@ class ConversationStateProtocol(Protocol):
     @property
     def events(self) -> EventsListBase:
         """Access to the events list."""
+        ...
+
+    @property
+    def view(self) -> View:
+        """The current view of events."""
         ...
 
     @property
