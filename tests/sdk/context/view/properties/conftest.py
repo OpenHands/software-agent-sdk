@@ -5,7 +5,13 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
     ObservationEvent,
 )
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.llm import (
+    Message,
+    MessageToolCall,
+    RedactedThinkingBlock,
+    TextContent,
+    ThinkingBlock,
+)
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 
 
@@ -14,6 +20,7 @@ def create_action_event(
     llm_response_id: str,
     tool_call_id: str,
     tool_name: str = "test_tool",
+    thinking: str | None = None,
 ) -> ActionEvent:
     """Helper to create an ActionEvent with specified IDs."""
     action = MCPToolAction(data={})
@@ -25,6 +32,10 @@ def create_action_event(
         origin="completion",
     )
 
+    thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = []
+    if thinking is not None:
+        thinking_blocks = [ThinkingBlock(thinking=thinking)]
+
     return ActionEvent(
         id=event_id,
         thought=[TextContent(text="Test thought")],
@@ -33,6 +44,7 @@ def create_action_event(
         tool_call_id=tool_call_id,
         tool_call=tool_call,
         llm_response_id=llm_response_id,
+        thinking_blocks=thinking_blocks,
         source="agent",
     )
 
