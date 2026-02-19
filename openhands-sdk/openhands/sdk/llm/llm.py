@@ -432,6 +432,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if d.get("top_p", 1.0) == 1.0:
                 d["top_p"] = 0.9
 
+        # Databricks models have a max_tokens limit of 25000
+        # Cap max_output_tokens if not already set or if it exceeds the limit
+        if model_val.startswith("databricks/"):
+            current_max = d.get("max_output_tokens")
+            if current_max is None or current_max > 25000:
+                d["max_output_tokens"] = 25000
+
         return d
 
     @model_validator(mode="after")
