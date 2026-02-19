@@ -17,8 +17,6 @@ import os
 import sys
 from typing import Any
 
-import litellm
-
 
 # Model configurations dictionary
 MODELS = {
@@ -235,6 +233,8 @@ def test_model(
     Returns:
         Tuple of (success: bool, message: str)
     """
+    import litellm
+
     llm_config = model_config.get("llm_config", {})
     model_name = llm_config.get("model", "unknown")
     display_name = model_config.get("display_name", model_name)
