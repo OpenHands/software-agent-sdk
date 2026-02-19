@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from functools import cached_property
 from logging import getLogger
 from typing import overload
 
@@ -33,10 +32,12 @@ class View(BaseModel):
     unhandled_condensation_request: bool = False
     """Whether there is an unhandled condensation request in the view."""
 
+    _cached_manipulation_indices: ManipulationIndices | None = None
+
     def __len__(self) -> int:
         return len(self.events)
 
-    @cached_property
+    @property
     def manipulation_indices(self) -> ManipulationIndices:
         """The indices where the view events can be manipulated without violating the
         properties expected by LLM APIs.
@@ -45,10 +46,18 @@ class View(BaseModel):
         in the returned set of manipulation indices if it exists in _all_ the sets of
         property-derived indices.
         """
+        if self._cached_manipulation_indices is not None:
+            return self._cached_manipulation_indices
+
         results: ManipulationIndices = ManipulationIndices.complete(self.events)
         for property in ALL_PROPERTIES:
             results &= property.manipulation_indices(self.events)
+
+        self._cached_manipulation_indices = results
         return results
+
+    def _invalidate_manipulation_indices(self) -> None:
+        self._cached_manipulation_indices = None
 
     # To preserve list-like indexing, we ideally support slicing and position-based
     # indexing. The only challenge with that is switching the return type based on the
@@ -110,6 +119,7 @@ class View(BaseModel):
                 self.events = [
                     event for event in self.events if event.id not in events_to_forget
                 ]
+                self._invalidate_manipulation_indices()
 
                 # If we've forgotten events to enforce the properties, we'll need to
                 # attempt to apply each property again. Once we get all the way through
@@ -143,9 +153,11 @@ class View(BaseModel):
             case Condensation():
                 self.unhandled_condensation_request = False
                 self.events = event.apply(self.events)
+                self._invalidate_manipulation_indices()
 
             case LLMConvertibleEvent():
                 self.events.append(event)
+                self._invalidate_manipulation_indices()
 
             # If the event isn't related to condensation and isn't LLMConvertible, it
             # should not be in the resulting view. Examples include certain internal
