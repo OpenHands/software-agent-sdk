@@ -1,10 +1,14 @@
 """Hook manager - orchestrates hook execution within conversations."""
 
+import logging
 from typing import Any
 
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.executor import HookExecutor, HookResult
 from openhands.sdk.hooks.types import HookEvent, HookEventType
+
+
+logger = logging.getLogger(__name__)
 
 
 class HookManager:
@@ -51,6 +55,14 @@ class HookManager:
         hooks = self.config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, tool_name)
         if not hooks:
             return True, []
+
+        # Warn about async hooks in PreToolUse - they cannot block operations
+        async_hooks = [h for h in hooks if h.async_]
+        if async_hooks:
+            logger.warning(
+                "Async hooks in PreToolUse cannot block tool execution. "
+                f"Found {len(async_hooks)} async hook(s) that will run in background."
+            )
 
         event = self._create_event(
             HookEventType.PRE_TOOL_USE,
@@ -127,11 +139,19 @@ class HookManager:
     def run_session_end(self) -> list[HookResult]:
         """Run SessionEnd hooks when a conversation ends."""
         hooks = self.config.get_hooks_for_event(HookEventType.SESSION_END)
-        if not hooks:
-            return []
+        results: list[HookResult] = []
+        if hooks:
+            event = self._create_event(HookEventType.SESSION_END)
+            results = self.executor.execute_all(hooks, event, stop_on_block=False)
 
-        event = self._create_event(HookEventType.SESSION_END)
-        return self.executor.execute_all(hooks, event, stop_on_block=False)
+        # Cleanup any background async processes
+        self.cleanup_async_processes()
+
+        return results
+
+    def cleanup_async_processes(self) -> None:
+        """Cleanup all background hook processes."""
+        self.executor.async_process_manager.cleanup_all()
 
     def run_stop(
         self,
