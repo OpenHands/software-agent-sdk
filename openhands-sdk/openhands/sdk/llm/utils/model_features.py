@@ -71,6 +71,7 @@ REASONING_EFFORT_MODELS: list[str] = [
     # Anthropic Opus 4.5 and 4.6
     "claude-opus-4-5",
     "claude-opus-4-6",
+    "claude-sonnet-4-6",
     # Nova 2 Lite
     "nova-2-lite",
 ]
@@ -96,6 +97,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-haiku-4-5",
     "claude-opus-4-5",
     "claude-opus-4-6",
+    "claude-sonnet-4-6",
 ]
 
 # Models that support a top-level prompt_cache_retention parameter
