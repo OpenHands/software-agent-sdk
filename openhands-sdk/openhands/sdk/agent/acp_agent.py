@@ -36,8 +36,16 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # Seconds to wait after prompt() for pending session_update notifications
-# to be processed.  Increase if using a slow or remote ACP server.
-_NOTIFICATION_DRAIN_DELAY: float = 0.1
+# to be processed.  This is a best-effort workaround: the ACP protocol does
+# not currently signal when all notifications for a turn have been delivered,
+# so we yield to the event loop and then sleep briefly to allow in-flight
+# handlers to finish.  Override via ACP_NOTIFICATION_DRAIN_DELAY for slow or
+# remote servers.
+# TODO: Replace with protocol-level synchronization once ACP supports a
+#       "turn complete" sentinel notification.
+_NOTIFICATION_DRAIN_DELAY: float = float(
+    os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
+)
 
 
 def _make_sentinel_llm() -> LLM:
@@ -441,11 +449,10 @@ class ACPAgent(AgentBase):
                     [text_block(user_message)],
                     self._session_id,
                 )
-                # Allow pending session_update notifications to be
-                # processed before we read accumulated text.  The ACP
-                # server sends notifications and responses through the
-                # same connection, but notification handlers run as
-                # tasks and may not have completed when prompt() returns.
+                # Drain pending session_update notification handlers.
+                # First yield lets already-queued handlers run, then a
+                # short sleep covers handlers still arriving over IO.
+                await asyncio.sleep(0)
                 await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
                 return response
 
