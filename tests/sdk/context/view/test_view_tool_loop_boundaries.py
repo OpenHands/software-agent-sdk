@@ -6,9 +6,6 @@ continues through all subsequent batches until a non-batch event is encountered.
 """
 
 from openhands.sdk.context.view import View
-from openhands.sdk.llm import (
-    ThinkingBlock,
-)
 from tests.sdk.context.view.conftest import (  # noqa: F401
     create_action_event,
     create_observation_event,
@@ -18,17 +15,9 @@ from tests.sdk.context.view.conftest import (  # noqa: F401
 
 def test_single_batch_with_thinking():
     """Test that a single batch with thinking blocks forms a tool loop."""
-    thinking = [
-        ThinkingBlock(
-            type="thinking",
-            thinking="Extended thinking...",
-            signature="sig",
-        )
-    ]
-
     events = [
         message_event("User message"),
-        create_action_event("resp_1", "call_1", thinking_blocks=thinking),
+        create_action_event("resp_1", "call_1", thinking="Thinking..."),
         create_observation_event("call_1"),
     ]
 
@@ -44,18 +33,10 @@ def test_single_batch_with_thinking():
 
 def test_tool_loop_multiple_batches():
     """Test that a tool loop continues through multiple consecutive batches."""
-    thinking = [
-        ThinkingBlock(
-            type="thinking",
-            thinking="Extended thinking...",
-            signature="sig",
-        )
-    ]
-
     events = [
         message_event("User message"),
         # Tool loop starts here with thinking
-        create_action_event("resp_1", "call_1", thinking_blocks=thinking),
+        create_action_event("resp_1", "call_1", thinking="Thinking..."),
         create_observation_event("call_1"),
         # Continues with second batch (no thinking)
         create_action_event("resp_2", "call_2"),
@@ -80,25 +61,17 @@ def test_tool_loop_multiple_batches():
 
 def test_tool_loop_ends_at_non_batch_event():
     """Test that a tool loop ends when encountering a non-batch event."""
-    thinking = [
-        ThinkingBlock(
-            type="thinking",
-            thinking="Extended thinking...",
-            signature="sig",
-        )
-    ]
-
     events = [
         message_event("User message 1"),
         # First tool loop
-        create_action_event("resp_1", "call_1", thinking_blocks=thinking),
+        create_action_event("resp_1", "call_1", thinking="Thinking..."),
         create_observation_event("call_1"),
         create_action_event("resp_2", "call_2"),
         create_observation_event("call_2"),
         # Non-batch event ends the tool loop
         message_event("User message 2"),
         # Second tool loop starts
-        create_action_event("resp_3", "call_3", thinking_blocks=thinking),
+        create_action_event("resp_3", "call_3", thinking="Thinking..."),
         create_observation_event("call_3"),
     ]
 
@@ -116,24 +89,16 @@ def test_tool_loop_ends_at_non_batch_event():
 
 def test_multiple_separate_tool_loops():
     """Test multiple tool loops separated by user messages."""
-    thinking = [
-        ThinkingBlock(
-            type="thinking",
-            thinking="Extended thinking...",
-            signature="sig",
-        )
-    ]
-
     events = [
         message_event("User 1"),
         # First tool loop
-        create_action_event("resp_1", "call_1", thinking_blocks=thinking),
+        create_action_event("resp_1", "call_1", thinking="Thinking..."),
         create_observation_event("call_1"),
         create_action_event("resp_2", "call_2"),
         create_observation_event("call_2"),
         message_event("User 2"),
         # Second tool loop
-        create_action_event("resp_3", "call_3", thinking_blocks=thinking),
+        create_action_event("resp_3", "call_3", thinking="Thinking..."),
         create_observation_event("call_3"),
         message_event("User 3"),
     ]
@@ -153,18 +118,10 @@ def test_multiple_separate_tool_loops():
 
 def test_parallel_tool_calls_in_tool_loop():
     """Test that parallel tool calls within a batch are handled correctly."""
-    thinking = [
-        ThinkingBlock(
-            type="thinking",
-            thinking="Extended thinking...",
-            signature="sig",
-        )
-    ]
-
     events = [
         message_event("User message"),
         # Tool loop starts with parallel tool calls
-        create_action_event("resp_1", "call_1a", thinking_blocks=thinking),
+        create_action_event("resp_1", "call_1a", thinking="Thinking..."),
         create_action_event("resp_1", "call_1b"),  # Same response_id = parallel
         create_observation_event("call_1a"),
         create_observation_event("call_1b"),
