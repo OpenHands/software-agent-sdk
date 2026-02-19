@@ -162,7 +162,7 @@ class DelegationManager:
         """Generate a unique task ID."""
         while True:
             uuid_ = uuid.uuid4()
-            short_uuid = str(uuid_)[:8]
+            short_uuid = uuid_.hex[:8]
             task_id = f"task_{short_uuid}"
             if (
                 task_id not in self._active_tasks
@@ -208,7 +208,6 @@ class DelegationManager:
         self,
         prompt: str,
         subagent_type: str = "default",
-        model: str | None = None,
         run_in_background: bool = False,
         resume: str | None = None,
         max_turns: int | None = None,
@@ -220,7 +219,6 @@ class DelegationManager:
         Args:
             prompt: The task description for the sub-agent.
             subagent_type: Type of agent to use (maps to registered agent factories).
-            model: Optional model override for the sub-agent LLM.
             run_in_background: If True, run in a background thread.
             resume: Task ID to resume (continues existing conversation).
             max_turns: Maximum number of agent iterations.
@@ -233,11 +231,6 @@ class DelegationManager:
         Raises:
             ValueError: If resume ID not found or capacity exceeded.
         """
-        if model is not None:
-            logger.warning(
-                "Custom model selection is not yet supported. "
-                "The parent conversation's model will be used instead."
-            )
         if conversation:
             self._ensure_parent(conversation)
 
@@ -487,16 +480,23 @@ class DelegationManager:
                 task = None
 
         if task:
+            # Mark the task as STOPPED *before* pausing the conversation.
+            # This ensures the background thread's _run() sees STOPPED when
+            # it checks task.status after conversation.run() returns.
+            # Without this ordering there is a race: pause() causes the run
+            # loop to break, _run() checks status (still RUNNING), and calls
+            # set_completed() before stop_task() reaches task.stop().
+            task.stop()
+
             # Pause the conversation's run loop so it actually stops executing.
             # This sets execution_status to PAUSED, which the run() loop checks
             # at each iteration and breaks on.
             if task.conversation is not None:
                 task.conversation.pause()
+                task.conversation.close()
 
-            task.stop()
             # Evict stopped tasks from running to inactive
-            if task.status == TaskStatus.STOPPED:
-                self._evict_task(task_id)
+            self._evict_task(task_id)
 
         return task
 
@@ -509,6 +509,7 @@ class DelegationManager:
             if task.thread and task.thread.is_alive():
                 if task.conversation is not None:
                     task.conversation.pause()
+                    task.conversation.close()
                 task.set_error("Manager closing.")
 
         for task in tasks:
@@ -594,7 +595,6 @@ class TaskExecutor(ToolExecutor):
             task = self._manager.start_task(
                 prompt=action.prompt,
                 subagent_type=action.subagent_type,
-                model=action.model,
                 run_in_background=action.run_in_background,
                 resume=action.resume,
                 max_turns=action.max_turns,

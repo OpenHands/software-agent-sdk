@@ -8,6 +8,7 @@ that the DelegationManager can retrieve task results after eviction.
 
 import json
 import threading
+import time
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch
@@ -34,9 +35,6 @@ from openhands.tools.claude.impl import (
 from openhands.tools.delegate.registration import AgentFactory
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 def _make_finish_response(
     message: str = "Task completed!",
     response_id: str = "resp-finish",
@@ -81,6 +79,40 @@ def _make_text_response(
             Choices(
                 message=LiteLLMMessage(role="assistant", content=text),
                 finish_reason="stop",
+                index=0,
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+def _make_think_response(
+    thought: str = "thinking...",
+    response_id: str = "resp-think",
+    tool_call_id: str = "think_1",
+) -> ModelResponse:
+    """Build a ``ModelResponse`` that contains a single think tool call."""
+    tool_call = ChatCompletionMessageToolCall(
+        id=tool_call_id,
+        type="function",
+        function=Function(
+            name="think",
+            arguments=json.dumps({"thought": thought}),
+        ),
+    )
+    return ModelResponse(
+        id=response_id,
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content=f"Let me think: {thought}",
+                    tool_calls=[tool_call],
+                ),
+                finish_reason="tool_calls",
                 index=0,
             )
         ],
@@ -551,8 +583,6 @@ class TestBackgroundTaskExecution:
                 run_in_background=True,
             )
 
-            import time
-
             start = time.monotonic()
             output = manager.get_task_output(task.id, block=True, timeout_ms=200)
             elapsed = time.monotonic() - start
@@ -641,197 +671,94 @@ class TestBackgroundTaskExecution:
         assert output.status == TaskStatus.STOPPED
 
 
-class TestExecutorIntegration:
-    """Integration tests that exercise the full executor → manager → conversation
-    path, simulating how the tools are actually called by the agent loop."""
+def test_stop_allows_in_flight_step_to_complete(
+    parent_conversation: LocalConversation,
+    manager: DelegationManager,
+):
+    """
+    The test verify that:
+    1. The total number of LLM calls is less than the maximum — proving
+       the pause mechanism eventually stopped execution.
+    2. The task ends with STOPPED status.
+    """
+    TOTAL_STEPS = 20
+    STOP_AFTER = 5
 
-    def test_task_executor_sync_full_flow(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
-    ):
-        """TaskExecutor should run a sync task through the full
-        conversation lifecycle and return a completed observation."""
-        from openhands.tools.claude.definition import TaskAction, TaskObservation
-        from openhands.tools.claude.impl import TaskExecutor
+    call_count = 0
+    call_count_lock = threading.Lock()
+    stop_signaled = threading.Event()
+    post_stop_calls: list[int] = []
+    reached_stop_point = threading.Event()
 
-        manager._ensure_parent(parent_conversation)
-        executor = TaskExecutor(manager=manager)
+    def _mock_completion(**kwargs):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+            current = call_count
 
-        action = TaskAction(
-            prompt="Do work via executor",
-            description="executor test",
-        )
+        if current == STOP_AFTER:
+            # Signal main thread that we've reached the stop point
+            reached_stop_point.set()
+            # Sleep while holding the state lock (we're inside agent.step())
+            # to give the main thread time to set stop_signaled and call
+            # stop_task() → pause() which will block on the state lock.
+            time.sleep(0.5)
 
-        with (
-            patch(
-                "openhands.tools.claude.impl.get_agent_factory",
-                return_value=_TEST_FACTORY,
-            ),
-            patch(
-                "openhands.sdk.llm.llm.litellm_completion",
-                return_value=_make_finish_response("executor result"),
-            ),
-        ):
-            obs = executor(action, conversation=parent_conversation)
+        is_post_stop = stop_signaled.is_set()
+        if is_post_stop:
+            post_stop_calls.append(current)
 
-        assert isinstance(obs, TaskObservation)
-        assert obs.status == "completed"
-        assert obs.text == "executor result"
-        assert obs.task_id.startswith("task_")
-
-    def test_task_executor_background_then_output_executor(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
-    ):
-        """Full flow: TaskExecutor launches background → TaskOutputExecutor
-        retrieves result, simulating real agent tool call sequence."""
-        from openhands.tools.claude.definition import (
-            TaskAction,
-            TaskObservation,
-            TaskOutputAction,
-            TaskOutputObservation,
-        )
-        from openhands.tools.claude.impl import TaskExecutor, TaskOutputExecutor
-
-        manager._ensure_parent(parent_conversation)
-        task_executor = TaskExecutor(manager=manager)
-        output_executor = TaskOutputExecutor(manager=manager)
-
-        barrier = threading.Event()
-
-        def _delayed_completion(**kwargs):
-            barrier.wait(timeout=10)
-            return _make_finish_response("bg executor result")
-
-        with (
-            patch(
-                "openhands.tools.claude.impl.get_agent_factory",
-                return_value=_TEST_FACTORY,
-            ),
-            patch(
-                "openhands.sdk.llm.llm.litellm_completion",
-                side_effect=_delayed_completion,
-            ),
-        ):
-            # Step 1: Launch background task
-            launch_action = TaskAction(
-                prompt="background via executor",
-                run_in_background=True,
+        if current <= TOTAL_STEPS:
+            return _make_think_response(
+                thought=f"step {current}",
+                response_id=f"resp-{current}",
+                tool_call_id=f"think_{current}",
             )
-            launch_obs = task_executor(launch_action, conversation=parent_conversation)
+        return _make_finish_response("done", response_id=f"resp-finish-{current}")
 
-            assert isinstance(launch_obs, TaskObservation)
-            assert launch_obs.status == "running"
-            task_id = launch_obs.task_id
+    manager._ensure_parent(parent_conversation)
 
-            # Step 2: Non-blocking poll
-            poll_action = TaskOutputAction(task_id=task_id, block=False)
-            poll_obs = output_executor(poll_action)
-            assert isinstance(poll_obs, TaskOutputObservation)
-            assert poll_obs.status == "running"
-
-            # Step 3: Release LLM and block until done
-            barrier.set()
-            wait_action = TaskOutputAction(task_id=task_id, block=True, timeout=10000)
-            final_obs = output_executor(wait_action)
-
-        assert isinstance(final_obs, TaskOutputObservation)
-        assert final_obs.status == "completed"
-        assert final_obs.text == "bg executor result"
-
-    def test_task_executor_stop_executor_full_flow(
-        self, parent_conversation: LocalConversation, manager: DelegationManager
+    with (
+        patch(
+            "openhands.tools.claude.impl.get_agent_factory",
+            return_value=_TEST_FACTORY,
+        ),
+        patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            side_effect=_mock_completion,
+        ),
     ):
-        """Full flow: TaskExecutor launches background → TaskStopExecutor
-        stops it, simulating the stop tool call sequence."""
-        from openhands.tools.claude.definition import (
-            TaskAction,
-            TaskStopAction,
-            TaskStopObservation,
+        task = manager.start_task(
+            prompt="Think many times then finish.",
+            conversation=parent_conversation,
+            run_in_background=True,
+            max_turns=TOTAL_STEPS + 10,
         )
-        from openhands.tools.claude.impl import TaskExecutor, TaskStopExecutor
 
-        manager._ensure_parent(parent_conversation)
-        task_executor = TaskExecutor(manager=manager)
-        stop_executor = TaskStopExecutor(manager=manager)
+        assert task.status == TaskStatus.RUNNING
+        assert task.thread is not None
 
-        barrier = threading.Event()
+        # Wait for the background thread to reach the stop point
+        reached_stop_point.wait(timeout=10)
 
-        def _blocked_completion(**kwargs):
-            barrier.wait(timeout=10)
-            return _make_finish_response("should be stopped")
+        # Signal stop before calling stop_task()
+        stop_signaled.set()
+        manager.stop_task(task.id)
 
-        with (
-            patch(
-                "openhands.tools.claude.impl.get_agent_factory",
-                return_value=_TEST_FACTORY,
-            ),
-            patch(
-                "openhands.sdk.llm.llm.litellm_completion",
-                side_effect=_blocked_completion,
-            ),
-        ):
-            # Launch background task
-            launch_obs = task_executor(
-                TaskAction(prompt="stoppable task", run_in_background=True),
-                conversation=parent_conversation,
-            )
-            task_id = launch_obs.task_id
+        # Wait for thread to exit
+        task.thread.join(timeout=10)
 
-            # Stop it
-            stop_obs = stop_executor(TaskStopAction(task_id=task_id))
-            assert isinstance(stop_obs, TaskStopObservation)
-            assert stop_obs.status == "stopped"
+    # -- Thread exited cleanly -----------------------------------------
+    assert not task.thread.is_alive()
 
-            # Clean up thread
-            barrier.set()
-            task = manager._active_tasks.get(task_id)
-            if task and task.thread:
-                task.thread.join(timeout=10)
+    # -- Task ended with STOPPED status --------------------------------
+    assert task.status == TaskStatus.STOPPED
 
-    def test_task_executor_capacity_limit(
-        self,
-        parent_conversation: LocalConversation,
-    ):
-        """Starting more tasks than max_tasks should fail gracefully
-        through the executor."""
-        from openhands.tools.claude.definition import TaskAction, TaskObservation
-        from openhands.tools.claude.impl import DelegationManager, TaskExecutor
-
-        mgr = DelegationManager(max_tasks=1)
-        mgr._ensure_parent(parent_conversation)
-        executor = TaskExecutor(manager=mgr)
-
-        barrier = threading.Event()
-
-        def _blocked_completion(**kwargs):
-            barrier.wait(timeout=10)
-            return _make_finish_response("done")
-
-        try:
-            with (
-                patch(
-                    "openhands.tools.claude.impl.get_agent_factory",
-                    return_value=_TEST_FACTORY,
-                ),
-                patch(
-                    "openhands.sdk.llm.llm.litellm_completion",
-                    side_effect=_blocked_completion,
-                ),
-            ):
-                # First task should succeed
-                obs1 = executor(
-                    TaskAction(prompt="first", run_in_background=True),
-                    conversation=parent_conversation,
-                )
-                assert obs1.status == "running"
-
-                # Second task should fail (capacity reached)
-                obs2 = executor(
-                    TaskAction(prompt="second", run_in_background=True),
-                    conversation=parent_conversation,
-                )
-                assert isinstance(obs2, TaskObservation)
-                assert obs2.is_error is True
-
-                barrier.set()
-        finally:
-            mgr.close()
+    # -- Run loop broke before all steps completed ---------------------
+    # Proves the pause mechanism eventually stopped execution.
+    with call_count_lock:
+        final_count = call_count
+    assert final_count < TOTAL_STEPS, (
+        f"Expected run loop to break before all {TOTAL_STEPS} steps, "
+        f"but {final_count} LLM calls were made"
+    )

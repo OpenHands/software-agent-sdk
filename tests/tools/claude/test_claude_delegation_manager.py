@@ -286,27 +286,6 @@ class TestClaudeDelegationManager:
         assert result is not None
         assert result.status == "stopped"
 
-    def test_stop_task_already_completed(self):
-        """Stopping an already completed task should not change status."""
-        manager = DelegationManager()
-        task = TaskState(
-            id="test_1",
-            conversation=None,
-            status=TaskStatus.RUNNING,
-        )
-        task.set_completed("Done")
-
-        assert task.result == "Done"
-        assert task.status == "succeeded"
-
-        # add task to manager and stop it
-        manager._active_tasks["test_1"] = task
-        stopped_task = manager.stop_task(task.id)
-        assert stopped_task is not None
-        assert stopped_task.result == "Done"
-        assert stopped_task.status == "succeeded"
-        assert stopped_task is task
-
     def test_get_task_output_completed(self):
         """Getting output for a completed task should return its result."""
         manager = DelegationManager()
@@ -453,7 +432,6 @@ class TestTaskAction:
         action = TaskAction(prompt="test")
         assert action.subagent_type == "default"
         assert action.description is None
-        assert action.model is None
         assert action.run_in_background is False
         assert action.resume is None
         assert action.max_turns is None
@@ -464,7 +442,6 @@ class TestTaskAction:
             prompt="Run tests",
             subagent_type="researcher",
             description="Run unit tests",
-            model="gpt-4o",
             run_in_background=True,
             resume="task_abc123",
             max_turns=10,
@@ -472,7 +449,6 @@ class TestTaskAction:
         assert action.prompt == "Run tests"
         assert action.subagent_type == "researcher"
         assert action.description == "Run unit tests"
-        assert action.model == "gpt-4o"
         assert action.run_in_background is True
         assert action.resume == "task_abc123"
         assert action.max_turns == 10

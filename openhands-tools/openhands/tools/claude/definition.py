@@ -51,13 +51,9 @@ class TaskAction(Action):
         default="default",
         description="The type of specialized agent to use for this task.",
     )
-    model: str | None = Field(
-        default=None,
-        description="Optional model to use. If not specified, inherits from parent.",
-    )
     resume: str | None = Field(
         default=None,
-        description="Optional agent ID to resume from.",
+        description="Optional task ID to resume from.",
     )
     run_in_background: bool = Field(
         default=False,
