@@ -5,13 +5,13 @@ from tests.sdk.context.view.conftest import message_event  # noqa: F401
 def test_complete_empty_list() -> None:
     """Test complete manipulation indices with empty event list."""
     manipulation_indices = ManipulationIndices.complete([])
-    assert list(manipulation_indices) == [0]
+    assert manipulation_indices == {0}
 
 
 def test_complete_single_message_event() -> None:
     """Test complete manipulation indices with a single message event."""
     manipulation_indices = ManipulationIndices.complete([message_event("Event 0")])
-    assert list(manipulation_indices) == [0, 1]
+    assert manipulation_indices == {0, 1}
 
 
 def test_complete_multiple_message_events() -> None:
@@ -23,4 +23,4 @@ def test_complete_multiple_message_events() -> None:
             message_event("Event 2"),
         ]
     )
-    assert list(manipulation_indices) == [0, 1, 2, 3]
+    assert manipulation_indices == {0, 1, 2, 3}
