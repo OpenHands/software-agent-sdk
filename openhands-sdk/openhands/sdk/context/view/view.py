@@ -5,7 +5,7 @@ from functools import cached_property
 from logging import getLogger
 from typing import overload
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties import ALL_PROPERTIES
@@ -32,9 +32,6 @@ class View(BaseModel):
 
     unhandled_condensation_request: bool = False
     """Whether there is an unhandled condensation request in the view."""
-
-    condensations: list[Condensation] = Field(default_factory=list)
-    """A list of condensations that were processed to produce the view."""
 
     def __len__(self) -> int:
         return len(self.events)
@@ -160,5 +157,4 @@ class View(BaseModel):
             unhandled_condensation_request=View.unhandled_condensation_request_exists(
                 events
             ),
-            condensations=condensations,
         )
