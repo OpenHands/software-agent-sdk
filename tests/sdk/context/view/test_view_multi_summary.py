@@ -16,15 +16,8 @@ Key behaviors tested:
 from openhands.sdk.context.view import View
 from openhands.sdk.event import Condensation, CondensationSummaryEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.llm import Message, TextContent
-
-
-def message_event(content: str) -> MessageEvent:
-    """Helper to create a MessageEvent."""
-    return MessageEvent(
-        llm_message=Message(role="user", content=[TextContent(text=content)]),
-        source="user",
-    )
+from openhands.sdk.llm import TextContent
+from tests.sdk.context.view.conftest import message_event  # noqa: F401
 
 
 # ==============================================================================
