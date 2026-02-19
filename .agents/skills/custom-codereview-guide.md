@@ -1,6 +1,6 @@
 ---
-name: code-review
-description: Structured code review covering style, readability, and security concerns with actionable feedback. Use when reviewing pull requests or merge requests to identify issues and suggest improvements.
+name: custom-codereview-guide
+description: Repo-specific code review guidelines for OpenHands/software-agent-sdk. Provides SDK-specific review rules in addition to the default code review skill.
 triggers:
 - /codereview
 ---

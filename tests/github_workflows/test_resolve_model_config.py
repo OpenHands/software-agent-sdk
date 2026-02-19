@@ -1,5 +1,6 @@
 """Tests for resolve_model_config.py GitHub Actions script."""
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -273,9 +274,7 @@ class TestTestModel:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
 
-        with patch(
-            "resolve_model_config.litellm.completion", return_value=mock_response
-        ):
+        with patch("litellm.completion", return_value=mock_response):
             success, message = test_model(model_config, "test-key", "https://test.com")
 
         assert success is True
@@ -291,9 +290,7 @@ class TestTestModel:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content=""))]
 
-        with patch(
-            "resolve_model_config.litellm.completion", return_value=mock_response
-        ):
+        with patch("litellm.completion", return_value=mock_response):
             success, message = test_model(model_config, "test-key", "https://test.com")
 
         assert success is False
@@ -310,7 +307,7 @@ class TestTestModel:
         }
 
         with patch(
-            "resolve_model_config.litellm.completion",
+            "litellm.completion",
             side_effect=litellm.exceptions.Timeout(
                 message="Timeout", model="test-model", llm_provider="test"
             ),
@@ -331,7 +328,7 @@ class TestTestModel:
         }
 
         with patch(
-            "resolve_model_config.litellm.completion",
+            "litellm.completion",
             side_effect=litellm.exceptions.APIConnectionError(
                 message="Connection failed", llm_provider="test", model="test-model"
             ),
@@ -352,7 +349,7 @@ class TestTestModel:
         }
 
         with patch(
-            "resolve_model_config.litellm.completion",
+            "litellm.completion",
             side_effect=litellm.exceptions.NotFoundError(
                 "Model not found", llm_provider="test", model="test-model"
             ),
@@ -376,9 +373,7 @@ class TestTestModel:
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
 
-        with patch(
-            "resolve_model_config.litellm.completion", return_value=mock_response
-        ) as mock_completion:
+        with patch("litellm.completion", return_value=mock_response) as mock_completion:
             test_model(model_config, "test-key", "https://test.com")
 
         mock_completion.assert_called_once()
@@ -420,9 +415,7 @@ class TestRunPreflightCheck:
         mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
 
         with patch.dict("os.environ", {"LLM_API_KEY": "test"}):
-            with patch(
-                "resolve_model_config.litellm.completion", return_value=mock_response
-            ):
+            with patch("litellm.completion", return_value=mock_response):
                 result = run_preflight_check(models)
 
         assert result is True
@@ -442,9 +435,50 @@ class TestRunPreflightCheck:
             return mock_response
 
         with patch.dict("os.environ", {"LLM_API_KEY": "test"}):
-            with patch(
-                "resolve_model_config.litellm.completion", side_effect=mock_completion
-            ):
+            with patch("litellm.completion", side_effect=mock_completion):
                 result = run_preflight_check(models)
 
         assert result is False
+
+
+def test_models_importable_without_litellm():
+    """Test that MODELS dictionary can be imported without litellm installed.
+
+    This is critical for the integration-runner workflow which uses MODELS
+    in the setup-matrix job without installing litellm. The import should
+    work in a clean Python environment.
+
+    Regression test for issue #2124.
+    """
+    # Get the repository root (where .github/ is located)
+    repo_root = Path(__file__).parent.parent.parent
+
+    script = """
+import sys
+sys.path.insert(0, '.github/run-eval')
+
+# This import should succeed without litellm being installed
+from resolve_model_config import MODELS
+
+# Verify we got the MODELS dictionary
+assert isinstance(MODELS, dict)
+assert len(MODELS) > 0
+print(f"SUCCESS: Imported {len(MODELS)} models without litellm")
+"""
+
+    # Run the script in a subprocess with a clean environment
+    # This ensures litellm is not available in sys.modules
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+
+    # Check that the script succeeded
+    assert result.returncode == 0, (
+        f"Failed to import MODELS without litellm.\n"
+        f"stdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+    assert "SUCCESS" in result.stdout
