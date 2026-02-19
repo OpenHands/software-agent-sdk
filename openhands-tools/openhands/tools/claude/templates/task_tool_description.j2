@@ -1,16 +1,16 @@
 Launch a new agent to handle complex, multi-step tasks autonomously.
 
-The Task tool launches specialized agents (subprocesses) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
+The task tool launches specialized agents (subprocesses) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
 
 Available agent types and the tools they have access to:
 {{ agent_types_info }}
 
-When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+When using the task tool, you must specify a subagent_type parameter to select which agent type to use.
 
-When NOT to use the Task tool:
-- If you want to read a specific file path, use the Read or Glob tool instead of the Task tool, to find the match more quickly
-- If you are searching for a specific class definition like "class Foo", use the Glob tool instead, to find the match more quickly
-- If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Task tool, to find the match more quickly
+When NOT to use the task tool:
+- If you want to read a specific file path, use the terminal tool instead of the task tool, to find the match more quickly
+- If you are searching for a specific class definition like "class Foo", use the terminal tool instead, to find the match more quickly
+- If you are searching for code within a specific file or set of 2-3 files, use the terminal tool instead of the task tool, to find the match more quickly
 - Other tasks that are not related to the agent descriptions above
 
 Usage notes:
@@ -18,16 +18,16 @@ Usage notes:
 - Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
 - When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you
 should send a text message back to the user with a concise summary of the result.
-- You can optionally run agents in the background using the run_in_background parameter. To check on the agent's progress or retrieve its results, use the TaskOutputTool tool. You
+- You can optionally run agents in the background using the run_in_background parameter. To check on the agent's progress or retrieve its results, use the task_output tool. You
 can continue working while background agents run.
-- Agents can be resumed using the resume parameter by passing the agent ID from a previous invocation. When resumed, the agent continues with its full previous
+- Agents can be resumed using the resume parameter by passing the task ID from a previous invocation. When resumed, the agent continues with its full previous
 context preserved. When NOT resuming, each invocation starts fresh and you should provide a detailed task description with all necessary context.
-- When you launch an agent with a task using the Task tool, an agent ID will be returned to you. You can use this ID to resume the agent later if needed for follow-up work.
+- When you launch an agent with a task using the Task tool, a task ID will be returned to you. You can use this ID to resume the agent later if needed for follow-up work.
 - Provide clear, detailed prompts so the agent can work autonomously and return exactly the information you need.
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's
 intent
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your
 judgement.
-- If the user specifies that they want you to run agents "in parallel", you MUST send a single message with multiple Task tool use content blocks. For example, if you
+- If the user specifies that they want you to run agents "in parallel", you MUST send a single message with multiple task tool calls. For example, if you
 need to launch both a build-validator agent and a test-runner agent in parallel, send a single message with both tool calls.
