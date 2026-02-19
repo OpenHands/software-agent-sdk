@@ -93,13 +93,13 @@ agent = Agent(
     llm=llm,
     tools=[Tool(name=TaskToolSet.name)],
 )
-conversation_2 = Conversation(
+conversation = Conversation(
     agent=agent,
     workspace=cwd,
     visualizer=DelegationVisualizer(name="Director"),
 )
 
-conversation_2.send_message(
+conversation.send_message(
     """
 I’d like two different perspectives on the concept of 'AI-generated poetry.'
 1. Use the task tool with subagent_type='poet' to have a subagent write a
@@ -112,4 +112,4 @@ let me know what your favorite pizza is. Once the tasks are complete, present
 both responses together followed by your own brief commentary.
 """
 )
-conversation_2.run()
+conversation.run()
