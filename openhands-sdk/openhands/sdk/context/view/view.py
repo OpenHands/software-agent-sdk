@@ -5,7 +5,7 @@ from functools import cached_property
 from logging import getLogger
 from typing import overload
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties import ALL_PROPERTIES
@@ -28,7 +28,7 @@ class View(BaseModel):
     in deciding whether further condensation is needed.
     """
 
-    events: list[LLMConvertibleEvent]
+    events: list[LLMConvertibleEvent] = Field(default_factory=list)
 
     unhandled_condensation_request: bool = False
     """Whether there is an unhandled condensation request in the view."""
@@ -160,11 +160,15 @@ class View(BaseModel):
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
         """
-        output: View = View(events=[])
+        output: View = View()
 
+        # Incrementally add all events one by one. This will track the unhandled
+        # condensation flag and apply any condensations along the way.
         for event in events:
             output.add_event(event)
 
+        # Enforce the view properties. These will drop any events that might violate
+        # structural properties expected by LLM APIs.
         output.enforce_properties(events)
 
         return output
