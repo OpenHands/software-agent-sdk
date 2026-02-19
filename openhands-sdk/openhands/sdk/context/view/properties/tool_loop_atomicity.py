@@ -21,31 +21,6 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
     element of the tool loop we have to remove the whole thing.
     """
 
-    def _is_tool_loop_event(self, event: Event) -> bool:
-        """Utility function for capturing the kinds of events that comprise tool loops.
-
-        Says nothing about whether the event is part of a tool loop, just if it is an
-        action or observation that _can be_ part of a tool loop.
-
-        Args:
-            event: An event object.
-
-        Returns:
-            True if the event can form a tool loop, false otherwise.
-        """
-        match event:
-            case ActionEvent():
-                return True
-
-            # Observation base events also capture tool use errors.
-            case ObservationBaseEvent():
-                return True
-
-            # The fall-through case -- anything not identifiable as able to comprise a
-            # tool loop is _not_ a tool loop event.
-            case _:
-                return False
-
     def _tool_loops(self, events: Sequence[Event]) -> list[set[EventID]]:
         """Calculate all tool loops in the events.
 
@@ -60,30 +35,26 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
         current_tool_loop: set[EventID] | None = None
 
         for event in events:
-            is_tool_loop_event = self._is_tool_loop_event(event)
-            in_tool_loop = current_tool_loop is not None
-
-            match (in_tool_loop, is_tool_loop_event):
-                # We're not in a tool loop and aren't entering one.
-                case (False, False):
-                    continue
-
-                # We're just entering a tool loop. Start tracking a new tool loop with
-                # the current event ID.
-                case (False, True):
+            match event:
+                # We start a tool loop if we find an action event with thinking blocks.
+                # If a tool loop already exists, end it and start a new one.
+                case ActionEvent() if event.thinking_blocks:
+                    if current_tool_loop is not None:
+                        tool_loops.append(current_tool_loop)
                     current_tool_loop = {event.id}
 
-                # We're stuck in a tool loop. Add the event ID and keep going.
-                case (True, True):
-                    assert current_tool_loop is not None
-                    current_tool_loop.add(event.id)
+                # If we see actions or observations, the current tool loop status stays
+                # the same -- if we're in a tool loop, the event is part of it, and if
+                # we're not in a tool loop we don't start one.
+                case ActionEvent() | ObservationBaseEvent():
+                    if current_tool_loop is not None:
+                        current_tool_loop.add(event.id)
 
-                # We're exiting a tool loop. Move the current tool loop to the output
-                # list and clear it.
-                case (True, False):
-                    assert current_tool_loop is not None
-                    tool_loops.append(current_tool_loop)
-                    current_tool_loop = None
+                # In all other situations we exit a tool loop.
+                case _:
+                    if current_tool_loop is not None:
+                        tool_loops.append(current_tool_loop)
+                        current_tool_loop = None
 
         # If the events end while we're still in a tool loop, append it to the output.
         if current_tool_loop is not None:
@@ -134,30 +105,15 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
         in_tool_loop: bool = False
 
         for index, event in enumerate(current_view_events):
-            is_tool_loop_event = self._is_tool_loop_event(event)
-
-            # There are four main cases:
-            match (in_tool_loop, is_tool_loop_event):
-                # We're not in a tool loop and aren't entering one. Keep the enumeration
-                # index in the manipulation indices and keep going.
-                case (False, False):
-                    continue
-
-                # We're just entering a tool loop. In this case we keep the enumeration
-                # index in the manipulation indices to be able to manipulate the start
-                # of the tool loop.
-                case (False, True):
+            match event:
+                case ActionEvent() if event.thinking_blocks:
                     in_tool_loop = True
 
-                # We're stuck in a tool loop. Remove the enumeration index from the
-                # manipulation indices to avoid splitting the tool loop in the future.
-                case (True, True):
-                    manipulation_indices.remove(index)
+                case ActionEvent() | ObservationBaseEvent():
+                    if in_tool_loop:
+                        manipulation_indices.remove(index)
 
-                # We're exiting a tool loop. Keep the enumeration index in the
-                # manipulation indices so we can reference the end of the tool loop
-                # during condensation.
-                case (True, False):
+                case _:
                     in_tool_loop = False
 
         return manipulation_indices
