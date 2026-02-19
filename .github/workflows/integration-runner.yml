@@ -71,9 +71,6 @@ jobs:
               with:
                   python-version: '3.13'
 
-            - name: Install required dependencies
-              run: pip install litellm
-
             - name: Resolve model configurations
               id: resolve-models
               env:
