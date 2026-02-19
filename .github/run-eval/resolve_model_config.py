@@ -12,16 +12,12 @@ Outputs to GITHUB_OUTPUT:
 - models_json: JSON array of full model configs with display names
 """
 
-from __future__ import annotations
-
 import json
 import os
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-
-if TYPE_CHECKING:
-    pass
+import litellm
 
 
 # Model configurations dictionary
@@ -239,8 +235,6 @@ def test_model(
     Returns:
         Tuple of (success: bool, message: str)
     """
-    import litellm
-
     llm_config = model_config.get("llm_config", {})
     model_name = llm_config.get("model", "unknown")
     display_name = model_config.get("display_name", model_name)
