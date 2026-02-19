@@ -72,16 +72,23 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
         Requires we iterate over all events to determine the full extent of tool loops.
         """
         all_tool_loops: list[set[EventID]] = self._tool_loops(all_events)
-
+        view_event_ids: set[EventID] = {event.id for event in current_view_events}
         events_to_remove: set[EventID] = set()
 
-        for view_tool_loop in self._tool_loops(current_view_events):
-            # We assume the current view events (or at least the ones that make up tool
-            # loops) are a subset of all the events. If a tool loop in the view isn't
-            # present in the total list of tool loops that indicates some element has
-            # been forgotten and we have to remove the remaining elements from the view.
-            if view_tool_loop not in all_tool_loops:
-                events_to_remove.update(view_tool_loop)
+        for event in current_view_events:
+            # If the event is already marked for removal, we can skip the subsequent
+            # checks.
+            if event.id in events_to_remove:
+                continue
+
+            # Check if the event is part of a tool loop. If it is, all events in that
+            # tool loop must be part of the view or we have to remove the remaining
+            # events.
+            for tool_loop in all_tool_loops:
+                if event.id in tool_loop:
+                    if not tool_loop.issubset(view_event_ids):
+                        events_to_remove.update(view_event_ids & tool_loop)
+                    break
 
         return events_to_remove
 
