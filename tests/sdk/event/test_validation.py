@@ -205,3 +205,58 @@ class TestPrepareLlmMessagesIntegration:
 
         messages = prepare_llm_messages([action, obs])
         assert len(messages) == 2  # action message + tool response
+
+
+class TestBugRegressions:
+    """Regression tests for fixed SDK bugs.
+
+    These tests verify that previously-known bugs are now handled:
+    - Bug #2127: Session crash mid-tool-call leaves orphan action
+    - Bug #1782: Resume re-executes action creating duplicate observation
+    """
+
+    def test_bug_2127_orphan_action_repaired_on_resume(self):
+        """Bug #2127: Session crashes mid-tool-call, orphan action is repaired.
+
+        Scenario:
+        1. LLM returns tool_call, ActionEvent created
+        2. Pod crashes BEFORE tool completes
+        3. Observation never created
+        4. User resumes -> get_repair_events() creates synthetic observation
+        5. validate_for_llm() passes after repair
+        """
+        # Simulate: action exists but no observation (session crashed)
+        action = make_action("call_crash", tool_name="terminal")
+        events = [action]
+
+        # On resume, get_repair_events creates synthetic observation
+        repairs = get_repair_events(events)
+        assert len(repairs) == 1
+        assert repairs[0].tool_call_id == "call_crash"
+        assert "interrupted" in repairs[0].error.lower()
+
+        # After adding repair events, validation passes
+        events_after_repair = list(events) + repairs
+        validate_for_llm(events_after_repair)  # Should not raise
+
+    def test_bug_1782_duplicate_observation_detected(self):
+        """Bug #1782: Resume re-executes action, duplicate observation detected.
+
+        Scenario:
+        1. Action executes, observation created
+        2. Pod terminates before checkpoint
+        3. Resume re-executes action (missing observation in checkpoint)
+        4. Duplicate observation with same tool_call_id
+        5. validate_for_llm() raises clear error
+        """
+        action = make_action("call_dup")
+        obs1 = make_observation("call_dup", "a_call_dup")
+        obs2 = make_observation("call_dup", "a_call_dup")  # Duplicate!
+        events = [action, obs1, obs2]
+
+        # validate_for_llm detects the duplicate
+        with pytest.raises(EventStreamValidationError) as exc_info:
+            validate_for_llm(events)
+
+        assert "Duplicate observation" in str(exc_info.value)
+        assert "call_dup" in str(exc_info.value)
