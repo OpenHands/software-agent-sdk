@@ -43,8 +43,9 @@ from tests.integration.api_compliance.result import (
 
 logger = get_logger(__name__)
 
-# Default models to test - mirrors the integration test matrix
+# Default models to test - one representative from each major provider
 # Each entry has: model path, optional config overrides, and short display name
+# Note: Avoid reasoning models (deepseek-reasoner) as they require special fields
 DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     "claude-sonnet-4-5": {
         "model": "litellm_proxy/claude-sonnet-4-5-20250929",
@@ -58,14 +59,6 @@ DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     "gemini-3-pro": {
         "model": "litellm_proxy/gemini-3-pro-preview",
         "_display": "gemini",
-    },
-    "deepseek-v3.2": {
-        "model": "litellm_proxy/deepseek/deepseek-reasoner",
-        "_display": "deepseek",
-    },
-    "qwen3-coder": {
-        "model": "litellm_proxy/qwen/qwen3-coder",
-        "_display": "qwen",
     },
 }
 

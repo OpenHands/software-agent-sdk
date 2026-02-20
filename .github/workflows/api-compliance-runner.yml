@@ -18,7 +18,7 @@ on:
 
 env:
     # Default models to test (matches DEFAULT_MODELS in run_compliance.py)
-    DEFAULT_MODELS: claude-sonnet-4-5,gpt-5.2,gemini-3-pro,deepseek-v3.2,qwen3-coder
+    DEFAULT_MODELS: claude-sonnet-4-5,gpt-5.2,gemini-3-pro
 
 jobs:
     run-compliance-tests:
