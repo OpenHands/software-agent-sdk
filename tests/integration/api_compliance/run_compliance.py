@@ -308,12 +308,12 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     for pattern in report.results:
         results_map[pattern.pattern_name] = {}
         for result in pattern.results:
-            # Map response type to colored emoji for quick scanning
-            result_symbol = "🟡"  # Yellow = other/error
+            # Map response type to emoji (color + shape for accessibility)
+            result_symbol = "⚠️"  # Warning = other/error
             if result.response_type == APIResponse.ACCEPTED:
-                result_symbol = "🟢"  # Green = accepted
+                result_symbol = "✅"  # Green check = accepted
             elif result.response_type == APIResponse.REJECTED:
-                result_symbol = "🔴"  # Red = rejected
+                result_symbol = "❌"  # Red X = rejected
 
             # Find matching model ID from full model path
             # e.g., "litellm_proxy/claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
@@ -325,7 +325,7 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     # Generate results table
     lines.append("## Results Matrix")
     lines.append("")
-    lines.append("🟢 accepted  🔴 rejected  🟡 error")
+    lines.append("✅ accepted  ❌ rejected  ⚠️ error")
     lines.append("")
 
     # Table header
