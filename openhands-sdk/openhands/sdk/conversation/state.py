@@ -1,6 +1,6 @@
 # state.py
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
@@ -17,7 +17,6 @@ from openhands.sdk.conversation.types import ConversationCallbackType, Conversat
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
-from openhands.sdk.event.validation import get_repair_events
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -461,52 +460,6 @@ class ConversationState(OpenHandsModel):
                     unmatched_actions.insert(0, event)
 
         return unmatched_actions
-
-    def repair_event_stream(
-        self,
-        persist_callback: Callable[[Event], None] | None = None,
-    ) -> int:
-        """Repair corrupt event stream by adding synthetic observations.
-
-        This should be called on conversation resume to fix orphan actions
-        (tool calls that were interrupted before completing).
-
-        For each orphan action (ActionEvent without matching ObservationEvent),
-        creates and persists a synthetic AgentErrorEvent informing the LLM
-        that the tool execution was interrupted.
-
-        Args:
-            persist_callback: Optional callback to persist synthetic events.
-                If not provided, events are added directly to the event log.
-
-        Returns:
-            Number of synthetic events added.
-
-        Example:
-            # On conversation resume
-            state = ConversationState.create_or_resume(...)
-            num_repaired = state.repair_event_stream(
-                persist_callback=conversation._on_event
-            )
-            if num_repaired > 0:
-                logger.warning(f"Repaired {num_repaired} orphan actions")
-        """
-        synthetic_events = get_repair_events(self.events)
-
-        for event in synthetic_events:
-            if persist_callback:
-                persist_callback(event)
-            else:
-                # Direct append to event log
-                self._events.append(event)
-
-        if synthetic_events:
-            logger.warning(
-                f"Repaired event stream: added {len(synthetic_events)} "
-                f"synthetic observation(s) for interrupted tool calls"
-            )
-
-        return len(synthetic_events)
 
     # ===== FIFOLock delegation methods =====
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:

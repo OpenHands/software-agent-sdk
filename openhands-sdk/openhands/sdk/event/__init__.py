@@ -20,9 +20,10 @@ from openhands.sdk.event.token import TokenEvent
 from openhands.sdk.event.types import EventID, ToolCallID
 from openhands.sdk.event.user_action import PauseEvent
 from openhands.sdk.event.validation import (
+    EventStreamValidationError,
     get_repair_events,
-    prepare_events_for_llm,
     validate_event_stream,
+    validate_for_llm,
 )
 
 
@@ -48,6 +49,7 @@ __all__ = [
     "ToolCallID",
     # Validation/Repair
     "validate_event_stream",
+    "validate_for_llm",
     "get_repair_events",
-    "prepare_events_for_llm",
+    "EventStreamValidationError",
 ]

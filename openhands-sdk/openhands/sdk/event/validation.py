@@ -1,17 +1,18 @@
 """Event stream validation and repair.
 
-Validates and repairs event streams to ensure they meet invariants required
-for correct LLM message conversion. Repairs are deterministic and logged.
+Validates event streams for LLM API compatibility. Provides clear errors
+when issues are detected, rather than silently fixing them.
 
-Invariants:
+Strategy:
+1. On conversation resume: Call get_repair_events() to add synthetic
+   observations for orphan actions (safe - only adds events, persisted)
+2. Before LLM call: Call validate_for_llm() which raises clear errors
+   if issues remain (makes debugging easier, surfaces bugs)
+
+Invariants checked:
 1. Each ActionEvent has exactly one matching observation (by tool_call_id)
 2. No duplicate tool_call_ids in observations
 3. No orphan observations (observation without matching action)
-
-Primary API:
-- prepare_events_for_llm(): Single function that fixes ALL issues before LLM call
-- get_repair_events(): Returns synthetic events to persist on conversation resume
-- validate_event_stream(): Detect issues without fixing
 """
 
 import logging
@@ -30,6 +31,24 @@ logger = logging.getLogger(__name__)
 
 # All observation types that satisfy an action
 ObservationTypes = ObservationEvent | UserRejectObservation | AgentErrorEvent
+
+
+class EventStreamValidationError(Exception):
+    """Raised when event stream has issues that would cause LLM API errors.
+
+    This error indicates a bug in the event stream that needs investigation.
+    The error message includes details to help debug the issue.
+    """
+
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        message = (
+            "Event stream validation failed. This would cause LLM API errors.\n"
+            "Issues found:\n" + "\n".join(f"  - {e}" for e in errors) + "\n"
+            "This may indicate a bug in event handling. "
+            "Please report this issue with the conversation ID."
+        )
+        super().__init__(message)
 
 
 def validate_event_stream(events: Sequence[Event]) -> list[str]:
@@ -72,88 +91,21 @@ def validate_event_stream(events: Sequence[Event]) -> list[str]:
     return errors
 
 
-def prepare_events_for_llm(events: Sequence[Event]) -> tuple[list[Event], list[str]]:
-    """Prepare events for LLM by fixing ALL validation issues.
+def validate_for_llm(events: Sequence[Event]) -> None:
+    """Validate event stream before sending to LLM.
 
-    Handles all cases that would cause LLM API errors:
-    1. Orphan actions (no observation) → Adds synthetic AgentErrorEvent
-    2. Duplicate observations → Keeps first, removes subsequent
-    3. Orphan observations (no action) → Removes
-
-    This is the primary function to call before events_to_messages().
+    Call this before events_to_messages() to catch issues early with
+    clear error messages. This helps surface bugs rather than hiding them.
 
     Args:
-        events: Sequence of events to prepare
+        events: Sequence of events to validate
 
-    Returns:
-        Tuple of (prepared_events, list of modifications made)
-
-    Example:
-        prepared, mods = prepare_events_for_llm(state.events)
-        messages = LLMConvertibleEvent.events_to_messages(prepared)
+    Raises:
+        EventStreamValidationError: If validation fails with details about issues
     """
-    modifications: list[str] = []
-    result: list[Event] = []
-
-    seen_obs_tool_call_ids: set[str] = set()
-    action_map: dict[
-        str, tuple[int, ActionEvent]
-    ] = {}  # tool_call_id -> (index, event)
-
-    # Single pass: collect actions, filter observations
-    for event in events:
-        if isinstance(event, ActionEvent) and event.tool_call_id:
-            action_map[event.tool_call_id] = (len(result), event)
-            result.append(event)
-
-        elif isinstance(event, ObservationTypes) and event.tool_call_id:
-            tc_id = event.tool_call_id
-
-            # Skip duplicate observations (keep first)
-            if tc_id in seen_obs_tool_call_ids:
-                modifications.append(f"Removed duplicate observation: {tc_id}")
-                continue
-
-            # Skip orphan observations (no matching action)
-            if tc_id not in action_map:
-                modifications.append(f"Removed orphan observation: {tc_id}")
-                continue
-
-            seen_obs_tool_call_ids.add(tc_id)
-            result.append(event)
-
-        else:
-            result.append(event)
-
-    # Add synthetic observations for orphan actions
-    # Process in reverse order so insertions don't affect indices
-    orphan_actions = [
-        (idx, action)
-        for tc_id, (idx, action) in action_map.items()
-        if tc_id not in seen_obs_tool_call_ids
-    ]
-    orphan_actions.sort(key=lambda x: x[0], reverse=True)
-
-    for idx, action in orphan_actions:
-        synthetic = AgentErrorEvent(
-            source="environment",
-            tool_name=action.tool_name,
-            tool_call_id=action.tool_call_id,
-            error=(
-                "Tool execution was interrupted. "
-                "The tool did not complete and no result is available."
-            ),
-        )
-        # Insert after the action
-        result.insert(idx + 1, synthetic)
-        modifications.append(
-            f"Added synthetic observation for orphan action: {action.tool_call_id}"
-        )
-
-    if modifications:
-        logger.warning(f"Prepared events for LLM: {modifications}")
-
-    return result, modifications
+    errors = validate_event_stream(events)
+    if errors:
+        raise EventStreamValidationError(errors)
 
 
 def get_repair_events(events: Sequence[Event]) -> list[AgentErrorEvent]:
@@ -162,15 +114,20 @@ def get_repair_events(events: Sequence[Event]) -> list[AgentErrorEvent]:
     For orphan actions (tool calls without observations), creates synthetic
     AgentErrorEvent to inform the LLM the tool execution was interrupted.
 
-    Use on conversation resume to persist these repairs to the event store.
-    For one-time LLM preparation, use prepare_events_for_llm() instead.
+    This is the ONLY safe repair: adding events. It should be called on
+    conversation resume and the events should be persisted to the event store.
+
+    Other issues (duplicate observations, orphan observations) are NOT
+    repaired here because:
+    - Removing events could hide bugs
+    - These issues indicate problems that should be investigated
 
     Args:
         events: Sequence of events to analyze
 
     Returns:
         List of AgentErrorEvent to append to the event store.
-        Empty list if no repairs needed.
+        Empty list if no orphan actions found.
     """
     action_tool_call_ids: dict[str, ActionEvent] = {}
     observation_tool_call_ids: set[str] = set()
