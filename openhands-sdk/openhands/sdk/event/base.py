@@ -88,10 +88,36 @@ class LLMConvertibleEvent(Event, ABC):
             return base_str
 
     @staticmethod
-    def events_to_messages(events: list["LLMConvertibleEvent"]) -> list[Message]:
-        """Convert event stream to LLM message stream, handling multi-action batches"""
-        # TODO: We should add extensive tests for this
+    def events_to_messages(
+        events: list["LLMConvertibleEvent"],
+        validate: bool = True,
+    ) -> list[Message]:
+        """Convert event stream to LLM message stream.
+
+        Handles multi-action batches (parallel function calling) and validates
+        event stream integrity before conversion.
+
+        Args:
+            events: List of LLM-convertible events
+            validate: If True (default), validate and repair the event stream
+                before conversion. This prevents LLM API errors from:
+                - Orphan actions (adds synthetic error response)
+                - Duplicate observations (keeps first)
+                - Orphan observations (removes)
+
+        Returns:
+            List of LLM messages ready for API call
+        """
+        from typing import cast
+
         from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.event.validation import prepare_events_for_llm
+
+        # Validate and repair event stream if requested
+        if validate:
+            prepared, _ = prepare_events_for_llm(events)
+            # Cast is safe: prepare_events_for_llm only adds LLMConvertibleEvents
+            events = cast(list["LLMConvertibleEvent"], prepared)
 
         messages = []
         i = 0

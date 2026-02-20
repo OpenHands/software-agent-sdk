@@ -79,7 +79,7 @@ class TestEventsToMessages:
     def test_empty_events_list(self):
         """Test conversion of empty events list."""
         events = []
-        messages = LLMConvertibleEvent.events_to_messages(events)
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)
         assert messages == []
 
     def test_single_message_event(self):
@@ -92,7 +92,7 @@ class TestEventsToMessages:
         )
 
         events = cast(list[LLMConvertibleEvent], [message_event])
-        messages = LLMConvertibleEvent.events_to_messages(events)
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)
 
         assert len(messages) == 1
         assert messages[0].role == "user"
@@ -111,7 +111,7 @@ class TestEventsToMessages:
         )
 
         events = cast(list[LLMConvertibleEvent], [action_event])
-        messages = LLMConvertibleEvent.events_to_messages(events)
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)
 
         assert len(messages) == 1
         assert messages[0].role == "assistant"
@@ -168,7 +168,7 @@ class TestEventsToMessages:
         )
 
         events = cast(list[LLMConvertibleEvent], [action1, action2, action3])
-        messages = LLMConvertibleEvent.events_to_messages(events)
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)
 
         # Should combine into single assistant message with multiple tool_calls
         assert len(messages) == 1
@@ -215,7 +215,7 @@ class TestEventsToMessages:
         )
 
         events = [action1, action2]
-        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)  # type: ignore
 
         # Should create separate messages for different response IDs
         assert len(messages) == 2
@@ -262,7 +262,7 @@ class TestEventsToMessages:
         )
 
         events = [system_event, user_message, action_event, observation_event]
-        messages = LLMConvertibleEvent.events_to_messages(events)
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)
 
         assert len(messages) == 4
 
@@ -295,7 +295,7 @@ class TestEventsToMessages:
         )
 
         events = [error_event]
-        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)  # type: ignore
 
         assert len(messages) == 1
         assert messages[0].role == "tool"
@@ -362,7 +362,7 @@ class TestEventsToMessages:
         )
 
         events = [user_msg, weather_sf, weather_nyc, obs_sf, obs_nyc, list_files]
-        messages = LLMConvertibleEvent.events_to_messages(events)
+        messages = LLMConvertibleEvent.events_to_messages(events, validate=False)
 
         assert len(messages) == 5
 
@@ -416,7 +416,7 @@ class TestEventsToMessages:
             AssertionError,
             match="Expected empty thought for multi-action events after the first one",
         ):
-            LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+            LLMConvertibleEvent.events_to_messages(events, validate=False)  # type: ignore
 
     def test_action_event_with_none_action_round_trip_and_observation_match(self):
         """Test ActionEvent with action=None round trip and observation match."""
@@ -433,7 +433,9 @@ class TestEventsToMessages:
         )
 
         # Convert to messages and ensure assistant message has single tool_call
-        messages = LLMConvertibleEvent.events_to_messages([action_event])
+        messages = LLMConvertibleEvent.events_to_messages(
+            [action_event], validate=False
+        )
         assert len(messages) == 1
         assert messages[0].role == "assistant"
         assert messages[0].tool_calls is not None and len(messages[0].tool_calls) == 1
@@ -447,7 +449,9 @@ class TestEventsToMessages:
             tool_name="missing_tool",
         )
 
-        msgs = LLMConvertibleEvent.events_to_messages([action_event, err])
+        msgs = LLMConvertibleEvent.events_to_messages(
+            [action_event, err], validate=False
+        )
         # Should produce two messages: assistant tool call + tool error
         assert len(msgs) == 2
         assert msgs[0].role == "assistant"

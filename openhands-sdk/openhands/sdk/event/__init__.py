@@ -19,7 +19,11 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.event.token import TokenEvent
 from openhands.sdk.event.types import EventID, ToolCallID
 from openhands.sdk.event.user_action import PauseEvent
-from openhands.sdk.event.validation import get_repair_events, validate_event_stream
+from openhands.sdk.event.validation import (
+    get_repair_events,
+    prepare_events_for_llm,
+    validate_event_stream,
+)
 
 
 __all__ = [
@@ -45,4 +49,5 @@ __all__ = [
     # Validation/Repair
     "validate_event_stream",
     "get_repair_events",
+    "prepare_events_for_llm",
 ]
