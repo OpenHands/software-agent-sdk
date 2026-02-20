@@ -335,7 +335,6 @@ class ACPAgent(AgentBase):
         if self.critic is not None:
             raise NotImplementedError(
                 "ACPAgent does not support critic; "
-                "the ACP server manages its own evaluation"
             )
         if self.agent_context is not None:
             raise NotImplementedError(
