@@ -10,10 +10,24 @@ See https://agentclientprotocol.com/protocol/overview
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
+from acp.client.connection import ClientSideConnection
+from acp.helpers import text_block
+from acp.schema import (
+    AgentMessageChunk,
+    AgentThoughtChunk,
+    AllowedOutcome,
+    RequestPermissionResponse,
+    TextContentBlock,
+    ToolCallProgress,
+    ToolCallStart,
+    UsageUpdate,
+)
+from acp.transports import default_environment
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
@@ -41,15 +55,16 @@ logger = get_logger(__name__)
 # so we yield to the event loop and then sleep briefly to allow in-flight
 # handlers to finish.  Override via ACP_NOTIFICATION_DRAIN_DELAY for slow or
 # remote servers.
-# TODO: Replace with protocol-level synchronization once ACP supports a
-#       "turn complete" sentinel notification.
+# TODO(https://github.com/agentclientprotocol/agent-client-protocol/issues/554):
+#       Replace with protocol-level synchronization once ACP supports a
+#       "turn complete" notification.
 _NOTIFICATION_DRAIN_DELAY: float = float(
     os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
 )
 
 
-def _make_sentinel_llm() -> LLM:
-    """Create a sentinel LLM that should never be called."""
+def _make_dummy_llm() -> LLM:
+    """Create a dummy LLM that should never be called directly."""
     return LLM(model="acp-managed")
 
 
@@ -78,20 +93,17 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
             if stripped.startswith(b"{") and b'"jsonrpc"' in line:
                 dest.feed_data(line)
             else:
-                # Log non-JSON lines at debug level
-                try:
-                    logger.debug(
-                        "ACP stdout (non-JSON): %s",
-                        line.decode(errors="replace").rstrip(),
-                    )
-                except Exception:
-                    pass
+                logger.debug(
+                    "ACP stdout (non-JSON): %s",
+                    line.decode(errors="replace").rstrip(),
+                )
     except Exception:
+        logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
         dest.feed_eof()
 
 
-class _OpenHandsACPClient:
-    """ACP Client that accumulates session updates and emits OpenHands events.
+class _OpenHandsACPBridge:
+    """Bridge between OpenHands and ACP that accumulates session updates.
 
     Implements the ``Client`` protocol from ``agent_client_protocol``.
     """
@@ -120,15 +132,6 @@ class _OpenHandsACPClient:
         update: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
-        from acp.schema import (
-            AgentMessageChunk,
-            AgentThoughtChunk,
-            TextContentBlock,
-            ToolCallProgress,
-            ToolCallStart,
-            UsageUpdate,
-        )
-
         if isinstance(update, AgentMessageChunk):
             if isinstance(update.content, TextContentBlock):
                 text = update.content.text
@@ -137,7 +140,7 @@ class _OpenHandsACPClient:
                     try:
                         self.on_token(text)
                     except Exception:
-                        pass
+                        logger.debug("on_token callback failed", exc_info=True)
         elif isinstance(update, AgentThoughtChunk):
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(update.content.text)
@@ -163,11 +166,6 @@ class _OpenHandsACPClient:
         **kwargs: Any,  # noqa: ARG002
     ) -> Any:
         """Auto-approve all permission requests from the ACP server."""
-        from acp.schema import (
-            AllowedOutcome,
-            RequestPermissionResponse,
-        )
-
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
         logger.info(
@@ -260,7 +258,7 @@ class ACPAgent(AgentBase):
     """
 
     # Override required fields with ACP-appropriate defaults
-    llm: LLM = Field(default_factory=_make_sentinel_llm)
+    llm: LLM = Field(default_factory=_make_dummy_llm)
     tools: list[Tool] = Field(default_factory=list)
     include_default_tools: list[str] = Field(default_factory=list)
 
@@ -285,7 +283,7 @@ class ACPAgent(AgentBase):
     _conn: Any = PrivateAttr(default=None)  # ClientSideConnection
     _session_id: str | None = PrivateAttr(default=None)
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
-    _client: Any = PrivateAttr(default=None)  # _OpenHandsACPClient
+    _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _closed: bool = PrivateAttr(default=False)
 
@@ -322,10 +320,6 @@ class ACPAgent(AgentBase):
                 "ACPAgent does not support condenser; "
                 "the ACP server manages its own context"
             )
-        if self.critic is not None:
-            raise NotImplementedError(
-                "ACPAgent does not support critic; "
-            )
         if self.agent_context is not None:
             raise NotImplementedError(
                 "ACPAgent does not support agent_context; "
@@ -354,16 +348,7 @@ class ACPAgent(AgentBase):
 
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
-        import asyncio
-
-        from acp.client.connection import (
-            ClientSideConnection,
-        )
-        from acp.transports import (
-            default_environment,
-        )
-
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client._llm_ref = self.llm
         self._client = client
 
@@ -449,9 +434,6 @@ class ACPAgent(AgentBase):
         self._client.on_token = on_token
 
         try:
-            import asyncio
-
-            from acp.helpers import text_block
 
             async def _prompt() -> Any:
                 response = await self._conn.prompt(
@@ -490,7 +472,7 @@ class ACPAgent(AgentBase):
                 try:
                     self.llm.telemetry._stats_update_callback()
                 except Exception:
-                    pass
+                    logger.debug("Stats update callback failed", exc_info=True)
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
