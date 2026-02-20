@@ -88,10 +88,36 @@ class LLMConvertibleEvent(Event, ABC):
             return base_str
 
     @staticmethod
-    def events_to_messages(events: list["LLMConvertibleEvent"]) -> list[Message]:
-        """Convert event stream to LLM message stream, handling multi-action batches"""
-        # TODO: We should add extensive tests for this
+    def events_to_messages(
+        events: list["LLMConvertibleEvent"],
+        repair: bool = True,
+    ) -> list[Message]:
+        """Convert event stream to LLM message stream.
+
+        Args:
+            events: List of LLM-convertible events
+            repair: If True, repair invalid event streams before conversion.
+                   Repairs include: removing duplicate observations, adding
+                   synthetic observations for orphan actions.
+
+        Returns:
+            List of LLM messages
+        """
+        import logging
+        from typing import cast
+
         from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.event.validation import validate_and_repair_event_stream
+
+        logger = logging.getLogger(__name__)
+
+        # Validate and repair if needed
+        if repair:
+            repaired, repairs = validate_and_repair_event_stream(events)
+            # Cast is safe: validation only adds LLMConvertibleEvents (AgentErrorEvent)
+            events = cast(list["LLMConvertibleEvent"], repaired)
+            if repairs:
+                logger.warning(f"Repaired event stream: {repairs}")
 
         messages = []
         i = 0
