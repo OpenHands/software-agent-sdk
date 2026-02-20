@@ -32,9 +32,8 @@ class LLMInputValidationError(LLMError):
         self.provider = provider
         if message is None:
             provider_str = f" ({provider})" if provider else ""
-            message = (
-                f"LLM input validation failed{provider_str}:\n"
-                + "\n".join(f"  - {e}" for e in errors)
+            message = f"LLM input validation failed{provider_str}:\n" + "\n".join(
+                f"  - {e}" for e in errors
             )
         super().__init__(message)
 

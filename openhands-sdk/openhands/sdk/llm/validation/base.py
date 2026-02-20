@@ -5,7 +5,10 @@ for validating LLM API inputs before sending requests.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Literal
+
+
+ResponseType = Literal["completion", "responses"]
 
 
 class BaseMessageValidator(ABC):
@@ -108,18 +111,10 @@ class ResponsesInputValidator(BaseMessageValidator):
         return validate_openai_responses_input(messages, tools_defined=tools_defined)
 
 
-from typing import Literal
-
-ResponseType = Literal["completion", "responses"]
-
-
 def _is_anthropic_model(model: str) -> bool:
     """Check if model is an Anthropic model."""
     model_lower = model.lower()
-    return any(
-        pattern in model_lower
-        for pattern in ["anthropic", "claude"]
-    )
+    return any(pattern in model_lower for pattern in ["anthropic", "claude"])
 
 
 def get_validator(
@@ -130,7 +125,7 @@ def get_validator(
 
     Args:
         model: Model identifier (e.g., "anthropic/claude-3-opus", "gpt-4")
-        response_type: Either "completion" (Chat Completions) or "responses" (Responses API)
+        response_type: "completion" (Chat Completions) or "responses" (Responses API)
 
     Returns:
         Appropriate validator instance
@@ -139,14 +134,17 @@ def get_validator(
         from openhands.sdk.llm.validation.openai_responses import (
             OpenAIResponsesInputValidator,
         )
+
         return OpenAIResponsesInputValidator()
 
     # Chat Completions - check for Anthropic
     if _is_anthropic_model(model):
         from openhands.sdk.llm.validation.anthropic import AnthropicMessageValidator
+
         return AnthropicMessageValidator()
 
     from openhands.sdk.llm.validation.openai_chat import OpenAIChatMessageValidator
+
     return OpenAIChatMessageValidator()
 
 

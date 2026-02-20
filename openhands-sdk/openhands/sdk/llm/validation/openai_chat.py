@@ -343,9 +343,7 @@ def validate_openai_chat_messages(
                 responded_tool_call_ids.add(tool_call_id)
 
             if not tools_defined:
-                errors.append(
-                    f"messages[{i}]: Tool message found but no tools defined"
-                )
+                errors.append(f"messages[{i}]: Tool message found but no tools defined")
 
     # Check for unresolved tool_calls at the end
     if pending_tool_call_ids:

@@ -63,9 +63,7 @@ class OpenAIResponsesFunctionCall(BaseModel):
         try:
             json.loads(self.arguments)
         except json.JSONDecodeError as e:
-            raise ValueError(
-                f"function_call arguments must be valid JSON: {e}"
-            ) from e
+            raise ValueError(f"function_call arguments must be valid JSON: {e}") from e
         return self
 
 
@@ -221,9 +219,7 @@ def validate_openai_responses_input(
                     )
 
             if not tools_defined:
-                errors.append(
-                    f"input[{i}]: function_call found but no tools defined"
-                )
+                errors.append(f"input[{i}]: function_call found but no tools defined")
 
         elif item_type == "function_call_output":
             call_id = item.get("call_id")

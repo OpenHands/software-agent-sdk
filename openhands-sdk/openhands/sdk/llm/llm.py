@@ -690,9 +690,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # 3.5) Pre-flight validation
         # Validate messages before sending to API to catch common errors early
-        self._validate_chat_messages(
-            formatted_messages, tools_defined=has_tools_flag
-        )
+        self._validate_chat_messages(formatted_messages, tools_defined=has_tools_flag)
 
         # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None

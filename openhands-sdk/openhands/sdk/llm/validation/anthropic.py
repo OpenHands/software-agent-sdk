@@ -292,8 +292,8 @@ def validate_anthropic_messages(
 
                     if not tools_defined:
                         errors.append(
-                            f"messages[{i}]: tool_use block found but no tools defined. "
-                            "Requests with tool_use blocks must include tools parameter."
+                            f"messages[{i}]: tool_use block found but no tools "
+                            "defined. Must include tools parameter."
                         )
 
             # If there are tool_use blocks, they need tool_result in next message
@@ -319,8 +319,8 @@ def validate_anthropic_messages(
                     if seen_non_tool_result:
                         errors.append(
                             f"messages[{i}].content[{j}]: "
-                            "tool_result blocks must come FIRST in user message content. "
-                            "Found tool_result after other content types."
+                            "tool_result blocks must come FIRST in user message "
+                            "content. Found after other content types."
                         )
 
                     # Check for duplicate tool_result for same tool_use_id
@@ -339,7 +339,7 @@ def validate_anthropic_messages(
                         errors.append(
                             f"messages[{i}].content[{j}]: "
                             "tool_result block found but no tools defined. "
-                            "Requests with tool_result blocks must include tools parameter."
+                            "Must include tools parameter."
                         )
                 else:
                     seen_non_tool_result = True
@@ -370,7 +370,7 @@ def validate_anthropic_messages(
                 # tool_result without preceding tool_use
                 errors.append(
                     f"messages[{i}]: Found tool_result blocks but no preceding "
-                    f"tool_use blocks. tool_result ids: {sorted(tool_result_ids_in_msg)}"
+                    f"tool_use blocks. ids: {sorted(tool_result_ids_in_msg)}"
                 )
 
     # Check for unresolved tool_use at end
