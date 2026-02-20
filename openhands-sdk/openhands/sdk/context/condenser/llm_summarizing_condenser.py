@@ -249,10 +249,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         naive_end = len(view) - events_from_tail
 
         # Find actual forgetting_start: smallest manipulation index >= keep_first
-        forgetting_start = view.find_next_manipulation_index(self.keep_first)
+        forgetting_start = view.manipulation_indices.find_next(self.keep_first)
 
         # Find actual forgetting_end: smallest manipulation index >= naive_end
-        forgetting_end = view.find_next_manipulation_index(naive_end)
+        forgetting_end = view.manipulation_indices.find_next(naive_end)
 
         # Extract events to forget using boundary-aware indices
         forgotten_events = view[forgetting_start:forgetting_end]
@@ -310,10 +310,16 @@ class LLMSummarizingCondenser(RollingCondenser):
         self, view: View, agent_llm: LLM | None = None
     ) -> Condensation:
         # The condensation is dependent on the events we want to drop and the previous
-        # summary.
-        forgotten_events, summary_offset = self._get_forgotten_events(
-            view, agent_llm=agent_llm
-        )
+        # summary. If we fail to find an appropriate set of events to forget raise an
+        # exception so the conversation can keep going until conditions change.
+        try:
+            forgotten_events, summary_offset = self._get_forgotten_events(
+                view, agent_llm=agent_llm
+            )
+        except ValueError as e:
+            raise NoCondensationAvailableException(
+                "Unable to compute forgotten events"
+            ) from e
 
         if not forgotten_events:
             raise NoCondensationAvailableException(
