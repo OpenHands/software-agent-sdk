@@ -5,6 +5,7 @@ description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
 dependencies = [
+    "agent-client-protocol>=0.8.1",
     "deprecation>=2.1.0",
     "fastmcp>=2.11.3",
     "filelock>=3.20.1",
