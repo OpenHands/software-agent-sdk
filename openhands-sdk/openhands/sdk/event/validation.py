@@ -49,76 +49,13 @@ class EventStreamValidationError(Exception):
         super().__init__(self.message)
 
 
-def _index_tool_calls(
-    events: Sequence[Event],
-) -> tuple[dict[str, ActionEvent], set[str]]:
-    """Build index of tool_call_ids from events.
-
-    Returns:
-        Tuple of (action_map, observation_ids) where:
-        - action_map: tool_call_id -> ActionEvent
-        - observation_ids: set of tool_call_ids that have observations
-    """
-    action_map: dict[str, ActionEvent] = {}
-    observation_ids: set[str] = set()
-
-    for event in events:
-        if isinstance(event, ActionEvent) and event.tool_call_id:
-            action_map[event.tool_call_id] = event
-        elif (
-            isinstance(
-                event, (ObservationEvent, UserRejectObservation, AgentErrorEvent)
-            )
-            and event.tool_call_id
-        ):
-            observation_ids.add(event.tool_call_id)
-
-    return action_map, observation_ids
-
-
-def validate_event_stream(events: Sequence[Event]) -> list[str]:
-    """Validate event stream invariants.
-
-    Args:
-        events: Sequence of events to validate
-
-    Returns:
-        List of error messages (empty if valid)
-    """
-    errors: list[str] = []
-    action_map, observation_ids = _index_tool_calls(events)
-
-    # Check for duplicate observations (requires second pass)
-    seen_obs: set[str] = set()
-    for event in events:
-        if (
-            isinstance(
-                event, (ObservationEvent, UserRejectObservation, AgentErrorEvent)
-            )
-            and event.tool_call_id
-        ):
-            if event.tool_call_id in seen_obs:
-                errors.append(
-                    f"Duplicate observation tool_call_id: {event.tool_call_id}"
-                )
-            seen_obs.add(event.tool_call_id)
-
-    # Check for orphan actions (no observation)
-    for tc_id in set(action_map.keys()) - observation_ids:
-        errors.append(f"Orphan action (no observation): {tc_id}")
-
-    # Check for orphan observations (no action)
-    for tc_id in observation_ids - set(action_map.keys()):
-        errors.append(f"Orphan observation (no action): {tc_id}")
-
-    return errors
-
-
 def validate_for_llm(events: Sequence[Event]) -> None:
     """Validate event stream before sending to LLM.
 
-    Call this before events_to_messages() to catch issues early with
-    clear error messages that can be displayed in the frontend.
+    Checks for issues that would cause LLM API errors:
+    - Orphan actions (tool_call without tool response)
+    - Duplicate observations (multiple responses for same tool_call_id)
+    - Orphan observations (tool response without matching tool_call)
 
     Args:
         events: Sequence of events to validate
@@ -126,7 +63,37 @@ def validate_for_llm(events: Sequence[Event]) -> None:
     Raises:
         EventStreamValidationError: If validation fails with details
     """
-    errors = validate_event_stream(events)
+    errors: list[str] = []
+
+    action_tool_call_ids: set[str] = set()
+    seen_obs_tool_call_ids: set[str] = set()
+    obs_tool_call_ids: set[str] = set()
+
+    for event in events:
+        if isinstance(event, ActionEvent) and event.tool_call_id:
+            action_tool_call_ids.add(event.tool_call_id)
+        elif (
+            isinstance(
+                event, (ObservationEvent, UserRejectObservation, AgentErrorEvent)
+            )
+            and event.tool_call_id
+        ):
+            # Check for duplicates
+            if event.tool_call_id in seen_obs_tool_call_ids:
+                errors.append(
+                    f"Duplicate observation tool_call_id: {event.tool_call_id}"
+                )
+            seen_obs_tool_call_ids.add(event.tool_call_id)
+            obs_tool_call_ids.add(event.tool_call_id)
+
+    # Check for orphan actions (no observation)
+    for tc_id in action_tool_call_ids - obs_tool_call_ids:
+        errors.append(f"Orphan action (no observation): {tc_id}")
+
+    # Check for orphan observations (no action)
+    for tc_id in obs_tool_call_ids - action_tool_call_ids:
+        errors.append(f"Orphan observation (no action): {tc_id}")
+
     if errors:
         raise EventStreamValidationError(errors)
 
@@ -140,8 +107,9 @@ def get_repair_events(events: Sequence[Event]) -> list[AgentErrorEvent]:
     This is the ONLY safe repair: adding events. Called on conversation
     resume; events should be persisted to the event store.
 
-    Other issues (duplicate observations, orphan observations) are NOT
-    repaired here - they indicate bugs that need investigation.
+    Note: This uses tool_call_id matching (for LLM API compatibility), which
+    should align with ConversationState.get_unmatched_actions() that uses
+    action_id matching (for SDK internal tracking).
 
     Args:
         events: Sequence of events to analyze
@@ -150,8 +118,23 @@ def get_repair_events(events: Sequence[Event]) -> list[AgentErrorEvent]:
         List of AgentErrorEvent to append to the event store.
         Empty list if no orphan actions found.
     """
-    action_map, observation_ids = _index_tool_calls(events)
-    orphan_ids = set(action_map.keys()) - observation_ids
+    # Build maps of tool_call_ids
+    action_map: dict[str, ActionEvent] = {}
+    obs_tool_call_ids: set[str] = set()
+
+    for event in events:
+        if isinstance(event, ActionEvent) and event.tool_call_id:
+            action_map[event.tool_call_id] = event
+        elif (
+            isinstance(
+                event, (ObservationEvent, UserRejectObservation, AgentErrorEvent)
+            )
+            and event.tool_call_id
+        ):
+            obs_tool_call_ids.add(event.tool_call_id)
+
+    # Find orphan actions
+    orphan_ids = set(action_map.keys()) - obs_tool_call_ids
 
     synthetic_events: list[AgentErrorEvent] = []
     for tc_id in orphan_ids:

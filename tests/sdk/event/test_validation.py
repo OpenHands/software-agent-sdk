@@ -1,10 +1,9 @@
 """Tests for event stream validation and repair.
 
 Tests verify that:
-1. Corrupt event streams are detected via validate_event_stream()
-2. validate_for_llm() raises clear errors for invalid streams
-3. get_repair_events() returns synthetic events for persistence on resume
-4. Integration: prepare_llm_messages() validates before conversion
+1. validate_for_llm() raises clear errors for invalid streams
+2. get_repair_events() returns synthetic events for persistence on resume
+3. Integration: prepare_llm_messages() validates before conversion
 """
 
 import pytest
@@ -12,9 +11,7 @@ import pytest
 from openhands.sdk.event.llm_convertible import ActionEvent, ObservationEvent
 from openhands.sdk.event.validation import (
     EventStreamValidationError,
-    _index_tool_calls,
     get_repair_events,
-    validate_event_stream,
     validate_for_llm,
 )
 from openhands.sdk.llm import MessageToolCall, TextContent
@@ -47,55 +44,6 @@ def make_observation(tool_call_id: str, action_id: str, tool_name: str = "x"):
         action_id=action_id,
         source="environment",
     )
-
-
-class TestIndexToolCalls:
-    """Tests for _index_tool_calls() helper."""
-
-    def test_indexes_actions_and_observations(self):
-        """Correctly indexes tool_call_ids."""
-        action = make_action("tc1")
-        obs = make_observation("tc1", "a_tc1")
-
-        action_map, obs_ids = _index_tool_calls([action, obs])
-
-        assert "tc1" in action_map
-        assert action_map["tc1"] == action
-        assert obs_ids == {"tc1"}
-
-
-class TestValidateEventStream:
-    """Tests for validate_event_stream() detection."""
-
-    def test_valid_stream_returns_no_errors(self):
-        """Valid event stream returns empty error list."""
-        action = make_action("tc1")
-        obs = make_observation("tc1", "a_tc1")
-        errors = validate_event_stream([action, obs])
-        assert errors == []
-
-    def test_detects_orphan_action(self):
-        """Detects action without observation."""
-        action = make_action("tc1")
-        errors = validate_event_stream([action])
-        assert len(errors) == 1
-        assert "Orphan action" in errors[0]
-
-    def test_detects_duplicate_observation(self):
-        """Detects duplicate observations for same tool_call_id."""
-        action = make_action("tc1")
-        obs1 = make_observation("tc1", "a_tc1")
-        obs2 = make_observation("tc1", "a_tc1")
-        errors = validate_event_stream([action, obs1, obs2])
-        assert len(errors) == 1
-        assert "Duplicate" in errors[0]
-
-    def test_detects_orphan_observation(self):
-        """Detects observation without matching action."""
-        obs = make_observation("tc_orphan", "a_unknown")
-        errors = validate_event_stream([obs])
-        assert len(errors) == 1
-        assert "Orphan observation" in errors[0]
 
 
 class TestValidateForLlm:

@@ -22,7 +22,6 @@ from openhands.sdk.event.user_action import PauseEvent
 from openhands.sdk.event.validation import (
     EventStreamValidationError,
     get_repair_events,
-    validate_event_stream,
     validate_for_llm,
 )
 
@@ -48,7 +47,6 @@ __all__ = [
     "EventID",
     "ToolCallID",
     # Validation/Repair
-    "validate_event_stream",
     "validate_for_llm",
     "get_repair_events",
     "EventStreamValidationError",
