@@ -66,6 +66,9 @@ class ComplianceReport(BaseModel):
 
     test_run_id: str = Field(description="Unique ID for this test run")
     timestamp: str = Field(description="ISO timestamp of test run")
+    elapsed_time: float = Field(
+        default=0.0, description="Total test duration in seconds"
+    )
     patterns_tested: int = Field(description="Number of patterns tested")
     models_tested: list[str] = Field(description="List of models tested")
     results: list[PatternResults] = Field(default_factory=list)

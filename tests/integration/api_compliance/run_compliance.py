@@ -254,8 +254,38 @@ def save_report(report: ComplianceReport, output_dir: str) -> str:
     return json_path
 
 
+# Base URL for linking to test files
+GITHUB_BASE_URL = (
+    "https://github.com/OpenHands/software-agent-sdk/blob/main/tests/integration/tests"
+)
+
+# Map pattern names to test file names
+PATTERN_TO_FILE = {
+    "unmatched_tool_use": "a01_unmatched_tool_use.py",
+    "unmatched_tool_result": "a02_unmatched_tool_result.py",
+    "interleaved_user_message": "a03_interleaved_user_msg.py",
+    "interleaved_assistant_message": "a04_interleaved_asst_msg.py",
+    "duplicate_tool_call_id": "a05_duplicate_tool_call_id.py",
+    "wrong_tool_call_id": "a06_wrong_tool_call_id.py",
+    "parallel_missing_result": "a07_parallel_missing_result.py",
+    "parallel_wrong_order": "a08_parallel_wrong_order.py",
+}
+
+# Brief descriptions for each pattern (one-line summaries)
+PATTERN_SUMMARIES = {
+    "unmatched_tool_use": "tool_use without following tool_result",
+    "unmatched_tool_result": "tool_result referencing non-existent tool_use ID",
+    "interleaved_user_message": "User message between tool_use and tool_result",
+    "interleaved_assistant_message": "Assistant message between tool_use/tool_result",
+    "duplicate_tool_call_id": "Same tool_call ID used in multiple tool_use blocks",
+    "wrong_tool_call_id": "tool_result with mismatched tool_call_id",
+    "parallel_missing_result": "Parallel tool calls with one result missing",
+    "parallel_wrong_order": "Parallel tool call results in wrong order",
+}
+
+
 def generate_markdown_report(report: ComplianceReport) -> str:
-    """Generate a human-readable markdown report.
+    """Generate a compact, human-readable markdown report.
 
     Args:
         report: ComplianceReport to format
@@ -266,57 +296,76 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     lines = [
         "# API Compliance Test Report",
         "",
-        f"**Run ID:** {report.test_run_id}",
-        f"**Timestamp:** {report.timestamp}",
-        f"**Patterns Tested:** {report.patterns_tested}",
-        f"**Models Tested:** {', '.join(report.models_tested)}",
-        "",
-        "## Summary",
-        "",
-        f"- Total tests: {report.total_tests}",
-        f"- Rejected (expected): {report.total_rejected}",
-        f"- Accepted (unexpected): {report.total_accepted}",
-        "",
-        "## Results by Pattern",
+        f"**Run:** `{report.test_run_id}` | "
+        f"**Time:** {report.timestamp} | "
+        f"**Duration:** {report.elapsed_time:.1f}s",
         "",
     ]
 
+    # Build results matrix: pattern -> model -> result
+    models = report.models_tested
+    results_map: dict[str, dict[str, str]] = {}
+
     for pattern in report.results:
-        lines.append(f"### {pattern.pattern_name}")
-        lines.append("")
-        lines.append(f"_{pattern.pattern_description.strip()}_")
-        lines.append("")
-        lines.append("| Model | Response | Error Type | Details |")
-        lines.append("|-------|----------|------------|---------|")
-
+        results_map[pattern.pattern_name] = {}
         for result in pattern.results:
-            response = result.response_type.value
-            error_type = result.error_type or "-"
-            # Truncate error message for table
-            details = (result.error_message or "-")[:80]
-            if len(result.error_message or "") > 80:
-                details += "..."
-            # Escape pipe characters in details
-            details = details.replace("|", "\\|")
-            lines.append(f"| {result.model} | {response} | {error_type} | {details} |")
+            if result.response_type.value == "ACCEPTED":
+                results_map[pattern.pattern_name][result.model] = "✓"
+            elif result.response_type.value == "REJECTED":
+                results_map[pattern.pattern_name][result.model] = "✗"
+            else:
+                results_map[pattern.pattern_name][result.model] = "⚠"
 
-        lines.append("")
-
-    # Add detailed error messages section
-    lines.append("## Detailed Error Messages")
+    # Generate results table
+    lines.append("## Results Matrix")
+    lines.append("")
+    lines.append(
+        "Legend: ✓ = accepted (API processed it), "
+        "✗ = rejected (API returned error), "
+        "⚠ = other error"
+    )
     lines.append("")
 
-    for pattern in report.results:
-        lines.append(f"### {pattern.pattern_name}")
-        lines.append("")
+    # Table header
+    header = "| Pattern | " + " | ".join(models) + " |"
+    separator = "|:--------|" + "|".join([":---:" for _ in models]) + "|"
+    lines.append(header)
+    lines.append(separator)
 
-        for result in pattern.results:
-            if result.error_message:
-                lines.append(f"**{result.model}** ({result.response_type.value}):")
-                lines.append("```")
-                lines.append(result.error_message)
-                lines.append("```")
-                lines.append("")
+    # Table rows
+    for pattern_name in results_map:
+        summary = PATTERN_SUMMARIES.get(pattern_name, "")
+        file_name = PATTERN_TO_FILE.get(pattern_name, "")
+        if file_name:
+            link = f"[`{pattern_name}`]({GITHUB_BASE_URL}/{file_name})"
+        else:
+            link = f"`{pattern_name}`"
+
+        row = f"| {link}<br><sub>{summary}</sub> |"
+        for model in models:
+            result = results_map[pattern_name].get(model, "-")
+            row += f" {result} |"
+        lines.append(row)
+
+    lines.append("")
+
+    # Summary stats
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- **Total tests:** {report.total_tests}")
+    lines.append(
+        f"- **Rejected (expected for malformed input):** {report.total_rejected}"
+    )
+    lines.append(f"- **Accepted (lenient API behavior):** {report.total_accepted}")
+    lines.append("")
+
+    # Note about detailed responses
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "*Full API responses and error details are available in "
+        "`compliance_report.json` (see workflow artifacts).*"
+    )
 
     return "\n".join(lines)
 
@@ -384,6 +433,7 @@ def main():
     start_time = time.time()
     report = run_compliance_tests(patterns=patterns, model_ids=model_ids)
     elapsed = time.time() - start_time
+    report.elapsed_time = elapsed
 
     # Save report
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
