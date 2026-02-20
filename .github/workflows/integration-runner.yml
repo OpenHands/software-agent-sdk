@@ -26,6 +26,13 @@ on:
                 required: false
                 default: ''
                 type: string
+            eval_ids:
+                description: >-
+                    Comma-separated list of specific test IDs to run (e.g., t01_fix_simple_typo,t02_add_bash_hello).
+                    Leave empty to run all tests.
+                required: false
+                default: ''
+                type: string
             issue_number:
                 description: Issue or PR number to post results to (optional)
                 required: false
@@ -291,20 +298,28 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
                   TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
+                  EVAL_IDS: ${{ github.event.inputs.eval_ids || '' }}
               run: |
                   set -eo pipefail
 
                   AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
                   EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config['run-suffix'] }}"
 
-                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS' TOOL_PRESET='$TOOL_PRESET'"
+                  EVAL_IDS_ARGS=""
+                  if [ -n "$EVAL_IDS" ]; then
+                    EVAL_IDS_ARGS="--eval-ids $EVAL_IDS"
+                    echo "Running specific test IDs: $EVAL_IDS"
+                  fi
+
+                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS' TOOL_PRESET='$TOOL_PRESET' EVAL_IDS_ARGS='$EVAL_IDS_ARGS'"
 
                   uv run python tests/integration/run_infer.py \
                     --llm-config "$LLM_CONFIG" \
                     --num-workers $N_PROCESSES \
                     --eval-note "$EVAL_NOTE" \
                     --tool-preset "$TOOL_PRESET" \
-                    $TEST_TYPE_ARGS
+                    $TEST_TYPE_ARGS \
+                    $EVAL_IDS_ARGS
 
                   # get integration tests JSON results
                   RESULTS_FILE=$(find tests/integration/outputs/*${{ matrix.job-config['run-suffix'] }}* -name "results.json" -type f | head -n 1)
