@@ -75,8 +75,8 @@ jobs:
             - name: Run API compliance tests
               id: compliance
               env:
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://llm-proxy.eval.all-hands.dev' }}
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
+                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
               run: |
                   uv run python tests/integration/api_compliance/run_compliance.py \
                     ${{ steps.params.outputs.args }} \
