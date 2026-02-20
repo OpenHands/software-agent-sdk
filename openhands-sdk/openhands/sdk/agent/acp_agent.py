@@ -257,16 +257,6 @@ class ACPAgent(AgentBase):
     server (e.g. ``claude-code-acp``) as a subprocess and communicates with
     it via the ACP protocol.  The server manages its own LLM, tools, and
     execution lifecycle.
-
-    Example::
-
-        from openhands.sdk.agent import ACPAgent
-        from openhands.sdk.conversation import Conversation
-
-        agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
-        conversation = Conversation(agent=agent, workspace="./workspace")
-        conversation.send_message("Hello! What is 2+2?")
-        conversation.run()
     """
 
     # Override required fields with ACP-appropriate defaults
