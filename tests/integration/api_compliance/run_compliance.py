@@ -310,15 +310,15 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     for pattern in report.results:
         results_map[pattern.pattern_name] = {}
         for result in pattern.results:
-            # Extract short model ID from full model path for matching
-            # e.g., "litellm_proxy/claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
+            # Map response type to symbol
             result_symbol = "⚠"
-            if result.response_type.value == "ACCEPTED":
+            if result.response_type == APIResponse.ACCEPTED:
                 result_symbol = "✓"
-            elif result.response_type.value == "REJECTED":
+            elif result.response_type == APIResponse.REJECTED:
                 result_symbol = "✗"
 
-            # Find matching model ID
+            # Find matching model ID from full model path
+            # e.g., "litellm_proxy/claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
             for model_id in models:
                 if model_id in result.model:
                     results_map[pattern.pattern_name][model_id] = result_symbol
