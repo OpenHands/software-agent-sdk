@@ -4,15 +4,19 @@ This example shows how to use the MaybeDontAnalyzer to validate agent actions
 against policy rules configured in a Maybe Don't Gateway before execution.
 
 Prerequisites:
-    1. A running Maybe Don't Gateway instance. Quick start with Docker:
+    1. A running Maybe Don't instance. Quick start with Docker:
 
-       docker run -p 8080:8080 ghcr.io/maybedont/maybe-dont:latest
+       docker run -d --name maybe-dont -p 8080:8080 \
+           -e MAYBE_DONT_SERVER_LISTEN_ADDR=0.0.0.0:8080 \
+           -e MAYBE_DONT_REQUEST_VALIDATION_AI_ENABLED=false \
+           -e MAYBE_DONT_NATIVE_TOOLS_AUDIT_REPORT_ENABLED=false \
+           ghcr.io/maybedont/maybe-dont:latest
 
        For configuration, see: https://maybedont.ai/docs
 
     2. Set environment variables:
        - LLM_API_KEY: Your LLM provider API key
-       - MAYBE_DONT_GATEWAY_URL: Gateway URL (default: http://localhost:8080)
+       - MAYBE_DONT_GATEWAY_URL: Maybe Don't URL (default: http://localhost:8080)
 
 The Maybe Don't Gateway supports two layers of protection:
     - Security Analyzer (this example): Pre-execution validation of ALL actions
