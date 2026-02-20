@@ -226,4 +226,7 @@ def create_test_llm(llm_config: dict[str, Any]) -> LLM:
         base_url=base_url,
         timeout=60,  # Short timeout for compliance tests
         num_retries=0,  # No retries - we want to see the raw error
+        # Disable features that may cause parameter errors on some models
+        prompt_cache_retention=None,
+        caching_prompt=False,
     )
