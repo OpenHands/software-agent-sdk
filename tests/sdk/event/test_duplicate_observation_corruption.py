@@ -3,12 +3,15 @@
 Two types of tests:
 1. XFAIL tests demonstrating SDK bugs (will pass when bugs are fixed)
 2. Passing tests showing validation catches these issues before API calls
-"""
 
-import json
+The XFAIL tests reproduce the actual conditions from production issues:
+- Bug #1782: Session terminates, resumes, re-executes action -> duplicate observation
+- Bug #2127: Session terminates mid-tool-execution -> orphan tool_use without tool_result
+"""
 
 import pytest
 
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
@@ -23,75 +26,147 @@ from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 
 
 # ============================================================================
-# XFAIL tests - These demonstrate SDK bugs that still exist
-# When fixed, these tests will start passing
+# XFAIL tests - Reproduce actual production failure scenarios
 # ============================================================================
 
 
-class TestSDKBugsStillExist:
-    """XFAIL tests for SDK bugs. Will pass when bugs are fixed."""
+class TestSessionTerminationBugs:
+    """Tests reproducing bugs from session termination mid-execution.
+    
+    These simulate real production scenarios where:
+    - A pod/session terminates unexpectedly during tool execution
+    - On resume, get_unmatched_actions() returns actions that shouldn't be re-executed
+    - Re-execution creates duplicate observations or corrupt message state
+    """
 
-    @pytest.mark.xfail(reason="Bug #1782: events_to_messages doesn't deduplicate", strict=True)
-    def test_duplicate_observations_not_filtered(self):
-        """SDK produces duplicate tool_results for same tool_call_id."""
+    @pytest.mark.xfail(
+        reason="Bug #2127: Session terminates mid-tool-call, orphan action sent to LLM",
+        strict=True,
+    )
+    def test_session_crash_mid_execution_leaves_orphan_action(self):
+        """Reproduce: Session crashes after action created but before observation.
+        
+        Real scenario:
+        1. LLM returns tool_call, ActionEvent is created and persisted
+        2. Tool starts executing
+        3. Pod crashes/terminates BEFORE tool completes
+        4. Observation is never created
+        5. User resumes session and sends new message
+        6. events_to_messages() includes the orphan action -> API error
+        
+        Expected: Orphan actions should be filtered from LLM messages
+        """
+        # Step 1-2: User message triggers action
+        user_msg = MessageEvent(
+            id="m1",
+            llm_message=Message(role="user", content=[TextContent(text="run ls")]),
+            source="user",
+        )
         action = ActionEvent(
             id="a1",
-            thought=[TextContent(text="t")],
-            action=MCPToolAction(data={}),
-            tool_name="x",
-            tool_call_id="tc1",
-            tool_call=MessageToolCall(id="tc1", name="x", arguments="{}", origin="completion"),
+            thought=[TextContent(text="Running command")],
+            action=MCPToolAction(data={"command": "ls"}),
+            tool_name="terminal",
+            tool_call_id="call_crash",
+            tool_call=MessageToolCall(
+                id="call_crash", name="terminal", arguments='{"command":"ls"}', origin="completion"
+            ),
+            llm_response_id="r1",
+            source="agent",
+        )
+        
+        # Step 3-4: Pod crashes - NO observation created
+        # Step 5: User resumes and sends new message
+        user_msg2 = MessageEvent(
+            id="m2",
+            llm_message=Message(role="user", content=[TextContent(text="what happened?")]),
+            source="user",
+        )
+        
+        # This is the event list after resume
+        events = [user_msg, action, user_msg2]
+        
+        # Verify get_unmatched_actions correctly identifies the orphan
+        unmatched = ConversationState.get_unmatched_actions(events)
+        assert len(unmatched) == 1, "Should detect orphan action"
+        assert unmatched[0].id == "a1"
+        
+        # Step 6: When preparing messages for LLM, orphan should be filtered
+        messages = LLMConvertibleEvent.events_to_messages(events)
+        
+        # BUG: The orphan action is included, causing API error
+        assistant_with_tools = [m for m in messages if m.role == "assistant" and m.tool_calls]
+        tool_results = [m for m in messages if m.role == "tool"]
+        
+        for msg in assistant_with_tools:
+            for tc in msg.tool_calls or []:
+                has_result = any(r.tool_call_id == tc.id for r in tool_results)
+                assert has_result, (
+                    f"Orphan tool_call {tc.id} sent to LLM without tool_result. "
+                    "This causes API error: 'tool_use ids without tool_result blocks'"
+                )
+
+    @pytest.mark.xfail(
+        reason="Bug #1782: Resume incorrectly re-executes action, creates duplicate",
+        strict=True,
+    )
+    def test_resume_reexecutes_completed_action_creates_duplicate(self):
+        """Reproduce: Resume re-executes action that already has observation.
+        
+        Real scenario:
+        1. Action executes, observation is created
+        2. Pod terminates before state is fully checkpointed
+        3. On resume, get_unmatched_actions() incorrectly returns the action
+           (because observation wasn't in the checkpoint)
+        4. Action re-executes, creating a SECOND observation with same tool_call_id
+        5. events_to_messages() produces duplicate tool_results -> API error
+        
+        Expected: Duplicate observations should be deduplicated
+        """
+        # Step 1: Normal execution - action with observation
+        action = ActionEvent(
+            id="a1",
+            thought=[TextContent(text="Running command")],
+            action=MCPToolAction(data={"command": "ls"}),
+            tool_name="terminal",
+            tool_call_id="call_dup",
+            tool_call=MessageToolCall(
+                id="call_dup", name="terminal", arguments='{"command":"ls"}', origin="completion"
+            ),
             llm_response_id="r1",
             source="agent",
         )
         obs1 = ObservationEvent(
             id="o1",
-            observation=MCPToolObservation.from_text("a", "x"),
-            tool_name="x",
-            tool_call_id="tc1",
+            observation=MCPToolObservation.from_text("file1.txt", "terminal"),
+            tool_name="terminal",
+            tool_call_id="call_dup",
             action_id="a1",
             source="environment",
         )
+        
+        # Step 2-4: After resume, action re-executes creating duplicate
         obs2 = ObservationEvent(
             id="o2",
-            observation=MCPToolObservation.from_text("b", "x"),
-            tool_name="x",
-            tool_call_id="tc1",  # duplicate
+            observation=MCPToolObservation.from_text("file1.txt (re-executed)", "terminal"),
+            tool_name="terminal",
+            tool_call_id="call_dup",  # Same tool_call_id!
             action_id="a1",
             source="environment",
         )
-
-        messages = LLMConvertibleEvent.events_to_messages([action, obs1, obs2])
+        
+        events = [action, obs1, obs2]
+        
+        # Step 5: Convert to messages - should deduplicate
+        messages = LLMConvertibleEvent.events_to_messages(events)
         tool_results = [m for m in messages if m.role == "tool"]
-        assert len(tool_results) == 1, f"Expected 1, got {len(tool_results)}"
-
-    @pytest.mark.xfail(reason="Bug #2127: events_to_messages includes orphan tool_use", strict=True)
-    def test_orphan_action_not_filtered(self):
-        """SDK includes tool_use without matching tool_result."""
-        user = MessageEvent(
-            id="m1",
-            llm_message=Message(role="user", content=[TextContent(text="hi")]),
-            source="user",
+        
+        # BUG: Both observations become tool_results
+        assert len(tool_results) == 1, (
+            f"Expected 1 tool_result, got {len(tool_results)}. "
+            "Duplicate observations should be deduplicated. "
+            "This causes API error: 'unexpected tool_use_id in tool_result'"
         )
-        action = ActionEvent(
-            id="a1",
-            thought=[TextContent(text="t")],
-            action=MCPToolAction(data={}),
-            tool_name="x",
-            tool_call_id="tc1",
-            tool_call=MessageToolCall(id="tc1", name="x", arguments="{}", origin="completion"),
-            llm_response_id="r1",
-            source="agent",
-        )
-        # NO observation - simulates crash
-
-        messages = LLMConvertibleEvent.events_to_messages([user, action])
-        assistant_with_tools = [m for m in messages if m.role == "assistant" and m.tool_calls]
-        tool_results = [m for m in messages if m.role == "tool"]
-
-        for msg in assistant_with_tools:
-            for tc in msg.tool_calls or []:
-                assert any(r.tool_call_id == tc.id for r in tool_results), f"Orphan {tc.id}"
 
 
 class TestValidatorFactory:
