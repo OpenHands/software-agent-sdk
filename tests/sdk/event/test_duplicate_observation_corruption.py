@@ -1,25 +1,155 @@
-"""Tests for LLM input validation catching conversation corruption issues.
+"""Tests for conversation corruption issues and validation.
 
-These tests verify that the pre-flight validation system catches the specific
-corruption scenarios that caused production issues:
+Two types of tests:
+1. XFAIL tests that demonstrate bugs still exist in the SDK
+2. PASSING tests that show the new validation catches these issues
 
+Issues covered:
 - Issue #1782: Duplicate ObservationEvent with same tool_call_id
 - Issue #2127: Missing tool_result block for tool_use  
 - Issue #1841: send_message() during pending tool execution corrupts ordering
-
-The validation catches these BEFORE sending to the API, avoiding the errors:
-- "unexpected `tool_use_id` found in `tool_result` blocks"
-- "`tool_use` ids were found without `tool_result` blocks immediately after"
 """
+
+import json
 
 import pytest
 
+from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.llm.exceptions import LLMInputValidationError
 from openhands.sdk.llm.validation import (
     AnthropicMessageValidator,
     OpenAIChatMessageValidator,
     get_chat_validator,
 )
+from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
+
+
+# ============================================================================
+# Helper functions for creating events
+# ============================================================================
+
+
+def create_action_event(
+    event_id: str,
+    tool_call_id: str,
+    tool_name: str = "terminal",
+) -> ActionEvent:
+    """Helper to create an ActionEvent."""
+    action = MCPToolAction(data={"command": "ls"})
+    tool_call = MessageToolCall(
+        id=tool_call_id,
+        name=tool_name,
+        arguments=json.dumps({"command": "ls"}),
+        origin="completion",
+    )
+    return ActionEvent(
+        id=event_id,
+        thought=[TextContent(text="Running command")],
+        action=action,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_call=tool_call,
+        llm_response_id="resp_1",
+        source="agent",
+    )
+
+
+def create_observation_event(
+    event_id: str,
+    action_id: str,
+    tool_call_id: str,
+    result: str = "output",
+) -> ObservationEvent:
+    """Helper to create an ObservationEvent."""
+    observation = MCPToolObservation.from_text(text=result, tool_name="terminal")
+    return ObservationEvent(
+        id=event_id,
+        observation=observation,
+        tool_name="terminal",
+        tool_call_id=tool_call_id,
+        action_id=action_id,
+        source="environment",
+    )
+
+
+def create_message_event(event_id: str, content: str) -> MessageEvent:
+    """Helper to create a MessageEvent."""
+    return MessageEvent(
+        id=event_id,
+        llm_message=Message(role="user", content=[TextContent(text=content)]),
+        source="user",
+    )
+
+
+# ============================================================================
+# XFAIL tests - These demonstrate bugs that still exist in the SDK
+# ============================================================================
+
+
+class TestSDKBugsStillExist:
+    """XFAIL tests demonstrating that the underlying SDK bugs still exist.
+    
+    These tests will FAIL (marked xfail) because the SDK doesn't handle these
+    corrupt states. The validation layer catches them before they reach the API,
+    but the bugs in events_to_messages() etc. are still present.
+    """
+
+    @pytest.mark.xfail(
+        reason="Bug #1782: events_to_messages() doesn't deduplicate observations",
+        strict=True,
+    )
+    def test_duplicate_observations_not_filtered_by_sdk(self):
+        """SDK doesn't filter duplicate observations with same tool_call_id."""
+        user_msg = create_message_event("msg_1", "List files")
+        action = create_action_event("action_1", "toolu_dup")
+        obs_1 = create_observation_event("obs_1", "action_1", "toolu_dup", "file1.txt")
+        obs_2 = create_observation_event("obs_2", "action_1", "toolu_dup", "duplicate!")
+
+        events: list[LLMConvertibleEvent] = [user_msg, action, obs_1, obs_2]
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        tool_results = [m for m in messages if m.role == "tool"]
+        
+        # BUG: SDK produces 2 tool_results for same tool_call_id
+        # This would cause Anthropic API error: "unexpected tool_use_id"
+        assert len(tool_results) == 1, (
+            f"Expected 1 tool_result, got {len(tool_results)}. "
+            "SDK should deduplicate observations by tool_call_id."
+        )
+
+    @pytest.mark.xfail(
+        reason="Bug #2127: events_to_messages() includes orphan tool_use",
+        strict=True,
+    )
+    def test_orphan_action_not_filtered_by_sdk(self):
+        """SDK doesn't filter actions without matching observations."""
+        user_msg_1 = create_message_event("msg_1", "Run command")
+        action = create_action_event("action_orphan", "toolu_orphan")
+        # NO observation - simulating crash
+        user_msg_2 = create_message_event("msg_2", "What happened?")
+
+        events: list[LLMConvertibleEvent] = [user_msg_1, action, user_msg_2]
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        # Check for orphan tool_use without tool_result
+        assistant_with_tools = [m for m in messages if m.role == "assistant" and m.tool_calls]
+        tool_results = [m for m in messages if m.role == "tool"]
+
+        for msg in assistant_with_tools:
+            for tc in msg.tool_calls or []:
+                has_result = any(r.tool_call_id == tc.id for r in tool_results)
+                # BUG: SDK includes tool_use without matching tool_result
+                # This would cause API error: "tool_use ids without tool_result"
+                assert has_result, (
+                    f"tool_use {tc.id} has no matching tool_result. "
+                    "SDK should filter orphan actions."
+                )
 
 
 class TestValidationCatchesDuplicateToolResults:
