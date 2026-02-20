@@ -633,16 +633,23 @@ def load_skills_from_dir(
     regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
+    # Wrap each load in try/except to ensure one bad skill doesn't break all loading
     for skill_md_path in skill_md_files:
-        load_and_categorize(
-            skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
+        try:
+            load_and_categorize(
+                skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
+            )
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
 
     # Load regular .md files
     for path in regular_md_files:
-        load_and_categorize(
-            path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
+        try:
+            load_and_categorize(
+                path, skill_dir, repo_skills, knowledge_skills, agent_skills
+            )
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load skill from {path}: {e}")
 
     total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)
     logger.debug(

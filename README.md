@@ -106,7 +106,7 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
 ## Community
 
 - [Join Slack](https://openhands.dev/joinslack) - Connect with the OpenHands community
-- [GitHub Repository](https://github.com/OpenHands/agent-sdk) - Source code and issues
+- [GitHub Repository](https://github.com/OpenHands/software-agent-sdk) - Source code and issues
 - [Documentation](https://docs.openhands.dev/sdk) - Complete documentation
 
 ## Cite
