@@ -86,6 +86,11 @@ MODELS = {
         "display_name": "Gemini 3 Flash",
         "llm_config": {"model": "litellm_proxy/gemini-3-flash-preview"},
     },
+    "gemini-3.1-pro": {
+        "id": "gemini-3.1-pro",
+        "display_name": "Gemini 3.1 Pro",
+        "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview"},
+    },
     "gpt-5.2": {
         "id": "gpt-5.2",
         "display_name": "GPT-5.2",
