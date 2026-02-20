@@ -18,24 +18,32 @@ jobs:
     pr-review:
         # Note: fork PRs will not have access to repository secrets under `pull_request`.
         # Skip forks to avoid noisy failures until we restore a hardened `pull_request_target` flow.
+        #
+        # Condition structure: We separate label-triggered reviews (open to anyone) from
+        # other triggers (require author_association). Each trigger type is isolated to avoid
+        # accessing undefined event properties (e.g., github.event.label when action != 'labeled').
         if: |
             github.event.pull_request.head.repo.full_name == github.repository &&
             (
-                github.event.pull_request.author_association == 'OWNER' ||
-                github.event.pull_request.author_association == 'MEMBER' ||
-                github.event.pull_request.author_association == 'COLLABORATOR'
-            ) &&
-            (
-                (github.event.action == 'opened' && github.event.pull_request.draft == false) ||
-                github.event.action == 'ready_for_review' ||
-                (github.event.action == 'labeled' && github.event.label.name == 'review-this') ||
                 (
-                    github.event.action == 'review_requested' &&
                     (
-                        github.event.requested_reviewer.login == 'openhands-agent' ||
-                        github.event.requested_reviewer.login == 'all-hands-bot'
+                        (github.event.action == 'opened' && github.event.pull_request.draft == false) ||
+                        github.event.action == 'ready_for_review' ||
+                        (
+                            github.event.action == 'review_requested' &&
+                            (
+                                github.event.requested_reviewer.login == 'openhands-agent' ||
+                                github.event.requested_reviewer.login == 'all-hands-bot'
+                            )
+                        )
+                    ) &&
+                    (
+                        github.event.pull_request.author_association == 'OWNER' ||
+                        github.event.pull_request.author_association == 'MEMBER' ||
+                        github.event.pull_request.author_association == 'COLLABORATOR'
                     )
-                )
+                ) ||
+                (github.event.action == 'labeled' && github.event.label.name == 'review-this')
             )
         concurrency:
             group: pr-review-${{ github.event.pull_request.number }}
