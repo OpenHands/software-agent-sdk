@@ -9,6 +9,36 @@ class LLMError(Exception):
         return self.message
 
 
+# Input validation errors (pre-flight)
+class LLMInputValidationError(LLMError):
+    """Raised when LLM input fails pre-flight validation.
+
+    This error is raised before sending a request to the LLM provider,
+    allowing the caller to handle invalid inputs (e.g., corrupted message
+    history, missing tool_results) without incurring API costs.
+
+    Attributes:
+        errors: List of specific validation error messages
+        provider: The provider the validation was performed for (e.g., "anthropic")
+    """
+
+    def __init__(
+        self,
+        errors: list[str],
+        provider: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        self.errors = errors
+        self.provider = provider
+        if message is None:
+            provider_str = f" ({provider})" if provider else ""
+            message = (
+                f"LLM input validation failed{provider_str}:\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            )
+        super().__init__(message)
+
+
 # General response parsing/validation errors
 class LLMMalformedActionError(LLMError):
     def __init__(self, message: str = "Malformed response") -> None:

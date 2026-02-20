@@ -9,6 +9,7 @@ from .types import (
     LLMContextWindowExceedError,
     LLMContextWindowTooSmallError,
     LLMError,
+    LLMInputValidationError,
     LLMMalformedActionError,
     LLMNoActionError,
     LLMNoResponseError,
@@ -24,6 +25,7 @@ from .types import (
 __all__ = [
     # Types
     "LLMError",
+    "LLMInputValidationError",
     "LLMMalformedActionError",
     "LLMNoActionError",
     "LLMResponseError",

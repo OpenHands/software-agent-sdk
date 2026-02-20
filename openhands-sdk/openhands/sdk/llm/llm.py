@@ -76,6 +76,7 @@ from litellm.utils import (
 
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
+    LLMInputValidationError,
     LLMNoResponseError,
     map_provider_exception,
 )
@@ -354,6 +355,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Excluded from serialization; must be reconfigured after load."
         ),
         exclude=True,
+    )
+
+    validate_input: bool = Field(
+        default=True,
+        description=(
+            "Enable pre-flight validation of messages before sending to the LLM API. "
+            "This catches common issues (e.g., missing tool_results, duplicate "
+            "tool_call_ids) locally before incurring API costs. "
+            "Set to False to disable validation (not recommended)."
+        ),
     )
 
     # =========================================================================
@@ -677,6 +688,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
 
+        # 3.5) Pre-flight validation
+        # Validate messages before sending to API to catch common errors early
+        self._validate_chat_messages(
+            formatted_messages, tools_defined=has_tools_flag
+        )
+
         # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
@@ -821,6 +838,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         call_kwargs = select_responses_options(
             self, kwargs, include=include, store=store
         )
+
+        # Pre-flight validation
+        # Validate input items before sending to API to catch common errors early
+        tools_defined = resp_tools is not None and len(resp_tools) > 0
+        self._validate_responses_input(input_items, tools_defined=tools_defined)
 
         # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
@@ -1208,6 +1230,54 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     -1
                 ].cache_prompt = True  # Last item inside the message content
                 break
+
+    def _validate_chat_messages(
+        self,
+        formatted_messages: list[dict],
+        tools_defined: bool = False,
+    ) -> None:
+        """Validate formatted messages before sending to Chat Completions API.
+
+        Args:
+            formatted_messages: List of formatted message dictionaries
+            tools_defined: Whether tools are defined in the request
+
+        Raises:
+            LLMInputValidationError: If validation fails
+        """
+        if not self.validate_input:
+            return
+
+        from openhands.sdk.llm.validation import get_chat_validator
+
+        validator = get_chat_validator(self._model_name_for_capabilities())
+        errors = validator.validate(formatted_messages, tools_defined=tools_defined)
+        if errors:
+            raise LLMInputValidationError(errors=errors, provider=validator.provider)
+
+    def _validate_responses_input(
+        self,
+        input_items: list[dict],
+        tools_defined: bool = False,
+    ) -> None:
+        """Validate input items before sending to Responses API.
+
+        Args:
+            input_items: List of input item dictionaries
+            tools_defined: Whether tools are defined in the request
+
+        Raises:
+            LLMInputValidationError: If validation fails
+        """
+        if not self.validate_input:
+            return
+
+        from openhands.sdk.llm.validation import get_responses_validator
+
+        validator = get_responses_validator(self._model_name_for_capabilities())
+        errors = validator.validate(input_items, tools_defined=tools_defined)
+        if errors:
+            raise LLMInputValidationError(errors=errors, provider=validator.provider)
 
     def format_messages_for_llm(self, messages: list[Message]) -> list[dict]:
         """Formats Message objects for LLM consumption."""
