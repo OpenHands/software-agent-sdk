@@ -15,6 +15,7 @@ from openhands.sdk.context.view import View
 from openhands.sdk.conversation.types import ConversationTokenCallbackType
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.validation import validate_for_llm
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
 
@@ -155,7 +156,12 @@ def prepare_llm_messages(
 
     Raises:
         RuntimeError: If condensation is needed but no callback is provided
+        EventStreamValidationError: If event stream has issues that would
+            cause LLM API errors (e.g., orphan tool calls, duplicate responses)
     """
+    # Validate event stream before converting to LLM messages.
+    # Raises EventStreamValidationError with clear message for frontend.
+    validate_for_llm(events)
 
     view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events

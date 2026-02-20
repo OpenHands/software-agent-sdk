@@ -4,6 +4,7 @@ Tests verify that:
 1. Corrupt event streams are detected via validate_event_stream()
 2. validate_for_llm() raises clear errors for invalid streams
 3. get_repair_events() returns synthetic events for persistence on resume
+4. Integration: prepare_llm_messages() validates before conversion
 """
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from openhands.sdk.event.llm_convertible import ActionEvent, ObservationEvent
 from openhands.sdk.event.validation import (
     EventStreamValidationError,
+    _index_tool_calls,
     get_repair_events,
     validate_event_stream,
     validate_for_llm,
@@ -45,6 +47,21 @@ def make_observation(tool_call_id: str, action_id: str, tool_name: str = "x"):
         action_id=action_id,
         source="environment",
     )
+
+
+class TestIndexToolCalls:
+    """Tests for _index_tool_calls() helper."""
+
+    def test_indexes_actions_and_observations(self):
+        """Correctly indexes tool_call_ids."""
+        action = make_action("tc1")
+        obs = make_observation("tc1", "a_tc1")
+
+        action_map, obs_ids = _index_tool_calls([action, obs])
+
+        assert "tc1" in action_map
+        assert action_map["tc1"] == action
+        assert obs_ids == {"tc1"}
 
 
 class TestValidateEventStream:
@@ -97,6 +114,7 @@ class TestValidateForLlm:
             validate_for_llm([action])
         assert "Orphan action" in str(exc_info.value)
         assert "tc1" in str(exc_info.value)
+        assert exc_info.value.errors == ["Orphan action (no observation): tc1"]
 
     def test_raises_on_duplicate_observation(self):
         """Raises clear error for duplicate observation."""
@@ -110,8 +128,6 @@ class TestValidateForLlm:
     def test_error_includes_all_issues(self):
         """Error message includes all issues found."""
         action = make_action("tc1")
-        # No observation for tc1 (orphan action)
-        # Plus orphan observation
         obs_orphan = make_observation("tc_orphan", "a_unknown")
 
         with pytest.raises(EventStreamValidationError) as exc_info:
@@ -161,5 +177,31 @@ class TestGetRepairEvents:
         obs2 = make_observation("tc1", "a_tc1")
 
         repair_events = get_repair_events([action, obs1, obs2])
-        # No repairs - duplicates need investigation, not silent fixing
         assert repair_events == []
+
+
+class TestPrepareLlmMessagesIntegration:
+    """Tests for prepare_llm_messages() validation integration."""
+
+    def test_raises_on_invalid_event_stream(self):
+        """prepare_llm_messages raises when event stream is invalid."""
+        from openhands.sdk.agent.utils import prepare_llm_messages
+
+        action = make_action("tc1")
+        # No observation - orphan action
+
+        with pytest.raises(EventStreamValidationError) as exc_info:
+            prepare_llm_messages([action])
+
+        assert "Orphan action" in str(exc_info.value)
+
+    def test_passes_with_valid_event_stream(self):
+        """prepare_llm_messages works with valid event stream."""
+        from openhands.sdk.agent.utils import prepare_llm_messages
+
+        # Valid event stream: action with matching observation
+        action = make_action("tc1")
+        obs = make_observation("tc1", "a_tc1")
+
+        messages = prepare_llm_messages([action, obs])
+        assert len(messages) == 2  # action message + tool response

@@ -17,6 +17,7 @@ from openhands.sdk.conversation.types import ConversationCallbackType, Conversat
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
+from openhands.sdk.event.validation import get_repair_events
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -315,6 +316,14 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+
+            # Repair event stream: add synthetic observations for orphan actions.
+            # This fixes interrupted tool calls from previous session crashes.
+            repair_events = get_repair_events(list(state._events))
+            for event in repair_events:
+                state._events.append(event)
+            if repair_events:
+                logger.info(f"Repaired {len(repair_events)} orphan action(s) on resume")
 
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)
