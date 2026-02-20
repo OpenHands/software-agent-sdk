@@ -103,6 +103,9 @@ jobs:
 
                   model_ids = "$MODEL_IDS".split(",")
                   model_ids = [m.strip() for m in model_ids if m.strip()]
+                  
+                  # Known problematic models that cause hangs (see issue #2147)
+                  BLOCKED_MODELS = ["claude-sonnet-4-6"]
 
                   matrix = []
                   for model_id in model_ids:
@@ -110,6 +113,12 @@ jobs:
                           available = ", ".join(sorted(MODELS.keys()))
                           print(f"Error: Model ID '{model_id}' not found. Available: {available}", file=sys.stderr)
                           sys.exit(1)
+                      
+                      # Block known problematic models
+                      if model_id in BLOCKED_MODELS:
+                          print(f"Error: Model '{model_id}' is blocked from integration tests due to known issues (hangs indefinitely). See issue #2147.", file=sys.stderr)
+                          sys.exit(1)
+                      
                       model = MODELS[model_id]
                       # Create run-suffix from model id (replace special chars with underscore)
                       run_suffix = model_id.replace("-", "_").replace(".", "_") + "_run"
