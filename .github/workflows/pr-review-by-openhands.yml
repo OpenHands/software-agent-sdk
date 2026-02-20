@@ -2,17 +2,11 @@
 name: PR Review by OpenHands
 
 on:
-    # Use pull_request_target to allow fork PRs to access secrets when triggered by maintainers
-    # Security: This workflow runs when:
-    #   1. A new PR is opened (non-draft), OR
-    #   2. A draft PR is marked as ready for review, OR
-    #   3. A maintainer adds the 'review-this' label, OR
-    #   4. A maintainer requests openhands-agent or all-hands-bot as a reviewer
-    # Adding labels and requesting new reviewers requires write access. GitHub may also allow PR authors
-    # to re-request review from a previous reviewer.
-    # The PR code is explicitly checked out for review, but secrets are only accessible
-    # because the workflow runs in the base repository context
-    pull_request_target:
+    # TEMPORARY MITIGATION (Clinejection hardening)
+    #
+    # We temporarily avoid `pull_request_target` here. We'll restore it after the PR review
+    # workflow is fully hardened for untrusted execution.
+    pull_request:
         types: [opened, ready_for_review, labeled, review_requested]
 
 permissions:
@@ -22,18 +16,27 @@ permissions:
 
 jobs:
     pr-review:
-        # Run when one of the following conditions is met:
-        #   1. A new non-draft PR is opened by a non-first-time contributor, OR
-        #   2. A draft PR is converted to ready for review by a non-first-time contributor, OR
-        #   3. 'review-this' label is added, OR
-        #   4. openhands-agent or all-hands-bot is requested as a reviewer
-        # Note: FIRST_TIME_CONTRIBUTOR PRs require manual trigger via label/reviewer request
+        # Note: fork PRs will not have access to repository secrets under `pull_request`.
+        # Skip forks to avoid noisy failures until we restore a hardened `pull_request_target` flow.
         if: |
-            (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
-            (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
-            github.event.label.name == 'review-this' ||
-            github.event.requested_reviewer.login == 'openhands-agent' ||
-            github.event.requested_reviewer.login == 'all-hands-bot'
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            (
+                github.event.pull_request.author_association == 'OWNER' ||
+                github.event.pull_request.author_association == 'MEMBER' ||
+                github.event.pull_request.author_association == 'COLLABORATOR'
+            ) &&
+            (
+                (github.event.action == 'opened' && github.event.pull_request.draft == false) ||
+                github.event.action == 'ready_for_review' ||
+                (github.event.action == 'labeled' && github.event.label.name == 'review-this') ||
+                (
+                    github.event.action == 'review_requested' &&
+                    (
+                        github.event.requested_reviewer.login == 'openhands-agent' ||
+                        github.event.requested_reviewer.login == 'all-hands-bot'
+                    )
+                )
+            )
         concurrency:
             group: pr-review-${{ github.event.pull_request.number }}
             cancel-in-progress: true
