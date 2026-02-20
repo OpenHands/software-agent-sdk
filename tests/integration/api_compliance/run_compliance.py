@@ -302,19 +302,27 @@ def generate_markdown_report(report: ComplianceReport) -> str:
         "",
     ]
 
-    # Build results matrix: pattern -> model -> result
+    # Build results matrix: pattern -> model_id -> result
+    # Note: result.model contains full model path, models_tested has short IDs
     models = report.models_tested
     results_map: dict[str, dict[str, str]] = {}
 
     for pattern in report.results:
         results_map[pattern.pattern_name] = {}
         for result in pattern.results:
+            # Extract short model ID from full model path for matching
+            # e.g., "litellm_proxy/claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
+            result_symbol = "⚠"
             if result.response_type.value == "ACCEPTED":
-                results_map[pattern.pattern_name][result.model] = "✓"
+                result_symbol = "✓"
             elif result.response_type.value == "REJECTED":
-                results_map[pattern.pattern_name][result.model] = "✗"
-            else:
-                results_map[pattern.pattern_name][result.model] = "⚠"
+                result_symbol = "✗"
+
+            # Find matching model ID
+            for model_id in models:
+                if model_id in result.model:
+                    results_map[pattern.pattern_name][model_id] = result_symbol
+                    break
 
     # Generate results table
     lines.append("## Results Matrix")
@@ -359,13 +367,22 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     lines.append(f"- **Accepted (lenient API behavior):** {report.total_accepted}")
     lines.append("")
 
-    # Note about detailed responses
+    # Note about detailed responses with link to artifacts
     lines.append("---")
     lines.append("")
-    lines.append(
-        "*Full API responses and error details are available in "
-        "`compliance_report.json` (see workflow artifacts).*"
-    )
+    # Link to workflow artifacts if running in GitHub Actions
+    github_run_id = os.environ.get("GITHUB_RUN_ID")
+    if github_run_id:
+        artifacts_url = (
+            "https://github.com/OpenHands/software-agent-sdk/actions/runs/"
+            f"{github_run_id}/artifacts"
+        )
+        lines.append(
+            f"*Full API responses available in "
+            f"[`compliance_report.json`]({artifacts_url})*"
+        )
+    else:
+        lines.append("*Full API responses available in `compliance_report.json`*")
 
     return "\n".join(lines)
 
