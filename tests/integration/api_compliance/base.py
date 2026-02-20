@@ -105,11 +105,13 @@ class BaseAPIComplianceTest(ABC):
     def run_test(
         self,
         llm: LLM,
+        model_id: str,
     ) -> ComplianceTestResult:
         """Execute the test against the given LLM and record results.
 
         Args:
             llm: LLM instance to test against
+            model_id: Short model identifier for display
 
         Returns:
             ComplianceTestResult with the outcome
@@ -128,6 +130,7 @@ class BaseAPIComplianceTest(ABC):
             return ComplianceTestResult(
                 pattern_name=self.pattern_name,
                 model=llm.model,
+                model_id=model_id,
                 provider=provider,
                 response_type=APIResponse.ACCEPTED,
                 raw_response=response.raw_response.model_dump()
@@ -139,6 +142,7 @@ class BaseAPIComplianceTest(ABC):
             return ComplianceTestResult(
                 pattern_name=self.pattern_name,
                 model=llm.model,
+                model_id=model_id,
                 provider=provider,
                 response_type=APIResponse.TIMEOUT,
                 error_message=str(e),
@@ -148,6 +152,7 @@ class BaseAPIComplianceTest(ABC):
             return ComplianceTestResult(
                 pattern_name=self.pattern_name,
                 model=llm.model,
+                model_id=model_id,
                 provider=provider,
                 response_type=APIResponse.CONNECTION_ERROR,
                 error_message=str(e),
@@ -172,6 +177,7 @@ class BaseAPIComplianceTest(ABC):
             return ComplianceTestResult(
                 pattern_name=self.pattern_name,
                 model=llm.model,
+                model_id=model_id,
                 provider=provider,
                 response_type=APIResponse.REJECTED,
                 error_message=str(e),

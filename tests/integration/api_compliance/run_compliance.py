@@ -44,22 +44,28 @@ from tests.integration.api_compliance.result import (
 logger = get_logger(__name__)
 
 # Default models to test - mirrors the integration test matrix
+# Each entry has: model path, optional config overrides, and short display name
 DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     "claude-sonnet-4-5": {
         "model": "litellm_proxy/claude-sonnet-4-5-20250929",
         "temperature": 0.0,
+        "_display": "claude",
     },
     "gpt-5.2": {
         "model": "litellm_proxy/openai/gpt-5.2-2025-12-11",
+        "_display": "gpt",
     },
     "gemini-3-pro": {
         "model": "litellm_proxy/gemini-3-pro-preview",
+        "_display": "gemini",
     },
     "deepseek-v3.2": {
         "model": "litellm_proxy/deepseek/deepseek-reasoner",
+        "_display": "deepseek",
     },
     "qwen3-coder": {
         "model": "litellm_proxy/qwen/qwen3-coder",
+        "_display": "qwen",
     },
 }
 
@@ -116,7 +122,7 @@ def run_single_test(
     Args:
         test_class: The test class to instantiate and run
         llm_config: LLM configuration dict
-        model_id: Model identifier for logging
+        model_id: Short model identifier for display
 
     Returns:
         ComplianceTestResult
@@ -125,12 +131,13 @@ def run_single_test(
 
     try:
         llm = create_test_llm(llm_config)
-        result = test.run_test(llm)
+        result = test.run_test(llm, model_id)
         return result
     except Exception as e:
         return ComplianceTestResult(
             pattern_name=test.pattern_name,
             model=llm_config.get("model", "unknown"),
+            model_id=model_id,
             provider="unknown",
             response_type=APIResponse.CONNECTION_ERROR,
             error_message=f"Failed to create LLM: {e}",
@@ -301,7 +308,6 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     ]
 
     # Build results matrix: pattern -> model_id -> result
-    # Note: result.model contains full model path, models_tested has short IDs
     models = report.models_tested
     results_map: dict[str, dict[str, str]] = {}
 
@@ -315,12 +321,9 @@ def generate_markdown_report(report: ComplianceReport) -> str:
             elif result.response_type == APIResponse.REJECTED:
                 result_symbol = "❌"  # Red X = rejected
 
-            # Find matching model ID from full model path
-            # e.g., "litellm_proxy/claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
-            for model_id in models:
-                if model_id in result.model:
-                    results_map[pattern.pattern_name][model_id] = result_symbol
-                    break
+            # Use model_id directly (no substring matching needed)
+            if result.model_id in models:
+                results_map[pattern.pattern_name][result.model_id] = result_symbol
 
     # Generate results table
     lines.append("## Results Matrix")
@@ -328,8 +331,11 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     lines.append("✅ accepted  ❌ rejected  ⚠️ error")
     lines.append("")
 
-    # Table header
-    header = "| Pattern | " + " | ".join(models) + " |"
+    # Get short display names for table headers
+    display_names = [DEFAULT_MODELS.get(m, {}).get("_display", m) for m in models]
+
+    # Table header with short display names
+    header = "| Pattern | " + " | ".join(display_names) + " |"
     separator = "|:--------|" + "|".join([":---:" for _ in models]) + "|"
     lines.append(header)
     lines.append(separator)
