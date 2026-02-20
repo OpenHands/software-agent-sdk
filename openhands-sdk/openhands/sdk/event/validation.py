@@ -7,6 +7,12 @@ Invariants:
 1. Each ActionEvent has exactly one matching observation (by tool_call_id)
 2. No duplicate tool_call_ids in observations
 3. No orphan observations (observation without matching action)
+
+Usage:
+    # On conversation resume, call repair and persist synthetic events
+    synthetic_events = get_repair_events(state.events)
+    for event in synthetic_events:
+        conversation._on_event(event)  # Persists to event store
 """
 
 import logging
@@ -67,108 +73,55 @@ def validate_event_stream(events: Sequence[Event]) -> list[str]:
     return errors
 
 
-def repair_event_stream(
-    events: Sequence[Event],
-) -> tuple[list[Event], list[str]]:
-    """Repair event stream to satisfy invariants.
+def get_repair_events(events: Sequence[Event]) -> list[AgentErrorEvent]:
+    """Get synthetic events needed to repair an invalid event stream.
 
-    Repairs:
-    1. Remove duplicate observations (keep first)
-    2. Add synthetic error observations for orphan actions
-    3. Remove orphan observations (no matching action)
+    This function returns NEW events that should be appended to the event store
+    to fix orphan actions. It does NOT modify existing events.
+
+    For orphan actions (tool calls without observations), creates synthetic
+    AgentErrorEvent to inform the LLM the tool execution was interrupted.
+
+    Note: Duplicate observations are NOT repaired here because they require
+    removing events from the store, which is more complex. The LLM can handle
+    seeing duplicate tool results.
 
     Args:
-        events: Sequence of events to repair
+        events: Sequence of events to analyze
 
     Returns:
-        Tuple of (repaired_events, list of repairs made)
+        List of AgentErrorEvent to append to the event store.
+        Empty list if no repairs needed.
     """
-    repairs: list[str] = []
-    result: list[Event] = []
+    action_tool_call_ids: dict[str, ActionEvent] = {}
+    observation_tool_call_ids: set[str] = set()
 
-    seen_obs_tool_call_ids: set[str] = set()
-    action_map: dict[
-        str, tuple[int, ActionEvent]
-    ] = {}  # tool_call_id -> (index, event)
-
-    # First pass: collect actions, filter duplicate observations
     for event in events:
         if isinstance(event, ActionEvent) and event.tool_call_id:
-            action_map[event.tool_call_id] = (len(result), event)
-            result.append(event)
-
+            action_tool_call_ids[event.tool_call_id] = event
         elif isinstance(event, ObservationTypes) and event.tool_call_id:
-            tc_id = event.tool_call_id
+            observation_tool_call_ids.add(event.tool_call_id)
 
-            # Skip duplicate observations
-            if tc_id in seen_obs_tool_call_ids:
-                repairs.append(f"Removed duplicate observation: {tc_id}")
-                continue
+    # Find orphan actions
+    orphan_tool_call_ids = set(action_tool_call_ids.keys()) - observation_tool_call_ids
 
-            # Skip orphan observations (no matching action)
-            if tc_id not in action_map:
-                repairs.append(f"Removed orphan observation: {tc_id}")
-                continue
-
-            seen_obs_tool_call_ids.add(tc_id)
-            result.append(event)
-
-        else:
-            result.append(event)
-
-    # Second pass: add synthetic observations for orphan actions
-    # Process in reverse order so insertions don't affect indices
-    orphan_actions = [
-        (idx, action)
-        for tc_id, (idx, action) in action_map.items()
-        if tc_id not in seen_obs_tool_call_ids
-    ]
-    orphan_actions.sort(key=lambda x: x[0], reverse=True)
-
-    for idx, action in orphan_actions:
+    # Create synthetic error events for each orphan
+    synthetic_events: list[AgentErrorEvent] = []
+    for tc_id in orphan_tool_call_ids:
+        action = action_tool_call_ids[tc_id]
         synthetic = AgentErrorEvent(
             source="environment",
             tool_name=action.tool_name,
             tool_call_id=action.tool_call_id,
-            error="Tool execution was interrupted. No result available.",
+            error=(
+                "Tool execution was interrupted due to a system restart. "
+                "The tool did not complete and no result is available."
+            ),
         )
-        # Insert after the action
-        result.insert(idx + 1, synthetic)
-        repairs.append(
-            f"Added synthetic observation for orphan action: {action.tool_call_id}"
-        )
-
-    return result, repairs
-
-
-def validate_and_repair_event_stream(
-    events: Sequence[Event],
-) -> tuple[list[Event], list[str]]:
-    """Validate event stream, repair only if needed.
-
-    Args:
-        events: Sequence of events
-
-    Returns:
-        Tuple of (events, repairs). If no repairs needed, returns list(events)
-        and empty repairs list.
-
-    Raises:
-        ValueError: If repair fails to fix all issues
-    """
-    errors = validate_event_stream(events)
-    if not errors:
-        return list(events), []
-
-    # Attempt repair
-    repaired, repairs = repair_event_stream(events)
-
-    # Validate repaired stream
-    remaining_errors = validate_event_stream(repaired)
-    if remaining_errors:
-        raise ValueError(
-            f"Event stream repair failed. "
-            f"Repaired: {repairs}. Remaining errors: {remaining_errors}"
+        synthetic_events.append(synthetic)
+        logger.warning(
+            f"Created synthetic observation for orphan action: "
+            f"tool={action.tool_name}, tool_call_id={tc_id}"
         )
 
-    return repaired, repairs
+    return synthetic_events
