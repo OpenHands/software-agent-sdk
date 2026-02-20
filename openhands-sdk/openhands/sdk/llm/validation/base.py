@@ -108,56 +108,54 @@ class ResponsesInputValidator(BaseMessageValidator):
         return validate_openai_responses_input(messages, tools_defined=tools_defined)
 
 
+from typing import Literal
+
+ResponseType = Literal["completion", "responses"]
+
+
 def _is_anthropic_model(model: str) -> bool:
     """Check if model is an Anthropic model."""
     model_lower = model.lower()
     return any(
         pattern in model_lower
-        for pattern in [
-            "anthropic",
-            "claude",
-            "claude-3",
-            "claude-2",
-            "claude-instant",
-        ]
+        for pattern in ["anthropic", "claude"]
     )
 
 
-def get_chat_validator(model: str | None = None) -> BaseMessageValidator:
-    """Get the appropriate Chat validator for a model.
+def get_validator(
+    model: str,
+    response_type: ResponseType = "completion",
+) -> BaseMessageValidator:
+    """Get the appropriate validator for a model and response type.
 
     Args:
         model: Model identifier (e.g., "anthropic/claude-3-opus", "gpt-4")
+        response_type: Either "completion" (Chat Completions) or "responses" (Responses API)
 
     Returns:
         Appropriate validator instance
     """
-    if model and _is_anthropic_model(model):
-        from openhands.sdk.llm.validation.anthropic import AnthropicMessageValidator
+    if response_type == "responses":
+        from openhands.sdk.llm.validation.openai_responses import (
+            OpenAIResponsesInputValidator,
+        )
+        return OpenAIResponsesInputValidator()
 
+    # Chat Completions - check for Anthropic
+    if _is_anthropic_model(model):
+        from openhands.sdk.llm.validation.anthropic import AnthropicMessageValidator
         return AnthropicMessageValidator()
 
-    # Default to OpenAI Chat validator for all other models
     from openhands.sdk.llm.validation.openai_chat import OpenAIChatMessageValidator
-
     return OpenAIChatMessageValidator()
 
 
+# Backwards compatibility aliases
+def get_chat_validator(model: str | None = None) -> BaseMessageValidator:
+    """Get Chat validator for a model. Use get_validator() instead."""
+    return get_validator(model or "", response_type="completion")
+
+
 def get_responses_validator(model: str | None = None) -> BaseMessageValidator:
-    """Get the appropriate Responses validator for a model.
-
-    Args:
-        model: Model identifier
-
-    Returns:
-        Appropriate validator instance
-
-    Note:
-        Currently all Responses API implementations use the same format,
-        so this always returns the standard validator.
-    """
-    from openhands.sdk.llm.validation.openai_responses import (
-        OpenAIResponsesInputValidator,
-    )
-
-    return OpenAIResponsesInputValidator()
+    """Get Responses validator for a model. Use get_validator() instead."""
+    return get_validator(model or "", response_type="responses")
