@@ -22,7 +22,7 @@ on:
             model_ids:
                 description: >-
                     Comma-separated model IDs to test (from resolve_model_config.py).
-                    Example: claude-sonnet-4-5-20250929,glm-4.7. Defaults to a standard set.
+                    Example: claude-sonnet-4-6,glm-4.7. Defaults to a standard set.
                 required: false
                 default: ''
                 type: string
@@ -31,13 +31,26 @@ on:
                 required: false
                 default: ''
                 type: string
+            tool_preset:
+                description: >-
+                    Tool preset for file editing (default, gemini, gpt5, planning).
+                    'default' uses FileEditorTool, 'gemini' uses read_file/write_file/edit/list_directory,
+                    'gpt5' uses apply_patch tool.
+                required: false
+                default: default
+                type: choice
+                options:
+                    - default
+                    - gemini
+                    - gpt5
+                    - planning
     schedule:
         - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
     # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
-    DEFAULT_MODEL_IDS: claude-sonnet-4-5-20250929,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3-pro
+    DEFAULT_MODEL_IDS: claude-sonnet-4-6,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3-pro
 
 jobs:
     setup-matrix:
@@ -203,6 +216,7 @@ jobs:
             ) && needs.setup-matrix.result == 'success'
         needs: [setup-matrix, post-label-comment, post-dispatch-comment]
         runs-on: ubuntu-22.04
+        timeout-minutes: 180
         permissions:
             contents: read
             id-token: write
@@ -276,18 +290,20 @@ jobs:
                   LLM_CONFIG: ${{ toJson(matrix.job-config['llm-config']) }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+                  TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
               run: |
                   set -eo pipefail
 
                   AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
                   EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config['run-suffix'] }}"
 
-                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS'"
+                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS' TOOL_PRESET='$TOOL_PRESET'"
 
                   uv run python tests/integration/run_infer.py \
                     --llm-config "$LLM_CONFIG" \
                     --num-workers $N_PROCESSES \
                     --eval-note "$EVAL_NOTE" \
+                    --tool-preset "$TOOL_PRESET" \
                     $TEST_TYPE_ARGS
 
                   # get integration tests JSON results
