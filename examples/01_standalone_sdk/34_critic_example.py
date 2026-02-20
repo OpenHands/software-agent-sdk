@@ -169,13 +169,12 @@ The task is complete ONLY when:
 
 
 llm_api_key = get_required_env("LLM_API_KEY")
-# Use weaker model by default to increase likelihood of needing multiple iterations
-llm_model = os.getenv("LLM_MODEL", "anthropic/claude-haiku-4-5")
 llm = LLM(
-    model=llm_model,
+    # Use a weaker model to increase likelihood of needing multiple iterations
+    model="anthropic/claude-haiku-4-5",
     api_key=llm_api_key,
     top_p=0.95,
-    base_url=os.getenv("LLM_BASE_URL"),
+    base_url=os.getenv("LLM_BASE_URL", None),
 )
 
 # Setup critic with iterative refinement config
