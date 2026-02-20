@@ -1,9 +1,3 @@
-"""Claude-style delegation tool – blocking-only implementation.
-
-This module provides a minimal TaskManager and TaskExecutor for
-synchronous (blocking) sub-agent tasks.
-"""
-
 from __future__ import annotations
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation

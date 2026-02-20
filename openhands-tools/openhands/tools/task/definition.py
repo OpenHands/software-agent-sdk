@@ -1,6 +1,6 @@
 """Task tool kit definitions.
 
-This module defines the Task tool for blocking sub-agent delegation.
+This module defines the Task tool for sub-agent task delegation.
 
 The TaskToolSet is registered as a single tool spec that creates
 the Task tool backed by a TaskManager.
@@ -60,11 +60,9 @@ class TaskObservation(Observation):
     status: str = Field(description="The status of the task.")
 
     def _get_task_info(self) -> str:
-        return f"""
-Task ID: {self.task_id}
-Subagent: None
-Status: {self.status}
-"""
+        return (
+            f"Task ID: {self.task_id}\nSubagent: {self.subagent}\nStatus: {self.status}"
+        )
 
     @property
     def visualize(self) -> Text:
@@ -103,7 +101,7 @@ TASK_TOOL_DESCRIPTION: Final[
     str
 ] = """Launch a new agent to handle complex, multi-step tasks autonomously.
 
-The task tool launches specialized agents (threads) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
+The task tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
 
 Available agent types and the tools they have access to:
 {agent_types_info}
@@ -118,11 +116,8 @@ When NOT to use the task tool:
 
 Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do
-- Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
 - When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you
 should send a text message back to the user with a concise summary of the result.
-- You can optionally run agents in the background using the run_in_background parameter. To check on the agent's progress or retrieve its results, use the task_output tool. You
-can continue working while background agents run.
 - Agents can be resumed using the resume parameter by passing the task ID from a previous invocation. When resumed, the agent continues with its full previous
 context preserved. When NOT resuming, each invocation starts fresh and you should provide a detailed task description with all necessary context.
 - When you launch an agent with a task using the Task tool, a task ID will be returned to you. You can use this ID to resume the agent later if needed for follow-up work.
@@ -132,8 +127,6 @@ context preserved. When NOT resuming, each invocation starts fresh and you shoul
 intent
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your
 judgement.
-- If the user specifies that they want you to run agents "in parallel", you MUST send a single message with multiple task tool calls. For example, if you
-need to launch both a build-validator agent and a test-runner agent in parallel, send a single message with both tool calls.
 """  # noqa: E501
 
 

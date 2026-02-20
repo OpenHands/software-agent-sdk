@@ -71,9 +71,8 @@ class TaskManager:
     def __init__(self):
         self._parent_conversation: LocalConversation | None = None
 
-        # task completed (successfully or not) and persisted
+        # takes track of task completed and persisted
         self._inactive_tasks: set[str] = set()
-
         # map from agent friendly task_id to uuid
         self._task_id_to_uuid: dict[str, uuid.UUID] = {}
         # tmp directory to save task to eventually resume it later
@@ -101,10 +100,6 @@ class TaskManager:
         uuid_ = uuid.uuid4()
         self._task_id_to_uuid[task_id] = uuid_
         return task_id
-
-    def _get_task_directory(self, task_id: str) -> Path:
-        """Return the task directory."""
-        return self._tmp_dir / str(self._task_id_to_uuid[task_id])
 
     def _evict_task(self, task: TaskState) -> None:
         """
@@ -244,8 +239,9 @@ class TaskManager:
         return factory.factory_func(sub_agent_llm)
 
     def _run_task(self, task: TaskState, prompt: str) -> TaskState:
-        """Run a task synchronously or in the background."""
-        assert task.conversation is not None
+        """Run a task synchronously."""
+        if task.conversation is None:
+            raise RuntimeError(f"Task '{task.id}' has no conversation to run.")
         # Get parent name for sender info
         parent_name = None
         parent = self.parent_conversation
@@ -257,16 +253,17 @@ class TaskManager:
             task.conversation.run()
             result = get_agent_final_response(task.conversation.state.events)
             task.set_result(result)
-            logger.info(f"Background task '{task.id}' completed.")
+            logger.info(f"Task '{task.id}' completed.")
         except Exception as e:
             task.set_error(str(e))
-            logger.warning(f"Task {task.id} failed with error: {str(e)}")
+            logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
             self._evict_task(task)
-            return task
+
+        return task
 
     def close(self) -> None:
-        """Clen-up tmp directory and remove all created tasks."""
+        """Clean up tmp directory and remove all created tasks."""
         if self._tmp_dir.exists():
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
