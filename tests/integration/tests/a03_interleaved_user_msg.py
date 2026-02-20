@@ -4,7 +4,6 @@ API Compliance Test: Interleaved User Message
 Tests how different LLM APIs respond when a user message appears
 between tool_use and tool_result.
 
-Related Issues: #1841
 
 Pattern:
     [assistant with tool_use] → [user message] → [tool_result]

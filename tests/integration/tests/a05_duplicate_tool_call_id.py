@@ -4,7 +4,6 @@ API Compliance Test: Duplicate tool_call_id
 Tests how different LLM APIs respond when multiple tool_result messages
 have the same tool_call_id.
 
-Related Issues: #1782
 
 Pattern:
     [assistant with tool_use id=X] → [tool_result id=X] → ... → [tool_result id=X]

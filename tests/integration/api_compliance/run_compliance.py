@@ -58,10 +58,8 @@ DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     "deepseek-v3.2": {
         "model": "litellm_proxy/deepseek/deepseek-reasoner",
     },
-    "kimi-k2.5": {
-        "model": "litellm_proxy/moonshot/kimi-k2.5",
-        "temperature": 1.0,
-        "top_p": 0.95,
+    "qwen3-coder": {
+        "model": "litellm_proxy/qwen/qwen3-coder",
     },
 }
 
@@ -310,12 +308,12 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     for pattern in report.results:
         results_map[pattern.pattern_name] = {}
         for result in pattern.results:
-            # Map response type to symbol
-            result_symbol = "⚠"
+            # Map response type to colored emoji for quick scanning
+            result_symbol = "🟡"  # Yellow = other/error
             if result.response_type == APIResponse.ACCEPTED:
-                result_symbol = "✓"
+                result_symbol = "🟢"  # Green = accepted
             elif result.response_type == APIResponse.REJECTED:
-                result_symbol = "✗"
+                result_symbol = "🔴"  # Red = rejected
 
             # Find matching model ID from full model path
             # e.g., "litellm_proxy/claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
@@ -327,11 +325,7 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     # Generate results table
     lines.append("## Results Matrix")
     lines.append("")
-    lines.append(
-        "Legend: ✓ = accepted (API processed it), "
-        "✗ = rejected (API returned error), "
-        "⚠ = other error"
-    )
+    lines.append("🟢 accepted  🔴 rejected  🟡 error")
     lines.append("")
 
     # Table header

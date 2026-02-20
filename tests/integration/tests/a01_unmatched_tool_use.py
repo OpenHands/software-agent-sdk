@@ -4,7 +4,6 @@ API Compliance Test: Unmatched tool_use
 Tests how different LLM APIs respond when a tool_use message is sent
 without a corresponding tool_result.
 
-Related Issues: #2127
 
 Pattern:
     [system] → [user] → [assistant with tool_use] → [user message] → API CALL
