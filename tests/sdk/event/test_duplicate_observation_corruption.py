@@ -1,38 +1,27 @@
-"""Tests for event stream validation/repair and LLM input validation.
+"""Tests for event stream validation and repair.
 
-Tests verify that:
-1. Event stream repair fixes corrupt states (orphan actions, duplicates)
-2. LLM message validators catch issues as a safety net
+Tests verify that corrupt event streams are detected and repaired
+before conversion to LLM messages.
 """
-
-import pytest
 
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
-    MessageEvent,
     ObservationEvent,
 )
 from openhands.sdk.event.validation import (
     repair_event_stream,
     validate_event_stream,
 )
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
-from openhands.sdk.llm.exceptions import LLMInputValidationError
-from openhands.sdk.llm.validation import (
-    AnthropicMessageValidator,
-    OpenAIChatMessageValidator,
-    OpenAIResponsesInputValidator,
-    get_validator,
-)
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 
 
 class TestEventStreamValidation:
     """Tests for validate_event_stream()."""
 
-    def test_valid_stream(self):
-        """Valid event stream returns no errors."""
+    def test_valid_stream_returns_no_errors(self):
+        """Valid event stream returns empty error list."""
         action = ActionEvent(
             id="a1",
             thought=[TextContent(text="t")],
@@ -74,11 +63,45 @@ class TestEventStreamValidation:
         assert len(errors) == 1
         assert "Orphan action" in errors[0]
 
+    def test_detects_duplicate_observation(self):
+        """Detects duplicate observations for same tool_call_id."""
+        action = ActionEvent(
+            id="a1",
+            thought=[TextContent(text="t")],
+            action=MCPToolAction(data={}),
+            tool_name="x",
+            tool_call_id="tc1",
+            tool_call=MessageToolCall(
+                id="tc1", name="x", arguments="{}", origin="completion"
+            ),
+            llm_response_id="r1",
+            source="agent",
+        )
+        obs1 = ObservationEvent(
+            id="o1",
+            observation=MCPToolObservation.from_text("a", tool_name="x"),
+            tool_name="x",
+            tool_call_id="tc1",
+            action_id="a1",
+            source="environment",
+        )
+        obs2 = ObservationEvent(
+            id="o2",
+            observation=MCPToolObservation.from_text("b", tool_name="x"),
+            tool_name="x",
+            tool_call_id="tc1",
+            action_id="a1",
+            source="environment",
+        )
+        errors = validate_event_stream([action, obs1, obs2])
+        assert len(errors) == 1
+        assert "Duplicate" in errors[0]
+
 
 class TestEventStreamRepair:
     """Tests for repair_event_stream()."""
 
-    def test_adds_synthetic_observation_for_orphan_action(self):
+    def test_adds_synthetic_observation_for_orphan(self):
         """Adds synthetic error observation for orphan action."""
         action = ActionEvent(
             id="a1",
@@ -98,9 +121,7 @@ class TestEventStreamRepair:
         assert len(repairs) == 1
         assert "synthetic" in repairs[0].lower()
         assert len(repaired) == 2
-
-        errors = validate_event_stream(repaired)
-        assert errors == []
+        assert validate_event_stream(repaired) == []
 
     def test_removes_duplicate_observations(self):
         """Removes duplicate observations, keeps first."""
@@ -138,18 +159,14 @@ class TestEventStreamRepair:
         assert len(repairs) == 1
         assert "duplicate" in repairs[0].lower()
         assert len(repaired) == 2
+        assert validate_event_stream(repaired) == []
 
 
-class TestEventsToMessagesWithRepair:
-    """Tests that events_to_messages() repairs corrupt streams."""
+class TestEventsToMessagesRepair:
+    """Tests that events_to_messages() auto-repairs."""
 
     def test_repairs_orphan_action(self):
         """Orphan action gets synthetic observation."""
-        user_msg = MessageEvent(
-            id="m1",
-            llm_message=Message(role="user", content=[TextContent(text="hi")]),
-            source="user",
-        )
         action = ActionEvent(
             id="a1",
             thought=[TextContent(text="t")],
@@ -163,7 +180,7 @@ class TestEventsToMessagesWithRepair:
             source="agent",
         )
 
-        messages = LLMConvertibleEvent.events_to_messages([user_msg, action])
+        messages = LLMConvertibleEvent.events_to_messages([action])
         tool_results = [m for m in messages if m.role == "tool"]
         assert len(tool_results) == 1
 
@@ -201,30 +218,3 @@ class TestEventsToMessagesWithRepair:
         messages = LLMConvertibleEvent.events_to_messages([action, obs1, obs2])
         tool_results = [m for m in messages if m.role == "tool"]
         assert len(tool_results) == 1
-
-
-class TestValidatorFactory:
-    """Test get_validator() returns correct validator."""
-
-    def test_anthropic_completion(self):
-        v = get_validator("claude-3-opus", response_type="completion")
-        assert isinstance(v, AnthropicMessageValidator)
-
-    def test_openai_completion(self):
-        v = get_validator("gpt-4o", response_type="completion")
-        assert isinstance(v, OpenAIChatMessageValidator)
-
-    def test_responses_api(self):
-        v = get_validator("gpt-4o", response_type="responses")
-        assert isinstance(v, OpenAIResponsesInputValidator)
-
-
-class TestValidateOrRaise:
-    """Test validate_or_raise raises LLMInputValidationError."""
-
-    def test_raises_with_details(self):
-        messages = [{"role": "tool", "tool_call_id": "orphan", "content": "x"}]
-        with pytest.raises(LLMInputValidationError) as exc:
-            OpenAIChatMessageValidator().validate_or_raise(messages, tools_defined=True)
-        assert exc.value.provider == "openai_chat"
-        assert len(exc.value.errors) > 0

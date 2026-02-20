@@ -20,6 +20,7 @@ from openhands.sdk.event.llm_convertible import (
     UserRejectObservation,
 )
 
+
 logger = logging.getLogger(__name__)
 
 # All observation types that satisfy an action
@@ -43,9 +44,7 @@ def validate_event_stream(events: Sequence[Event]) -> list[str]:
     for event in events:
         if isinstance(event, ActionEvent) and event.tool_call_id:
             if event.tool_call_id in action_tool_call_ids:
-                errors.append(
-                    f"Duplicate action tool_call_id: {event.tool_call_id}"
-                )
+                errors.append(f"Duplicate action tool_call_id: {event.tool_call_id}")
             action_tool_call_ids[event.tool_call_id] = event
 
         elif isinstance(event, ObservationTypes) and event.tool_call_id:
@@ -88,7 +87,9 @@ def repair_event_stream(
     result: list[Event] = []
 
     seen_obs_tool_call_ids: set[str] = set()
-    action_map: dict[str, tuple[int, ActionEvent]] = {}  # tool_call_id -> (index, event)
+    action_map: dict[
+        str, tuple[int, ActionEvent]
+    ] = {}  # tool_call_id -> (index, event)
 
     # First pass: collect actions, filter duplicate observations
     for event in events:
@@ -133,7 +134,9 @@ def repair_event_stream(
         )
         # Insert after the action
         result.insert(idx + 1, synthetic)
-        repairs.append(f"Added synthetic observation for orphan action: {action.tool_call_id}")
+        repairs.append(
+            f"Added synthetic observation for orphan action: {action.tool_call_id}"
+        )
 
     return result, repairs
 
