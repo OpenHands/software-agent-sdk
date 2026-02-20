@@ -216,6 +216,7 @@ jobs:
             ) && needs.setup-matrix.result == 'success'
         needs: [setup-matrix, post-label-comment, post-dispatch-comment]
         runs-on: blacksmith-4vcpu-ubuntu-2204
+        timeout-minutes: 180
         permissions:
             contents: read
             id-token: write

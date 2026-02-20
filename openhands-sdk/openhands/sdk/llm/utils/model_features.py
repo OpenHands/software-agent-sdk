@@ -81,6 +81,7 @@ EXTENDED_THINKING_MODELS: list[str] = [
     # We did not include sonnet 3.7 and 4 here as they don't brings
     # significant performance improvements for agents
     "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
     "claude-haiku-4-5",
 ]
 
@@ -95,6 +96,8 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4",
     # Anthropic Haiku 4.5 variants (dash only; official IDs use hyphens)
     "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
