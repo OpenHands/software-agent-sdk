@@ -54,6 +54,15 @@ _EXCLUDED_EXAMPLES = {
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
 }
 
+# TEMPORARY: Only run previously failing examples to verify fixes
+# Remove this block after verification
+_ONLY_RUN_EXAMPLES: set[str] | None = {
+    "examples/01_standalone_sdk/34_critic_example.py",
+    "examples/02_remote_agent_server/01_convo_with_local_agent_server.py",
+    "examples/01_standalone_sdk/31_iterative_refinement.py",
+    "examples/01_standalone_sdk/38_browser_session_recording.py",
+}
+
 
 def _discover_examples() -> list[Path]:
     candidates: list[Path] = []
@@ -71,9 +80,17 @@ def _discover_examples() -> list[Path]:
 
 def _iter_examples() -> Iterable[Path]:
     excluded = {_normalize_path(REPO_ROOT / p) for p in _EXCLUDED_EXAMPLES}
+    # TEMPORARY: If _ONLY_RUN_EXAMPLES is set, only run those examples
+    only_run = (
+        {_normalize_path(REPO_ROOT / p) for p in _ONLY_RUN_EXAMPLES}
+        if _ONLY_RUN_EXAMPLES
+        else None
+    )
     for example_path in _discover_examples():
         normalized = _normalize_path(example_path)
         if normalized in excluded:
+            continue
+        if only_run is not None and normalized not in only_run:
             continue
         yield example_path
 
