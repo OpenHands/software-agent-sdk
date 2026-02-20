@@ -1,6 +1,6 @@
 """TaskToolSet.
 
-This module provides Claude Code-style delegation tools as an alternative to
+This module provides a Task Tool Set as an alternative to
 the default DelegateTool.
 
 Tools:

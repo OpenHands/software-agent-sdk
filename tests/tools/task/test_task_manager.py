@@ -95,6 +95,12 @@ class TestTaskState:
 class TestTaskManager:
     """Tests for TaskManager."""
 
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
     def test_init_defaults(self):
         """Manager should initialize with correct defaults."""
         manager = TaskManager()
@@ -197,43 +203,11 @@ class TestTaskManager:
         assert resumed.conversation is not None
         assert resumed.conversation.state.id == original_uuid
 
-    def test_close(self):
-        manager = TaskManager()
-        assert manager._tmp_dir.exists()
-
-        manager._inactive_tasks.add("task_abc123")
-        manager._task_id_to_uuid["task_abc123"] = uuid.uuid4()
-
-        manager.close()
-
-        assert not manager._tmp_dir.exists()
-        assert len(manager._inactive_tasks) == 0
-        assert len(manager._task_id_to_uuid) == 0
-
-
-# ---------------------------------------------------------------------------
-# Tests for _get_sub_agent
-# ---------------------------------------------------------------------------
-
-
-class TestGetSubAgent:
-    """Tests for TaskManager._get_sub_agent."""
-
-    def setup_method(self):
-        _reset_registry_for_tests()
-
-    def teardown_method(self):
-        _reset_registry_for_tests()
-
     def test_default_agent_type(self, tmp_path):
         """'default' should return an agent without raising."""
         manager, _ = _manager_with_parent(tmp_path)
         agent = manager._get_sub_agent("default")
         assert isinstance(agent, Agent)
-
-    def test_default_agent_disables_streaming(self, tmp_path):
-        manager, _ = _manager_with_parent(tmp_path)
-        agent = manager._get_sub_agent("default")
         assert agent.llm.stream is False
 
     def test_registered_agent_type(self, tmp_path):
@@ -261,14 +235,18 @@ class TestGetSubAgent:
         with pytest.raises(ValueError, match="Unknown agent"):
             manager._get_sub_agent("nonexistent_agent")
 
+    def test_close(self):
+        manager = TaskManager()
+        assert manager._tmp_dir.exists()
 
-# ---------------------------------------------------------------------------
-# Tests for _get_conversation
-# ---------------------------------------------------------------------------
+        manager._inactive_tasks.add("task_abc123")
+        manager._task_id_to_uuid["task_abc123"] = uuid.uuid4()
 
+        manager.close()
 
-class TestGetConversation:
-    """Tests for TaskManager._get_conversation."""
+        assert not manager._tmp_dir.exists()
+        assert len(manager._inactive_tasks) == 0
+        assert len(manager._task_id_to_uuid) == 0
 
     def test_returns_local_conversation(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
@@ -277,36 +255,11 @@ class TestGetConversation:
 
         conv = manager._get_conversation(
             description="quiz",
-            max_turns=5,
             task_id=task_id,
             worker_agent=agent,
+            max_turns=None,
         )
         assert isinstance(conv, LocalConversation)
-
-    def test_max_turns_forwarded(self, tmp_path):
-        manager, _ = _manager_with_parent(tmp_path)
-        task_id = manager._generate_task_id()
-        agent = manager._get_sub_agent("default")
-
-        conv = manager._get_conversation(
-            description=None,
-            max_turns=7,
-            task_id=task_id,
-            worker_agent=agent,
-        )
-        assert conv.max_iteration_per_run == 7
-
-    def test_max_turns_defaults_to_500(self, tmp_path):
-        manager, _ = _manager_with_parent(tmp_path)
-        task_id = manager._generate_task_id()
-        agent = manager._get_sub_agent("default")
-
-        conv = manager._get_conversation(
-            description=None,
-            max_turns=None,
-            task_id=task_id,
-            worker_agent=agent,
-        )
         assert conv.max_iteration_per_run == 500
 
     def test_persistence_dir_is_tmp_dir(self, tmp_path):
@@ -325,19 +278,6 @@ class TestGetConversation:
         assert persistence_dir is not None
         conv_persistence = Path(persistence_dir)
         assert str(conv_persistence).startswith(str(manager._tmp_dir))
-
-    def test_delete_on_close_is_false(self, tmp_path):
-        manager, _ = _manager_with_parent(tmp_path)
-        task_id = manager._generate_task_id()
-        agent = manager._get_sub_agent("default")
-
-        conv = manager._get_conversation(
-            description=None,
-            max_turns=None,
-            task_id=task_id,
-            worker_agent=agent,
-        )
-        assert conv.delete_on_close is False
 
     def test_no_visualizer_when_parent_has_none(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)

@@ -1,5 +1,5 @@
 """
-Animal Quiz with Task Tool
+Animal Quiz with Task Tool Set
 
 Demonstrates the TaskToolSet with a main agent delegating to an
 animal-expert sub-agent. The flow is:
