@@ -34,7 +34,7 @@ from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent, SystemPromptEvent
+from openhands.sdk.event import ACPToolCallEvent, MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool  # noqa: TC002
@@ -124,6 +124,7 @@ class _OpenHandsACPBridge:
     def __init__(self) -> None:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
+        self.accumulated_tool_calls: list[dict[str, Any]] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
@@ -138,6 +139,7 @@ class _OpenHandsACPBridge:
     def reset(self) -> None:
         self.accumulated_text.clear()
         self.accumulated_thoughts.clear()
+        self.accumulated_tool_calls.clear()
         self.on_token = None
         # Note: telemetry state (_last_cost, _context_window, etc.)
         # is intentionally NOT cleared — it accumulates across turns.
@@ -150,6 +152,8 @@ class _OpenHandsACPBridge:
         update: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
+        logger.debug("ACP session_update: type=%s", type(update).__name__)
+
         # Route fork session updates to the fork accumulator
         if self._fork_session_id is not None and session_id == self._fork_session_id:
             if isinstance(update, AgentMessageChunk):
@@ -178,8 +182,34 @@ class _OpenHandsACPBridge:
                 if delta > 0:
                     self._llm_ref.metrics.add_cost(delta)
                 self._last_cost = update.cost.amount
-        elif isinstance(update, (ToolCallStart, ToolCallProgress)):
-            logger.debug("ACP tool call event: %s", type(update).__name__)
+        elif isinstance(update, ToolCallStart):
+            self.accumulated_tool_calls.append(
+                {
+                    "tool_call_id": update.tool_call_id,
+                    "title": update.title,
+                    "tool_kind": update.kind,
+                    "status": update.status,
+                    "raw_input": update.raw_input,
+                    "raw_output": update.raw_output,
+                }
+            )
+            logger.debug("ACP tool call start: %s", update.tool_call_id)
+        elif isinstance(update, ToolCallProgress):
+            # Find the existing tool call entry and merge updates
+            for tc in self.accumulated_tool_calls:
+                if tc["tool_call_id"] == update.tool_call_id:
+                    if update.title is not None:
+                        tc["title"] = update.title
+                    if update.kind is not None:
+                        tc["tool_kind"] = update.kind
+                    if update.status is not None:
+                        tc["status"] = update.status
+                    if update.raw_input is not None:
+                        tc["raw_input"] = update.raw_input
+                    if update.raw_output is not None:
+                        tc["raw_output"] = update.raw_output
+                    break
+            logger.debug("ACP tool call progress: %s", update.tool_call_id)
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
 
@@ -343,7 +373,7 @@ class ACPAgent(AgentBase):
     def init_state(
         self,
         state: ConversationState,
-        on_event: ConversationCallbackType,
+        on_event: ConversationCallbackType,  # noqa: ARG002
     ) -> None:
         """Spawn the ACP server and initialize a session."""
         # Validate no unsupported features
@@ -379,13 +409,6 @@ class ACPAgent(AgentBase):
             self._cleanup()
             raise
 
-        # Emit a minimal SystemPromptEvent
-        event = SystemPromptEvent(
-            source="agent",
-            system_prompt=TextContent(text="ACP-managed agent"),
-            tools=[],
-        )
-        on_event(event)
         self._initialized = True
 
     def _start_acp_server(self, state: ConversationState) -> None:
@@ -492,6 +515,19 @@ class ACPAgent(AgentBase):
             response = self._executor.run_async(_prompt)
 
             self._record_usage(response, self._session_id or "")
+
+            # Emit ACPToolCallEvents for each accumulated tool call
+            for tc in self._client.accumulated_tool_calls:
+                tc_event = ACPToolCallEvent(
+                    tool_call_id=tc["tool_call_id"],
+                    title=tc["title"],
+                    status=tc.get("status"),
+                    tool_kind=tc.get("tool_kind"),
+                    raw_input=tc.get("raw_input"),
+                    raw_output=tc.get("raw_output"),
+                    is_error=tc.get("status") == "failed",
+                )
+                on_event(tc_event)
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
