@@ -26,7 +26,15 @@ from openhands.sdk.workspace.local import LocalWorkspace
 
 
 def _make_agent(**kwargs) -> ACPAgent:
-    return ACPAgent(acp_command=["echo", "test"], **kwargs)
+    if "acp_command" not in kwargs and "acp_host" not in kwargs:
+        kwargs["acp_command"] = ["echo", "test"]
+    return ACPAgent(**kwargs)
+
+
+def _make_tcp_agent(**kwargs) -> ACPAgent:
+    kwargs.setdefault("acp_host", "localhost")
+    kwargs.setdefault("acp_port", 4001)
+    return ACPAgent(**kwargs)
 
 
 def _make_state(tmp_path) -> ConversationState:
@@ -57,9 +65,23 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         assert agent.include_default_tools == []
 
-    def test_requires_acp_command(self):
-        with pytest.raises(Exception):
-            ACPAgent()  # type: ignore[call-arg]
+    def test_creates_with_tcp_transport(self):
+        agent = ACPAgent(acp_host="localhost", acp_port=4001)
+        assert agent.acp_host == "localhost"
+        assert agent.acp_port == 4001
+        assert agent.acp_command is None
+
+    def test_rejects_both_command_and_host(self):
+        with pytest.raises(Exception, match="mutually exclusive"):
+            ACPAgent(acp_command=["echo"], acp_host="localhost", acp_port=4001)
+
+    def test_rejects_neither_command_nor_host(self):
+        with pytest.raises(Exception, match="Either acp_command or acp_host"):
+            ACPAgent()
+
+    def test_rejects_host_without_port(self):
+        with pytest.raises(Exception, match="acp_port is required"):
+            ACPAgent(acp_host="localhost")
 
     def test_acp_command_stored(self):
         agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
@@ -122,6 +144,26 @@ class TestACPAgentSerialization:
         assert isinstance(agent, ACPAgent)
         assert agent.acp_command == ["echo", "test"]
 
+    def test_roundtrip_serialization_tcp(self):
+        agent = ACPAgent(acp_host="acp.internal", acp_port=5000)
+        dumped = agent.model_dump_json()
+        restored = AgentBase.model_validate_json(dumped)
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_host == "acp.internal"
+        assert restored.acp_port == 5000
+        assert restored.acp_command is None
+
+    def test_deserialization_from_dict_tcp(self):
+        data = {
+            "kind": "ACPAgent",
+            "acp_host": "10.0.0.1",
+            "acp_port": 4001,
+        }
+        agent = AgentBase.model_validate(data)
+        assert isinstance(agent, ACPAgent)
+        assert agent.acp_host == "10.0.0.1"
+        assert agent.acp_port == 4001
+
 
 # ---------------------------------------------------------------------------
 # Feature validation (init_state guards)
@@ -174,6 +216,31 @@ class TestACPAgentInitState:
         assert isinstance(events[0], SystemPromptEvent)
         assert events[0].system_prompt.text == "ACP-managed agent"
         assert events[0].tools == []
+
+    def test_tcp_transport_connects(self, tmp_path):
+        """TCP mode stores connection, session_id, and tcp_writer."""
+        agent = _make_tcp_agent()
+        state = _make_state(tmp_path)
+        events: list = []
+
+        mock_conn = MagicMock()
+        mock_writer = MagicMock()
+
+        # Mock AsyncExecutor so run_async returns the expected TCP tuple
+        mock_executor = MagicMock()
+        mock_executor.run_async.return_value = (mock_conn, "tcp-session-1", mock_writer)
+
+        with patch(
+            "openhands.sdk.utils.async_executor.AsyncExecutor",
+            return_value=mock_executor,
+        ):
+            agent.init_state(state, on_event=events.append)
+
+        assert agent._conn is mock_conn
+        assert agent._session_id == "tcp-session-1"
+        assert agent._tcp_writer is mock_writer
+        assert agent._process is None
+        assert agent._filtered_reader is None
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +556,45 @@ class TestACPAgentCleanup:
 
         # Should not raise
         agent.close()
+
+    def test_close_closes_tcp_writer(self):
+        agent = _make_tcp_agent()
+        mock_writer = MagicMock()
+        agent._tcp_writer = mock_writer
+        agent._executor = MagicMock()
+        agent._conn = None
+        agent._process = None
+
+        agent.close()
+
+        mock_writer.close.assert_called_once()
+        assert agent._tcp_writer is None
+
+    def test_close_skips_process_in_tcp_mode(self):
+        agent = _make_tcp_agent()
+        mock_writer = MagicMock()
+        agent._tcp_writer = mock_writer
+        agent._executor = MagicMock()
+        agent._conn = None
+        agent._process = None  # No process in TCP mode
+
+        agent.close()
+
+        # No process terminate/kill should be attempted
+        mock_writer.close.assert_called_once()
+
+    def test_close_tcp_writer_handles_errors(self):
+        agent = _make_tcp_agent()
+        mock_writer = MagicMock()
+        mock_writer.close.side_effect = OSError("connection reset")
+        agent._tcp_writer = mock_writer
+        agent._executor = MagicMock()
+        agent._conn = None
+        agent._process = None
+
+        # Should not raise
+        agent.close()
+        assert agent._tcp_writer is None
 
 
 # ---------------------------------------------------------------------------

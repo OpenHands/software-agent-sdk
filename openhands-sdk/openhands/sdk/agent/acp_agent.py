@@ -14,7 +14,7 @@ import os
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -263,20 +263,21 @@ class _OpenHandsACPClient:
 class ACPAgent(AgentBase):
     """Agent that delegates to an ACP (Agent Client Protocol) server.
 
-    Instead of calling an LLM directly, this agent spawns an ACP-compatible
-    server (e.g. ``claude-code-acp``) as a subprocess and communicates with
-    it via the ACP protocol.  The server manages its own LLM, tools, and
-    execution lifecycle.
+    Instead of calling an LLM directly, this agent communicates with an
+    ACP-compatible server (e.g. ``claude-code-acp``) via the ACP protocol.
+    The server manages its own LLM, tools, and execution lifecycle.
 
-    Example::
+    Two transport modes are supported (mutually exclusive):
 
-        from openhands.sdk.agent import ACPAgent
-        from openhands.sdk.conversation import Conversation
+    **Subprocess mode** — the agent spawns the ACP server as a child process
+    and communicates via stdin/stdout JSON-RPC::
 
         agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
-        conversation = Conversation(agent=agent, workspace="./workspace")
-        conversation.send_message("Hello! What is 2+2?")
-        conversation.run()
+
+    **TCP mode** — the agent connects to an already-running ACP server over
+    the network::
+
+        agent = ACPAgent(acp_host="acp-server.internal", acp_port=4001)
     """
 
     # Override required fields with ACP-appropriate defaults
@@ -285,12 +286,39 @@ class ACPAgent(AgentBase):
     include_default_tools: list[str] = Field(default_factory=list)
 
     # ACP-specific configuration
-    acp_command: list[str] = Field(
-        ...,
+    acp_command: list[str] | None = Field(
+        default=None,
         description=(
-            "Command to start the ACP server, e.g. ['npx', '-y', 'claude-code-acp']"
+            "Command to start the ACP server, e.g. ['npx', '-y', 'claude-code-acp']. "
+            "Mutually exclusive with acp_host."
         ),
     )
+    acp_host: str | None = Field(
+        default=None,
+        description=(
+            "Hostname of a remote ACP server. Mutually exclusive with acp_command."
+        ),
+    )
+    acp_port: int | None = Field(
+        default=None,
+        description="Port of the remote ACP server. Required when acp_host is set.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_transport(cls, data):
+        if not isinstance(data, dict):
+            return data
+        has_command = data.get("acp_command") is not None
+        has_host = data.get("acp_host") is not None
+        if has_command and has_host:
+            raise ValueError("acp_command and acp_host are mutually exclusive")
+        if not has_command and not has_host:
+            raise ValueError("Either acp_command or acp_host must be provided")
+        if has_host and data.get("acp_port") is None:
+            raise ValueError("acp_port is required when acp_host is set")
+        return data
+
     acp_args: list[str] = Field(
         default_factory=list,
         description="Additional arguments for the ACP server command",
@@ -307,6 +335,7 @@ class ACPAgent(AgentBase):
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPClient
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
+    _tcp_writer: Any = PrivateAttr(default=None)  # asyncio.StreamWriter (TCP mode)
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
 
@@ -375,70 +404,86 @@ class ACPAgent(AgentBase):
         self._initialized = True
 
     def _start_acp_server(self, state: ConversationState) -> None:
-        """Start the ACP subprocess and initialize the session."""
+        """Start the ACP connection and initialize the session.
+
+        In subprocess mode (``acp_command``), spawns the server as a child
+        process and communicates via stdin/stdout.  In TCP mode
+        (``acp_host``/``acp_port``), connects to an already-running server
+        over the network.
+        """
         import asyncio
 
         from acp.client.connection import (
             ClientSideConnection,
-        )
-        from acp.transports import (
-            default_environment,
         )
 
         client = _OpenHandsACPClient()
         client._llm_ref = self.llm
         self._client = client
 
-        # Build environment: inherit current env + ACP extras
-        env = default_environment()
-        env.update(os.environ)
-        env.update(self.acp_env)
-
-        command = self.acp_command[0]
-        args = list(self.acp_command[1:]) + list(self.acp_args)
-
         working_dir = str(state.workspace.working_dir)
 
-        async def _init() -> tuple[Any, Any, Any, str]:
-            # Spawn the subprocess directly so we can install a
-            # filtering reader that skips non-JSON-RPC lines some
-            # ACP servers (e.g. claude-code-acp v0.1.x) write to
-            # stdout.
-            process = await asyncio.create_subprocess_exec(
-                command,
-                *args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            assert process.stdin is not None
-            assert process.stdout is not None
+        if self.acp_host is not None:
+            # --- TCP mode ---
+            async def _init_tcp() -> tuple[Any, str, Any]:
+                reader, writer = await asyncio.open_connection(
+                    self.acp_host, self.acp_port
+                )
+                conn = ClientSideConnection(
+                    client,
+                    writer,  # input_stream (write to server)
+                    reader,  # output_stream (read from server)
+                )
+                await conn.initialize(protocol_version=1)
+                response = await conn.new_session(cwd=working_dir)
+                return conn, response.session_id, writer
 
-            # Wrap the subprocess stdout in a filtering reader that
-            # only passes lines starting with '{' (JSON-RPC messages).
-            filtered_reader = asyncio.StreamReader()
-            asyncio.get_event_loop().create_task(
-                _filter_jsonrpc_lines(process.stdout, filtered_reader)
-            )
-
-            conn = ClientSideConnection(
-                client,
-                process.stdin,  # write to subprocess
-                filtered_reader,  # read filtered output
+            result = self._executor.run_async(_init_tcp)
+            self._conn, self._session_id, self._tcp_writer = result
+        else:
+            # --- Subprocess mode ---
+            from acp.transports import (
+                default_environment,
             )
 
-            # Initialize the protocol
-            await conn.initialize(protocol_version=1)
+            env = default_environment()
+            env.update(os.environ)
+            env.update(self.acp_env)
 
-            # Create a new session
-            response = await conn.new_session(cwd=working_dir)
-            session_id = response.session_id
+            assert self.acp_command is not None
+            command = self.acp_command[0]
+            args = list(self.acp_command[1:]) + list(self.acp_args)
 
-            return conn, process, filtered_reader, session_id
+            async def _init_subprocess() -> tuple[Any, Any, Any, str]:
+                process = await asyncio.create_subprocess_exec(
+                    command,
+                    *args,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                assert process.stdin is not None
+                assert process.stdout is not None
 
-        result = self._executor.run_async(_init)
-        self._conn, self._process, self._filtered_reader, self._session_id = result
+                filtered_reader = asyncio.StreamReader()
+                asyncio.get_event_loop().create_task(
+                    _filter_jsonrpc_lines(process.stdout, filtered_reader)
+                )
+
+                conn = ClientSideConnection(
+                    client,
+                    process.stdin,
+                    filtered_reader,
+                )
+
+                await conn.initialize(protocol_version=1)
+                response = await conn.new_session(cwd=working_dir)
+                return conn, process, filtered_reader, response.session_id
+
+            result = self._executor.run_async(_init_subprocess)
+            self._conn, self._process, self._filtered_reader, self._session_id = result
+
         self._working_dir = working_dir
 
     def step(
@@ -639,6 +684,14 @@ class ACPAgent(AgentBase):
             except Exception as e:
                 logger.debug("Error closing ACP connection: %s", e)
             self._conn = None
+
+        # Close TCP writer if in network mode
+        if self._tcp_writer is not None:
+            try:
+                self._tcp_writer.close()
+            except Exception as e:
+                logger.debug("Error closing TCP writer: %s", e)
+            self._tcp_writer = None
 
         # Terminate the subprocess
         if self._process is not None:
