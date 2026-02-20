@@ -120,7 +120,7 @@ class _OpenHandsACPClient:
         update: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
-        from acp.schema import (  # type: ignore[reportMissingImports]
+        from acp.schema import (
             AgentMessageChunk,
             AgentThoughtChunk,
             TextContentBlock,
@@ -163,7 +163,7 @@ class _OpenHandsACPClient:
         **kwargs: Any,  # noqa: ARG002
     ) -> Any:
         """Auto-approve all permission requests from the ACP server."""
-        from acp.schema import (  # type: ignore[reportMissingImports]
+        from acp.schema import (
             AllowedOutcome,
             RequestPermissionResponse,
         )
@@ -316,18 +316,6 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Spawn the ACP server and initialize a session."""
-        # Lazy import guard
-        try:
-            from acp import (
-                spawn_agent_process,  # type: ignore[reportMissingImports]  # noqa: F401
-            )
-        except ImportError:
-            raise ImportError(
-                "The 'agent-client-protocol' package is required for ACPAgent. "
-                "Install it with: pip install 'openhands-sdk[acp]' or "
-                "pip install agent-client-protocol"
-            ) from None
-
         # Validate no unsupported features
         if self.tools:
             raise NotImplementedError(
@@ -380,10 +368,10 @@ class ACPAgent(AgentBase):
         import asyncio
 
         from acp.client.connection import (
-            ClientSideConnection,  # type: ignore[reportMissingImports]
+            ClientSideConnection,
         )
         from acp.transports import (
-            default_environment,  # type: ignore[reportMissingImports]
+            default_environment,
         )
 
         client = _OpenHandsACPClient()
@@ -474,7 +462,7 @@ class ACPAgent(AgentBase):
         try:
             import asyncio
 
-            from acp.helpers import text_block  # type: ignore[reportMissingImports]
+            from acp.helpers import text_block
 
             async def _prompt() -> Any:
                 response = await self._conn.prompt(

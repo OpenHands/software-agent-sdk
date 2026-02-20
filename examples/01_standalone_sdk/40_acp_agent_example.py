@@ -6,7 +6,6 @@ as the agent backend instead of direct LLM calls.
 Prerequisites:
     - Node.js / npx available
     - Claude Code CLI authenticated (or CLAUDE_API_KEY set)
-    - pip install agent-client-protocol>=0.8.1
 
 Usage:
     uv run python examples/01_standalone_sdk/40_acp_agent_example.py
