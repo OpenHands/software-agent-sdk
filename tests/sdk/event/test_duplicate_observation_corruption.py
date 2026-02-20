@@ -1,10 +1,17 @@
-"""Tests for LLM input validation.
+"""Tests for LLM input validation and SDK corruption bugs.
 
-Verifies validation catches corrupt message states before API calls.
+Two types of tests:
+1. XFAIL tests demonstrating SDK bugs (will pass when bugs are fixed)
+2. Passing tests showing validation catches these issues before API calls
 """
+
+import json
 
 import pytest
 
+from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.llm_convertible import ActionEvent, MessageEvent, ObservationEvent
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.llm.exceptions import LLMInputValidationError
 from openhands.sdk.llm.validation import (
     AnthropicMessageValidator,
@@ -12,6 +19,79 @@ from openhands.sdk.llm.validation import (
     OpenAIResponsesInputValidator,
     get_validator,
 )
+from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
+
+
+# ============================================================================
+# XFAIL tests - These demonstrate SDK bugs that still exist
+# When fixed, these tests will start passing
+# ============================================================================
+
+
+class TestSDKBugsStillExist:
+    """XFAIL tests for SDK bugs. Will pass when bugs are fixed."""
+
+    @pytest.mark.xfail(reason="Bug #1782: events_to_messages doesn't deduplicate", strict=True)
+    def test_duplicate_observations_not_filtered(self):
+        """SDK produces duplicate tool_results for same tool_call_id."""
+        action = ActionEvent(
+            id="a1",
+            thought=[TextContent(text="t")],
+            action=MCPToolAction(data={}),
+            tool_name="x",
+            tool_call_id="tc1",
+            tool_call=MessageToolCall(id="tc1", name="x", arguments="{}", origin="completion"),
+            llm_response_id="r1",
+            source="agent",
+        )
+        obs1 = ObservationEvent(
+            id="o1",
+            observation=MCPToolObservation.from_text("a", "x"),
+            tool_name="x",
+            tool_call_id="tc1",
+            action_id="a1",
+            source="environment",
+        )
+        obs2 = ObservationEvent(
+            id="o2",
+            observation=MCPToolObservation.from_text("b", "x"),
+            tool_name="x",
+            tool_call_id="tc1",  # duplicate
+            action_id="a1",
+            source="environment",
+        )
+
+        messages = LLMConvertibleEvent.events_to_messages([action, obs1, obs2])
+        tool_results = [m for m in messages if m.role == "tool"]
+        assert len(tool_results) == 1, f"Expected 1, got {len(tool_results)}"
+
+    @pytest.mark.xfail(reason="Bug #2127: events_to_messages includes orphan tool_use", strict=True)
+    def test_orphan_action_not_filtered(self):
+        """SDK includes tool_use without matching tool_result."""
+        user = MessageEvent(
+            id="m1",
+            llm_message=Message(role="user", content=[TextContent(text="hi")]),
+            source="user",
+        )
+        action = ActionEvent(
+            id="a1",
+            thought=[TextContent(text="t")],
+            action=MCPToolAction(data={}),
+            tool_name="x",
+            tool_call_id="tc1",
+            tool_call=MessageToolCall(id="tc1", name="x", arguments="{}", origin="completion"),
+            llm_response_id="r1",
+            source="agent",
+        )
+        # NO observation - simulates crash
+
+        messages = LLMConvertibleEvent.events_to_messages([user, action])
+        assistant_with_tools = [m for m in messages if m.role == "assistant" and m.tool_calls]
+        tool_results = [m for m in messages if m.role == "tool"]
+
+        for msg in assistant_with_tools:
+            for tc in msg.tool_calls or []:
+                assert any(r.tool_call_id == tc.id for r in tool_results), f"Orphan {tc.id}"
 
 
 class TestValidatorFactory:
