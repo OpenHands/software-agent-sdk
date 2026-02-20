@@ -104,6 +104,9 @@ class _OpenHandsACPClient:
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._context_window: int = 0  # context window size from ACP
         self._llm_ref: Any = None  # reference to the sentinel LLM
+        # Fork session state for ask_agent()
+        self._fork_session_id: str | None = None
+        self._fork_accumulated_text: list[str] = []
 
     def reset(self) -> None:
         self.accumulated_text.clear()
@@ -116,7 +119,7 @@ class _OpenHandsACPClient:
 
     async def session_update(
         self,
-        session_id: str,  # noqa: ARG002
+        session_id: str,
         update: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
@@ -128,6 +131,13 @@ class _OpenHandsACPClient:
             ToolCallStart,
             UsageUpdate,
         )
+
+        # Route fork session updates to the fork accumulator
+        if self._fork_session_id is not None and session_id == self._fork_session_id:
+            if isinstance(update, AgentMessageChunk):
+                if isinstance(update.content, TextContentBlock):
+                    self._fork_accumulated_text.append(update.content.text)
+            return
 
         if isinstance(update, AgentMessageChunk):
             if isinstance(update.content, TextContentBlock):
@@ -298,6 +308,7 @@ class ACPAgent(AgentBase):
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPClient
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _closed: bool = PrivateAttr(default=False)
+    _working_dir: str = PrivateAttr(default="")
 
     # -- Override base properties to be no-ops for ACP ---------------------
 
@@ -428,6 +439,7 @@ class ACPAgent(AgentBase):
 
         result = self._executor.run_async(_init)
         self._conn, self._process, self._filtered_reader, self._session_id = result
+        self._working_dir = working_dir
 
     def step(
         self,
@@ -537,6 +549,79 @@ class ACPAgent(AgentBase):
             )
             on_event(error_event)
             state.execution_status = ConversationExecutionStatus.ERROR
+
+    def ask_agent(self, question: str) -> str | None:
+        """Answer a stateless question by forking the ACP session.
+
+        Forks the current session, prompts the fork with the question,
+        collects the response, and discards the fork — preserving the
+        read-only semantics required by the ``ask_agent`` API.
+        """
+        if self._conn is None or self._session_id is None:
+            raise RuntimeError("ACPAgent is not initialized; call init_state() first")
+
+        import asyncio
+
+        from acp.helpers import text_block
+
+        client = self._client
+
+        async def _fork_and_prompt() -> str:
+            # Fork the current session
+            fork_response = await self._conn.fork_session(
+                cwd=self._working_dir,
+                session_id=self._session_id,
+            )
+            fork_session_id = fork_response.session_id
+
+            # Set up fork routing on the client
+            client._fork_session_id = fork_session_id
+            client._fork_accumulated_text.clear()
+            try:
+                # Prompt on the forked session
+                response = await self._conn.prompt(
+                    [text_block(question)],
+                    fork_session_id,
+                )
+
+                # Drain pending notifications
+                await asyncio.sleep(0)
+                await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
+
+                # Collect response text
+                result = "".join(client._fork_accumulated_text)
+
+                # Record token usage from PromptResponse
+                if (
+                    response is not None
+                    and hasattr(response, "usage")
+                    and response.usage is not None
+                ):
+                    usage = response.usage
+                    self.llm.metrics.add_token_usage(
+                        prompt_tokens=usage.input_tokens,
+                        completion_tokens=usage.output_tokens,
+                        cache_read_tokens=usage.cached_read_tokens or 0,
+                        cache_write_tokens=usage.cached_write_tokens or 0,
+                        reasoning_tokens=usage.thought_tokens or 0,
+                        context_window=client._context_window,
+                        response_id=fork_session_id,
+                    )
+
+                # Notify stats callback
+                if self.llm.telemetry._stats_update_callback is not None:
+                    try:
+                        self.llm.telemetry._stats_update_callback()
+                    except Exception:
+                        pass
+
+                return result
+            finally:
+                # Clean up fork state
+                client._fork_session_id = None
+                client._fork_accumulated_text.clear()
+
+        return self._executor.run_async(_fork_and_prompt)
 
     def close(self) -> None:
         """Terminate the ACP subprocess and clean up resources."""

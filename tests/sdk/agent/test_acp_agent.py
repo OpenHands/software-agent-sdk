@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -790,3 +790,216 @@ class TestACPAgentTelemetry:
         assert client._last_cost == 1.23
         assert client._context_window == 128000
         assert client._llm_ref is not None
+
+
+# ---------------------------------------------------------------------------
+# ask_agent
+# ---------------------------------------------------------------------------
+
+
+class TestACPAgentAskAgent:
+    def test_ask_agent_raises_if_not_initialized(self):
+        """ask_agent() raises RuntimeError when _conn is None."""
+        agent = _make_agent()
+        # _conn and _session_id are None by default
+        with pytest.raises(RuntimeError, match="not initialized"):
+            agent.ask_agent("What is 2+2?")
+
+    def test_ask_agent_raises_if_session_id_missing(self):
+        """ask_agent() raises RuntimeError when _session_id is None."""
+        agent = _make_agent()
+        agent._conn = MagicMock()
+        agent._session_id = None
+        with pytest.raises(RuntimeError, match="not initialized"):
+            agent.ask_agent("What is 2+2?")
+
+    def test_ask_agent_forks_and_prompts(self):
+        """ask_agent() forks the session, prompts, and returns the response."""
+        agent = _make_agent()
+        mock_client = _OpenHandsACPClient()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "main-session"
+        agent._working_dir = "/workspace"
+
+        # Mock fork_session response
+        mock_fork_response = MagicMock()
+        mock_fork_response.session_id = "fork-session-123"
+
+        # Mock prompt response (no usage)
+        mock_prompt_response = MagicMock()
+        mock_prompt_response.usage = None
+
+        async def _fake_prompt(*args, **kwargs):
+            # Simulate text arriving via session_update during prompt
+            mock_client._fork_accumulated_text.extend(["Hello", " world"])
+            return mock_prompt_response
+
+        def _fake_run_async(coro_fn):
+            """Simulate the async execution synchronously."""
+            loop = asyncio.new_event_loop()
+            try:
+                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
+                agent._conn.prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        result = agent.ask_agent("What is 2+2?")
+
+        assert result == "Hello world"
+
+    def test_ask_agent_records_token_usage(self):
+        """ask_agent() records token usage from the PromptResponse."""
+        agent = _make_agent()
+        mock_client = _OpenHandsACPClient()
+        mock_client._context_window = 200000
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "main-session"
+        agent._working_dir = "/workspace"
+
+        mock_fork_response = MagicMock()
+        mock_fork_response.session_id = "fork-session-456"
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
+        mock_usage.cached_read_tokens = 10
+        mock_usage.cached_write_tokens = 5
+        mock_usage.thought_tokens = 20
+
+        mock_prompt_response = MagicMock()
+        mock_prompt_response.usage = mock_usage
+
+        async def _fake_prompt(*args, **kwargs):
+            mock_client._fork_accumulated_text.append("response")
+            return mock_prompt_response
+
+        def _fake_run_async(coro_fn):
+            loop = asyncio.new_event_loop()
+            try:
+                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
+                agent._conn.prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.ask_agent("Summarize this")
+
+        metrics = agent.llm.metrics
+        assert len(metrics.token_usages) == 1
+        usage = metrics.token_usages[0]
+        assert usage.prompt_tokens == 100
+        assert usage.completion_tokens == 50
+        assert usage.cache_read_tokens == 10
+        assert usage.cache_write_tokens == 5
+        assert usage.reasoning_tokens == 20
+        assert usage.context_window == 200000
+
+    def test_ask_agent_cleans_up_fork_state(self):
+        """ask_agent() cleans up fork state even on success."""
+        agent = _make_agent()
+        mock_client = _OpenHandsACPClient()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "main-session"
+        agent._working_dir = "/workspace"
+
+        mock_fork_response = MagicMock()
+        mock_fork_response.session_id = "fork-session-789"
+
+        mock_prompt_response = MagicMock()
+        mock_prompt_response.usage = None
+
+        async def _fake_prompt(*args, **kwargs):
+            mock_client._fork_accumulated_text.append("ok")
+            return mock_prompt_response
+
+        def _fake_run_async(coro_fn):
+            loop = asyncio.new_event_loop()
+            try:
+                agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
+                agent._conn.prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.ask_agent("test")
+
+        # Fork state should be cleaned up
+        assert mock_client._fork_session_id is None
+        assert mock_client._fork_accumulated_text == []
+
+
+# ---------------------------------------------------------------------------
+# Client fork text routing
+# ---------------------------------------------------------------------------
+
+
+class TestClientForkTextRouting:
+    @pytest.mark.asyncio
+    async def test_fork_text_routed_to_fork_accumulator(self):
+        """When _fork_session_id is set, matching text goes to fork accumulator."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPClient()
+        client._fork_session_id = "fork-sess"
+        client._fork_accumulated_text = []
+
+        update = MagicMock(spec=AgentMessageChunk)
+        update.content = MagicMock(spec=TextContentBlock)
+        update.content.text = "fork response"
+
+        await client.session_update("fork-sess", update)
+
+        assert client._fork_accumulated_text == ["fork response"]
+        # Main accumulator should be empty
+        assert client.accumulated_text == []
+
+    @pytest.mark.asyncio
+    async def test_main_text_unaffected_by_active_fork(self):
+        """Main session text routes to accumulated_text even when fork is active."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPClient()
+        client._fork_session_id = "fork-sess"
+        client._fork_accumulated_text = []
+
+        update = MagicMock(spec=AgentMessageChunk)
+        update.content = MagicMock(spec=TextContentBlock)
+        update.content.text = "main response"
+
+        await client.session_update("main-sess", update)
+
+        assert client.accumulated_text == ["main response"]
+        assert client._fork_accumulated_text == []
+
+    @pytest.mark.asyncio
+    async def test_no_fork_normal_routing(self):
+        """When _fork_session_id is None, all text goes to main accumulator."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPClient()
+        assert client._fork_session_id is None
+
+        update = MagicMock(spec=AgentMessageChunk)
+        update.content = MagicMock(spec=TextContentBlock)
+        update.content.text = "normal text"
+
+        await client.session_update("any-session", update)
+
+        assert client.accumulated_text == ["normal text"]
+        assert client._fork_accumulated_text == []
