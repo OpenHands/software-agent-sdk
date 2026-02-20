@@ -12,8 +12,7 @@ if TYPE_CHECKING:
 
 # Lazy import: eagerly importing ACPAgent registers it in the
 # DiscriminatedUnionMixin, which makes `kind` required in Agent payloads
-# that previously defaulted. It also avoids a circular import through
-# tool/builtins/finish.py if ACPAgent is imported before Agent.
+# that previously defaulted.
 def __getattr__(name: str):
     if name == "ACPAgent":
         from openhands.sdk.agent.acp_agent import ACPAgent
