@@ -1,0 +1,22 @@
+---
+name: Version bump guard
+
+on:
+    pull_request:
+        branches: [main]
+
+jobs:
+    version-bump-guard:
+        name: Guard against accidental package version bumps
+        runs-on: ubuntu-latest
+        if: ${{ !startsWith(github.head_ref, 'rel-') }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+            - name: Check for version bumps
+              env:
+                  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+                  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+              run: python3 .github/scripts/check_no_version_bump.py

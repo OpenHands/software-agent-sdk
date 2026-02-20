@@ -52,6 +52,15 @@ def _git_show(sha: str, path: str) -> bytes | None:
         return None
 
 
+def _git_path_exists(sha: str, path: str) -> bool:
+    proc = subprocess.run(
+        ["git", "cat-file", "-e", f"{sha}:{path}"],
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
 def _read_project_version(content: bytes, *, path: str, sha: str) -> str | None:
     try:
         text = content.decode()
@@ -95,6 +104,19 @@ def main() -> int:
     failures = 0
 
     for pkg in PACKAGES:
+        base_exists = _git_path_exists(base_sha, pkg.pyproject_path)
+        head_exists = _git_path_exists(head_sha, pkg.pyproject_path)
+
+        if not base_exists or not head_exists:
+            print(
+                f"::warning file={pkg.pyproject_path},"
+                "title=Version bump guard skipped::"
+                f"Unable to compare versions for {pkg.name}: "
+                f"exists in base={base_exists}, head={head_exists}. "
+                "If this path moved, update PACKAGES in check_no_version_bump.py."
+            )
+            continue
+
         base_content = _git_show(base_sha, pkg.pyproject_path)
         head_content = _git_show(head_sha, pkg.pyproject_path)
 

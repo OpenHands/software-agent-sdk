@@ -4,31 +4,14 @@ name: API breakage checks
 on:
     pull_request:
         branches: [main]
-        # This workflow serves two purposes:
-        # - On everyday PRs: ensure package versions are NOT bumped accidentally
-        # - On release PRs created by prepare-release.yml (rel-X.Y.Z branches):
-        #   run Griffe API breakage checks
+        # Only run on release PRs created by prepare-release.yml (rel-X.Y.Z branches)
+        # We enforce version-bump policy here, which does not apply to everyday PRs.
+        head-branches: [rel-*]
 
 jobs:
-    version-bump-guard:
-        name: Guard against accidental package version bumps
-        runs-on: ubuntu-latest
-        if: ${{ !startsWith(github.head_ref, 'rel-') }}
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v5
-              with:
-                  fetch-depth: 0
-            - name: Check for version bumps
-              env:
-                  BASE_SHA: ${{ github.event.pull_request.base.sha }}
-                  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-              run: python3 .github/scripts/check_no_version_bump.py
-
     sdk-api:
         name: SDK programmatic API (Griffe)
         runs-on: ubuntu-latest
-        if: ${{ startsWith(github.head_ref, 'rel-') }}
         # Non-blocking for now — report failures but don't gate releases.
         # Remove continue-on-error once validated in production.
         continue-on-error: true

@@ -10,8 +10,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
-
 
 def _load_prod_module():
     repo_root = Path(__file__).resolve().parents[2]
@@ -35,6 +33,11 @@ def _pyproject_bytes(version: str) -> bytes:
     ).encode()
 
 
+def _fake_run_path_exists(cmd, capture_output=None, text=None):  # noqa: ARG001
+    assert cmd[:3] == ["git", "cat-file", "-e"]
+    return _prod.subprocess.CompletedProcess(cmd, 0, "", "")
+
+
 def test_main_requires_pr_shas(monkeypatch):
     monkeypatch.delenv("BASE_SHA", raising=False)
     monkeypatch.delenv("HEAD_SHA", raising=False)
@@ -45,6 +48,7 @@ def test_main_requires_pr_shas(monkeypatch):
 def test_no_version_bumps_detected(monkeypatch, capsys):
     monkeypatch.setenv("BASE_SHA", "base")
     monkeypatch.setenv("HEAD_SHA", "head")
+    monkeypatch.setattr(_prod.subprocess, "run", _fake_run_path_exists)
 
     def _fake_check_output(cmd, stderr=None):  # noqa: ARG001
         assert cmd[:2] == ["git", "show"]
@@ -63,6 +67,7 @@ def test_no_version_bumps_detected(monkeypatch, capsys):
 def test_version_bump_fails(monkeypatch, capsys):
     monkeypatch.setenv("BASE_SHA", "base")
     monkeypatch.setenv("HEAD_SHA", "head")
+    monkeypatch.setattr(_prod.subprocess, "run", _fake_run_path_exists)
 
     def _fake_check_output(cmd, stderr=None):  # noqa: ARG001
         sha, path = cmd[2].split(":", 1)
@@ -82,6 +87,7 @@ def test_version_bump_fails(monkeypatch, capsys):
 def test_malformed_toml_fails(monkeypatch):
     monkeypatch.setenv("BASE_SHA", "base")
     monkeypatch.setenv("HEAD_SHA", "head")
+    monkeypatch.setattr(_prod.subprocess, "run", _fake_run_path_exists)
 
     def _fake_check_output(cmd, stderr=None):  # noqa: ARG001
         sha, _path = cmd[2].split(":", 1)
@@ -94,12 +100,29 @@ def test_malformed_toml_fails(monkeypatch):
     assert _prod.main() == 1
 
 
-@pytest.mark.parametrize(
-    "content",
-    [
-        b"[project]\nname='x'\nversion='1.2.3'\n",
-        b"[project]\nname='x'\nversion='1.2.3'\n",
-    ],
-)
-def test_read_project_version_happy_path(content):
+def test_missing_pyproject_is_warning_and_skipped(monkeypatch, capsys):
+    monkeypatch.setenv("BASE_SHA", "base")
+    monkeypatch.setenv("HEAD_SHA", "head")
+
+    def _fake_run(cmd, capture_output=None, text=None):  # noqa: ARG001
+        assert cmd[:3] == ["git", "cat-file", "-e"]
+        return _prod.subprocess.CompletedProcess(cmd, 1, "", "")
+
+    def _check_output_should_not_run(*_args, **_kwargs):
+        raise AssertionError("git show should not be called when file is missing")
+
+    monkeypatch.setattr(_prod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(_prod.subprocess, "check_output", _check_output_should_not_run)
+
+    assert _prod.main() == 0
+    out = capsys.readouterr().out
+    assert "Version bump guard skipped" in out
+
+
+def test_read_project_version_happy_path():
+    content = b"[project]\nname='x'\nversion='1.2.3'\n"
     assert _prod._read_project_version(content, path="p", sha="deadbeef") == "1.2.3"
+
+
+def test_read_project_version_invalid_utf8():
+    assert _prod._read_project_version(b"\xff", path="p", sha="deadbeef") is None
