@@ -367,19 +367,18 @@ def generate_markdown_report(report: ComplianceReport) -> str:
     lines.append(f"- **Accepted (lenient API behavior):** {report.total_accepted}")
     lines.append("")
 
-    # Note about detailed responses with link to artifacts
+    # Note about detailed responses with link to workflow run
     lines.append("---")
     lines.append("")
-    # Link to workflow artifacts if running in GitHub Actions
+    # Link to workflow run page (artifacts are downloadable from there)
     github_run_id = os.environ.get("GITHUB_RUN_ID")
     if github_run_id:
-        artifacts_url = (
+        run_url = (
             "https://github.com/OpenHands/software-agent-sdk/actions/runs/"
-            f"{github_run_id}/artifacts"
+            f"{github_run_id}"
         )
         lines.append(
-            f"*Full API responses available in "
-            f"[`compliance_report.json`]({artifacts_url})*"
+            f"*Full API responses available in [workflow artifacts]({run_url})*"
         )
     else:
         lines.append("*Full API responses available in `compliance_report.json`*")
