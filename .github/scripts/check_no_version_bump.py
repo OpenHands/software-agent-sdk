@@ -54,8 +54,16 @@ def _git_show(sha: str, path: str) -> bytes | None:
 
 def _read_project_version(content: bytes, *, path: str, sha: str) -> str | None:
     try:
-        data = tomllib.loads(content.decode())
-    except Exception as e:  # noqa: BLE001
+        text = content.decode()
+    except UnicodeDecodeError as e:
+        sys.stderr.write(
+            f"ERROR: Failed decoding '{path}' at {sha[:7]} as UTF-8: {e}\n"
+        )
+        return None
+
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
         sys.stderr.write(f"ERROR: Failed parsing TOML for '{path}' at {sha[:7]}: {e}\n")
         return None
 
