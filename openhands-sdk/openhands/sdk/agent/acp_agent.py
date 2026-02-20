@@ -120,7 +120,7 @@ class _OpenHandsACPClient:
         update: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
-        from acp.schema import (
+        from acp.schema import (  # type: ignore[reportMissingImports]
             AgentMessageChunk,
             AgentThoughtChunk,
             TextContentBlock,
@@ -163,7 +163,10 @@ class _OpenHandsACPClient:
         **kwargs: Any,  # noqa: ARG002
     ) -> Any:
         """Auto-approve all permission requests from the ACP server."""
-        from acp.schema import AllowedOutcome, RequestPermissionResponse
+        from acp.schema import (  # type: ignore[reportMissingImports]
+            AllowedOutcome,
+            RequestPermissionResponse,
+        )
 
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
@@ -315,7 +318,9 @@ class ACPAgent(AgentBase):
         """Spawn the ACP server and initialize a session."""
         # Lazy import guard
         try:
-            from acp import spawn_agent_process  # noqa: F401
+            from acp import (
+                spawn_agent_process,  # type: ignore[reportMissingImports]  # noqa: F401
+            )
         except ImportError:
             raise ImportError(
                 "The 'agent-client-protocol' package is required for ACPAgent. "
@@ -374,8 +379,12 @@ class ACPAgent(AgentBase):
         """Start the ACP subprocess and initialize the session."""
         import asyncio
 
-        from acp.client.connection import ClientSideConnection
-        from acp.transports import default_environment
+        from acp.client.connection import (
+            ClientSideConnection,  # type: ignore[reportMissingImports]
+        )
+        from acp.transports import (
+            default_environment,  # type: ignore[reportMissingImports]
+        )
 
         client = _OpenHandsACPClient()
         client._llm_ref = self.llm
@@ -465,7 +474,7 @@ class ACPAgent(AgentBase):
         try:
             import asyncio
 
-            from acp.helpers import text_block
+            from acp.helpers import text_block  # type: ignore[reportMissingImports]
 
             async def _prompt() -> Any:
                 response = await self._conn.prompt(

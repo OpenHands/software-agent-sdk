@@ -20,6 +20,18 @@ from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
+try:
+    import acp  # type: ignore[reportMissingImports]  # noqa: F401
+
+    _acp_available = True
+except ImportError:
+    _acp_available = False
+
+requires_acp = pytest.mark.skipif(
+    not _acp_available, reason="acp package not installed"
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -128,6 +140,7 @@ class TestACPAgentSerialization:
 # ---------------------------------------------------------------------------
 
 
+@requires_acp
 class TestACPAgentValidation:
     """Test that unsupported features raise NotImplementedError in init_state."""
 
@@ -160,6 +173,7 @@ class TestACPAgentValidation:
 
 
 class TestACPAgentInitState:
+    @requires_acp
     def test_emits_system_prompt_event(self, tmp_path):
         agent = _make_agent()
         state = _make_state(tmp_path)
@@ -290,6 +304,7 @@ class TestACPAgentStep:
         conversation.state = state
         return conversation
 
+    @requires_acp
     def test_step_emits_message_event(self, tmp_path):
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
@@ -318,6 +333,7 @@ class TestACPAgentStep:
         assert isinstance(content_block, TextContent)
         assert content_block.text == "The answer is 4"
 
+    @requires_acp
     def test_step_includes_reasoning(self, tmp_path):
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
@@ -341,6 +357,7 @@ class TestACPAgentStep:
         msg = events[0].llm_message
         assert msg.reasoning_content == "I need to add 2+2"
 
+    @requires_acp
     def test_step_sets_finished(self, tmp_path):
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
@@ -377,6 +394,7 @@ class TestACPAgentStep:
 
         assert state.execution_status == ConversationExecutionStatus.FINISHED
 
+    @requires_acp
     def test_step_error_sets_error_status(self, tmp_path):
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
@@ -399,6 +417,7 @@ class TestACPAgentStep:
         assert isinstance(content_block, TextContent)
         assert "ACP error: boom" in content_block.text
 
+    @requires_acp
     def test_step_no_response_text_fallback(self, tmp_path):
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
@@ -597,6 +616,7 @@ class TestACPAgentTelemetry:
         assert llms[0] is agent.llm
         assert llms[0].model == "acp-managed"
 
+    @requires_acp
     def test_step_records_token_usage(self, tmp_path):
         """step() records per-turn token usage from PromptResponse.usage."""
         agent = _make_agent()
@@ -666,10 +686,11 @@ class TestACPAgentTelemetry:
         # No token usage should be recorded
         assert len(agent.llm.metrics.token_usages) == 0
 
+    @requires_acp
     @pytest.mark.asyncio
     async def test_usage_update_records_cost(self):
         """UsageUpdate with cost records incremental cost via metrics."""
-        from acp.schema import UsageUpdate
+        from acp.schema import UsageUpdate  # type: ignore[reportMissingImports]
 
         from openhands.sdk.llm import LLM
 
@@ -689,10 +710,11 @@ class TestACPAgentTelemetry:
         assert client._last_cost == 0.05
         assert client._context_window == 128000
 
+    @requires_acp
     @pytest.mark.asyncio
     async def test_usage_update_incremental_cost(self):
         """UsageUpdate cost tracking is incremental (delta from last seen)."""
-        from acp.schema import UsageUpdate
+        from acp.schema import UsageUpdate  # type: ignore[reportMissingImports]
 
         from openhands.sdk.llm import LLM
 
@@ -719,10 +741,11 @@ class TestACPAgentTelemetry:
         assert llm.metrics.accumulated_cost == pytest.approx(0.12)
         assert client._last_cost == 0.12
 
+    @requires_acp
     @pytest.mark.asyncio
     async def test_usage_update_updates_context_window(self):
         """UsageUpdate.size updates the client's _context_window."""
-        from acp.schema import UsageUpdate
+        from acp.schema import UsageUpdate  # type: ignore[reportMissingImports]
 
         client = _OpenHandsACPClient()
 
@@ -734,6 +757,7 @@ class TestACPAgentTelemetry:
 
         assert client._context_window == 200000
 
+    @requires_acp
     def test_stats_callback_invoked(self, tmp_path):
         """After step(), the sentinel LLM's stats callback is invoked."""
         agent = _make_agent()
@@ -763,6 +787,7 @@ class TestACPAgentTelemetry:
 
         callback.assert_called_once()
 
+    @requires_acp
     def test_start_acp_server_wires_llm_ref(self, tmp_path):
         """_start_acp_server wires _llm_ref on the client."""
         agent = _make_agent()

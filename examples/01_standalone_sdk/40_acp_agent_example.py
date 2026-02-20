@@ -9,7 +9,7 @@ Prerequisites:
     - pip install agent-client-protocol>=0.8.1
 
 Usage:
-    uv run python examples/01_standalone_sdk/36_acp_agent_example.py
+    uv run python examples/01_standalone_sdk/40_acp_agent_example.py
 """
 
 import os

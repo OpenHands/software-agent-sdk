@@ -1,5 +1,13 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from openhands.sdk.agent.agent import Agent
 from openhands.sdk.agent.base import AgentBase
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.agent.acp_agent import ACPAgent
 
 
 def __getattr__(name: str):
