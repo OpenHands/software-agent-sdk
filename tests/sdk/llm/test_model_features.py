@@ -32,7 +32,7 @@ def test_model_matches(name, pattern, expected):
         ("o3", True),
         # Anthropic Opus 4.5 (dash variant only)
         ("claude-opus-4-5", True),
-        ("nova-2-lite", True),
+        ("nova-2-lite", False),
         # Gemini 3 family
         ("gemini-3-pro-preview", True),
         ("gemini-3-flash-preview", True),
@@ -42,6 +42,20 @@ def test_model_matches(name, pattern, expected):
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),
+        # DeepSeek Reasoner
+        ("deepseek/deepseek-reasoner", True),
+        # OpenRouter docs list these as reasoning models, but LiteLLM capability
+        # metadata does not currently mark them as reasoning-capable.
+        ("openrouter/moonshotai/kimi-k2.5", False),
+        ("openrouter/moonshotai/kimi-k2-thinking", False),
+        # OpenRouter reasoning-capable models per LiteLLM metadata
+        ("openrouter/deepseek/deepseek-r1", True),
+        ("openrouter/anthropic/claude-opus-4.5", True),
+        ("openrouter/openai/gpt-5", True),
+        # Eval LiteLLM proxy wrapper should not affect capability detection.
+        ("litellm_proxy/gpt-5", True),
+        ("litellm_proxy/claude-opus-4-5", True),
+        ("litellm_proxy/gemini-3-flash-preview", True),
         ("unknown-model", False),
     ],
 )
@@ -133,13 +147,20 @@ def test_stop_words_support(model, expected_stop_words):
 
 
 def test_get_features_with_provider_prefix():
-    """Test that get_features works with provider prefixes."""
-    # Test with various provider prefixes
+    """Test that get_features works with provider prefixes.
+
+    Reasoning-effort detection delegates provider parsing to LiteLLM (we only
+    strip the `litellm_proxy/` wrapper).
+    """
     assert get_features("openai/gpt-4o").supports_reasoning_effort is False
     assert (
         get_features("anthropic/claude-3-5-sonnet").supports_reasoning_effort is False
     )
     assert get_features("litellm_proxy/gpt-4o").supports_reasoning_effort is False
+
+    # Known reasoning-capable model IDs should be recognized.
+    assert get_features("claude-sonnet-4-5").supports_reasoning_effort is True
+    assert get_features("anthropic/claude-sonnet-4-5").supports_reasoning_effort is True
 
 
 def test_get_features_case_insensitive():

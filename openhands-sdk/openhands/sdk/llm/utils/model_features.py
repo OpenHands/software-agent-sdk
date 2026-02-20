@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from litellm.utils import supports_reasoning
+
 
 def model_matches(model: str, patterns: list[str]) -> bool:
     """Return True if any pattern appears as a substring in the raw model name.
@@ -49,31 +51,33 @@ class ModelFeatures:
     supports_prompt_cache_retention: bool
 
 
-# Model lists capturing current behavior. Keep entries lowercase.
+LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
-REASONING_EFFORT_MODELS: list[str] = [
-    # Mirror main behavior exactly (no unintended expansion)
-    "o1-2024-12-17",
-    "o1",
-    "o3",
-    "o3-2025-04-16",
-    "o3-mini-2025-01-31",
-    "o3-mini",
-    "o4-mini",
-    "o4-mini-2025-04-16",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    # Gemini 3 family
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
-    # OpenAI GPT-5 family (includes mini variants)
-    "gpt-5",
-    # Anthropic Opus 4.5 and 4.6
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    # Nova 2 Lite
-    "nova-2-lite",
-]
+
+def _supports_reasoning_effort(model: str | None) -> bool:
+    """Return True if the model supports reasoning_effort via LiteLLM.
+
+    We pass the full model string to LiteLLM so it can run its own provider
+    parsing logic (including nested provider paths like `openrouter/anthropic/...`
+    and other special cases).
+
+    We only strip our `litellm_proxy/` wrapper prefix, since it is not a real
+    LiteLLM provider.
+    """
+    if not model:
+        return False
+
+    normalized = model.strip().lower()
+    if normalized.startswith(LITELLM_PROXY_PREFIX):
+        normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
+
+    try:
+        return bool(supports_reasoning(model=normalized, custom_llm_provider=None))
+    except Exception:
+        return False
+
+
+# Model lists capturing current behavior. Keep entries lowercase.
 
 EXTENDED_THINKING_MODELS: list[str] = [
     # Anthropic model family
@@ -169,7 +173,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
     return ModelFeatures(
-        supports_reasoning_effort=model_matches(model, REASONING_EFFORT_MODELS),
+        supports_reasoning_effort=_supports_reasoning_effort(model),
         supports_extended_thinking=model_matches(model, EXTENDED_THINKING_MODELS),
         supports_prompt_cache=model_matches(model, PROMPT_CACHE_MODELS),
         supports_stop_words=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
