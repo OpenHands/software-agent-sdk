@@ -729,6 +729,22 @@ def _find_git_repo_root(path: Path) -> Path | None:
     return None
 
 
+def _merge_loaded_skills(
+    *,
+    source_dir: Path,
+    loaded_skills: list[dict[str, Skill]],
+    seen_names: set[str],
+    all_skills: list[Skill],
+) -> None:
+    for skills_dict in loaded_skills:
+        for name, skill in skills_dict.items():
+            if name not in seen_names:
+                all_skills.append(skill)
+                seen_names.add(name)
+            else:
+                logger.warning(f"Skipping duplicate skill '{name}' from {source_dir}")
+
+
 def load_project_skills(work_dir: str | Path) -> list[Skill]:
     """Load skills from project-specific directories.
 
@@ -810,17 +826,12 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     project_skills_dir
                 )
 
-                # Merge all skill categories (skip duplicates including third-party)
-                for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
-                    for name, skill in skills_dict.items():
-                        if name not in seen_names:
-                            all_skills.append(skill)
-                            seen_names.add(name)
-                        else:
-                            logger.warning(
-                                f"Skipping duplicate skill '{name}' from "
-                                f"{project_skills_dir}"
-                            )
+                _merge_loaded_skills(
+                    source_dir=project_skills_dir,
+                    loaded_skills=[repo_skills, knowledge_skills, agent_skills],
+                    seen_names=seen_names,
+                    all_skills=all_skills,
+                )
 
             except Exception as e:
                 logger.warning(
