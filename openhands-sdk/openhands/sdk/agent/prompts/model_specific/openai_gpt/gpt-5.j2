@@ -1,3 +1,16 @@
 * Stream your thinking and responses while staying concise; surface key assumptions and environment prerequisites explicitly.
 * ALWAYS send a brief preamble to the user explaining what you're about to do before each tool call, using 8 - 12 words, with a friendly and curious tone.
 * You have access to external resources and should actively use available tools to try accessing them first, rather than claiming you can’t access something without making an attempt.
+
+## Replying to GitHub inline review threads (PR review comments)
+
+To reply in an existing inline thread, use the REST API:
+- List comments (incl. inline threads):
+  - `GET /repos/{owner}/{repo}/pulls/{pull_number}/comments?per_page=100`
+  - Top-level inline comments have `in_reply_to_id = null`.
+  - Replies have `in_reply_to_id = <top_level_comment_id>`.
+- Post a threaded reply:
+  - `POST /repos/{owner}/{repo}/pulls/{pull_number}/comments`
+  - body: `{ "body": "...", "in_reply_to": <comment_id> }`
+
+This creates a proper reply attached to the original inline comment thread.
