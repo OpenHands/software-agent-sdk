@@ -10,6 +10,7 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 
+import httpx
 import pytest
 import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
@@ -23,12 +24,14 @@ from openhands.sdk.event import (
     CondensationSummaryEvent,
     ConversationStateUpdateEvent,
     Event,
+    HookExecutionEvent,
     LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -107,7 +110,6 @@ def server_env(
     thread.start()
 
     # Wait for the server to be ready with health check
-    import httpx
 
     base_url = f"http://127.0.0.1:{port}"
     server_ready = False
@@ -580,7 +582,6 @@ def test_events_not_lost_during_client_disconnection(
 
     See PR #1791 review for details: https://github.com/OpenHands/software-agent-sdk/pull/1791#pullrequestreview-3694259068
     """
-    import httpx
 
     def fake_completion_with_finish_tool(
         self,
@@ -741,8 +742,6 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     This test is intentionally conservative: it doesn't change production logic
     except for injecting a delay into the client-side callback.
     """
-
-    import httpx
 
     ws_delay_s = 0.75
 
@@ -1019,3 +1018,179 @@ def test_security_risk_field_with_live_server(
     # The test validates that:
     # 1. Actions can be executed without security_risk (defaults to UNKNOWN)
     # 2. ActionEvent always has a security_risk attribute
+
+
+def test_hook_config_sent_to_server(
+    server_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Test that hook_config is properly sent to the server and hooks are executed.
+
+    This validates the fix for the bug where hook_config was accepted by
+    RemoteConversation but never sent to the server, meaning server-side hooks
+    (PreToolUse, PostToolUse, UserPromptSubmit, Stop) were never executed.
+
+    The test:
+    1. Configures both post_tool_use and stop hooks
+    2. Uses a patched LLM that returns a finish tool call
+    3. Verifies HookExecutionEvent events are received for both hook types
+    """
+    # Create hook scripts that output JSON to indicate successful execution
+    post_tool_hook = tmp_path / "post_tool_hook.sh"
+    post_tool_hook.write_text('#!/bin/bash\necho \'{"decision": "allow"}\'\nexit 0\n')
+    post_tool_hook.chmod(0o755)
+
+    stop_hook = tmp_path / "stop_hook.sh"
+    stop_hook.write_text('#!/bin/bash\necho \'{"decision": "allow"}\'\nexit 0\n')
+    stop_hook.chmod(0o755)
+
+    hook_config = HookConfig(
+        post_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=str(post_tool_hook),
+                        timeout=5,
+                    )
+                ],
+            )
+        ],
+        stop=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=str(stop_hook),
+                        timeout=5,
+                    )
+                ],
+            )
+        ],
+    )
+
+    # Create a patched LLM that returns a finish tool call to trigger hooks
+    call_count = {"count": 0}
+
+    def fake_completion_with_finish(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+
+        # First call: return finish tool call (triggers PostToolUse and Stop hooks)
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": '{"message": "Task complete"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            # Subsequent calls: simple message
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
+
+    # Create an Agent
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+
+    # Create conversation via factory with hook_config
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        hook_config=hook_config,
+    )
+
+    # Verify the conversation was created successfully
+    assert conv._id is not None
+
+    # Send a message and run - this triggers the finish tool call
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # Wait for events to be received and check for HookExecutionEvents
+    found_post_tool_use_hook = False
+    found_stop_hook = False
+    events: list[Event] = []
+
+    for attempt in range(50):  # up to ~5s
+        events = list(conv.state.events)
+        for e in events:
+            if isinstance(e, HookExecutionEvent):
+                if e.hook_event_type == "PostToolUse":
+                    found_post_tool_use_hook = True
+                    # Verify hook executed successfully
+                    assert e.success is True
+                    assert e.blocked is False
+                    assert e.exit_code == 0
+                    assert str(post_tool_hook) in e.hook_command
+                elif e.hook_event_type == "Stop":
+                    found_stop_hook = True
+                    # Verify hook executed successfully
+                    assert e.success is True
+                    assert e.blocked is False
+                    assert e.exit_code == 0
+                    assert str(stop_hook) in e.hook_command
+
+        if found_post_tool_use_hook and found_stop_hook:
+            break
+        time.sleep(0.1)
+
+    # Assert both hooks were executed and their events were received
+    assert found_post_tool_use_hook, (
+        "Expected HookExecutionEvent for PostToolUse hook. "
+        f"Events received: {[type(e).__name__ for e in events]}"
+    )
+    assert found_stop_hook, (
+        "Expected HookExecutionEvent for Stop hook. "
+        f"Events received: {[type(e).__name__ for e in events]}"
+    )
+
+    # Verify state transitions occurred (proves the conversation ran successfully)
+    state = conv.state
+    assert state.execution_status.value in {"finished", "idle", "running"}
+
+    conv.close()

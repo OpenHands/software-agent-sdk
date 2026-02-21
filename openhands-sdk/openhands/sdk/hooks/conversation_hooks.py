@@ -1,9 +1,17 @@
 """Hook integration for conversations."""
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from openhands.sdk.event import ActionEvent, Event, MessageEvent, ObservationEvent
+from openhands.sdk.event import (
+    ActionEvent,
+    Event,
+    HookExecutionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
 from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.hooks.executor import HookResult
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookEventType
 from openhands.sdk.llm import TextContent
@@ -15,30 +23,65 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Type alias for the callback function that emits events
+EventEmitter = Callable[[Event], None]
+
 
 class HookEventProcessor:
     """Processes events and runs hooks at appropriate points.
 
     Call set_conversation_state() after creating Conversation for blocking to work.
 
-    Note on persistence: HookEvent/HookResult are ephemeral (for hook script I/O).
-    If hook execution traces need to be persisted (e.g., for observability), create
-    a HookExecutionObservation inheriting from Observation and emit it through the
-    event stream, rather than modifying these hook classes.
+    HookExecutionEvent is emitted for each hook execution when emit_hook_events=True,
+    providing full observability into hook execution for clients.
     """
 
     def __init__(
         self,
         hook_manager: HookManager,
         original_callback: Any = None,
+        emit_hook_events: bool = True,
     ):
         self.hook_manager = hook_manager
         self.original_callback = original_callback
         self._conversation_state: ConversationState | None = None
+        self.emit_hook_events = emit_hook_events
 
     def set_conversation_state(self, state: "ConversationState") -> None:
         """Set conversation state for blocking support."""
         self._conversation_state = state
+
+    def _emit_hook_execution_event(
+        self,
+        hook_event_type: HookEventType,
+        hook_command: str,
+        result: HookResult,
+        tool_name: str | None = None,
+        action_id: str | None = None,
+        message_id: str | None = None,
+        hook_input: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a HookExecutionEvent for observability."""
+        if not self.emit_hook_events or not self.original_callback:
+            return
+
+        event = HookExecutionEvent(
+            hook_event_type=hook_event_type.value,
+            hook_command=hook_command,
+            tool_name=tool_name,
+            success=result.success,
+            blocked=result.blocked,
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            reason=result.reason,
+            additional_context=result.additional_context,
+            error=result.error,
+            action_id=action_id,
+            message_id=message_id,
+            hook_input=hook_input,
+        )
+        self.original_callback(event)
 
     def on_event(self, event: Event) -> None:
         """Process an event and run appropriate hooks."""
@@ -67,7 +110,7 @@ class HookEventProcessor:
             return
 
         tool_name = event.tool_name
-        tool_input = {}
+        tool_input: dict[str, Any] = {}
 
         # Extract tool input from action
         if event.action is not None:
@@ -76,10 +119,26 @@ class HookEventProcessor:
             except Exception as e:
                 logger.debug(f"Could not extract tool input: {e}")
 
+        # Get hooks to emit events with command info
+        hooks = self.hook_manager.config.get_hooks_for_event(
+            HookEventType.PRE_TOOL_USE, tool_name
+        )
+
         should_continue, results = self.hook_manager.run_pre_tool_use(
             tool_name=tool_name,
             tool_input=tool_input,
         )
+
+        # Emit HookExecutionEvents for each hook
+        for hook, result in zip(hooks, results, strict=False):
+            self._emit_hook_execution_event(
+                hook_event_type=HookEventType.PRE_TOOL_USE,
+                hook_command=hook.command,
+                result=result,
+                tool_name=tool_name,
+                action_id=event.id,
+                hook_input={"tool_name": tool_name, "tool_input": tool_input},
+            )
 
         if not should_continue:
             reason = self.hook_manager.get_blocking_reason(results)
@@ -134,14 +193,31 @@ class HookEventProcessor:
             except Exception as e:
                 logger.debug(f"Could not extract tool response: {e}")
 
+        # Get hooks to emit events with command info
+        hooks = self.hook_manager.config.get_hooks_for_event(
+            HookEventType.POST_TOOL_USE, tool_name
+        )
+
         results = self.hook_manager.run_post_tool_use(
             tool_name=tool_name,
             tool_input=tool_input,
             tool_response=tool_response,
         )
 
-        # Log any hook errors
-        for result in results:
+        # Emit HookExecutionEvents for each hook and log errors
+        for hook, result in zip(hooks, results, strict=False):
+            self._emit_hook_execution_event(
+                hook_event_type=HookEventType.POST_TOOL_USE,
+                hook_command=hook.command,
+                result=result,
+                tool_name=tool_name,
+                action_id=action_event.id,
+                hook_input={
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_response": tool_response,
+                },
+            )
             if result.error:
                 logger.warning(f"PostToolUse hook error: {result.error}")
 
@@ -161,9 +237,24 @@ class HookEventProcessor:
                 if isinstance(content, TextContent):
                     message += content.text
 
+        # Get hooks to emit events with command info
+        hooks = self.hook_manager.config.get_hooks_for_event(
+            HookEventType.USER_PROMPT_SUBMIT
+        )
+
         should_continue, additional_context, results = (
             self.hook_manager.run_user_prompt_submit(message=message)
         )
+
+        # Emit HookExecutionEvents for each hook
+        for hook, result in zip(hooks, results, strict=False):
+            self._emit_hook_execution_event(
+                hook_event_type=HookEventType.USER_PROMPT_SUBMIT,
+                hook_command=hook.command,
+                result=result,
+                message_id=event.id,
+                hook_input={"message": message},
+            )
 
         if not should_continue:
             reason = self.hook_manager.get_blocking_reason(results)
@@ -213,29 +304,52 @@ class HookEventProcessor:
 
     def run_session_start(self) -> None:
         """Run SessionStart hooks. Call after conversation is created."""
+        hooks = self.hook_manager.config.get_hooks_for_event(
+            HookEventType.SESSION_START
+        )
         results = self.hook_manager.run_session_start()
-        for r in results:
-            if r.error:
-                logger.warning(f"SessionStart hook error: {r.error}")
+
+        for hook, result in zip(hooks, results, strict=False):
+            self._emit_hook_execution_event(
+                hook_event_type=HookEventType.SESSION_START,
+                hook_command=hook.command,
+                result=result,
+            )
+            if result.error:
+                logger.warning(f"SessionStart hook error: {result.error}")
 
     def run_session_end(self) -> None:
         """Run SessionEnd hooks. Call before conversation is closed."""
+        hooks = self.hook_manager.config.get_hooks_for_event(HookEventType.SESSION_END)
         results = self.hook_manager.run_session_end()
-        for r in results:
-            if r.error:
-                logger.warning(f"SessionEnd hook error: {r.error}")
+
+        for hook, result in zip(hooks, results, strict=False):
+            self._emit_hook_execution_event(
+                hook_event_type=HookEventType.SESSION_END,
+                hook_command=hook.command,
+                result=result,
+            )
+            if result.error:
+                logger.warning(f"SessionEnd hook error: {result.error}")
 
     def run_stop(self, reason: str | None = None) -> tuple[bool, str | None]:
         """Run Stop hooks. Returns (should_stop, feedback)."""
         if not self.hook_manager.has_hooks(HookEventType.STOP):
             return True, None
 
+        hooks = self.hook_manager.config.get_hooks_for_event(HookEventType.STOP)
         should_stop, results = self.hook_manager.run_stop(reason=reason)
 
-        # Log any errors
-        for r in results:
-            if r.error:
-                logger.warning(f"Stop hook error: {r.error}")
+        # Emit events and log errors
+        for hook, result in zip(hooks, results, strict=False):
+            self._emit_hook_execution_event(
+                hook_event_type=HookEventType.STOP,
+                hook_command=hook.command,
+                result=result,
+                hook_input={"reason": reason} if reason else None,
+            )
+            if result.error:
+                logger.warning(f"Stop hook error: {result.error}")
 
         # Collect feedback if denied
         feedback = None
@@ -258,8 +372,21 @@ def create_hook_callback(
     working_dir: str | None = None,
     session_id: str | None = None,
     original_callback: Any = None,
+    emit_hook_events: bool = True,
 ) -> tuple[HookEventProcessor, Any]:
-    """Create a hook-enabled event callback. Returns (processor, callback)."""
+    """Create a hook-enabled event callback. Returns (processor, callback).
+
+    Args:
+        hook_config: Configuration for hooks to run.
+        working_dir: Working directory for hook execution.
+        session_id: Session ID passed to hooks.
+        original_callback: Callback to chain after hook processing.
+        emit_hook_events: If True, emit HookExecutionEvent for each hook execution.
+            Defaults to True for full observability.
+
+    Returns:
+        Tuple of (HookEventProcessor, callback function).
+    """
     hook_manager = HookManager(
         config=hook_config,
         working_dir=working_dir,
@@ -269,6 +396,7 @@ def create_hook_callback(
     processor = HookEventProcessor(
         hook_manager=hook_manager,
         original_callback=original_callback,
+        emit_hook_events=emit_hook_events,
     )
 
     return processor, processor.on_event

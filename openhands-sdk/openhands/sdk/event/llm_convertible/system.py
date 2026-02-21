@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import json
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 from rich.text import Text
@@ -7,6 +10,10 @@ from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.tool import ToolDefinition
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.hooks import HookConfig
 
 
 class SystemPromptEvent(LLMConvertibleEvent):
@@ -24,6 +31,7 @@ class SystemPromptEvent(LLMConvertibleEvent):
         tools: List of available tools
         dynamic_context: Optional per-conversation context (hosts, repo info, etc.)
             Sent as a second TextContent block inside the system message.
+        hook_config: Optional hook configuration for the conversation.
     """
 
     source: SourceType = "agent"
@@ -37,6 +45,14 @@ class SystemPromptEvent(LLMConvertibleEvent):
             "Optional dynamic per-conversation context (runtime info, repo context, "
             "secrets). When provided, this is included as a second content block in "
             "the system message (not cached)."
+        ),
+    )
+    hook_config: HookConfig | None = Field(
+        default=None,
+        description=(
+            "Optional hook configuration for this conversation. When set, shows what "
+            "hooks are active for PreToolUse, PostToolUse, UserPromptSubmit, "
+            "SessionStart, SessionEnd, and Stop events."
         ),
     )
 
@@ -70,6 +86,31 @@ class SystemPromptEvent(LLMConvertibleEvent):
                 content.append(f"  Parameters: {params_str}")
             except Exception:
                 content.append("  Parameters: <unavailable>")
+
+        # Show hooks if configured
+        if self.hook_config:
+            content.append("\n\nHooks Configured:", style="bold")
+            hook_types = [
+                ("PreToolUse", self.hook_config.pre_tool_use),
+                ("PostToolUse", self.hook_config.post_tool_use),
+                ("UserPromptSubmit", self.hook_config.user_prompt_submit),
+                ("SessionStart", self.hook_config.session_start),
+                ("SessionEnd", self.hook_config.session_end),
+                ("Stop", self.hook_config.stop),
+            ]
+            for hook_type, matchers in hook_types:
+                if matchers:
+                    content.append(f"\n  {hook_type}: {len(matchers)} matcher(s)")
+                    for matcher in matchers:
+                        pattern = matcher.matcher if matcher.matcher != "*" else "(all)"
+                        content.append(f"\n    [{pattern}]:")
+                        for hook in matcher.hooks:
+                            cmd_preview = (
+                                hook.command[:50] + "..."
+                                if len(hook.command) > 50
+                                else hook.command
+                            )
+                            content.append(f"\n      - {cmd_preview}")
         return content
 
     def to_llm_message(self) -> Message:
@@ -101,7 +142,28 @@ class SystemPromptEvent(LLMConvertibleEvent):
             context_info = (
                 f"\n  Dynamic Context: {len(self.dynamic_context.text)} chars"
             )
+        hooks_info = ""
+        if self.hook_config:
+            hook_counts = []
+            if self.hook_config.pre_tool_use:
+                hook_counts.append(f"PreToolUse:{len(self.hook_config.pre_tool_use)}")
+            if self.hook_config.post_tool_use:
+                hook_counts.append(f"PostToolUse:{len(self.hook_config.post_tool_use)}")
+            if self.hook_config.user_prompt_submit:
+                hook_counts.append(
+                    f"UserPromptSubmit:{len(self.hook_config.user_prompt_submit)}"
+                )
+            if self.hook_config.session_start:
+                hook_counts.append(
+                    f"SessionStart:{len(self.hook_config.session_start)}"
+                )
+            if self.hook_config.session_end:
+                hook_counts.append(f"SessionEnd:{len(self.hook_config.session_end)}")
+            if self.hook_config.stop:
+                hook_counts.append(f"Stop:{len(self.hook_config.stop)}")
+            if hook_counts:
+                hooks_info = f"\n  Hooks: {', '.join(hook_counts)}"
         return (
             f"{base_str}\n  System: {prompt_preview}\n  "
-            f"Tools: {tool_count} available{context_info}"
+            f"Tools: {tool_count} available{context_info}{hooks_info}"
         )

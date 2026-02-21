@@ -376,6 +376,9 @@ class LocalConversation(BaseConversation):
 
         # Set up hook processor with the combined config
         if final_hook_config is not None:
+            # Store final hook_config in state for observability
+            self._state.hook_config = final_hook_config
+
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
