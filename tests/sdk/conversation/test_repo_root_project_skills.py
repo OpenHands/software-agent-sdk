@@ -7,7 +7,8 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.skills import load_project_skills
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import SystemPromptEvent
-from tests.sdk.utils.llm import TestLLM
+from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.testing import TestLLM
 
 
 def test_system_prompt_includes_repo_root_agents_md_when_workdir_is_subdir(
@@ -39,7 +40,15 @@ def test_system_prompt_includes_repo_root_agents_md_when_workdir_is_subdir(
     )
 
     agent = Agent(
-        llm=TestLLM(model="test-model"),
+        llm=TestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="ok")],
+                )
+            ],
+            model="test-model",
+        ),
         tools=[],
         include_default_tools=[],
         agent_context=ctx,
