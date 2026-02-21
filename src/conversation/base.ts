@@ -141,6 +141,13 @@ export interface IConversation {
   generateTitle(maxLength?: number, llm?: LLM): Promise<string>;
 
   /**
+   * Set the title of the conversation.
+   *
+   * @param title - The title to set
+   */
+  setTitle(title: string): Promise<void>;
+
+  /**
    * Update secrets available to the agent.
    *
    * @param secrets - Record of secret name to value mappings

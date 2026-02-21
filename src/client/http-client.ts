@@ -178,6 +178,14 @@ export class HttpClient {
     return this.request<T>({ method: 'PUT', url, data, ...options });
   }
 
+  async patch<T = any>(
+    url: string,
+    data?: any,
+    options?: Omit<RequestOptions, 'method' | 'url' | 'data'>
+  ): Promise<HttpResponse<T>> {
+    return this.request<T>({ method: 'PATCH', url, data, ...options });
+  }
+
   async delete<T = any>(
     url: string,
     options?: Omit<RequestOptions, 'method' | 'url'>
