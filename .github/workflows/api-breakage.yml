@@ -32,8 +32,6 @@ jobs:
             - name: Run SDK API breakage check
               id: api_breakage
               continue-on-error: true
-              env:
-                  SDK_INCLUDE_PATHS: openhands.sdk
               run: |
                   uv run python .github/scripts/check_sdk_api_breakage.py 2>&1 | tee api-breakage.log
                   echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
