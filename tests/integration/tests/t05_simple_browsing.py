@@ -100,11 +100,8 @@ class SimpleBrowsingTest(BaseIntegrationTest):
 
     @property
     def tools(self) -> list[Tool]:
-        """List of tools available to the agent based on configured tool preset.
-
-        Note: This test needs browser tools for the browsing functionality.
-        """
-        return get_tools_for_preset(self.tool_preset, enable_browser=True)
+        """List of tools available to the agent based on configured tool preset."""
+        return get_tools_for_preset(self.tool_preset, enable_browser=False)
 
     def setup(self) -> None:
         """Set up a local web server with the HTML file."""
