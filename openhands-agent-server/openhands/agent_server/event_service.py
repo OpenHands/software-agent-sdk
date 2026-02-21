@@ -441,6 +441,11 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
+        logger.info(
+            f"Creating LocalConversation with hook_config from stored: "
+            f"{self.stored.hook_config}"
+        )
+
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -454,6 +459,10 @@ class EventService:
             secrets=self.stored.secrets,
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
+        )
+        logger.info(
+            f"LocalConversation created with _pending_hook_config: "
+            f"{conversation._pending_hook_config}"
         )
 
         # Set confirmation mode if enabled
