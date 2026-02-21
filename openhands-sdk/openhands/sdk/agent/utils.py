@@ -15,6 +15,7 @@ from openhands.sdk.context.view import View
 from openhands.sdk.conversation.types import ConversationTokenCallbackType
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.validation import validate_for_llm
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
 
@@ -118,6 +119,7 @@ def prepare_llm_messages(
     condenser: None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
+    conversation_id: str | None = None,
 ) -> list[Message]: ...
 
 
@@ -127,6 +129,7 @@ def prepare_llm_messages(
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
+    conversation_id: str | None = None,
 ) -> list[Message] | Condensation: ...
 
 
@@ -135,6 +138,7 @@ def prepare_llm_messages(
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
+    conversation_id: str | None = None,
 ) -> list[Message] | Condensation:
     """Prepare LLM messages from conversation context.
 
@@ -148,6 +152,8 @@ def prepare_llm_messages(
         additional_messages: Optional additional messages to append
         llm: Optional LLM instance from the agent, passed to condenser for
             token counting or other LLM features
+        conversation_id: Optional conversation ID for better validation error
+            messages
 
     Returns:
         List of messages ready for LLM completion, or a Condensation event
@@ -155,7 +161,12 @@ def prepare_llm_messages(
 
     Raises:
         RuntimeError: If condensation is needed but no callback is provided
+        EventStreamValidationError: If event stream has issues that would
+            cause LLM API errors (e.g., orphan tool calls, duplicate responses)
     """
+    # Validate event stream before converting to LLM messages.
+    # Raises EventStreamValidationError with clear message for frontend.
+    validate_for_llm(events, conversation_id=conversation_id)
 
     view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
