@@ -60,7 +60,7 @@ ARG USERNAME UID GID PORT
 # Install base packages and create user
 RUN set -eux; \
     # Install base packages (works for both Debian-based images)
-    apt-get update; \
+    apt-get update --allow-releaseinfo-change; \
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget sudo apt-utils git jq tmux build-essential \
         coreutils util-linux procps findutils grep sed \
