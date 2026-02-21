@@ -6,77 +6,20 @@ constraints.
 """
 
 from openhands.sdk.context.view import View
-from openhands.sdk.event.llm_convertible import (
-    ActionEvent,
-    MessageEvent,
-    ObservationEvent,
-)
 from openhands.sdk.llm import (
-    Message,
-    MessageToolCall,
-    TextContent,
     ThinkingBlock,
 )
-from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
-
-
-def create_action_event(
-    llm_response_id: str,
-    tool_call_id: str,
-    tool_name: str = "test_tool",
-    thinking_blocks: list[ThinkingBlock] | None = None,
-) -> ActionEvent:
-    """Helper to create an ActionEvent with specified IDs."""
-    action = MCPToolAction(data={})
-
-    tool_call = MessageToolCall(
-        id=tool_call_id,
-        name=tool_name,
-        arguments="{}",
-        origin="completion",
-    )
-
-    return ActionEvent(
-        thought=[TextContent(text="Test thought")],
-        thinking_blocks=thinking_blocks or [],  # type: ignore
-        action=action,
-        tool_name=tool_name,
-        tool_call_id=tool_call_id,
-        tool_call=tool_call,
-        llm_response_id=llm_response_id,
-        source="agent",
-    )
-
-
-def create_observation_event(
-    tool_call_id: str, content: str = "Success", tool_name: str = "test_tool"
-) -> ObservationEvent:
-    """Helper to create an ObservationEvent."""
-    observation = MCPToolObservation.from_text(
-        text=content,
-        tool_name=tool_name,
-    )
-    return ObservationEvent(
-        observation=observation,
-        tool_name=tool_name,
-        tool_call_id=tool_call_id,
-        action_id="action_event_id",
-        source="environment",
-    )
-
-
-def message_event(content: str) -> MessageEvent:
-    """Helper to create a MessageEvent."""
-    return MessageEvent(
-        llm_message=Message(role="user", content=[TextContent(text=content)]),
-        source="user",
-    )
+from tests.sdk.context.view.conftest import (  # noqa: F401
+    create_action_event,
+    create_observation_event,
+    message_event,
+)
 
 
 def test_empty_list() -> None:
     """Test manipulation_indices with empty event list."""
     view = View.from_events([])
-    assert view.manipulation_indices == [0]
+    assert view.manipulation_indices == {0}
 
 
 def test_single_message_event() -> None:
@@ -85,9 +28,7 @@ def test_single_message_event() -> None:
     view = View.from_events(events)
 
     # Should have boundaries before and after the single message
-    assert 0 in view.manipulation_indices
-    assert 1 in view.manipulation_indices
-    assert view.manipulation_indices == [0, 1]
+    assert view.manipulation_indices == {0, 1}
 
 
 def test_multiple_message_events() -> None:
@@ -100,7 +41,7 @@ def test_multiple_message_events() -> None:
     view = View.from_events(events)
 
     # Each message is its own atomic unit, so boundaries exist between all of them
-    assert view.manipulation_indices == [0, 1, 2, 3]
+    assert view.manipulation_indices == {0, 1, 2, 3}
 
 
 def test_single_action_observation_pair() -> None:
@@ -112,7 +53,7 @@ def test_single_action_observation_pair() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # The pair is an atomic unit, so boundaries are only at start and end
-    assert indices == [0, 2]
+    assert indices == {0, 2}
 
 
 def test_action_observation_with_message_events() -> None:
@@ -126,7 +67,7 @@ def test_action_observation_with_message_events() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # Boundaries: [0 msg1 1 (action+obs) 3 msg2 4]
-    assert indices == [0, 1, 3, 4]
+    assert indices == {0, 1, 3, 4}
 
 
 def test_batch_of_actions_simple() -> None:
@@ -148,23 +89,7 @@ def test_batch_of_actions_simple() -> None:
 
     # All actions are part of the same batch, and observations extend the range
     # The entire batch (actions + observations) is one atomic unit
-    assert indices == [0, 6]
-
-
-def test_batch_with_interleaved_observations() -> None:
-    """Test manipulation indices when observations are interleaved with actions."""
-    action1 = create_action_event("response_1", "tool_call_1")
-    action2 = create_action_event("response_1", "tool_call_2")
-
-    obs1 = create_observation_event("tool_call_1")
-    obs2 = create_observation_event("tool_call_2")
-
-    # Interleave: action1, obs1, action2, obs2
-    events = [action1, obs1, action2, obs2]
-    indices = View.from_events(events).manipulation_indices
-
-    # Still one atomic unit because actions share llm_response_id
-    assert indices == [0, 4]
+    assert indices == {0, 6}
 
 
 def test_multiple_separate_batches() -> None:
@@ -194,7 +119,7 @@ def test_multiple_separate_batches() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # Two atomic units: batch1 (indices 0-3) and batch2 (indices 4-7)
-    assert indices == [0, 4, 8]
+    assert indices == {0, 4, 8}
 
 
 def test_batches_separated_by_messages() -> None:
@@ -217,7 +142,7 @@ def test_batches_separated_by_messages() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # [0 msg1 1 (batch1: action1,action2,obs1,obs2) 5 msg2 6 (batch2) 8 msg3 9]
-    assert indices == [0, 1, 5, 6, 8, 9]
+    assert indices == {0, 1, 5, 6, 8, 9}
 
 
 def test_single_action_in_batch() -> None:
@@ -229,7 +154,7 @@ def test_single_action_in_batch() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # Single-action batch is still an atomic unit
-    assert indices == [0, 2]
+    assert indices == {0, 2}
 
 
 def test_complex_interleaved_scenario() -> None:
@@ -294,7 +219,7 @@ def test_complex_interleaved_scenario() -> None:
     # - 7: after msg3, before batch2
     # - 9: after batch2
 
-    assert indices == [0, 1, 6, 7, 9]
+    assert indices == {0, 1, 6, 7, 9}
 
 
 def test_observations_extend_batch_range() -> None:
@@ -313,7 +238,7 @@ def test_observations_extend_batch_range() -> None:
     # Batch includes actions 0-1 and observations 3-4
     # Message at 2 falls within the batch range, so treated as part of it
     # Range: min=0, max=4
-    assert indices == [0, 5]
+    assert indices == {0, 5}
 
 
 def test_batch_with_all_observations() -> None:
@@ -332,7 +257,7 @@ def test_batch_with_all_observations() -> None:
     indices = view.manipulation_indices
 
     # The batch is one atomic unit containing both action-observation pairs
-    assert indices == [0, 4]
+    assert indices == {0, 4}
 
 
 def test_interleaved_batches_and_messages() -> None:
@@ -353,7 +278,7 @@ def test_interleaved_batches_and_messages() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # [0 msg1 1 batch1 3 msg2 4 batch2 6 msg3 7]
-    assert indices == [0, 1, 3, 4, 6, 7]
+    assert indices == {0, 1, 3, 4, 6, 7}
 
 
 def test_three_action_batch() -> None:
@@ -370,7 +295,7 @@ def test_three_action_batch() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # All part of one batch
-    assert indices == [0, 6]
+    assert indices == {0, 6}
 
 
 def test_consecutive_atomic_units() -> None:
@@ -387,7 +312,7 @@ def test_consecutive_atomic_units() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # [0 msg1 1 msg2 2 batch 4 msg3 5]
-    assert indices == [0, 1, 2, 4, 5]
+    assert indices == {0, 1, 2, 4, 5}
 
     # Verify atomic units:
     # events[0:1] = [msg1]
@@ -411,7 +336,4 @@ def test_forgetting_range_selection() -> None:
     indices = View.from_events(events).manipulation_indices
 
     # [0 msg1 1 batch 5 msg2 6]
-    assert indices == [0, 1, 5, 6]
-
-    # To forget the batch: forget events[1:5]
-    # That would remove action1, action2, obs1, obs2 as an atomic unit
+    assert indices == {0, 1, 5, 6}

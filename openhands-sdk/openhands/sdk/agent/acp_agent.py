@@ -10,10 +10,26 @@ See https://agentclientprotocol.com/protocol/overview
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
+from acp.client.connection import ClientSideConnection
+from acp.helpers import text_block
+from acp.schema import (
+    AgentMessageChunk,
+    AgentThoughtChunk,
+    AllowedOutcome,
+    PromptResponse,
+    RequestPermissionResponse,
+    TextContentBlock,
+    ToolCallProgress,
+    ToolCallStart,
+    UsageUpdate,
+)
+from acp.transports import default_environment
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
@@ -41,15 +57,27 @@ logger = get_logger(__name__)
 # so we yield to the event loop and then sleep briefly to allow in-flight
 # handlers to finish.  Override via ACP_NOTIFICATION_DRAIN_DELAY for slow or
 # remote servers.
-# TODO: Replace with protocol-level synchronization once ACP supports a
-#       "turn complete" sentinel notification.
+# TODO(https://github.com/agentclientprotocol/agent-client-protocol/issues/554):
+#       Replace with protocol-level synchronization once ACP supports a
+#       "turn complete" notification.
 _NOTIFICATION_DRAIN_DELAY: float = float(
     os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
 )
 
 
-def _make_sentinel_llm() -> LLM:
-    """Create a sentinel LLM that should never be called."""
+async def _drain_notifications() -> None:
+    """Best-effort drain of pending ``session_update`` notifications.
+
+    ACP does not yet signal when all notifications for a turn have been
+    delivered (see TODO above).  We yield to the event loop so already-queued
+    handlers run, then sleep briefly to allow in-flight IO handlers to finish.
+    """
+    await asyncio.sleep(0)
+    await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
+
+
+def _make_dummy_llm() -> LLM:
+    """Create a dummy LLM that should never be called directly."""
     return LLM(model="acp-managed")
 
 
@@ -78,20 +106,17 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
             if stripped.startswith(b"{") and b'"jsonrpc"' in line:
                 dest.feed_data(line)
             else:
-                # Log non-JSON lines at debug level
-                try:
-                    logger.debug(
-                        "ACP stdout (non-JSON): %s",
-                        line.decode(errors="replace").rstrip(),
-                    )
-                except Exception:
-                    pass
+                logger.debug(
+                    "ACP stdout (non-JSON): %s",
+                    line.decode(errors="replace").rstrip(),
+                )
     except Exception:
+        logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
         dest.feed_eof()
 
 
-class _OpenHandsACPClient:
-    """ACP Client that accumulates session updates and emits OpenHands events.
+class _OpenHandsACPBridge:
+    """Bridge between OpenHands and ACP that accumulates session updates.
 
     Implements the ``Client`` protocol from ``agent_client_protocol``.
     """
@@ -104,7 +129,9 @@ class _OpenHandsACPClient:
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._context_window: int = 0  # context window size from ACP
         self._llm_ref: Any = None  # reference to the sentinel LLM
-        # Fork session state for ask_agent()
+        # Fork session state for ask_agent() — guarded by _fork_lock to
+        # prevent concurrent ask_agent() calls from colliding.
+        self._fork_lock = threading.Lock()
         self._fork_session_id: str | None = None
         self._fork_accumulated_text: list[str] = []
 
@@ -123,15 +150,6 @@ class _OpenHandsACPClient:
         update: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
-        from acp.schema import (
-            AgentMessageChunk,
-            AgentThoughtChunk,
-            TextContentBlock,
-            ToolCallProgress,
-            ToolCallStart,
-            UsageUpdate,
-        )
-
         # Route fork session updates to the fork accumulator
         if self._fork_session_id is not None and session_id == self._fork_session_id:
             if isinstance(update, AgentMessageChunk):
@@ -147,7 +165,7 @@ class _OpenHandsACPClient:
                     try:
                         self.on_token(text)
                     except Exception:
-                        pass
+                        logger.debug("on_token callback failed", exc_info=True)
         elif isinstance(update, AgentThoughtChunk):
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(update.content.text)
@@ -173,11 +191,6 @@ class _OpenHandsACPClient:
         **kwargs: Any,  # noqa: ARG002
     ) -> Any:
         """Auto-approve all permission requests from the ACP server."""
-        from acp.schema import (
-            AllowedOutcome,
-            RequestPermissionResponse,
-        )
-
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
         logger.info(
@@ -281,7 +294,7 @@ class ACPAgent(AgentBase):
     """
 
     # Override required fields with ACP-appropriate defaults
-    llm: LLM = Field(default_factory=_make_sentinel_llm)
+    llm: LLM = Field(default_factory=_make_dummy_llm)
     tools: list[Tool] = Field(default_factory=list)
     include_default_tools: list[str] = Field(default_factory=list)
 
@@ -333,11 +346,33 @@ class ACPAgent(AgentBase):
     _conn: Any = PrivateAttr(default=None)  # ClientSideConnection
     _session_id: str | None = PrivateAttr(default=None)
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
-    _client: Any = PrivateAttr(default=None)  # _OpenHandsACPClient
+    _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _tcp_writer: Any = PrivateAttr(default=None)  # asyncio.StreamWriter (TCP mode)
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
+
+    # -- Helpers -----------------------------------------------------------
+
+    def _record_usage(self, response: PromptResponse | None, session_id: str) -> None:
+        """Record token usage and notify stats callback from a PromptResponse."""
+        if response is not None and response.usage is not None:
+            usage = response.usage
+            self.llm.metrics.add_token_usage(
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cached_read_tokens or 0,
+                cache_write_tokens=usage.cached_write_tokens or 0,
+                reasoning_tokens=usage.thought_tokens or 0,
+                context_window=self._client._context_window,
+                response_id=session_id,
+            )
+
+        if self.llm.telemetry._stats_update_callback is not None:
+            try:
+                self.llm.telemetry._stats_update_callback()
+            except Exception:
+                logger.debug("Stats update callback failed", exc_info=True)
 
     # -- Override base properties to be no-ops for ACP ---------------------
 
@@ -371,11 +406,6 @@ class ACPAgent(AgentBase):
             raise NotImplementedError(
                 "ACPAgent does not support condenser; "
                 "the ACP server manages its own context"
-            )
-        if self.critic is not None:
-            raise NotImplementedError(
-                "ACPAgent does not support critic; "
-                "the ACP server manages its own evaluation"
             )
         if self.agent_context is not None:
             raise NotImplementedError(
@@ -411,13 +441,7 @@ class ACPAgent(AgentBase):
         (``acp_host``/``acp_port``), connects to an already-running server
         over the network.
         """
-        import asyncio
-
-        from acp.client.connection import (
-            ClientSideConnection,
-        )
-
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client._llm_ref = self.llm
         self._client = client
 
@@ -442,13 +466,12 @@ class ACPAgent(AgentBase):
             self._conn, self._session_id, self._tcp_writer = result
         else:
             # --- Subprocess mode ---
-            from acp.transports import (
-                default_environment,
-            )
-
+            # Build environment: inherit current env + ACP extras
             env = default_environment()
             env.update(os.environ)
             env.update(self.acp_env)
+            # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
+            env.pop("CLAUDECODE", None)
 
             assert self.acp_command is not None
             command = self.acp_command[0]
@@ -517,48 +540,19 @@ class ACPAgent(AgentBase):
         self._client.on_token = on_token
 
         try:
-            import asyncio
 
-            from acp.helpers import text_block
-
-            async def _prompt() -> Any:
+            async def _prompt() -> PromptResponse:
                 response = await self._conn.prompt(
                     [text_block(user_message)],
                     self._session_id,
                 )
-                # Drain pending session_update notification handlers.
-                # First yield lets already-queued handlers run, then a
-                # short sleep covers handlers still arriving over IO.
-                await asyncio.sleep(0)
-                await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
+                await _drain_notifications()
                 return response
 
             # Send prompt to ACP server
             response = self._executor.run_async(_prompt)
 
-            # Record per-turn token usage from PromptResponse
-            if (
-                response is not None
-                and hasattr(response, "usage")
-                and response.usage is not None
-            ):
-                usage = response.usage
-                self.llm.metrics.add_token_usage(
-                    prompt_tokens=usage.input_tokens,
-                    completion_tokens=usage.output_tokens,
-                    cache_read_tokens=usage.cached_read_tokens or 0,
-                    cache_write_tokens=usage.cached_write_tokens or 0,
-                    reasoning_tokens=usage.thought_tokens or 0,
-                    context_window=self._client._context_window,
-                    response_id=self._session_id or "",
-                )
-
-            # Notify stats callback
-            if self.llm.telemetry._stats_update_callback is not None:
-                try:
-                    self.llm.telemetry._stats_update_callback()
-                except Exception:
-                    pass
+            self._record_usage(response, self._session_id or "")
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
@@ -596,77 +590,41 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.ERROR
 
     def ask_agent(self, question: str) -> str | None:
-        """Answer a stateless question by forking the ACP session.
-
-        Forks the current session, prompts the fork with the question,
-        collects the response, and discards the fork — preserving the
-        read-only semantics required by the ``ask_agent`` API.
-        """
-        if self._conn is None or self._session_id is None:
-            raise RuntimeError("ACPAgent is not initialized; call init_state() first")
-
-        import asyncio
-
-        from acp.helpers import text_block
+        """Fork the ACP session, prompt the fork, and return the response."""
+        if self._conn is None:
+            msg = "ACPAgent has no ACP connection; call init_state() first"
+            raise RuntimeError(msg)
+        if self._session_id is None:
+            msg = "ACPAgent has no session ID; call init_state() first"
+            raise RuntimeError(msg)
 
         client = self._client
 
         async def _fork_and_prompt() -> str:
-            # Fork the current session
             fork_response = await self._conn.fork_session(
                 cwd=self._working_dir,
                 session_id=self._session_id,
             )
             fork_session_id = fork_response.session_id
 
-            # Set up fork routing on the client
             client._fork_session_id = fork_session_id
             client._fork_accumulated_text.clear()
             try:
-                # Prompt on the forked session
                 response = await self._conn.prompt(
                     [text_block(question)],
                     fork_session_id,
                 )
+                await _drain_notifications()
 
-                # Drain pending notifications
-                await asyncio.sleep(0)
-                await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
-
-                # Collect response text
                 result = "".join(client._fork_accumulated_text)
-
-                # Record token usage from PromptResponse
-                if (
-                    response is not None
-                    and hasattr(response, "usage")
-                    and response.usage is not None
-                ):
-                    usage = response.usage
-                    self.llm.metrics.add_token_usage(
-                        prompt_tokens=usage.input_tokens,
-                        completion_tokens=usage.output_tokens,
-                        cache_read_tokens=usage.cached_read_tokens or 0,
-                        cache_write_tokens=usage.cached_write_tokens or 0,
-                        reasoning_tokens=usage.thought_tokens or 0,
-                        context_window=client._context_window,
-                        response_id=fork_session_id,
-                    )
-
-                # Notify stats callback
-                if self.llm.telemetry._stats_update_callback is not None:
-                    try:
-                        self.llm.telemetry._stats_update_callback()
-                    except Exception:
-                        pass
-
+                self._record_usage(response, fork_session_id)
                 return result
             finally:
-                # Clean up fork state
                 client._fork_session_id = None
                 client._fork_accumulated_text.clear()
 
-        return self._executor.run_async(_fork_and_prompt)
+        with client._fork_lock:
+            return self._executor.run_async(_fork_and_prompt)
 
     def close(self) -> None:
         """Terminate the ACP subprocess and clean up resources."""

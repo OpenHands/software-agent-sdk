@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from openhands.sdk.agent.acp_agent import ACPAgent, _OpenHandsACPClient
+from openhands.sdk.agent.acp_agent import ACPAgent, _OpenHandsACPBridge
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -244,13 +244,13 @@ class TestACPAgentInitState:
 
 
 # ---------------------------------------------------------------------------
-# _OpenHandsACPClient
+# _OpenHandsACPBridge
 # ---------------------------------------------------------------------------
 
 
 class TestOpenHandsACPClient:
     def test_reset_clears_state(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client.accumulated_text.append("hello")
         client.accumulated_thoughts.append("thinking")
         client.on_token = lambda _: None
@@ -263,20 +263,20 @@ class TestOpenHandsACPClient:
 
     @pytest.mark.asyncio
     async def test_session_update_accumulates_text(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client.accumulated_text.append("Hello")
         client.accumulated_text.append(" World")
         assert "".join(client.accumulated_text) == "Hello World"
 
     @pytest.mark.asyncio
     async def test_session_update_accumulates_thoughts(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client.accumulated_thoughts.append("Let me think")
         client.accumulated_thoughts.append(" about this")
         assert "".join(client.accumulated_thoughts) == "Let me think about this"
 
     def test_on_token_callback(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         tokens: list[str] = []
         client.on_token = tokens.append
 
@@ -290,7 +290,7 @@ class TestOpenHandsACPClient:
 
     @pytest.mark.asyncio
     async def test_fs_methods_raise(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         with pytest.raises(NotImplementedError):
             await client.write_text_file("c", "/f", "s1")
         with pytest.raises(NotImplementedError):
@@ -298,7 +298,7 @@ class TestOpenHandsACPClient:
 
     @pytest.mark.asyncio
     async def test_terminal_methods_raise(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         with pytest.raises(NotImplementedError):
             await client.create_terminal("bash", "s1")
         with pytest.raises(NotImplementedError):
@@ -312,13 +312,13 @@ class TestOpenHandsACPClient:
 
     @pytest.mark.asyncio
     async def test_ext_method_returns_empty_dict(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         result = await client.ext_method("test", {})
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_ext_notification_is_noop(self):
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
 
 
@@ -356,7 +356,7 @@ class TestACPAgentStep:
 
         # Set up mocked runtime state — populate text *after* reset
         # (step() calls client.reset() then run_async which populates text)
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
@@ -382,7 +382,7 @@ class TestACPAgentStep:
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
@@ -404,7 +404,7 @@ class TestACPAgentStep:
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
@@ -430,7 +430,7 @@ class TestACPAgentStep:
         conversation = MagicMock()
         conversation.state = state
 
-        agent._client = _OpenHandsACPClient()
+        agent._client = _OpenHandsACPBridge()
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -441,7 +441,7 @@ class TestACPAgentStep:
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
@@ -463,7 +463,7 @@ class TestACPAgentStep:
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         # accumulated_text stays empty — run_async is a no-op
         agent._client = mock_client
         agent._conn = MagicMock()
@@ -483,7 +483,7 @@ class TestACPAgentStep:
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
@@ -700,7 +700,7 @@ class TestACPAgentTelemetry:
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         mock_client._context_window = 200000
         agent._client = mock_client
         agent._conn = MagicMock()
@@ -743,7 +743,7 @@ class TestACPAgentTelemetry:
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
@@ -771,7 +771,7 @@ class TestACPAgentTelemetry:
 
         from openhands.sdk.llm import LLM
 
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         llm = LLM(model="acp-managed")
         client._llm_ref = llm
         client._last_cost = 0.0
@@ -794,7 +794,7 @@ class TestACPAgentTelemetry:
 
         from openhands.sdk.llm import LLM
 
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         llm = LLM(model="acp-managed")
         client._llm_ref = llm
 
@@ -822,7 +822,7 @@ class TestACPAgentTelemetry:
         """UsageUpdate.size updates the client's _context_window."""
         from acp.schema import UsageUpdate
 
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
 
         update = MagicMock(spec=UsageUpdate)
         update.size = 200000
@@ -837,7 +837,7 @@ class TestACPAgentTelemetry:
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
 
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
@@ -871,7 +871,7 @@ class TestACPAgentTelemetry:
         ) as mock_start:
 
             def fake_start(s):
-                client = _OpenHandsACPClient()
+                client = _OpenHandsACPBridge()
                 client._llm_ref = agent.llm
                 agent._client = client
 
@@ -882,7 +882,7 @@ class TestACPAgentTelemetry:
 
     def test_reset_preserves_telemetry_state(self):
         """reset() clears text/thoughts but preserves telemetry state."""
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client._last_cost = 1.23
         client._context_window = 128000
         client._llm_ref = MagicMock()
@@ -908,7 +908,7 @@ class TestACPAgentAskAgent:
         """ask_agent() raises RuntimeError when _conn is None."""
         agent = _make_agent()
         # _conn and _session_id are None by default
-        with pytest.raises(RuntimeError, match="not initialized"):
+        with pytest.raises(RuntimeError, match="no ACP connection"):
             agent.ask_agent("What is 2+2?")
 
     def test_ask_agent_raises_if_session_id_missing(self):
@@ -916,13 +916,13 @@ class TestACPAgentAskAgent:
         agent = _make_agent()
         agent._conn = MagicMock()
         agent._session_id = None
-        with pytest.raises(RuntimeError, match="not initialized"):
+        with pytest.raises(RuntimeError, match="no session ID"):
             agent.ask_agent("What is 2+2?")
 
     def test_ask_agent_forks_and_prompts(self):
         """ask_agent() forks the session, prompts, and returns the response."""
         agent = _make_agent()
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "main-session"
@@ -962,7 +962,7 @@ class TestACPAgentAskAgent:
     def test_ask_agent_records_token_usage(self):
         """ask_agent() records token usage from the PromptResponse."""
         agent = _make_agent()
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         mock_client._context_window = 200000
         agent._client = mock_client
         agent._conn = MagicMock()
@@ -1014,7 +1014,7 @@ class TestACPAgentAskAgent:
     def test_ask_agent_cleans_up_fork_state(self):
         """ask_agent() cleans up fork state even on success."""
         agent = _make_agent()
-        mock_client = _OpenHandsACPClient()
+        mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "main-session"
@@ -1061,7 +1061,7 @@ class TestClientForkTextRouting:
         """When _fork_session_id is set, matching text goes to fork accumulator."""
         from acp.schema import AgentMessageChunk, TextContentBlock
 
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client._fork_session_id = "fork-sess"
         client._fork_accumulated_text = []
 
@@ -1080,7 +1080,7 @@ class TestClientForkTextRouting:
         """Main session text routes to accumulated_text even when fork is active."""
         from acp.schema import AgentMessageChunk, TextContentBlock
 
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         client._fork_session_id = "fork-sess"
         client._fork_accumulated_text = []
 
@@ -1098,7 +1098,7 @@ class TestClientForkTextRouting:
         """When _fork_session_id is None, all text goes to main accumulator."""
         from acp.schema import AgentMessageChunk, TextContentBlock
 
-        client = _OpenHandsACPClient()
+        client = _OpenHandsACPBridge()
         assert client._fork_session_id is None
 
         update = MagicMock(spec=AgentMessageChunk)
