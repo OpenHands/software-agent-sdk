@@ -1,5 +1,6 @@
 """Tests for event_router.py endpoints."""
 
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -10,12 +11,74 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.dependencies import get_event_service
-from openhands.agent_server.event_router import event_router
+from openhands.agent_server.event_router import (
+    event_router,
+    normalize_datetime_to_server_timezone,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
+
+
+class TestNormalizeDatetimeToServerTimezone:
+    """Unit tests for normalize_datetime_to_server_timezone function."""
+
+    def test_naive_datetime_passthrough(self):
+        """Naive datetimes should be returned unchanged."""
+        naive_dt = datetime(2025, 1, 15, 10, 30, 0)
+        result = normalize_datetime_to_server_timezone(naive_dt)
+
+        assert result == naive_dt
+        assert result.tzinfo is None
+
+    def test_utc_datetime_converted_to_naive(self):
+        """UTC datetime should be converted to server local time and made naive."""
+        utc_dt = datetime(2025, 1, 15, 10, 30, 0, tzinfo=UTC)
+        result = normalize_datetime_to_server_timezone(utc_dt)
+
+        # Result should be naive
+        assert result.tzinfo is None
+        # Result should represent the same instant converted to local time
+        expected = utc_dt.astimezone(None).replace(tzinfo=None)
+        assert result == expected
+
+    def test_non_utc_timezone_converted_to_naive(self):
+        """Non-UTC timezone-aware datetime should be converted to server local time."""
+        # Create a timezone-aware datetime in UTC
+        aware_dt = datetime(2025, 6, 15, 18, 30, 0, tzinfo=UTC)
+
+        result = normalize_datetime_to_server_timezone(aware_dt)
+
+        # Result should be naive
+        assert result.tzinfo is None
+        # Result should represent the same instant in server local time
+        expected = aware_dt.astimezone(None).replace(tzinfo=None)
+        assert result == expected
+
+    def test_preserves_microseconds(self):
+        """Microseconds should be preserved through conversion."""
+        utc_dt = datetime(2025, 1, 15, 10, 30, 0, 123456, tzinfo=UTC)
+        result = normalize_datetime_to_server_timezone(utc_dt)
+
+        assert result.microsecond == 123456
+
+    def test_different_fixed_offset_timezone(self):
+        """Test with a specific fixed offset timezone."""
+        # UTC+5:30 (like India Standard Time)
+        from datetime import timedelta
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        ist_dt = datetime(2025, 1, 15, 16, 0, 0, tzinfo=ist)  # 4:00 PM IST
+
+        result = normalize_datetime_to_server_timezone(ist_dt)
+
+        # Should be naive
+        assert result.tzinfo is None
+        # Should be the same instant converted to server local time
+        expected = ist_dt.astimezone(None).replace(tzinfo=None)
+        assert result == expected
 
 
 @pytest.fixture
