@@ -123,20 +123,6 @@ When adding non-Python files (JS, templates, etc.) loaded at runtime, add them t
 </DEV_SETUP>
 
 
-<GH_API_NOTES>
-## Replying to GitHub inline review threads (PR review comments)
-
-- To reply in an existing inline thread, use the REST API:
-  - List comments (incl. inline threads):
-    - `GET /repos/{owner}/{repo}/pulls/{pull_number}/comments?per_page=100`
-    - Top-level inline comments have `in_reply_to_id = null`.
-    - Replies have `in_reply_to_id = <top_level_comment_id>`.
-  - Post a threaded reply:
-    - `POST /repos/{owner}/{repo}/pulls/{pull_number}/comments`
-    - body: `{ "body": "...", "in_reply_to": <comment_id> }`
-
-This creates a proper reply attached to the original inline comment thread.
-</GH_API_NOTES>
 
 <PR_ARTIFACTS>
 # PR-Specific Documents
