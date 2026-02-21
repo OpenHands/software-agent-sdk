@@ -435,11 +435,109 @@ Type guards: `isMessageEvent`, `isActionEvent`, `isObservationEvent`, `isAgentEr
 
 ---
 
-## 8. Notes
+## 8. Configuring Agent Tools
+
+Tools are passed on the `agent` object when creating a conversation. **Tool names are lowercase snake_case** — the swagger doc examples show PascalCase names like `BashTool` which do NOT work.
+
+```ts
+const agent = new Agent({
+  llm: { model, api_key: apiKey },
+  tools: [
+    { name: 'terminal' },        // bash / shell execution
+    { name: 'file_editor' },     // read, write, patch files
+    { name: 'browser_tool_set'}, // web browsing (requires Chromium)
+    { name: 'task_tracker' },    // optional: task list management
+  ],
+});
+```
+
+**Confirmed registered tool names** (from `openhands-tools`):
+
+| Name | Class | Description |
+|---|---|---|
+| `terminal` | `TerminalTool` | Bash/shell execution |
+| `file_editor` | `FileEditorTool` | File read/write/patch |
+| `browser_tool_set` | `BrowserToolSet` | Web browsing (navigate, click, type, screenshot) |
+| `task_tracker` | `TaskTrackerTool` | Task list management |
+| `glob` | `GlobTool` | File pattern matching |
+| `grep` | `GrepTool` | Content search |
+| `apply_patch` | `ApplyPatchTool` | Apply unified diffs |
+
+**`browser_tool_set` requires Chromium:**
+```bash
+uvx playwright install chromium --with-deps
+```
+
+If you get `"ToolDefinition 'X' is not registered"` — the name is wrong. Check the actual `.name` class attribute in `openhands-tools/openhands/tools/*/definition.py` or test via the API.
+
+---
+
+## 9. Listing Conversations
+
+Use `ConversationManager` to fetch the conversation list:
+
+```ts
+import { ConversationManager } from '@openhands/typescript-client';
+import type { ConversationInfo } from '@openhands/typescript-client';
+
+const manager = new ConversationManager({
+  host: 'http://localhost:8000',
+  apiKey: sessionKey || undefined, // X-Session-API-Key header
+});
+const conversations: ConversationInfo[] = await manager.getAllConversations();
+manager.close();
+```
+
+`ConversationInfo` has: `id`, `title`, `execution_status`, `created_at`, `updated_at`, `agent`.
+
+---
+
+## 10. Vite Configuration
+
+When using the local package (`file:../typescript-client`) with Vite, exclude it from pre-bundling to avoid esbuild choking on the conditional `require('ws')` in the WebSocket client:
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  plugins: [react()],
+  optimizeDeps: {
+    exclude: ['@openhands/typescript-client'],
+  },
+  server: {
+    allowedHosts: true, // allow any hostname (reverse proxy, tunnels, etc.)
+  },
+});
+```
+
+And in `package.json`, bind to all interfaces by default:
+```json
+"dev": "vite --host"
+```
+
+---
+
+## 11. Authentication
+
+The agent server uses the `X-Session-API-Key` HTTP header. Set via `OH_SESSION_API_KEYS_0` env var on the server. Pass it as `apiKey` in `Workspace` and `ConversationManager`:
+
+```ts
+new Workspace({ host, workingDir: '/workspace', apiKey: sessionKey });
+new ConversationManager({ host, apiKey: sessionKey });
+```
+
+For WebSocket connections the key goes as a query param: `?session_api_key=<key>` (the client handles this automatically).
+
+With no `OH_SESSION_API_KEYS_0` set, auth is disabled — omit `apiKey` entirely.
+
+---
+
+## 12. Notes
 
 - The agent server runs on port 8000 by default (`agent-server --host 0.0.0.0 --port 8000`)
-- With no `OH_SESSION_API_KEYS_0` set, auth is disabled; omit `apiKey` in `Workspace`
 - `llm_message.content` is always an array of `{type:'text', text:string}` objects
 - `ActionEvent.thought` is also an array of text content objects (iterate to get text)
 - `ConversationStateUpdateEvent` with `key='full_state'` carries the entire state snapshot
 - `ConversationStateUpdateEvent` with `key='execution_status'` is the most useful for live status
+- Track status from WS events (key `execution_status`) rather than polling — avoids extra HTTP calls
+- Deduplicate events by `id` when merging history + live WS stream to avoid duplicates
+- When resuming an existing conversation, load history with `conv.state.events.getEvents()` BEFORE calling `startWebSocketClient()` for a consistent snapshot
