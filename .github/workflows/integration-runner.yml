@@ -22,7 +22,7 @@ on:
             model_ids:
                 description: >-
                     Comma-separated model IDs to test (from resolve_model_config.py).
-                    Example: claude-sonnet-4-5-20250929,glm-4.7. Defaults to a standard set.
+                    Example: claude-sonnet-4-6,glm-4.7. Defaults to a standard set.
                 required: false
                 default: ''
                 type: string
@@ -50,7 +50,7 @@ on:
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
     # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
-    DEFAULT_MODEL_IDS: claude-sonnet-4-5-20250929,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3-pro
+    DEFAULT_MODEL_IDS: claude-sonnet-4-6,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3-pro
 
 jobs:
     setup-matrix:

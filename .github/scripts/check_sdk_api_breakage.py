@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import sys
 import tomllib
 import urllib.request
@@ -147,6 +148,38 @@ def ensure_griffe() -> None:
         raise SystemExit(1)
 
 
+def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
+    """Check if the change is only in Field metadata (description, title, etc.).
+
+    Field metadata parameters like ``description``, ``title``, and ``examples``
+    don't affect runtime behavior - they're documentation-only. Changes to these
+    should not be considered breaking API changes.
+
+    Returns:
+        True if both values are Field() calls and only metadata parameters differ.
+    """
+    old_str = str(old_val)
+    new_str = str(new_val)
+
+    if not (old_str.startswith("Field(") and new_str.startswith("Field(")):
+        return False
+
+    # Metadata parameters that don't affect runtime behavior
+    # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
+    metadata_params = ["description", "title", "examples", "json_schema_extra"]
+
+    old_normalized = old_str
+    new_normalized = new_str
+
+    for param in metadata_params:
+        # Pattern to match param='...' or param="..." with simple string values
+        pattern = rf'{param}\s*=\s*([\'"])([^\'"]*?)\1'
+        old_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", old_normalized)
+        new_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", new_normalized)
+
+    return old_normalized == new_normalized
+
+
 def _collect_breakages_pairs(
     objs: Iterable[tuple[object, object]],
     *,
@@ -171,6 +204,18 @@ def _collect_breakages_pairs(
             obj = getattr(br, "obj", None)
             if not getattr(obj, "is_public", True):
                 continue
+
+            # Skip ATTRIBUTE_CHANGED_VALUE when it's just Field metadata changes
+            # (description, title, examples, etc.) - these don't affect runtime
+            if br.kind == BreakageKind.ATTRIBUTE_CHANGED_VALUE:
+                old_value = getattr(br, "old_value", None)
+                new_value = getattr(br, "new_value", None)
+                if _is_field_metadata_only_change(old_value, new_value):
+                    print(
+                        f"::notice title={title}::Ignoring Field metadata-only "
+                        f"change (non-breaking): {obj.name if obj else 'unknown'}"
+                    )
+                    continue
 
             print(br.explain(style=ExplanationStyle.GITHUB))
             breakages.append(br)

@@ -29,6 +29,14 @@ Examples of straightforward and low-risk PRs you should approve (non-exhaustive)
 - **Test-only changes**: Adding or updating tests without changing production code
 - **Dependency updates**: Version bumps with passing CI
 
+### When NOT to APPROVE - Blocking Issues
+
+**DO NOT APPROVE** PRs that have any of the following issues:
+
+- **Package version bumps in non-release PRs**: If any `pyproject.toml` file has changes to the `version` field (e.g., `version = "1.12.0"` → `version = "1.13.0"`), and the PR is NOT explicitly a release PR (title/description doesn't indicate it's a release), **DO NOT APPROVE**. Version numbers should only be changed in dedicated release PRs managed by maintainers.
+  - Check: Look for changes to `version = "..."` in any `*/pyproject.toml` files
+  - Exception: PRs with titles like "release: v1.x.x" or "chore: bump version to 1.x.x" from maintainers
+
 Examples:
 - A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates
 - A PR adding documentation notes to docstrings clarifying method behavior (e.g., security considerations, bypass behaviors)

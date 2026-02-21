@@ -21,11 +21,6 @@ jobs:
         if: |
             github.event.pull_request.head.repo.full_name == github.repository &&
             (
-                github.event.pull_request.author_association == 'OWNER' ||
-                github.event.pull_request.author_association == 'MEMBER' ||
-                github.event.pull_request.author_association == 'COLLABORATOR'
-            ) &&
-            (
                 (github.event.action == 'opened' && github.event.pull_request.draft == false) ||
                 github.event.action == 'ready_for_review' ||
                 (github.event.action == 'labeled' && github.event.label.name == 'review-this') ||

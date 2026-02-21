@@ -31,6 +31,7 @@ PackageConfig = _prod.PackageConfig
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
+_is_field_metadata_only_change = _prod._is_field_metadata_only_change
 
 # Reusable test config matching the _write_pkg_init helper
 _SDK_CFG = PackageConfig(
@@ -316,3 +317,76 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     )
     assert total_breaks == 1
     assert undeprecated == 1
+
+
+def test_is_field_metadata_only_change_description_only():
+    """Changing only Field description is detected as metadata-only."""
+    old = "Field(default=False, description='old description')"
+    new = "Field(default=False, description='new description')"
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_title_and_description():
+    """Changing title and description is detected as metadata-only."""
+    old = "Field(default=False, title='old', description='old desc')"
+    new = "Field(default=False, title='new', description='new desc')"
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_default_changed():
+    """Changing Field default value is NOT metadata-only."""
+    old = "Field(default=False, description='desc')"
+    new = "Field(default=True, description='desc')"
+    assert _is_field_metadata_only_change(old, new) is False
+
+
+def test_is_field_metadata_only_change_not_field():
+    """Non-Field values return False."""
+    old = "SomeClass(value=1)"
+    new = "SomeClass(value=2)"
+    assert _is_field_metadata_only_change(old, new) is False
+
+
+def test_is_field_metadata_only_change_long_description():
+    """Long descriptions with URLs are handled correctly."""
+    old = (
+        "Field(default=False, description='Whether to automatically load "
+        "skills from https://github.com/OpenHands/skills.')"
+    )
+    new = (
+        "Field(default=False, description='Whether to automatically load "
+        "skills from https://github.com/OpenHands/extensions.')"
+    )
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_field_description_change_is_not_breaking(tmp_path):
+    """Field description changes should not be counted as breaking changes."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(default=False, description='Old description')\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(default=False, description='New description')\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+    )
+    # Field description changes should NOT count as breaking
+    assert total_breaks == 0
+    assert undeprecated == 0
