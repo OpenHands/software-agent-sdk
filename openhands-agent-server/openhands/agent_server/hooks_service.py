@@ -46,7 +46,12 @@ def load_hooks_from_workspace(project_dir: str | None = None) -> HookConfig | No
             logger.debug(f"hooks.json at {hooks_path} is empty")
             return None
 
-        logger.info(f"Loaded hooks from {hooks_path}")
+        # Set project_dir so hook executor knows where to run commands from.
+        # Without this, relative paths like .openhands/hooks/on_stop.sh would
+        # be resolved against workspace.working_dir instead of the project root.
+        hook_config.project_dir = project_dir
+
+        logger.info(f"Loaded hooks from {hooks_path}, project_dir={project_dir}")
         return hook_config
 
     except Exception as e:

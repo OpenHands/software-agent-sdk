@@ -150,6 +150,14 @@ class HookConfig(BaseModel):
         default_factory=list,
         description="Hooks that run when the agent attempts to stop",
     )
+    project_dir: str | None = Field(
+        default=None,
+        description=(
+            "Project directory where hooks are located. When set, hook commands "
+            "are executed with this directory as the working directory. This is "
+            "automatically set when loading hooks from a workspace subdirectory."
+        ),
+    )
 
     def is_empty(self) -> bool:
         """Check if this config has no hooks configured."""
@@ -320,12 +328,14 @@ class HookConfig(BaseModel):
             return None
 
         # Collect all matchers by event type using the canonical field list
-        collected: dict[str, list] = {field: [] for field in HOOK_EVENT_FIELDS}
+        collected: dict[str, list[HookMatcher]] = {
+            field: [] for field in HOOK_EVENT_FIELDS
+        }
         for config in configs:
             for field in HOOK_EVENT_FIELDS:
                 collected[field].extend(getattr(config, field))
 
-        merged = cls(**collected)
+        merged = cls(**collected)  # type: ignore[arg-type]
 
         # Return None if the merged config is empty
         if merged.is_empty():
