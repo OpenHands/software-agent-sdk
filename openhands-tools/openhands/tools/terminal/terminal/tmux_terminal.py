@@ -142,22 +142,18 @@ class TmuxTerminal(TerminalInterface):
         control character (``^L``) can leak into the shell input buffer over SSH
         connections.
 
-        Instead, we ask tmux itself to reset/redraw the pane and then clear the
-        scrollback history.
+        Instead, we run the ``clear`` command to clear the visible screen, then
+        use tmux's ``clear-history`` to remove the scrollback buffer.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        try:
-            # This is handled by tmux (not the shell), so it won't leak control
-            # characters into the input buffer.
-            self.pane.cmd("send-keys", "-R")
-        except Exception:
-            # Best-effort fallback: run `clear` in the shell.
-            # This should not introduce ^L into the input buffer.
-            self.pane.send_keys("clear", enter=True)
-
+        # Run the `clear` command to clear the visible screen content.
+        # This is safe because `clear` outputs escape sequences to the terminal
+        # rather than sending control characters to the shell's input buffer.
+        self.pane.send_keys("clear", enter=True)
         time.sleep(0.1)
+        # Clear the scrollback history (including the `clear` command itself)
         self.pane.cmd("clear-history")
 
     def interrupt(self) -> bool:
