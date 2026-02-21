@@ -459,7 +459,7 @@ def main():
         default="default",
         help=(
             "Tool preset to use for file editing (default: 'default'). "
-            "'default' uses FileEditorTool (claude-style), "
+            "'default' uses FileEditorTool (task-style), "
             "'gemini' uses read_file/write_file/edit/list_directory tools, "
             "'planning' uses planning-specific tools."
         ),
