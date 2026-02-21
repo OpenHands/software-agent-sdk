@@ -23,7 +23,7 @@ jobs:
         # Schedule trigger only runs in the main repository, not in forks
         if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && 
             github.repository == 'OpenHands/software-agent-sdk')
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
@@ -65,6 +65,7 @@ jobs:
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_MODEL: openhands/claude-haiku-4-5-20251001
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   RUNTIME_API_KEY: ${{ secrets.RUNTIME_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PR_NUMBER: ${{ github.event.pull_request.number }}

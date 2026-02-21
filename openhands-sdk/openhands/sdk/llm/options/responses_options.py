@@ -15,15 +15,16 @@ def select_responses_options(
 ) -> dict[str, Any]:
     """Behavior-preserving extraction of _normalize_responses_kwargs."""
     # Apply defaults for keys that are not forced by policy
-    out = apply_defaults_if_absent(
-        user_kwargs,
-        {
-            "max_output_tokens": llm.max_output_tokens,
-        },
-    )
+    # Note: max_output_tokens is not supported in subscription mode
+    defaults = {}
+    if not llm.is_subscription:
+        defaults["max_output_tokens"] = llm.max_output_tokens
+    out = apply_defaults_if_absent(user_kwargs, defaults)
 
     # Enforce sampling/tool behavior for Responses path
-    out["temperature"] = 1.0
+    # Note: temperature is not supported in subscription mode
+    if not llm.is_subscription:
+        out["temperature"] = 1.0
     out["tool_choice"] = "auto"
 
     # If user didn't set extra_headers, propagate from llm config

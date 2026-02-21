@@ -100,7 +100,7 @@ try:
     print("\nCustom security policy loaded from temporary file.")
 
     # Verify the custom policy is in the system message
-    system_message = custom_agent.system_message
+    system_message = custom_agent.static_system_message
     if "Custom Security Risk Policy" in system_message:
         print("✓ Custom security policy successfully embedded in system message.")
     else:

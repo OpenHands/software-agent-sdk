@@ -211,3 +211,4 @@ agent-sdk.workspace.code-workspace
 
 # Integration test outputs
 tests/integration/outputs/
+tests/integration/api_compliance/outputs/

@@ -1,6 +1,9 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from openhands.sdk.agent import Agent, AgentBase
+from openhands.sdk.agent import (
+    Agent,
+    AgentBase,
+)
 from openhands.sdk.context import (
     AgentContext,
     load_project_skills,
@@ -24,7 +27,9 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    FallbackStrategy,
     ImageContent,
+    LLMProfileStore,
     LLMRegistry,
     LLMStreamChunk,
     Message,
@@ -66,7 +71,9 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMProfileStore",
     "LLMStreamChunk",
+    "FallbackStrategy",
     "TokenCallbackType",
     "ConversationStats",
     "RegistryEvent",

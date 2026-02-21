@@ -36,6 +36,18 @@ def detect_platform():
     return "linux/amd64"
 
 
+def get_server_image():
+    """Get the server image tag, using PR-specific image in CI."""
+    platform_str = detect_platform()
+    arch = "arm64" if "arm64" in platform_str else "amd64"
+    # If GITHUB_SHA is set (e.g. running in CI of a PR), use that to ensure consistency
+    # Otherwise, use the latest image from main
+    github_sha = os.getenv("GITHUB_SHA")
+    if github_sha:
+        return f"ghcr.io/openhands/agent-server:{github_sha[:7]}-python-{arch}"
+    return "ghcr.io/openhands/agent-server:latest-python"
+
+
 # 2) Create a Docker-based remote workspace that will set up and manage
 #    the Docker container automatically. Use `DockerWorkspace` with a pre-built
 #    image or `DockerDevWorkspace` to automatically build the image on-demand.
@@ -45,9 +57,11 @@ def detect_platform():
 #        host_port=8010,
 #        platform=detect_platform(),
 #    ) as workspace:
+server_image = get_server_image()
+logger.info(f"Using server image: {server_image}")
 with DockerWorkspace(
     # use pre-built image for faster startup
-    server_image="ghcr.io/openhands/agent-server:latest-python",
+    server_image=server_image,
     host_port=8010,
     platform=detect_platform(),
 ) as workspace:

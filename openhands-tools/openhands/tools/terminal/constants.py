@@ -3,8 +3,11 @@ import re
 
 CMD_OUTPUT_PS1_BEGIN = "\n###PS1JSON###\n"
 CMD_OUTPUT_PS1_END = "\n###PS1END###"
+# Regex to match PS1 metadata blocks. Uses negative lookahead to handle corruption
+# scenarios where concurrent output causes nested ###PS1JSON### markers. This ensures
+# we match only the LAST ###PS1JSON### before each ###PS1END###.
 CMD_OUTPUT_METADATA_PS1_REGEX = re.compile(
-    f"^{CMD_OUTPUT_PS1_BEGIN.strip()}(.*?){CMD_OUTPUT_PS1_END.strip()}",
+    rf"^{CMD_OUTPUT_PS1_BEGIN.strip()}((?:(?!{CMD_OUTPUT_PS1_BEGIN.strip()}).)*?){CMD_OUTPUT_PS1_END.strip()}",
     re.DOTALL | re.MULTILINE,
 )
 

@@ -5,6 +5,7 @@ from pydantic import ValidationError, model_validator
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
@@ -17,11 +18,9 @@ from openhands.sdk.conversation import (
     LocalConversation,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
-    LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -67,13 +66,18 @@ from openhands.sdk.tool.builtins import (
 logger = get_logger(__name__)
 maybe_init_laminar()
 
+# Maximum number of events to scan during init_state defensive checks.
+# SystemPromptEvent must appear within this prefix (at index 0 or 1).
+INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
-class Agent(AgentBase):
+
+class Agent(CriticMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
     interact with tools, process messages, and execute actions. It inherits from
-    AgentBase and implements the agent execution logic.
+    AgentBase and implements the agent execution logic. Critic-related functionality
+    is provided by CriticMixin.
 
     Example:
         >>> from openhands.sdk import LLM, Agent, Tool
@@ -102,107 +106,101 @@ class Agent(AgentBase):
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
+        """Initialize conversation state.
+
+        Invariants enforced by this method:
+        - If a SystemPromptEvent is already present, it must be within the first 3
+          events (index 0 or 1 in practice; index 2 is included in the scan window
+          to detect a user message appearing before the system prompt).
+        - A user MessageEvent should not appear before the SystemPromptEvent.
+
+        These invariants keep event ordering predictable for downstream components
+        (condenser, UI, etc.) and also prevent accidentally materializing the full
+        event history during initialization.
+        """
         super().init_state(state, on_event=on_event)
-        # TODO(openhands): we should add test to test this init_state will actually
-        # modify state in-place
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
         # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
-        events = list(state.events)
-        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in events)
-        has_user_message = any(
-            isinstance(e, MessageEvent) and e.source == "user" for e in events
-        )
-        has_any_llm_event = any(isinstance(e, LLMConvertibleEvent) for e in events)
+        #
+        # NOTE: len() is O(1) for EventLog (file-backed implementation).
+        event_count = len(state.events)
 
+        # NOTE: state.events is intentionally an EventsListBase (Sequence-like), not
+        # a plain list. Avoid materializing the full history via list(state.events)
+        # here (conversations can reach 30k+ events).
+        #
+        # Invariant: when init_state is called, SystemPromptEvent (if present) must be
+        # at index 0 or 1.
+        #
+        # Rationale:
+        # - Local conversations start empty and init_state is responsible for adding
+        #   the SystemPromptEvent as the first event.
+        # - Remote conversations may receive an initial ConversationStateUpdateEvent
+        #   from the agent-server immediately after subscription. In a typical remote
+        #   session prefix you may see:
+        #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
+        #
+        # We intentionally only inspect the first few events (cheap for both local and
+        # remote) to enforce this invariant.
+        prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
+
+        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
+        has_user_message = any(
+            isinstance(e, MessageEvent) and e.source == "user" for e in prefix_events
+        )
         # Log state for debugging initialization order issues
         logger.debug(
             f"init_state called: conversation_id={state.id}, "
-            f"event_count={len(events)}, "
+            f"event_count={event_count}, "
             f"has_system_prompt={has_system_prompt}, "
-            f"has_user_message={has_user_message}, "
-            f"has_any_llm_event={has_any_llm_event}"
+            f"has_user_message={has_user_message}"
         )
 
         if has_system_prompt:
-            # SystemPromptEvent already exists - this is unexpected during normal flow
-            # but could happen in persistence/resume scenarios
-            logger.warning(
-                f"init_state called but SystemPromptEvent already exists. "
-                f"conversation_id={state.id}, event_count={len(events)}. "
-                f"This may indicate double initialization or a resume scenario."
+            # Restoring/resuming conversations is normal: a system prompt already
+            # present means this conversation was initialized previously.
+            logger.debug(
+                "init_state: SystemPromptEvent already present; skipping init. "
+                f"conversation_id={state.id}, event_count={event_count}."
             )
             return
 
-        # Assert: If there are user messages but no system prompt, something is wrong
-        # The system prompt should always be added before any user messages
+        # Assert: A user message should never appear before the system prompt.
+        #
+        # NOTE: This is a best-effort check based on the first few events only.
+        # Remote conversations can include a ConversationStateUpdateEvent near the
+        # start, so we scan a small prefix window.
         if has_user_message:
-            event_types = [type(e).__name__ for e in events]
+            event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
-                f"init_state: User message exists without SystemPromptEvent! "
-                f"conversation_id={state.id}, events={event_types}"
+                f"init_state: User message found in prefix before SystemPromptEvent! "
+                f"conversation_id={state.id}, prefix_events={event_types}"
             )
-            assert not has_user_message, (
-                f"Unexpected state: User message exists before SystemPromptEvent. "
-                f"conversation_id={state.id}, event_count={len(events)}, "
-                f"event_types={event_types}. "
-                f"This indicates an initialization order bug - init_state should be "
-                f"called before any user messages are added to the conversation."
+            raise AssertionError(
+                "Unexpected state: user message exists before SystemPromptEvent. "
+                f"conversation_id={state.id}, event_count={event_count}, "
+                f"prefix_event_types={event_types}."
             )
 
-        # Prepare system message
+        # Prepare system message with separate static and dynamic content.
+        # The dynamic_context is included as a second content block in the
+        # system message (without a cache marker) to enable cross-conversation
+        # prompt caching of the static system prompt.
+        dynamic_context = self.dynamic_context
         event = SystemPromptEvent(
             source="agent",
-            system_prompt=TextContent(text=self.system_message),
+            system_prompt=TextContent(text=self.static_system_message),
             # Tools are stored as ToolDefinition objects and converted to
             # OpenAI format with security_risk parameter during LLM completion.
             # See make_llm_completion() in agent/utils.py for details.
             tools=list(self.tools_map.values()),
+            dynamic_context=TextContent(text=dynamic_context)
+            if dynamic_context
+            else None,
         )
         on_event(event)
-
-    def _should_evaluate_with_critic(self, action: Action | None) -> bool:
-        """Determine if critic should evaluate based on action type and mode."""
-        if self.critic is None:
-            return False
-
-        if self.critic.mode == "all_actions":
-            return True
-
-        # For "finish_and_message" mode, only evaluate FinishAction
-        # (MessageEvent will be handled separately in step())
-        if isinstance(action, FinishAction):
-            return True
-
-        return False
-
-    def _evaluate_with_critic(
-        self, conversation: LocalConversation, event: ActionEvent | MessageEvent
-    ) -> CriticResult | None:
-        """Run critic evaluation on the current event and history."""
-        if self.critic is None:
-            return None
-
-        try:
-            # Build event history including the current event
-            events = list(conversation.state.events) + [event]
-            llm_convertible_events = [
-                e for e in events if isinstance(e, LLMConvertibleEvent)
-            ]
-
-            # Evaluate without git_patch for now
-            critic_result = self.critic.evaluate(
-                events=llm_convertible_events, git_patch=None
-            )
-            logger.info(
-                f"✓ Critic evaluation: score={critic_result.score:.3f}, "
-                f"success={critic_result.success}"
-            )
-            return critic_result
-        except Exception as e:
-            logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
-            return None
 
     def _execute_actions(
         self,
@@ -234,14 +232,17 @@ class Agent(AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        for event in reversed(list(state.events)):
-            if isinstance(event, MessageEvent) and event.source == "user":
-                reason = state.pop_blocked_message(event.id)
-                if reason is not None:
-                    logger.info(f"User message blocked by hook: {reason}")
-                    state.execution_status = ConversationExecutionStatus.FINISHED
-                    return
-                break  # Only check the most recent user message
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
@@ -625,6 +626,7 @@ class Agent(AgentBase):
                 tool_name=action_event.tool_name,
                 tool_call_id=action_event.tool_call_id,
                 rejection_reason=reason,
+                rejection_source="hook",
             )
             on_event(rejection)
             return rejection
@@ -671,7 +673,22 @@ class Agent(AgentBase):
 
         # Set conversation state
         if tool.name == FinishTool.name:
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            # Check if iterative refinement should continue
+            should_continue, followup = self._check_iterative_refinement(
+                conversation, action_event
+            )
+            if should_continue and followup:
+                # Send follow-up message and continue agent loop
+                followup_msg = MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text=followup)]
+                    ),
+                )
+                on_event(followup_msg)
+                # Don't set FINISHED - let the agent continue
+            else:
+                state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
 
     def _maybe_emit_vllm_tokens(

@@ -1,4 +1,12 @@
+from openhands.sdk.llm.auth import (
+    OPENAI_CODEX_MODELS,
+    CredentialStore,
+    OAuthCredentials,
+    OpenAISubscriptionAuth,
+)
+from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
@@ -22,11 +30,20 @@ from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 
 
 __all__ = [
+    # Auth
+    "CredentialStore",
+    "OAuthCredentials",
+    "OpenAISubscriptionAuth",
+    "OPENAI_CODEX_MODELS",
+    # Core
+    "FallbackStrategy",
     "LLMResponse",
     "LLM",
     "LLMRegistry",
+    "LLMProfileStore",
     "RouterLLM",
     "RegistryEvent",
+    # Messages
     "Message",
     "MessageToolCall",
     "TextContent",
@@ -35,10 +52,13 @@ __all__ = [
     "RedactedThinkingBlock",
     "ReasoningItemModel",
     "content_to_str",
+    # Streaming
     "LLMStreamChunk",
     "TokenCallbackType",
+    # Metrics
     "Metrics",
     "MetricsSnapshot",
+    # Models
     "VERIFIED_MODELS",
     "UNVERIFIED_MODELS_EXCLUDING_BEDROCK",
     "get_unverified_models",
