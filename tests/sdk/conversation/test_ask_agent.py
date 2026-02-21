@@ -257,7 +257,8 @@ def test_ask_agent_with_existing_events_and_tool_calls(
 
     # 0. SystemPromptEvent (required for proper conversation state)
     # In a real conversation, this is always added by init_state before user messages
-    conv.state.events.append(
+    # Use _on_event so the view is kept in sync with the event log.
+    conv._on_event(
         SystemPromptEvent(
             source="agent",
             system_prompt=TextContent(text="You are a helpful assistant."),
@@ -266,7 +267,7 @@ def test_ask_agent_with_existing_events_and_tool_calls(
     )
 
     # 1. Prior user message
-    conv.state.events.append(
+    conv._on_event(
         MessageEvent(
             source="user",
             llm_message=Message(
@@ -283,7 +284,7 @@ def test_ask_agent_with_existing_events_and_tool_calls(
         arguments=json.dumps({"command": "ls -la"}),
         origin="completion",
     )
-    conv.state.events.append(
+    conv._on_event(
         ActionEvent(
             source="agent",
             thought=[TextContent(text="I'll list the files using the terminal")],
@@ -302,7 +303,7 @@ def test_ask_agent_with_existing_events_and_tool_calls(
         "drwxr-xr-x 3 user user 4096 Nov 25 09:59 ..\n"
         "-rw-r--r-- 1 user user   12 Nov 25 10:00 test.txt"
     )
-    conv.state.events.append(
+    conv._on_event(
         ObservationEvent(
             source="environment",
             observation=MockObservation(result=observation_result),

@@ -1,11 +1,13 @@
 """Tests for View.manipulation_indices property.
 
-This module tests the cached property that identifies safe indices for manipulating
+This module tests the property that identifies safe indices for manipulating
 events (inserting new events or forgetting ranges) while respecting atomicity
 constraints.
 """
 
 from openhands.sdk.context.view import View
+from openhands.sdk.event.base import Event
+from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import (
     ThinkingBlock,
 )
@@ -337,3 +339,59 @@ def test_forgetting_range_selection() -> None:
 
     # [0 msg1 1 batch 5 msg2 6]
     assert indices == {0, 1, 5, 6}
+
+
+def test_add_event_invalidates_cached_indices() -> None:
+    """Test that manipulation_indices are recomputed after add_event."""
+    view = View()
+    view.add_event(message_event("Event 0"))
+    indices_after_first = view.manipulation_indices
+    assert indices_after_first == {0, 1}
+
+    view.add_event(message_event("Event 1"))
+    indices_after_second = view.manipulation_indices
+    assert indices_after_second == {0, 1, 2}
+    assert indices_after_second is not indices_after_first
+
+
+def test_add_event_condensation_invalidates_cached_indices() -> None:
+    """Test that manipulation_indices are recomputed after a Condensation."""
+    events: list[Event] = [message_event(f"Event {i}") for i in range(3)]
+    view = View.from_events(events)
+    assert view.manipulation_indices == {0, 1, 2, 3}
+
+    condensation = Condensation(
+        forgotten_event_ids=[events[0].id],
+        llm_response_id="condensation_response_1",
+    )
+    view.add_event(condensation)
+    assert view.manipulation_indices == {0, 1, 2}
+
+
+def test_enforce_properties_invalidates_cached_indices() -> None:
+    """Test that manipulation_indices are recomputed after enforce_properties."""
+    # Create a view with messages and an unmatched action (no observation).
+    # enforce_properties will drop the unmatched action, invalidating the cache.
+    msg1 = message_event("Message 1")
+    msg2 = message_event("Message 2")
+    action = create_action_event("response_1", "tool_call_1")
+
+    view = View()
+    view.add_event(msg1)
+    view.add_event(msg2)
+    view.add_event(action)
+
+    # Cache the indices before enforcement
+    indices_before = view.manipulation_indices
+    assert len(view.events) == 3
+
+    # enforce_properties should drop the unmatched action and invalidate cache
+    all_events: list[Event] = [msg1, msg2, action]
+    view.enforce_properties(all_events)
+
+    assert len(view.events) == 2
+    indices_after = view.manipulation_indices
+    # The cache was invalidated and a new object was computed
+    assert indices_after is not indices_before
+    # The indices correctly reflect the post-enforcement state (2 messages)
+    assert indices_after == {0, 1, 2}
