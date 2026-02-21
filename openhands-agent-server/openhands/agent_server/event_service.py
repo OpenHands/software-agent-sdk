@@ -11,6 +11,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.secret_utils import preprocess_stored_conversation_json
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -54,8 +55,9 @@ class EventService:
 
     async def load_meta(self):
         meta_file = self.conversation_dir / "meta.json"
+        cleaned_json = preprocess_stored_conversation_json(meta_file.read_text())
         self.stored = StoredConversation.model_validate_json(
-            meta_file.read_text(),
+            cleaned_json,
             context={
                 "cipher": self.cipher,
             },
