@@ -59,7 +59,8 @@ class LocalFileStore(FileStore):
         return full
 
     @observe(name="LocalFileStore.write", span_type="TOOL")
-    def write(self, path: str, contents: str | bytes, cache: bool = False) -> None:
+    def write(self, path: str, contents: str | bytes, **kwargs) -> None:
+        cache = kwargs.get("cache", True)
         full_path = self.get_full_path(path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         if isinstance(contents, str):
@@ -73,7 +74,8 @@ class LocalFileStore(FileStore):
             # Don't cache binary content - LocalFileStore is meant for JSON data
             # If binary data is written and then read, it will error on read
 
-    def read(self, path: str, cache: bool = False) -> str:
+    def read(self, path: str, **kwargs) -> str:
+        cache = kwargs.get("cache", True)
         full_path = self.get_full_path(path)
 
         if full_path in self.cache:
