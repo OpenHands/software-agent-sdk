@@ -42,25 +42,25 @@ _SDK_CFG = PackageConfig(
 
 
 def _write_pkg_init(
-    tmp_path, root: str, all_names: list[str], module_parts: tuple[str, ...] = ()
+    tmp_path,
+    root: str,
+    init_body: str = "",
+    module_parts: tuple[str, ...] = (),
 ):
-    """Create a minimal package with ``__all__`` under *tmp_path/root*.
+    """Create a minimal package with an ``__init__.py`` under *tmp_path/root*."""
 
-    *module_parts* defaults to ``("openhands", "sdk")``; pass a different
-    tuple to create e.g. ``("openhands", "workspace")``.
-    """
     parts = module_parts or ("openhands", "sdk")
     pkg = tmp_path / root / Path(*parts)
     pkg.mkdir(parents=True, exist_ok=True)
-    # ensure parent __init__.py files exist
+
+    # Ensure parent __init__.py files exist
     for i in range(1, len(parts)):
         parent = tmp_path / root / Path(*parts[:i])
         init = parent / "__init__.py"
         if not init.exists():
             init.write_text("")
-    (pkg / "__init__.py").write_text(
-        "__all__ = [\n" + "\n".join(f"    {name!r}," for name in all_names) + "\n]\n"
-    )
+
+    (pkg / "__init__.py").write_text(init_body)
     return pkg
 
 
@@ -102,9 +102,9 @@ class TextContent:
     assert _check_version_bump("1.11.3", "1.12.0", total_breaks=total_breaks) == 0
 
 
-def test_griffe_removed_export_from_all_is_breaking(tmp_path):
-    _write_pkg_init(tmp_path, "old", ["Foo", "Bar"])
-    _write_pkg_init(tmp_path, "new", ["Foo"])
+def test_removed_public_symbol_is_breaking(tmp_path):
+    _write_pkg_init(tmp_path, "old", "class Foo: ...\nclass Bar: ...\n")
+    _write_pkg_init(tmp_path, "new", "class Foo: ...\n")
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
@@ -113,16 +113,16 @@ def test_griffe_removed_export_from_all_is_breaking(tmp_path):
         old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
     )
     assert total_breaks == 1
-    # Bar was not deprecated before removal
     assert undeprecated == 1
 
 
 def test_removal_of_deprecated_symbol_does_not_count_as_undeprecated(tmp_path):
-    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo", "Bar"])
-    (old_pkg / "bar.py").write_text(
-        "@deprecated(deprecated_in='1.0', removed_in='2.0')\nclass Bar:\n    pass\n"
+    _write_pkg_init(
+        tmp_path,
+        "old",
+        "@deprecated(deprecated_in='1.0', removed_in='2.0')\nclass Bar:\n    pass\n",
     )
-    _write_pkg_init(tmp_path, "new", ["Foo"])
+    _write_pkg_init(tmp_path, "new")
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
@@ -135,16 +135,14 @@ def test_removal_of_deprecated_symbol_does_not_count_as_undeprecated(tmp_path):
 
 
 def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
-    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo", "Bar"])
-    (old_pkg / "bar.py").write_text(
+    _write_pkg_init(
+        tmp_path,
+        "old",
+        "warn_deprecated('Bar', deprecated_in='1.0', removed_in='2.0')\n"
         "class Bar:\n"
-        "    @property\n"
-        "    def value(self):\n"
-        "        warn_deprecated('Bar.value', deprecated_in='1.0',"
-        " removed_in='2.0')\n"
-        "        return 42\n"
+        "    pass\n",
     )
-    _write_pkg_init(tmp_path, "new", ["Foo"])
+    _write_pkg_init(tmp_path, "new")
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
@@ -157,8 +155,8 @@ def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
 
 
 def test_removed_public_method_requires_deprecation(tmp_path):
-    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo"])
-    new_pkg = _write_pkg_init(tmp_path, "new", ["Foo"])
+    old_pkg = _write_pkg_init(tmp_path, "old")
+    new_pkg = _write_pkg_init(tmp_path, "new")
 
     old_init = old_pkg / "__init__.py"
     new_init = new_pkg / "__init__.py"
@@ -182,8 +180,8 @@ def test_removed_public_method_requires_deprecation(tmp_path):
 
 
 def test_removed_public_method_with_deprecation_is_not_undeprecated(tmp_path):
-    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo"])
-    new_pkg = _write_pkg_init(tmp_path, "new", ["Foo"])
+    old_pkg = _write_pkg_init(tmp_path, "old")
+    new_pkg = _write_pkg_init(tmp_path, "new")
 
     old_init = old_pkg / "__init__.py"
     new_init = new_pkg / "__init__.py"
@@ -297,7 +295,7 @@ def test_find_deprecated_symbols_ignores_syntax_errors(tmp_path):
     assert result.qualified == {"ok"}
 
 
-def test_workspace_removed_export_is_breaking(tmp_path):
+def test_workspace_removed_public_symbol_is_breaking(tmp_path):
     """Breakage detection works for non-SDK packages (openhands.workspace)."""
     ws_cfg = PackageConfig(
         package="openhands.workspace",
@@ -305,9 +303,17 @@ def test_workspace_removed_export_is_breaking(tmp_path):
         source_dir="openhands-workspace",
     )
     _write_pkg_init(
-        tmp_path, "old", ["Foo", "Bar"], module_parts=("openhands", "workspace")
+        tmp_path,
+        "old",
+        "class Foo: ...\nclass Bar: ...\n",
+        module_parts=("openhands", "workspace"),
     )
-    _write_pkg_init(tmp_path, "new", ["Foo"], module_parts=("openhands", "workspace"))
+    _write_pkg_init(
+        tmp_path,
+        "new",
+        "class Foo: ...\n",
+        module_parts=("openhands", "workspace"),
+    )
 
     old_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "old")])
     new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
@@ -319,9 +325,8 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     assert undeprecated == 1
 
 
-
-def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
-    """Unresolvable aliases should not abort checking other exports.
+def test_unresolved_aliases_do_not_crash_breakage_detection(tmp_path):
+    """Unresolvable aliases should not abort checking other public symbols.
 
     This mirrors a real-world scenario for packages that re-export SDK symbols.
     """
@@ -337,14 +342,7 @@ def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
         pkg.mkdir(parents=True)
         (tmp_path / root / "openhands" / "__init__.py").write_text("")
 
-        content = (
-            "from openhands.sdk.workspace import PlatformType\n\n"
-            "__all__ = [\n"
-            "    'PlatformType',\n"
-            "    'Foo',\n"
-            "]\n\n"
-            "class Foo:\n"
-        )
+        content = "from openhands.sdk.workspace import PlatformType\n\nclass Foo:\n"
         if include_method:
             content += "    def bar(self) -> int:\n        return 1\n"
         else:
@@ -409,8 +407,8 @@ def test_is_field_metadata_only_change_long_description():
 
 def test_field_description_change_is_not_breaking(tmp_path):
     """Field description changes should not be counted as breaking changes."""
-    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
-    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+    old_pkg = _write_pkg_init(tmp_path, "old")
+    new_pkg = _write_pkg_init(tmp_path, "new")
 
     old_init = old_pkg / "__init__.py"
     new_init = new_pkg / "__init__.py"
