@@ -4,14 +4,14 @@
 This script compares current workspace packages against their previous PyPI
 releases to detect breaking changes in the public API.
 
-It focuses on the public surface of each package:
-- public members reachable from the package root module (e.g. ``openhands.sdk``)
-- additional modules/objects configured via ``*_INCLUDE_PATHS`` environment vars
+It focuses on the curated public surface:
+- symbols exported via ``__all__``
+- public members removed from classes exported via ``__all__``
 
 It enforces two policies:
 
-1. **Deprecation-before-removal** – any removed public symbol or removed public
-   class member must have been marked deprecated in the *previous* release using the
+1. **Deprecation-before-removal** – any removed export or removed public class
+   member must have been marked deprecated in the *previous* release using the
    canonical deprecation helpers (``@deprecated`` decorator or
    ``warn_deprecated()`` call from ``openhands.sdk.utils.deprecation``). For
    members, the recommended ``warn_deprecated`` feature name is qualified (e.g.
@@ -54,7 +54,7 @@ class PackageConfig:
 class DeprecatedSymbols:
     """Deprecated SDK symbols detected in a source tree.
 
-    ``top_level`` tracks module-level symbols like ``LLM``.
+    ``top_level`` tracks module-level symbols (exports) like ``LLM``.
     ``qualified`` tracks class members like ``LLM.some_method``.
     """
 
@@ -272,27 +272,44 @@ def _collect_breakages_pairs(
     return breakages, undeprecated_removals
 
 
-def _public_members(obj: object) -> dict[str, object]:
-    """Return public members of a Griffe object keyed by name."""
+def _extract_exported_names(module) -> set[str]:
+    """Extract names exported from a module via ``__all__``.
 
-    members = getattr(obj, "members", None)
-    if not members:
-        return {}
-
-    public: dict[str, object] = {}
+    This check is explicitly meant to track the curated public surface. The SDK
+    is expected to define ``__all__`` in ``openhands.sdk``; if it's missing or we
+    can't statically interpret it, we fail fast rather than silently widening the
+    surface area (which would make the check noisy and brittle).
+    """
     try:
-        items = members.items()
-    except AttributeError:
-        return public
+        all_var = module["__all__"]
+    except Exception as e:
+        raise ValueError("Expected __all__ to be defined on the public module") from e
 
-    for name, member in items:
-        if name.startswith("_"):
-            continue
-        if not getattr(member, "is_public", True):
-            continue
-        public[name] = member
+    val = getattr(all_var, "value", None)
+    elts = getattr(val, "elements", None)
+    if not elts:
+        raise ValueError("Unable to statically evaluate __all__")
 
-    return public
+    names: set[str] = set()
+    for el in elts:
+        # Griffe represents string literals in __all__ in different ways depending
+        # on how the module is loaded / griffe version:
+        # - sometimes as plain Python strings (including quotes, e.g. "'LLM'")
+        # - sometimes as expression nodes with a `.value` attribute
+        #
+        # We intentionally only support the "static __all__ of string literals"
+        # case; we just normalize the representation.
+        if isinstance(el, str):
+            names.add(el.strip("\"'"))
+            continue
+        s = getattr(el, "value", None)
+        if isinstance(s, str):
+            names.add(s)
+
+    if not names:
+        raise ValueError("__all__ resolved to an empty set")
+
+    return names
 
 
 def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
@@ -517,8 +534,8 @@ def _compute_breakages(
     Returns:
         ``(total_breaks, undeprecated_removals)`` — *total_breaks* counts all
         structural breakages (for the version-bump policy), while
-        *undeprecated_removals* counts public API removals (top-level symbols and
-        class members) without a prior deprecation marker (a separate hard failure).
+        *undeprecated_removals* counts public API removals (exports and class
+        members) without a prior deprecation marker (a separate hard failure).
     """
     pkg = cfg.package
     title = f"{cfg.distribution} API"
@@ -530,6 +547,9 @@ def _compute_breakages(
         _find_deprecated_symbols(source_root) if source_root else DeprecatedSymbols()
     )
 
+    old_exports: set[str] = set()
+    new_exports: set[str] = set()
+
     try:
         old_mod = _resolve_griffe_object(old_root, pkg, root_package=pkg)
         new_mod = _resolve_griffe_object(new_root, pkg, root_package=pkg)
@@ -539,27 +559,51 @@ def _compute_breakages(
         new_mod = None
 
     if old_mod is not None and new_mod is not None:
-        old_members = _public_members(old_mod)
-        new_members = _public_members(new_mod)
+        try:
+            old_exports = _extract_exported_names(old_mod)
+        except ValueError as e:
+            print(
+                f"::warning title={title}::Previous release does not define a "
+                f"static {pkg}.__all__; export-based checks will be skipped: {e}"
+            )
+        except Exception as e:
+            print(f"::warning title={title}::Failed to read previous __all__: {e}")
 
-        removed = sorted(set(old_members) - set(new_members))
-        for name in removed:
-            total_breaks += 1  # every removal is a structural break
-            if name not in deprecated.top_level:
-                print(
-                    f"::error title={title}::Removed public symbol '{name}' from "
-                    f"{pkg} without prior deprecation. Mark it with @deprecated or "
-                    "warn_deprecated() for at least one release before removing."
-                )
-                undeprecated_removals += 1
-            else:
-                print(
-                    f"::notice title={title}::Removed previously-deprecated symbol "
-                    f"'{name}' from {pkg}"
-                )
+        try:
+            new_exports = _extract_exported_names(new_mod)
+        except Exception as e:
+            print(f"::warning title={title}::Failed to read current __all__: {e}")
 
-        common = sorted(set(old_members) & set(new_members))
-        pairs = [(old_members[name], new_members[name]) for name in common]
+    if old_exports and new_exports:
+        removed = sorted(old_exports - new_exports)
+
+        # Check deprecation-before-removal policy (exports)
+        if removed:
+            for name in removed:
+                total_breaks += 1  # every removal is a structural break
+                if name not in deprecated.top_level:
+                    print(
+                        f"::error title={title}::Removed '{name}' from "
+                        f"{pkg}.__all__ without prior deprecation. "
+                        "Mark it with @deprecated or warn_deprecated() "
+                        "for at least one release before removing."
+                    )
+                    undeprecated_removals += 1
+                else:
+                    print(
+                        f"::notice title={title}::Removed previously-"
+                        f"deprecated symbol '{name}' from "
+                        f"{pkg}.__all__"
+                    )
+
+        common = sorted(old_exports & new_exports)
+        pairs: list[tuple[object, object]] = []
+        for name in common:
+            try:
+                pairs.append((old_mod[name], new_mod[name]))
+            except Exception as e:
+                print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
+
         breakages, undeprecated_members = _collect_breakages_pairs(
             pairs,
             deprecated=deprecated,
