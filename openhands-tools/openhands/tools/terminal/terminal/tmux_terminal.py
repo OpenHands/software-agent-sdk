@@ -136,13 +136,20 @@ class TmuxTerminal(TerminalInterface):
         return content
 
     def clear_screen(self) -> None:
-        """Clear the tmux pane screen and history."""
+        """Clear the tmux pane screen and history.
+
+        Uses tmux's clear-history command instead of sending C-l (Ctrl+L) to
+        avoid the control character leaking into shell input, which can cause
+        commands to fail over SSH connections.
+        """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys("C-l", enter=False)
-        time.sleep(0.1)
+        # Clear the history buffer using tmux command (not C-l which can leak)
         self.pane.cmd("clear-history")
+        # Send an empty enter to get a fresh prompt displayed
+        self.pane.send_keys("", enter=True)
+        time.sleep(0.1)
 
     def interrupt(self) -> bool:
         """Send interrupt signal (Ctrl+C) to the tmux pane.
