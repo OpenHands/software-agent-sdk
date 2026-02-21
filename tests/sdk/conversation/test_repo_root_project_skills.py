@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import SecretStr
-
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.skills import load_project_skills
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import SystemPromptEvent
-from openhands.sdk.llm import LLM
+from tests.sdk.utils.llm import TestLLM
 
 
 def test_system_prompt_includes_repo_root_agents_md_when_workdir_is_subdir(
@@ -41,7 +39,7 @@ def test_system_prompt_includes_repo_root_agents_md_when_workdir_is_subdir(
     )
 
     agent = Agent(
-        llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+        llm=TestLLM(model="test-model"),
         tools=[],
         include_default_tools=[],
         agent_context=ctx,
