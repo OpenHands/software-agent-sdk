@@ -10,7 +10,7 @@ import os
 import shutil
 import tempfile
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -28,6 +28,10 @@ from tests.integration.utils.format_costs import format_cost
 
 
 logger = get_logger(__name__)
+
+# Maximum time in seconds to wait for a single test to complete
+# This prevents hung tests from blocking the entire test suite indefinitely
+DEFAULT_TEST_TIMEOUT = 1800  # 30 minutes
 
 
 class TestInstance(BaseModel):
@@ -280,13 +284,27 @@ def run_evaluation(
     llm_config: dict[str, Any],
     num_workers: int,
     tool_preset: ToolPresetType = "default",
+    test_timeout: int = DEFAULT_TEST_TIMEOUT,
 ) -> list[EvalOutput]:
-    """Run evaluation on all test instances and return results directly."""
+    """Run evaluation on all test instances and return results directly.
+
+    Args:
+        instances: List of test instances to run
+        llm_config: LLM configuration dictionary
+        num_workers: Number of parallel workers to use
+        tool_preset: Tool preset to use for tests
+        test_timeout: Maximum time in seconds to wait for each test
+            (default: 30 minutes)
+
+    Returns:
+        List of evaluation outputs, including timeout failures
+    """
     logger.info(
-        "Running %d tests with %d workers (tool_preset: %s)",
+        "Running %d tests with %d workers (tool_preset: %s, timeout: %ds)",
         len(instances),
         num_workers,
         tool_preset,
+        test_timeout,
     )
 
     results = []
@@ -297,7 +315,7 @@ def run_evaluation(
             result = process_instance(instance, llm_config, tool_preset)
             results.append(result)
     else:
-        # Parallel execution
+        # Parallel execution with timeout handling
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             future_to_instance = {
                 executor.submit(
@@ -306,9 +324,53 @@ def run_evaluation(
                 for instance in instances
             }
 
-            for future in as_completed(future_to_instance):
-                result = future.result()
-                results.append(result)
+            for future in as_completed(future_to_instance, timeout=None):
+                instance = future_to_instance[future]
+                try:
+                    # Wait for result with timeout to prevent indefinite hanging
+                    result = future.result(timeout=test_timeout)
+                    results.append(result)
+                except TimeoutError:
+                    logger.error(
+                        "Test %s timed out after %d seconds",
+                        instance.instance_id,
+                        test_timeout,
+                    )
+                    # Create a failure result for the timed-out test
+                    timeout_result = EvalOutput(
+                        instance_id=instance.instance_id,
+                        test_result=TestResult(
+                            success=False,
+                            reason=(
+                                f"Test execution timed out after "
+                                f"{test_timeout} seconds. "
+                                "This may indicate an infinite loop, hung LLM call, "
+                                "or deadlock in the agent or tools."
+                            ),
+                        ),
+                        llm_model=llm_config.get("model", "unknown"),
+                        test_type=instance.test_type,
+                        error_message=f"Timeout after {test_timeout}s",
+                    )
+                    results.append(timeout_result)
+                except Exception as e:
+                    logger.error(
+                        "Unexpected error waiting for test %s: %s",
+                        instance.instance_id,
+                        e,
+                    )
+                    # Create a failure result for the errored test
+                    error_result = EvalOutput(
+                        instance_id=instance.instance_id,
+                        test_result=TestResult(
+                            success=False,
+                            reason=f"Unexpected error in test runner: {str(e)}",
+                        ),
+                        llm_model=llm_config.get("model", "unknown"),
+                        test_type=instance.test_type,
+                        error_message=str(e),
+                    )
+                    results.append(error_result)
 
     return results
 
@@ -464,6 +526,17 @@ def main():
             "'planning' uses planning-specific tools."
         ),
     )
+    parser.add_argument(
+        "--test-timeout",
+        type=int,
+        default=DEFAULT_TEST_TIMEOUT,
+        help=(
+            f"Maximum time in seconds to wait for each test to complete "
+            f"(default: {DEFAULT_TEST_TIMEOUT}s / 30 minutes). "
+            "Tests that exceed this timeout will be marked as failed to prevent "
+            "indefinite hanging."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -506,7 +579,9 @@ def main():
 
     logger.info("Output directory: %s", output_dir)
 
-    eval_outputs = run_evaluation(instances, llm_config, args.num_workers, tool_preset)
+    eval_outputs = run_evaluation(
+        instances, llm_config, args.num_workers, tool_preset, args.test_timeout
+    )
 
     generate_structured_results(
         eval_outputs=eval_outputs,
