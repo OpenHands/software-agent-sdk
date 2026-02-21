@@ -210,6 +210,23 @@ def test_removed_public_method_with_deprecation_is_not_undeprecated(tmp_path):
     assert undeprecated == 0
 
 
+def test_missing_all_in_previous_release_skips_breakage_check(tmp_path):
+    """If previous release lacks __all__, skip instead of failing workflow."""
+    old_pkg = tmp_path / "old" / "openhands" / "sdk"
+    old_pkg.mkdir(parents=True)
+    (tmp_path / "old" / "openhands" / "__init__.py").write_text("")
+    (old_pkg / "__init__.py").write_text("# no __all__ in previous release\n")
+
+    _write_pkg_init(tmp_path, "new", ["Foo"])
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(old_root, new_root, _SDK_CFG)
+    assert total_breaks == 0
+    assert undeprecated == 0
+
+
 def test_parse_version_simple():
     v = _parse_version("1.2.3")
     assert v.major == 1

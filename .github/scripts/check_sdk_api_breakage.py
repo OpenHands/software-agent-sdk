@@ -551,8 +551,20 @@ def _compute_breakages(old_root, new_root, cfg: PackageConfig) -> tuple[int, int
     except Exception as e:
         raise RuntimeError(f"Failed to resolve root module '{pkg}'") from e
 
-    old_exports = _extract_exported_names(old_mod)
     new_exports = _extract_exported_names(new_mod)
+    try:
+        old_exports = _extract_exported_names(old_mod)
+    except ValueError as e:
+        # The API breakage check relies on a curated public surface defined via
+        # __all__. If the previous release didn't define (or couldn't statically
+        # evaluate) __all__, we can't compute meaningful breakages.
+        #
+        # In this situation, skip rather than failing the entire workflow.
+        print(
+            f"::notice title={title}::Skipping breakage check; previous release "
+            f"has no statically-evaluable {pkg}.__all__: {e}"
+        )
+        return 0, 0
 
     removed = sorted(old_exports - new_exports)
 
