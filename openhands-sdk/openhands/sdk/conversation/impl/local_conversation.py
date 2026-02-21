@@ -757,6 +757,11 @@ class LocalConversation(BaseConversation):
         # Ensure agent is initialized (needs tools_map)
         self._ensure_agent_ready()
 
+        # Try agent-specific override first (e.g. ACPAgent uses fork_session)
+        agent_response = self.agent.ask_agent(question)
+        if agent_response is not None:
+            return agent_response
+
         # Import here to avoid circular imports
         from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
 
