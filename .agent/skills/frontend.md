@@ -2,6 +2,14 @@
 
 Build a React chat frontend that connects to an OpenHands agent server, sends messages, and displays a live conversation including all event types.
 
+## Basic structure
+You will probably want the following features:
+* A settings modal/page where the user can set:
+  * host and password for agent-server
+  * LLM model and key
+* a chat input
+* the ability to display both messages and actions from the agent
+
 ## Packages
 
 ```bash
