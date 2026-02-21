@@ -42,7 +42,8 @@ class TmuxTerminal(TerminalInterface):
             return
 
         env = sanitized_env()
-        self.server = libtmux.Server(environment=env)
+        # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
+        self.server = libtmux.Server(socket_name="openhands", environment=env)
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
