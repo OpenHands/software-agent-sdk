@@ -169,6 +169,29 @@ GitHub:
 - [issue_conversation_instructions.j2](https://github.com/OpenHands/OpenHands/blob/main/openhands/integrations/templates/resolver/github/issue_conversation_instructions.j2)
 - [issue_prompt.j2](https://github.com/OpenHands/OpenHands/blob/main/openhands/integrations/templates/resolver/github/issue_prompt.j2)
 - [pr_update_conversation_instructions.j2](https://github.com/OpenHands/OpenHands/blob/main/openhands/integrations/templates/resolver/github/pr_update_conversation_instructions.j2)
+  - Contains the following section (verbatim):
+
+    ```
+    # Steps to Handle the Comment
+
+    ## Understand the PR Context
+    Use the $GITHUB_TOKEN and GitHub API to:
+        1. Retrieve the diff against main to understand the changes
+        2. Fetch the PR body and the linked issue for context
+
+    ## Process the Comment
+    If it's a question:
+        1. Answer the question asked
+        2. DO NOT leave any comments on the PR
+
+    If it requests a code update:
+        1. Modify the code accordingly in the current branch
+        2. Commit your changes with a clear commit message
+        3. Push the changes to GitHub to update the PR
+        4. DO NOT leave any comments on the PR
+    ```
+
+
 - [pr_update_prompt.j2](https://github.com/OpenHands/OpenHands/blob/main/openhands/integrations/templates/resolver/github/pr_update_prompt.j2)
 
 GitLab:
