@@ -122,8 +122,6 @@ When adding non-Python files (JS, templates, etc.) loaded at runtime, add them t
 
 </DEV_SETUP>
 
-
-
 <PR_ARTIFACTS>
 # PR-Specific Documents
 
