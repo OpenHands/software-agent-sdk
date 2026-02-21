@@ -633,16 +633,23 @@ def load_skills_from_dir(
     regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
+    # Wrap each load in try/except to ensure one bad skill doesn't break all loading
     for skill_md_path in skill_md_files:
-        load_and_categorize(
-            skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
+        try:
+            load_and_categorize(
+                skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
+            )
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
 
     # Load regular .md files
     for path in regular_md_files:
-        load_and_categorize(
-            path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
+        try:
+            load_and_categorize(
+                path, skill_dir, repo_skills, knowledge_skills, agent_skills
+            )
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load skill from {path}: {e}")
 
     total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)
     logger.debug(
@@ -656,6 +663,7 @@ def load_skills_from_dir(
 
 # Default user skills directories (in order of priority)
 USER_SKILLS_DIRS = [
+    Path.home() / ".agents" / "skills",
     Path.home() / ".openhands" / "skills",
     Path.home() / ".openhands" / "microagents",  # Legacy support
 ]
@@ -664,9 +672,10 @@ USER_SKILLS_DIRS = [
 def load_user_skills() -> list[Skill]:
     """Load skills from user's home directory.
 
-    Searches for skills in ~/.openhands/skills/ and ~/.openhands/microagents/
-    (legacy). Skills from both directories are merged, with skills/ taking
-    precedence for duplicate names.
+    Searches for skills in ~/.agents/skills/, ~/.openhands/skills/, and
+    ~/.openhands/microagents/ (legacy). Skills from all directories are merged,
+    with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
+    names.
 
     Returns:
         List of Skill objects loaded from user directories.
@@ -796,7 +805,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
 
 # Public skills repository configuration
-PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
+PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 PUBLIC_SKILLS_BRANCH = "main"
 
 
@@ -807,10 +816,14 @@ def load_public_skills(
     """Load skills from the public OpenHands skills repository.
 
     This function maintains a local git clone of the public skills registry at
-    https://github.com/OpenHands/skills. On first run, it clones the repository
+    https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
+
+    Note: When a skill directory contains a SKILL.md file (AgentSkills format),
+    any other markdown files in that directory or its subdirectories are treated
+    as reference materials for that skill, NOT as separate skills.
 
     Args:
         repo_url: URL of the skills repository. Defaults to the official
@@ -848,13 +861,21 @@ def load_public_skills(
             logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        # Find all .md files in the skills directory
-        md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
+        # Find SKILL.md directories (AgentSkills format) and regular .md files
+        # This ensures that markdown files in SKILL.md directories are NOT loaded
+        # as separate skills - they are reference materials for the parent skill.
+        skill_md_files = find_skill_md_directories(skills_dir)
+        skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
+        regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
 
-        logger.info(f"Found {len(md_files)} skill files in public skills repository")
+        # Combine all skill files to load
+        all_skill_files = list(skill_md_files) + list(regular_md_files)
+        logger.info(
+            f"Found {len(all_skill_files)} skill files in public skills repository"
+        )
 
         # Load each skill file
-        for skill_file in md_files:
+        for skill_file in all_skill_files:
             try:
                 skill = Skill.load(
                     path=skill_file,

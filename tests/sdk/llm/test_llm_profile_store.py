@@ -401,6 +401,6 @@ def test_multiple_profiles(profile_store: LLMProfileStore) -> None:
         assert loaded.temperature == expected_temp
 
     # Delete one
-    profile_store.delete("gpt35")
+    profile_store.delete("gpt4")
     assert len(profile_store.list()) == 2
-    assert "gpt35.json" not in profile_store.list()
+    assert "gpt4.json" not in profile_store.list()

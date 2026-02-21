@@ -52,6 +52,15 @@ class LLMSummarizingCondenser(RollingCondenser):
     `keep_first` events in the conversation will never be condensed or summarized.
     """
 
+    minimum_progress: float = Field(default=0.1, gt=0.0, lt=1.0)
+    """Minimum fraction of events that must be condensed (0.0-1.0). If fewer than
+    this proportion of events would be forgotten, condensation is treated as an error.
+    Default 0.1 means at least 10% of events must be condensed.
+    """
+    """Minimum ratio of the view to be condensed. Condensations below this threshold
+    are treated as errors.
+    """
+
     hard_context_reset_max_retries: int = Field(default=5, gt=0)
     """Number of attempts to perform hard context reset before raising an error."""
 
@@ -240,10 +249,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         naive_end = len(view) - events_from_tail
 
         # Find actual forgetting_start: smallest manipulation index >= keep_first
-        forgetting_start = view.find_next_manipulation_index(self.keep_first)
+        forgetting_start = view.manipulation_indices.find_next(self.keep_first)
 
         # Find actual forgetting_end: smallest manipulation index >= naive_end
-        forgetting_end = view.find_next_manipulation_index(naive_end)
+        forgetting_end = view.manipulation_indices.find_next(naive_end)
 
         # Extract events to forget using boundary-aware indices
         forgotten_events = view[forgetting_start:forgetting_end]
@@ -301,16 +310,28 @@ class LLMSummarizingCondenser(RollingCondenser):
         self, view: View, agent_llm: LLM | None = None
     ) -> Condensation:
         # The condensation is dependent on the events we want to drop and the previous
-        # summary.
-        forgotten_events, summary_offset = self._get_forgotten_events(
-            view, agent_llm=agent_llm
-        )
+        # summary. If we fail to find an appropriate set of events to forget raise an
+        # exception so the conversation can keep going until conditions change.
+        try:
+            forgotten_events, summary_offset = self._get_forgotten_events(
+                view, agent_llm=agent_llm
+            )
+        except ValueError as e:
+            raise NoCondensationAvailableException(
+                "Unable to compute forgotten events"
+            ) from e
 
         if not forgotten_events:
             raise NoCondensationAvailableException(
                 "Cannot condense 0 events. This typically occurs when a tool loop "
                 "spans almost the entire view, leaving no valid range for forgetting "
                 "events. Consider adjusting keep_first or max_size parameters."
+            )
+
+        if len(forgotten_events) < len(view) * self.minimum_progress:
+            raise NoCondensationAvailableException(
+                "Cannot apply condensation: events forgotten below minimum progress "
+                "threshold."
             )
 
         return self._generate_condensation(

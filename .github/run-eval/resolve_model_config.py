@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Resolve model IDs to full model configurations.
+Resolve model IDs to full model configurations and verify model availability.
 
 Reads:
 - MODEL_IDS: comma-separated model IDs
+- LLM_API_KEY: API key for litellm_proxy (optional, for preflight check)
+- LLM_BASE_URL: Base URL for litellm_proxy (optional, defaults to eval proxy)
+- SKIP_PREFLIGHT: Set to 'true' to skip the preflight LLM check
 
 Outputs to GITHUB_OUTPUT:
 - models_json: JSON array of full model configs with display names
@@ -12,6 +15,7 @@ Outputs to GITHUB_OUTPUT:
 import json
 import os
 import sys
+from typing import Any
 
 
 # Model configurations dictionary
@@ -64,15 +68,28 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "claude-sonnet-4-6": {
+        "id": "claude-sonnet-4-6",
+        "display_name": "Claude Sonnet 4.6",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-sonnet-4-6",
+            "temperature": 0.0,
+        },
+    },
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
-        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-pro-preview"},
+        "llm_config": {"model": "litellm_proxy/gemini-3-pro-preview"},
     },
     "gemini-3-flash": {
         "id": "gemini-3-flash",
         "display_name": "Gemini 3 Flash",
-        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-flash-preview"},
+        "llm_config": {"model": "litellm_proxy/gemini-3-flash-preview"},
+    },
+    "gemini-3.1-pro": {
+        "id": "gemini-3.1-pro",
+        "display_name": "Gemini 3.1 Pro",
+        "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview"},
     },
     "gpt-5.2": {
         "id": "gpt-5.2",
@@ -96,6 +113,15 @@ MODELS = {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
         "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
+    },
+    "minimax-m2.5": {
+        "id": "minimax-m2.5",
+        "display_name": "MiniMax M2.5",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M2.5",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
     },
     "minimax-m2.1": {
         "id": "minimax-m2.1",
@@ -128,6 +154,15 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/openrouter/z-ai/glm-4.7",
             # OpenRouter glm-4.7 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
+    },
+    "glm-5": {
+        "id": "glm-5",
+        "display_name": "GLM-5",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5",
+            # OpenRouter glm-5 is text-only despite LiteLLM reporting vision support
             "disable_vision": True,
         },
     },
@@ -186,6 +221,103 @@ def find_models_by_id(model_ids: list[str]) -> list[dict]:
     return resolved
 
 
+def test_model(
+    model_config: dict[str, Any],
+    api_key: str,
+    base_url: str,
+    timeout: int = 60,
+) -> tuple[bool, str]:
+    """Test a single model with a simple completion request using litellm.
+
+    Args:
+        model_config: Model configuration dict with 'llm_config' key
+        api_key: API key for authentication
+        base_url: Base URL for the LLM proxy
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    import litellm
+
+    llm_config = model_config.get("llm_config", {})
+    model_name = llm_config.get("model", "unknown")
+    display_name = model_config.get("display_name", model_name)
+
+    try:
+        # Build kwargs from llm_config, excluding 'model' which is passed separately
+        kwargs = {k: v for k, v in llm_config.items() if k != "model"}
+
+        response = litellm.completion(
+            model=model_name,
+            messages=[{"role": "user", "content": "Say 'OK' if you can read this."}],
+            max_tokens=10,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            **kwargs,
+        )
+
+        content = response.choices[0].message.content if response.choices else None
+        if content:
+            return True, f"✓ {display_name}: OK"
+        else:
+            return False, f"✗ {display_name}: Empty response"
+
+    except litellm.exceptions.Timeout:
+        return False, f"✗ {display_name}: Request timed out after {timeout}s"
+    except litellm.exceptions.APIConnectionError as e:
+        return False, f"✗ {display_name}: Connection error - {e}"
+    except litellm.exceptions.BadRequestError as e:
+        return False, f"✗ {display_name}: Bad request - {e}"
+    except litellm.exceptions.NotFoundError as e:
+        return False, f"✗ {display_name}: Model not found - {e}"
+    except Exception as e:
+        return False, f"✗ {display_name}: {type(e).__name__} - {e}"
+
+
+def run_preflight_check(models: list[dict[str, Any]]) -> bool:
+    """Run preflight LLM check for all models.
+
+    Args:
+        models: List of model configurations to test
+
+    Returns:
+        True if all models passed, False otherwise
+    """
+    api_key = os.environ.get("LLM_API_KEY")
+    base_url = os.environ.get("LLM_BASE_URL", "https://llm-proxy.eval.all-hands.dev")
+    skip_preflight = os.environ.get("SKIP_PREFLIGHT", "").lower() == "true"
+
+    if skip_preflight:
+        print("Preflight check: SKIPPED (SKIP_PREFLIGHT=true)")
+        return True
+
+    if not api_key:
+        print("Preflight check: SKIPPED (LLM_API_KEY not set)")
+        return True
+
+    print(f"\nPreflight LLM check for {len(models)} model(s)...")
+    print("-" * 50)
+
+    all_passed = True
+    for model_config in models:
+        success, message = test_model(model_config, api_key, base_url)
+        print(message)
+        if not success:
+            all_passed = False
+
+    print("-" * 50)
+
+    if all_passed:
+        print(f"✓ All {len(models)} model(s) passed preflight check\n")
+    else:
+        print("✗ Some models failed preflight check")
+        print("Evaluation aborted to avoid wasting compute resources.\n")
+
+    return all_passed
+
+
 def main() -> None:
     model_ids_str = get_required_env("MODEL_IDS")
     github_output = get_required_env("GITHUB_OUTPUT")
@@ -195,13 +327,16 @@ def main() -> None:
 
     # Resolve model configs
     resolved = find_models_by_id(model_ids)
+    print(f"Resolved {len(resolved)} model(s): {', '.join(model_ids)}")
+
+    # Run preflight check
+    if not run_preflight_check(resolved):
+        error_exit("Preflight LLM check failed")
 
     # Output as JSON
     models_json = json.dumps(resolved, separators=(",", ":"))
     with open(github_output, "a", encoding="utf-8") as f:
         f.write(f"models_json={models_json}\n")
-
-    print(f"Resolved {len(resolved)} model(s): {', '.join(model_ids)}")
 
 
 if __name__ == "__main__":

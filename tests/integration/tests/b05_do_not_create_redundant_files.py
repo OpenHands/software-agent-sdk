@@ -7,10 +7,13 @@ import subprocess
 from textwrap import dedent
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
-from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
+from openhands.sdk.tool import Tool
+from tests.integration.base import (
+    BaseIntegrationTest,
+    SkipTest,
+    TestResult,
+    get_tools_for_preset,
+)
 from tests.integration.behavior_utils import (
     get_conversation_summary,
 )
@@ -34,9 +37,7 @@ class NoRedundantFilesTest(BaseIntegrationTest):
 
     @property
     def tools(self) -> list[Tool]:
-        register_tool("TerminalTool", TerminalTool)
-        register_tool("FileEditorTool", FileEditorTool)
-        return [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        return get_tools_for_preset(self.tool_preset, enable_browser=False)
 
     def setup(self) -> None:  # noqa: D401
         """Set up a realistic codebase by cloning the lerobot repo."""

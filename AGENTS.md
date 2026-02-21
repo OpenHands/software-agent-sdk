@@ -101,20 +101,24 @@ When reviewing code, provide constructive feedback:
 **Next Steps**: [Clear action items]
 </ROLE>
 <DEV_SETUP>
-- Make sure you `make build` to configure the dependency first
+- Make sure you `make build` to configure the dependencies first
 - We use pre-commit hooks `.pre-commit-config.yaml` that includes:
   - type check through pyright
   - linting and formatter with `uv ruff`
 - NEVER USE `mypy`!
-- Do NOT commit ALL the file, just commit the relavant file you've changed!
-- in every commit message, you should add "Co-authored-by: openhands <openhands@all-hands.dev>"
+- Do NOT commit ALL the file, just commit the relevant file you've changed!
+- In every commit message, you should add "Co-authored-by: openhands <openhands@all-hands.dev>"
 - You can run pytest with `uv run pytest`
 
 # Instruction for fixing "E501 Line too long"
 
-- If it is just code, you can modify it so it spans multiple lne.
+- If it is just code, you can modify it so it spans multiple lines.
 - If it is a single-line string, you can break it into a multi-line string by doing "ABC" -> ("A"\n"B"\n"C")
 - If it is a long multi-line string (e.g., docstring), you should just add type ignore AFTER the ending """. You should NEVER ADD IT INSIDE the docstring.
+
+# PyInstaller Data Files
+
+When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
 
 </DEV_SETUP>
 
@@ -158,10 +162,71 @@ mkdir -p .pr
 </PR_ARTIFACTS>
 
 <REVIEW_HANDLING>
-- After addressing inline review comments, mark the corresponding review threads as resolved.
+- Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
+  - Does it fix a real bug or improve clarity significantly?
+  - Does it align with the project's engineering principles (simplicity, maintainability)?
+  - Is the suggested change proportional to the benefit, or does it add unnecessary complexity?
+- It's acceptable to respectfully decline suggestions that add verbosity without clear benefit, over-engineer for hypothetical edge cases, or contradict the project's pragmatic approach.
+- After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
 - Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
 - Prefer resolving threads only once fixes are pushed or a clear decision is documented.
-- Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+- Use the GitHub GraphQL API to reply to and resolve review threads (see below).
+
+## Resolving Review Threads via GraphQL
+
+The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
+
+1. Get the thread IDs (replace `<OWNER>`, `<REPO>`, `<PR_NUMBER>`):
+```bash
+gh api graphql -f query='
+{
+  repository(owner: "<OWNER>", name: "<REPO>") {
+    pullRequest(number: <PR_NUMBER>) {
+      reviewThreads(first: 20) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+2. Reply to the thread explaining how the feedback was addressed:
+```bash
+gh api graphql -f query='
+mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: "<THREAD_ID>"
+    body: "Fixed in <COMMIT_SHA>"
+  }) {
+    comment { id }
+  }
+}'
+```
+
+3. Resolve the thread:
+```bash
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+    thread { isResolved }
+  }
+}'
+```
+
+4. Get the failed workflow run ID and rerun it:
+```bash
+# Find the run ID from the failed check URL, or use:
+gh run list --repo <OWNER>/<REPO> --branch <BRANCH> --limit 5
+
+# Rerun failed jobs
+gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
+```
 </REVIEW_HANDLING>
 
 
@@ -175,13 +240,90 @@ mkdir -p .pr
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+
+## Event Type Deprecation Policy
+
+When modifying event types (e.g., `TextContent`, `Message`, or any Pydantic model used in event serialization), follow these guidelines to ensure backward compatibility:
+
+### Critical Requirement: Old Events Must Always Load
+
+**Old events should ALWAYS load without error.** Production systems may resume conversations that contain events serialized with older SDK versions. Breaking changes to event schemas will cause production failures.
+
+**Important**: Deprecated field handlers are **permanent** and should never be removed. They ensure old conversations can always be loaded, regardless of when they were created.
+
+### When Removing a Field from an Event Type
+
+1. **Never use `extra="forbid"` without a deprecation handler** - This will reject old events that contain removed fields.
+
+2. **Add a model validator to handle deprecated fields** using the `handle_deprecated_model_fields` utility:
+   ```python
+   from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
+
+   class MyModel(BaseModel):
+       model_config = ConfigDict(extra="forbid")
+
+       # Deprecated fields that are silently removed for backward compatibility
+       # when loading old events. These are kept permanently.
+       _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = ("old_field_name",)
+
+       @model_validator(mode="before")
+       @classmethod
+       def _handle_deprecated_fields(cls, data: Any) -> Any:
+           """Remove deprecated fields for backward compatibility with old events."""
+           return handle_deprecated_model_fields(data, cls._DEPRECATED_FIELDS)
+   ```
+
+3. **Write tests that verify both old and new event formats load correctly**:
+   - Test that old format (with deprecated field) loads successfully
+   - Test that new format (without deprecated field) works
+   - Test that loading a sequence of mixed old/new events works
+
+### Test Naming Convention for Event Backward Compatibility Tests
+
+**The version in the test name should be the LAST version where a particular event structure exists.**
+
+For example, if `enable_truncation` was removed in v1.11.1, the test should be named `test_v1_10_0_...` (the last version with that field).
+
+This convention:
+- Makes it clear which version's format is being tested
+- Avoids duplicate tests for the same structure across multiple versions
+- Documents when a field was last present in the schema
+
+Example test names:
+- `test_v1_10_0_text_content_with_enable_truncation` - Tests the last version with `enable_truncation`
+- `test_v1_9_0_message_with_deprecated_fields` - Tests the last version with Message deprecated fields
+- `test_text_content_current_format` - Tests the current format (no version needed)
+
+### Example: See `TextContent` and `Message` in `openhands/sdk/llm/message.py`
+
+These classes demonstrate the proper pattern for handling deprecated fields while maintaining backward compatibility with persisted events.
+
+## Public API Removal Policy
+
+Symbols exported via `openhands.sdk.__all__` are the SDK's public surface. Two CI policies govern changes:
+
+1. **Deprecation before removal** – before removing a public API object, it must have been marked deprecated for at least one release using the canonical helpers in `openhands.sdk.utils.deprecation`.
+
+   This applies to:
+   - Removing a symbol from `openhands.sdk.__all__`.
+   - Removing a public class member (method/property/attribute) from a class that is exported via `openhands.sdk.__all__`.
+
+   Acceptable deprecation markers:
+   - `@deprecated(deprecated_in=..., removed_in=...)` decorator for functions/classes/methods
+   - `warn_deprecated(feature, deprecated_in=..., removed_in=...)` for runtime paths (e.g., attribute accessors). For members, use a qualified feature name like `"LLM.some_method"`.
+
+   Note: Deprecating a class counts as deprecating its members for the purposes of member removal.
+
+2. **MINOR version bump** – any breaking change (removal or structural) requires at least a MINOR version bump.
+
+These are enforced by `check_sdk_api_breakage.py` (runs on release PRs). Deprecation deadlines are separately enforced by `check_deprecations.py` (runs on every PR).
 </CODE>
 
 <TESTING>
 - AFTER you edit ONE file, you should run pre-commit hook on that file via `uv run pre-commit run --files [filepath]` to make sure you didn't break it.
 - Don't write TOO MUCH test, you should write just enough to cover edge cases.
 - Check how we perform tests in .github/workflows/tests.yml
-- You should put unit tests in the corresponding test folder. For example, to test `openhands.sdk.tool/tool.py`, you should put tests under `openhands.sdk.tests/tool/test_tool.py`.
+- Put unit tests under the corresponding domain folder in `tests/` (e.g., `tests/sdk`, `tests/tools`, `tests/workspace`). For example, changes to `openhands-sdk/openhands/sdk/tool/tool.py` should be covered in `tests/sdk/tool/test_tool.py`.
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
@@ -219,9 +361,25 @@ git push -u origin <feature-name>
 ```
 </DOCUMENTATION_WORKFLOW>
 
+<AGENT_TMP_DIRECTORY>
+# Agent Temporary Directory Convention
+
+When tools need to store observation files (e.g., browser session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
+
+The browser session recording tool saves recordings to `.agent_tmp/observations/recording-{timestamp}/`.
+
+This convention ensures tool-generated observation files are stored in a predictable location that can be easily:
+- Added to `.gitignore`
+- Cleaned up after agent sessions
+- Identified as agent-generated artifacts
+
+Note: This is separate from `persistence_dir` which is used for conversation state persistence.
+</AGENT_TMP_DIRECTORY>
+
 <REPO>
 <PROJECT_STRUCTURE>
-- `openhands-sdk/` core SDK; `openhands-tools/` built-in tools; `openhands-workspace/` workspace management; `openhands-agent-server/` server runtime; `examples/` runnable patterns; `tests/` split by domain (`tests/sdk`, `tests/tools`, `tests/agent_server`, etc.).
+- This is a `uv`-managed Python monorepo (single `uv.lock` at repo root) with multiple distributable packages: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- `examples/` contains runnable patterns; `tests/` is split by domain (`tests/sdk`, `tests/tools`, `tests/workspace`, `tests/agent_server`, etc.).
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 </PROJECT_STRUCTURE>
 
@@ -233,6 +391,22 @@ git push -u origin <feature-name>
 - Clean caches: `make clean`
 - Run an example: `uv run python examples/01_standalone_sdk/main.py`
 </QUICK_COMMANDS>
+
+<RUNNING_EXAMPLES>
+# Running SDK Examples
+
+When implementing or modifying examples in `examples/`, always verify they work before committing:
+
+```bash
+# Run examples using the All-Hands LLM proxy
+LLM_BASE_URL="https://llm-proxy.eval.all-hands.dev" LLM_API_KEY="$LLM_API_KEY" \
+  uv run python examples/01_standalone_sdk/<example_name>.py
+```
+
+The `LLM_API_KEY` environment variable may be available in the OpenHands development environment and works with the All-Hands LLM proxy (`llm-proxy.eval.all-hands.dev` OR `llm-proxy.app.all-hands.dev`). Please consult the human user for the LLM key if it is not found.
+
+For examples that use the critic model (e.g., `34_critic_example.py`), the critic is auto-configured when using the All-Hands LLM proxy - no additional setup needed.
+</RUNNING_EXAMPLES>
 
 <REPO_CONFIG_NOTES>
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
