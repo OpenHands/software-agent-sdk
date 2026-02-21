@@ -33,7 +33,6 @@ from openhands.tools.file_editor.utils.encoding import (
     EncodingManager,
     with_encoding,
 )
-from openhands.tools.file_editor.utils.history import FileHistoryManager
 from openhands.tools.file_editor.utils.shell import run_shell_cmd
 
 
@@ -56,7 +55,6 @@ class FileEditor:
     """
 
     MAX_FILE_SIZE_MB: int = 10  # Maximum file size in MB
-    _history_manager: FileHistoryManager
     _max_file_size: int
     _encoding_manager: EncodingManager
     _cwd: str
@@ -75,7 +73,6 @@ class FileEditor:
                 directory for relative path suggestions. Must be an absolute path.
                 If None, no path suggestions will be provided for relative paths.
         """
-        self._history_manager = FileHistoryManager(max_history_per_file=10)
         self._max_file_size = (
             (max_file_size_mb or self.MAX_FILE_SIZE_MB) * 1024 * 1024
         )  # Convert to bytes
@@ -113,7 +110,6 @@ class FileEditor:
             if file_text is None:
                 raise EditorToolParameterMissingError(command, "file_text")
             self.write_file(_path, file_text)
-            self._history_manager.add_history(_path, file_text)
             return FileEditorObservation.from_text(
                 text=f"File created successfully at: {_path}",
                 command=command,
@@ -140,8 +136,6 @@ class FileEditor:
             if new_str is None:
                 raise EditorToolParameterMissingError(command, "new_str")
             return self.insert(_path, insert_line, new_str)
-        elif command == "undo_edit":
-            return self.undo_edit(_path)
 
         raise ToolError(
             f"Unrecognized command {command}. The allowed commands for "
@@ -238,9 +232,6 @@ class FileEditor:
 
         # Write the new content to the file
         self.write_file(path, new_file_content)
-
-        # Save the content to history
-        self._history_manager.add_history(path, file_content)
 
         # Create a snippet of the edited section
         start_line = max(0, replacement_line - SNIPPET_CONTEXT_WINDOW)
@@ -486,32 +477,32 @@ class FileEditor:
                 f"It should be within the range of allowed values: {[0, num_lines]}",
             )
 
+        # Read original content before modification
+        old_file_text = self.read_file(path)
+
         new_str_lines = new_str.split("\n")
 
         # Create temporary file for the new content
         with tempfile.NamedTemporaryFile(
             mode="w", encoding=encoding, delete=False
         ) as temp_file:
-            # Copy lines before insert point and save them for history
-            history_lines = []
+            # Copy lines before insert point
             with open(path, encoding=encoding) as f:
                 for i, line in enumerate(f, 1):
                     if i > insert_line:
                         break
                     temp_file.write(line)
-                    history_lines.append(line)
 
             # Insert new content
             for line in new_str_lines:
                 temp_file.write(line + "\n")
 
-            # Copy remaining lines and save them for history
+            # Copy remaining lines
             with open(path, encoding=encoding) as f:
                 for i, line in enumerate(f, 1):
                     if i <= insert_line:
                         continue
                     temp_file.write(line)
-                    history_lines.append(line)
 
         # Move temporary file to original location
         shutil.move(temp_file.name, path)
@@ -523,10 +514,6 @@ class FileEditor:
             insert_line + SNIPPET_CONTEXT_WINDOW + len(new_str_lines),
         )
         snippet = self.read_file(path, start_line=start_line + 1, end_line=end_line)
-
-        # Save history - we already have the lines in memory
-        file_text = "".join(history_lines)
-        self._history_manager.add_history(path, file_text)
 
         # Read new content for result
         new_file_text = self.read_file(path)
@@ -547,7 +534,7 @@ class FileEditor:
             command="insert",
             prev_exist=True,
             path=str(path),
-            old_content=file_text,
+            old_content=old_file_text,
             new_content=new_file_text,
         )
 
@@ -599,29 +586,6 @@ class FileEditor:
                     f"The path {path} is a directory and only the `view` command can "
                     "be used on directories.",
                 )
-
-    def undo_edit(self, path: Path) -> FileEditorObservation:
-        """
-        Implement the undo_edit command.
-        """
-        current_text = self.read_file(path)
-        old_text = self._history_manager.pop_last_history(path)
-        if old_text is None:
-            raise ToolError(f"No edit history found for {path}.")
-
-        self.write_file(path, old_text)
-
-        return FileEditorObservation.from_text(
-            text=(
-                f"Last edit to {path} undone successfully. "
-                f"{self._make_output(old_text, str(path))}"
-            ),
-            command="undo_edit",
-            path=str(path),
-            prev_exist=True,
-            old_content=current_text,
-            new_content=old_text,
-        )
 
     def validate_file(self, path: Path) -> None:
         """

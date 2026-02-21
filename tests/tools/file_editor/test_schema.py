@@ -34,7 +34,7 @@ def test_to_mcp_tool_detailed_type_validation_editor(mock_conversation_state):
 
     command_schema = str_editor_props["command"]
     assert "enum" in command_schema
-    expected_commands = ["view", "create", "str_replace", "insert", "undo_edit"]
+    expected_commands = ["view", "create", "str_replace", "insert"]
     assert set(command_schema["enum"]) == set(expected_commands)
 
     path_schema = str_editor_props["path"]
