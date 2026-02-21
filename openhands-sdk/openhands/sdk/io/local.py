@@ -61,6 +61,7 @@ class LocalFileStore(FileStore):
     @observe(name="LocalFileStore.write", span_type="TOOL")
     def write(self, path: str, contents: str | bytes, **kwargs) -> None:
         cache = kwargs.get("cache", True)
+
         full_path = self.get_full_path(path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         if isinstance(contents, str):
@@ -78,7 +79,7 @@ class LocalFileStore(FileStore):
         cache = kwargs.get("cache", True)
         full_path = self.get_full_path(path)
 
-        if full_path in self.cache:
+        if cache and full_path in self.cache:
             return self.cache[full_path]
 
         if not os.path.exists(full_path):
