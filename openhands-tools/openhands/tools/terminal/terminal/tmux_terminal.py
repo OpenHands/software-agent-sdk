@@ -148,12 +148,8 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        # Run the `clear` command to clear the visible screen content.
-        # This is safe because `clear` outputs escape sequences to the terminal
-        # rather than sending control characters to the shell's input buffer.
         self.pane.send_keys("clear", enter=True)
         time.sleep(0.1)
-        # Clear the scrollback history (including the `clear` command itself)
         self.pane.cmd("clear-history")
 
     def interrupt(self) -> bool:
