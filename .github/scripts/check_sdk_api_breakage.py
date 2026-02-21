@@ -321,7 +321,7 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
         0 if policy satisfied, 1 if not
     """
     if total_breaks == 0:
-        print("No SDK breaking changes detected")
+        print("No breaking changes detected")
         return 0
 
     parsed_prev = _parse_version(prev)
@@ -334,14 +334,14 @@ def _check_version_bump(prev: str, new_version: str, total_breaks: int) -> int:
 
     if not ok:
         print(
-            f"::error title=SDK SemVer::Breaking changes detected ({total_breaks}); "
+            f"::error title=SemVer::Breaking changes detected ({total_breaks}); "
             f"require at least minor version bump from "
             f"{parsed_prev.major}.{parsed_prev.minor}.x, but new is {new_version}"
         )
         return 1
 
     print(
-        f"SDK breaking changes detected ({total_breaks}) and version bump policy "
+        f"Breaking changes detected ({total_breaks}) and version bump policy "
         f"satisfied ({prev} -> {new_version})"
     )
     return 0
@@ -526,9 +526,7 @@ def _get_source_root(griffe_root: object) -> Path | None:
     return None
 
 
-def _compute_breakages(
-    old_root, new_root, cfg: PackageConfig, include: list[str]
-) -> tuple[int, int]:
+def _compute_breakages(old_root, new_root, cfg: PackageConfig) -> tuple[int, int]:
     """Detect breaking changes between old and new package versions.
 
     Returns:
@@ -547,90 +545,49 @@ def _compute_breakages(
         _find_deprecated_symbols(source_root) if source_root else DeprecatedSymbols()
     )
 
-    old_exports: set[str] = set()
-    new_exports: set[str] = set()
-
     try:
         old_mod = _resolve_griffe_object(old_root, pkg, root_package=pkg)
         new_mod = _resolve_griffe_object(new_root, pkg, root_package=pkg)
     except Exception as e:
-        print(f"::warning title={title}::Failed to resolve root module '{pkg}': {e}")
-        old_mod = None
-        new_mod = None
+        raise RuntimeError(f"Failed to resolve root module '{pkg}'") from e
 
-    if old_mod is not None and new_mod is not None:
-        try:
-            old_exports = _extract_exported_names(old_mod)
-        except ValueError as e:
+    old_exports = _extract_exported_names(old_mod)
+    new_exports = _extract_exported_names(new_mod)
+
+    removed = sorted(old_exports - new_exports)
+
+    # Check deprecation-before-removal policy (exports)
+    for name in removed:
+        total_breaks += 1  # every removal is a structural break
+        if name not in deprecated.top_level:
             print(
-                f"::warning title={title}::Previous release does not define a "
-                f"static {pkg}.__all__; export-based checks will be skipped: {e}"
+                f"::error title={title}::Removed '{name}' from "
+                f"{pkg}.__all__ without prior deprecation. "
+                "Mark it with @deprecated or warn_deprecated() "
+                "for at least one release before removing."
             )
-        except Exception as e:
-            print(f"::warning title={title}::Failed to read previous __all__: {e}")
+            undeprecated_removals += 1
+        else:
+            print(
+                f"::notice title={title}::Removed previously-deprecated symbol "
+                f"'{name}' from {pkg}.__all__"
+            )
 
+    common = sorted(old_exports & new_exports)
+    pairs: list[tuple[object, object]] = []
+    for name in common:
         try:
-            new_exports = _extract_exported_names(new_mod)
+            pairs.append((old_mod[name], new_mod[name]))
         except Exception as e:
-            print(f"::warning title={title}::Failed to read current __all__: {e}")
+            print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
 
-    if old_exports and new_exports:
-        removed = sorted(old_exports - new_exports)
-
-        # Check deprecation-before-removal policy (exports)
-        if removed:
-            for name in removed:
-                total_breaks += 1  # every removal is a structural break
-                if name not in deprecated.top_level:
-                    print(
-                        f"::error title={title}::Removed '{name}' from "
-                        f"{pkg}.__all__ without prior deprecation. "
-                        "Mark it with @deprecated or warn_deprecated() "
-                        "for at least one release before removing."
-                    )
-                    undeprecated_removals += 1
-                else:
-                    print(
-                        f"::notice title={title}::Removed previously-"
-                        f"deprecated symbol '{name}' from "
-                        f"{pkg}.__all__"
-                    )
-
-        common = sorted(old_exports & new_exports)
-        pairs: list[tuple[object, object]] = []
-        for name in common:
-            try:
-                pairs.append((old_mod[name], new_mod[name]))
-            except Exception as e:
-                print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
-
-        breakages, undeprecated_members = _collect_breakages_pairs(
-            pairs,
-            deprecated=deprecated,
-            title=title,
-        )
-        total_breaks += len(breakages)
-        undeprecated_removals += undeprecated_members
-
-    extra_pairs: list[tuple[object, object]] = []
-    for path in include:
-        if path == pkg:
-            continue
-        try:
-            old_obj = _resolve_griffe_object(old_root, path, root_package=pkg)
-            new_obj = _resolve_griffe_object(new_root, path, root_package=pkg)
-            extra_pairs.append((old_obj, new_obj))
-        except Exception as e:
-            print(f"::warning title={title}::Path {path} not found: {e}")
-
-    if extra_pairs:
-        breakages, undeprecated_members = _collect_breakages_pairs(
-            extra_pairs,
-            deprecated=deprecated,
-            title=title,
-        )
-        total_breaks += len(breakages)
-        undeprecated_removals += undeprecated_members
+    breakages, undeprecated_members = _collect_breakages_pairs(
+        pairs,
+        deprecated=deprecated,
+        title=title,
+    )
+    total_breaks += len(breakages)
+    undeprecated_removals += undeprecated_members
 
     return total_breaks, undeprecated_removals
 
@@ -639,10 +596,6 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
     """Run breakage checks for a single package. Returns 0 on success."""
     pyproj = os.path.join(repo_root, cfg.source_dir, "pyproject.toml")
     new_version = read_version_from_pyproject(pyproj)
-
-    include_env = f"{cfg.package.upper().replace('.', '_')}_INCLUDE_PATHS"
-    include = os.environ.get(include_env, cfg.package).split(",")
-    include = [p.strip() for p in include if p.strip()]
 
     title = f"{cfg.distribution} API"
     prev = get_prev_pypi_version(cfg.distribution, new_version)
@@ -663,7 +616,11 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
     if not old_root:
         return 1
 
-    total_breaks, undeprecated = _compute_breakages(old_root, new_root, cfg, include)
+    try:
+        total_breaks, undeprecated = _compute_breakages(old_root, new_root, cfg)
+    except Exception as e:
+        print(f"::error title={title}::Failed to compute breakages: {e}")
+        return 1
 
     if undeprecated:
         print(

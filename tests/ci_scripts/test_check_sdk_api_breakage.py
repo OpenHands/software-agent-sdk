@@ -65,37 +65,30 @@ def _write_pkg_init(
 
 
 def test_griffe_breakage_removed_attribute_requires_minor_bump(tmp_path):
-    old_pkg = tmp_path / "old" / "openhands" / "sdk" / "llm"
-    new_pkg = tmp_path / "new" / "openhands" / "sdk" / "llm"
-    old_pkg.mkdir(parents=True)
-    new_pkg.mkdir(parents=True)
+    old_pkg = _write_pkg_init(tmp_path, "old", ["TextContent"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["TextContent"])
 
-    (old_pkg / "message.py").write_text(
-        """
-class TextContent:
-    def __init__(self, text: str):
-        self.text = text
-        self.enable_truncation = True
-""".lstrip()
-    )
-    (new_pkg / "message.py").write_text(
-        """
-class TextContent:
-    def __init__(self, text: str):
-        self.text = text
-""".lstrip()
-    )
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
 
-    old_root = griffe.load(
-        "openhands.sdk.llm.message", search_paths=[str(tmp_path / "old")]
+    old_init.write_text(
+        old_init.read_text()
+        + "\n\nclass TextContent:\n"
+        + "    def __init__(self, text: str):\n"
+        + "        self.text = text\n"
+        + "        self.enable_truncation = True\n"
     )
-    new_root = griffe.load(
-        "openhands.sdk.llm.message", search_paths=[str(tmp_path / "new")]
+    new_init.write_text(
+        new_init.read_text()
+        + "\n\nclass TextContent:\n"
+        + "    def __init__(self, text: str):\n"
+        + "        self.text = text\n"
     )
 
-    total_breaks, _undeprecated = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, include=["openhands.sdk.llm.message.TextContent"]
-    )
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, _undeprecated = _prod._compute_breakages(old_root, new_root, _SDK_CFG)
     assert total_breaks > 0
 
     assert _check_version_bump("1.11.3", "1.11.4", total_breaks=total_breaks) == 1
@@ -110,7 +103,9 @@ def test_griffe_removed_export_from_all_is_breaking(tmp_path):
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+        old_root,
+        new_root,
+        _SDK_CFG,
     )
     assert total_breaks == 1
     # Bar was not deprecated before removal
@@ -128,7 +123,9 @@ def test_removal_of_deprecated_symbol_does_not_count_as_undeprecated(tmp_path):
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+        old_root,
+        new_root,
+        _SDK_CFG,
     )
     assert total_breaks == 1
     assert undeprecated == 0
@@ -150,7 +147,9 @@ def test_removal_with_warn_deprecated_is_not_undeprecated(tmp_path):
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+        old_root,
+        new_root,
+        _SDK_CFG,
     )
     assert total_breaks == 1
     assert undeprecated == 0
@@ -175,7 +174,9 @@ def test_removed_public_method_requires_deprecation(tmp_path):
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+        old_root,
+        new_root,
+        _SDK_CFG,
     )
     assert total_breaks > 0
     assert undeprecated == 1
@@ -201,7 +202,9 @@ def test_removed_public_method_with_deprecation_is_not_undeprecated(tmp_path):
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+        old_root,
+        new_root,
+        _SDK_CFG,
     )
     assert total_breaks > 0
     assert undeprecated == 0
@@ -313,11 +316,12 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, ws_cfg, include=["openhands.workspace"]
+        old_root,
+        new_root,
+        ws_cfg,
     )
     assert total_breaks == 1
     assert undeprecated == 1
-
 
 
 def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
@@ -359,7 +363,9 @@ def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
     new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, ws_cfg, include=["openhands.workspace"]
+        old_root,
+        new_root,
+        ws_cfg,
     )
 
     assert total_breaks >= 1
@@ -432,7 +438,9 @@ def test_field_description_change_is_not_breaking(tmp_path):
     new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
 
     total_breaks, undeprecated = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, include=["openhands.sdk"]
+        old_root,
+        new_root,
+        _SDK_CFG,
     )
     # Field description changes should NOT count as breaking
     assert total_breaks == 0
