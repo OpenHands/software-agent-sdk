@@ -253,7 +253,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             running_as_root = os.getuid() == 0
             if running_as_root:
                 logger.info(
-                    "Running as root - disabling Chromium sandbox (required for root)"
+                logger.warning(
+                    "Running as root - disabling Chromium sandbox (required for root). "
+                    "WARNING: This reduces security isolation."
+                )
                 )
 
             self._config = {
