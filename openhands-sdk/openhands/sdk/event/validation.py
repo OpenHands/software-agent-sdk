@@ -37,19 +37,29 @@ class EventStreamValidationError(Exception):
     The error message includes details to help debug the issue.
     """
 
-    def __init__(self, errors: list[str]):
+    def __init__(self, errors: list[str], conversation_id: str | None = None):
         self.errors = errors
+        self.conversation_id = conversation_id
         issues = "\n".join(f"  - {e}" for e in errors)
+
+        # Build error message with conversation_id if available
+        conv_info = f" (conversation_id: {conversation_id})" if conversation_id else ""
         self.message = (
-            f"Event stream validation failed. This would cause LLM API errors.\n"
+            f"Event stream validation failed{conv_info}. "
+            f"This would cause LLM API errors.\n"
             f"Issues found:\n{issues}\n"
-            f"This may indicate a bug in event handling. "
-            f"Please report this issue with the conversation ID."
+            f"This may indicate a bug in event handling."
         )
+        if conversation_id:
+            self.message += (
+                f" Please report this issue with conversation_id: {conversation_id}"
+            )
         super().__init__(self.message)
 
 
-def validate_for_llm(events: Sequence[Event]) -> None:
+def validate_for_llm(
+    events: Sequence[Event], conversation_id: str | None = None
+) -> None:
     """Validate event stream before sending to LLM.
 
     Checks for issues that would cause LLM API errors:
@@ -57,8 +67,14 @@ def validate_for_llm(events: Sequence[Event]) -> None:
     - Duplicate observations (multiple responses for same tool_call_id)
     - Orphan observations (tool response without matching tool_call)
 
+    Note: Additional validation checks (e.g., invalid JSON arguments, message
+    ordering, role alternation for Anthropic) are planned for future implementation.
+    The current implementation focuses on tool_call_id matching which addresses
+    the most critical production issues (#1782, #2127).
+
     Args:
         events: Sequence of events to validate
+        conversation_id: Optional conversation ID for better error messages
 
     Raises:
         EventStreamValidationError: If validation fails with details
@@ -95,7 +111,7 @@ def validate_for_llm(events: Sequence[Event]) -> None:
         errors.append(f"Orphan observation (no action): {tc_id}")
 
     if errors:
-        raise EventStreamValidationError(errors)
+        raise EventStreamValidationError(errors, conversation_id=conversation_id)
 
 
 def get_repair_events(events: Sequence[Event]) -> list[AgentErrorEvent]:

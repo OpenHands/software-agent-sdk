@@ -17,7 +17,7 @@ from openhands.sdk.conversation.types import ConversationCallbackType, Conversat
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
-from openhands.sdk.event.validation import get_repair_events
+from openhands.sdk.event.validation import get_repair_events, validate_for_llm
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -324,6 +324,10 @@ class ConversationState(OpenHandsModel):
                 state._events.append(event)
             if repair_events:
                 logger.info(f"Repaired {len(repair_events)} orphan action(s) on resume")
+                # Validate repaired stream to catch remaining issues early.
+                # This provides clear errors at resume time rather than later
+                # during LLM calls.
+                validate_for_llm(list(state._events), conversation_id=str(id))
 
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)

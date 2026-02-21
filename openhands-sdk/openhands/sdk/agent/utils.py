@@ -119,6 +119,7 @@ def prepare_llm_messages(
     condenser: None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
+    conversation_id: str | None = None,
 ) -> list[Message]: ...
 
 
@@ -128,6 +129,7 @@ def prepare_llm_messages(
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
+    conversation_id: str | None = None,
 ) -> list[Message] | Condensation: ...
 
 
@@ -136,6 +138,7 @@ def prepare_llm_messages(
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
+    conversation_id: str | None = None,
 ) -> list[Message] | Condensation:
     """Prepare LLM messages from conversation context.
 
@@ -149,6 +152,8 @@ def prepare_llm_messages(
         additional_messages: Optional additional messages to append
         llm: Optional LLM instance from the agent, passed to condenser for
             token counting or other LLM features
+        conversation_id: Optional conversation ID for better validation error
+            messages
 
     Returns:
         List of messages ready for LLM completion, or a Condensation event
@@ -161,7 +166,7 @@ def prepare_llm_messages(
     """
     # Validate event stream before converting to LLM messages.
     # Raises EventStreamValidationError with clear message for frontend.
-    validate_for_llm(events)
+    validate_for_llm(events, conversation_id=conversation_id)
 
     view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
