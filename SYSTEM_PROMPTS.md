@@ -116,38 +116,7 @@ Source: https://github.com/OpenHands/software-agent-sdk/blob/main/openhands-sdk/
 
 ## OpenHands repository
 
-### CodeAct agent system prompt
-
-Source: https://github.com/OpenHands/OpenHands/blob/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/codeact_agent/prompts/system_prompt.j2
-
-Additional section compared to SDK base:
-
-- `<DOCUMENTATION>`: Documentation handling rules (where to place docs and
-  whether to include them in VCS).
-  [Lines 97-105](https://github.com/OpenHands/OpenHands/blob/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/codeact_agent/prompts/system_prompt.j2#L97-L105)
-
-### Long-horizon additions
-
-Source: https://github.com/OpenHands/OpenHands/blob/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/codeact_agent/prompts/system_prompt_long_horizon.j2
-
-- `<TASK_TRACKING_PERSISTENCE>`: Continue task tracking across condensation events.
-  [Lines 42-46](https://github.com/OpenHands/OpenHands/blob/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/codeact_agent/prompts/system_prompt_long_horizon.j2#L42-L46)
-
-### ReadOnly agent prompt
-
-Source: https://github.com/OpenHands/OpenHands/blob/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/readonly_agent/prompts/system_prompt.j2
-
-- `<CAPABILITIES>`: Read-only tool list and restrictions.
-  [Lines 7-19](https://github.com/OpenHands/OpenHands/blob/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/readonly_agent/prompts/system_prompt.j2#L7-L19)
-- `<GUIDELINES>`: Read-only behavior guidelines and escalation instructions.
-  [Lines 21-34](https://github.com/OpenHands/OpenHands/blob/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/readonly_agent/prompts/system_prompt.j2#L21-L34)
-
-### Other OpenHands prompts
-
-Source directory: https://github.com/OpenHands/OpenHands/tree/bef9b80b9dc6061d27a748ef2115120a6a2feb87/openhands/agenthub/codeact_agent/prompts/
-
-- `system_prompt_interactive.j2`: Same `<INTERACTION_RULES>` section as SDK.
-- `system_prompt_tech_philosophy.j2`: Same `<TECHNICAL_PHILOSOPHY>` section as SDK.
+(TODO - we need V1 ONLY, not V0 legacy prompts which still exist in that codebase!)
 
 ## OpenHands-CLI repository
 
