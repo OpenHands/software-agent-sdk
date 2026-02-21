@@ -14,6 +14,65 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
+# ============================================================================
+# Credential redaction utilities (must be defined before run_git_command)
+# ============================================================================
+
+
+def redact_url_credentials(url: str) -> str:
+    """Redact credentials from a git URL for safe logging and display.
+
+    Replaces any username:password or token in the URL with "****" to prevent
+    credential exposure in logs, error messages, and persisted state.
+
+    Handles multiple URL formats:
+    - HTTPS with embedded credentials: https://user:token@host/path
+    - HTTPS with OAuth2: https://oauth2:token@host/path
+    - HTTPS with x-token-auth: https://x-token-auth:token@host/path
+    - SSH format (user@host:path) - no credentials to redact
+
+    Args:
+        url: Git URL that may contain credentials.
+
+    Returns:
+        URL with credentials redacted, or the original URL if no credentials found.
+
+    Examples:
+        >>> redact_url_credentials("https://oauth2:SECRET@gitlab.com/repo.git")
+        "https://****@gitlab.com/repo.git"
+        >>> redact_url_credentials("https://github.com/owner/repo.git")
+        "https://github.com/owner/repo.git"
+        >>> redact_url_credentials("git@github.com:owner/repo.git")
+        "git@github.com:owner/repo.git"
+    """
+    # Match HTTPS/HTTP URLs with credentials: protocol://user:pass@host or protocol://user@host
+    # The pattern captures: protocol, credentials (user:pass or just user), and the rest
+    pattern = r"^(https?://)([^@/]+)@(.+)$"
+    match = re.match(pattern, url)
+
+    if match:
+        protocol = match.group(1)
+        rest = match.group(3)
+        return f"{protocol}****@{rest}"
+
+    return url
+
+
+def _redact_args_for_logging(args: list[str]) -> str:
+    """Redact credentials from git command arguments for safe logging.
+
+    Joins command args with shlex.join and redacts any URLs containing credentials.
+
+    Args:
+        args: List of command arguments.
+
+    Returns:
+        A string representation of the command with credentials redacted.
+    """
+    redacted_args = [redact_url_credentials(arg) for arg in args]
+    return shlex.join(redacted_args)
+
+
 def run_git_command(
     args: list[str],
     cwd: str | Path | None = None,
@@ -43,7 +102,8 @@ def run_git_command(
         )
 
         if result.returncode != 0:
-            cmd_str = shlex.join(args)
+            # Redact credentials from command for logging and error messages
+            cmd_str = _redact_args_for_logging(args)
             error_msg = f"Git command failed: {cmd_str}"
             logger.error(
                 f"{error_msg}. Exit code: {result.returncode}. Stderr: {result.stderr}"
@@ -55,11 +115,11 @@ def run_git_command(
                 stderr=result.stderr.strip(),
             )
 
-        logger.debug(f"Git command succeeded: {shlex.join(args)}")
+        logger.debug(f"Git command succeeded: {_redact_args_for_logging(args)}")
         return result.stdout.strip()
 
     except subprocess.TimeoutExpired as e:
-        cmd_str = shlex.join(args)
+        cmd_str = _redact_args_for_logging(args)
         error_msg = f"Git command timed out: {cmd_str}"
         logger.error(error_msg)
         raise GitCommandError(
