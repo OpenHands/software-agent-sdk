@@ -737,11 +737,11 @@ class LocalConversation(BaseConversation):
             updated_context = AgentContext(secrets=existing_secrets)
 
         # Update the agent with the new context
-        self.agent = self.agent.model_copy(update={"agent_context": updated_context})
-
-        # Also update the agent in _state so it persists and API responses reflect it
+        # Update the agent in _state directly to maintain consistency
         with self._state:
-            self._state.agent = self.agent
+            self._state.agent = self._state.agent.model_copy(
+                update={"agent_context": updated_context}
+            )
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the conversation."""
