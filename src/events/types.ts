@@ -171,8 +171,8 @@ export interface UserRejectObservation extends BaseEvent {
   action_id: string;
   /** Reason for rejection */
   rejection_reason: string;
-  /** Who rejected: user in confirmation mode, or a PreToolUse hook */
-  rejection_source: 'user' | 'hook';
+  /** Source of the rejection */
+  rejection_source: 'user' | 'system';
 }
 
 /**

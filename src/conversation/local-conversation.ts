@@ -309,6 +309,7 @@ export class LocalConversation implements IConversation {
 
   private _conversationId?: string;
   private _state?: LocalConversationState;
+  private _title?: string;
   private callback?: ConversationCallbackType;
   private tokenCallback?: ConversationTokenCallback;
   private persistenceDir?: string;
@@ -708,6 +709,10 @@ export class LocalConversation implements IConversation {
     }
   }
 
+  async setTitle(title: string): Promise<void> {
+    this._title = title;
+  }
+
   /**
    * Generate a title for the conversation using the LLM.
    */
@@ -788,7 +793,10 @@ Provide a direct answer without using any tools.`;
         timestamp: new Date().toISOString(),
         source: 'user',
         action_id: actionId,
-        reason,
+        tool_name: action.tool_name ?? '',
+        tool_call_id: action.tool_call_id ?? '',
+        rejection_reason: reason,
+        rejection_source: 'user',
       };
 
       this.emitTypedEvent(rejectEvent);

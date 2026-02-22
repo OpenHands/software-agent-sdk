@@ -27,6 +27,7 @@ import {
   CreateConversationRequest,
   GenerateTitleRequest,
   GenerateTitleResponse,
+  UpdateConversationRequest,
   UpdateSecretsRequest,
   AskAgentRequest,
   AskAgentResponse,
@@ -180,6 +181,11 @@ export class RemoteConversation implements IConversation {
     await this.client.post(`/api/conversations/${this.id}/events/respond_to_confirmation`, request);
   }
 
+  async setTitle(title: string): Promise<void> {
+    const request: UpdateConversationRequest = { title };
+    await this.client.patch(`/api/conversations/${this.id}`, request);
+  }
+
   async generateTitle(maxLength: number = 50, llm?: LLM): Promise<string> {
     const request: GenerateTitleRequest = { max_length: maxLength };
     if (llm) {
@@ -190,7 +196,9 @@ export class RemoteConversation implements IConversation {
       `/api/conversations/${this.id}/generate_title`,
       request
     );
-    return response.data.title;
+    const title = response.data.title;
+    await this.setTitle(title);
+    return title;
   }
 
   /**

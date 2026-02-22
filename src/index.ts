@@ -174,6 +174,7 @@ export type {
   CreateConversationRequest,
   GenerateTitleRequest,
   GenerateTitleResponse,
+  UpdateConversationRequest,
   UpdateSecretsRequest,
   StaticSecret,
   LookupSecret,
