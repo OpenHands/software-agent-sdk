@@ -77,7 +77,8 @@ export interface ObservationEvent extends BaseEvent {
 }
 
 /**
- * Agent error event - error during agent execution
+ * Agent error event - error during agent execution (scaffold error, not tool result).
+ * This IS sent to the LLM as a tool observation. Source is "agent".
  */
 export interface AgentErrorEvent extends BaseEvent {
   kind: 'AgentErrorEvent';
@@ -85,10 +86,8 @@ export interface AgentErrorEvent extends BaseEvent {
   tool_name: string;
   /** Tool call ID for correlation */
   tool_call_id: string;
-  /** Error message or details */
+  /** Error message from the scaffold */
   error: string;
-  /** ID of the action that caused the error */
-  action_id: string;
 }
 
 /**
@@ -119,18 +118,30 @@ export interface CondensationRequestEvent extends BaseEvent {
 }
 
 /**
- * Condensation summary event - result of conversation condensation
+ * Condensation summary event - the LLM-generated summary injected after condensation.
+ * This IS sent to the LLM as context (LLMConvertibleEvent).
  */
 export interface CondensationSummaryEvent extends BaseEvent {
   kind: 'CondensationSummaryEvent';
-  /** Summary of condensed content */
+  /** The summary text of the condensed events */
   summary: string;
-  /** Number of events condensed */
-  events_condensed: number;
-  /** Token count before condensation */
-  tokens_before?: number;
-  /** Token count after condensation */
-  tokens_after?: number;
+}
+
+/**
+ * Condensation event - marks that conversation history was condensed.
+ * Records which events were forgotten and optionally includes a summary.
+ * NOT sent to the LLM directly (infrastructure event).
+ */
+export interface CondensationEvent extends BaseEvent {
+  kind: 'Condensation';
+  /** IDs of events that were removed from context */
+  forgotten_event_ids: string[];
+  /** Summary of the forgotten events, if generated */
+  summary?: string | null;
+  /** Where to insert the summary in the view after removing forgotten events */
+  summary_offset?: number | null;
+  /** LLM response ID that triggered this condensation */
+  llm_response_id: string;
 }
 
 /**
@@ -147,16 +158,17 @@ export interface ConversationStateUpdateEvent extends BaseEvent {
 }
 
 /**
- * User reject observation - user rejected a pending action
+ * User reject observation - action was rejected by the user or a PreToolUse hook.
+ * Sent to the LLM as an observation.
  */
 export interface UserRejectObservation extends BaseEvent {
   kind: 'UserRejectObservation';
+  /** The tool that was rejected */
+  tool_name: string;
+  /** Tool call ID for correlation with the action */
+  tool_call_id: string;
   /** ID of the rejected action */
   action_id: string;
-  /** Name of the tool that was rejected */
-  tool_name: string;
-  /** ID of the tool call that was rejected */
-  tool_call_id: string;
   /** Reason for rejection */
   rejection_reason: string;
   /** Source of the rejection */
@@ -192,16 +204,15 @@ export interface ConfirmationResponseEvent extends BaseEvent {
 }
 
 /**
- * Token event - streaming token from LLM
+ * Token event - raw token IDs from VLLM for LLM interaction tracking.
+ * Carries prompt and response token ID arrays, not streaming text tokens.
  */
 export interface TokenEvent extends BaseEvent {
   kind: 'TokenEvent';
-  /** The token content */
-  token: string;
-  /** Token index in the current response */
-  index?: number;
-  /** Whether this is the final token */
-  is_final?: boolean;
+  /** Token IDs from the prompt */
+  prompt_token_ids: number[];
+  /** Token IDs from the response */
+  response_token_ids: number[];
 }
 
 /**
@@ -243,6 +254,33 @@ export interface ThinkEvent extends BaseEvent {
 }
 
 /**
+ * Conversation error event - a conversation-level failure NOT sent to the LLM.
+ * Typically causes the run loop to move to ERROR state. Source is usually "environment".
+ */
+export interface ConversationErrorEvent extends BaseEvent {
+  kind: 'ConversationErrorEvent';
+  /** Error code/type identifier */
+  code: string;
+  /** Detailed error message */
+  detail: string;
+}
+
+/**
+ * LLM completion log event - streams raw LLM completion logs from remote agents to clients.
+ */
+export interface LLMCompletionLogEvent extends BaseEvent {
+  kind: 'LLMCompletionLogEvent';
+  /** Intended filename for the log, relative to the log directory */
+  filename: string;
+  /** JSON-encoded log data */
+  log_data: string;
+  /** Name of the model that produced the log */
+  model_name?: string;
+  /** LLM usage_id that produced this log */
+  usage_id?: string;
+}
+
+/**
  * Union type of all conversation events
  */
 export type ConversationEvent =
@@ -254,7 +292,10 @@ export type ConversationEvent =
   | PauseEvent
   | CondensationRequestEvent
   | CondensationSummaryEvent
+  | CondensationEvent
   | ConversationStateUpdateEvent
+  | ConversationErrorEvent
+  | LLMCompletionLogEvent
   | UserRejectObservation
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
@@ -302,6 +343,20 @@ export function isObservationLike(
     event.kind === 'AgentErrorEvent' ||
     event.kind === 'UserRejectObservation'
   );
+}
+
+/**
+ * Type guard to check if an event is a ConversationErrorEvent
+ */
+export function isConversationErrorEvent(event: BaseEvent): event is ConversationErrorEvent {
+  return event.kind === 'ConversationErrorEvent';
+}
+
+/**
+ * Type guard to check if an event is a CondensationEvent
+ */
+export function isCondensationEvent(event: BaseEvent): event is CondensationEvent {
+  return event.kind === 'Condensation';
 }
 
 /**

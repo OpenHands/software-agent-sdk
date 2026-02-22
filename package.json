@@ -6,6 +6,9 @@
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "overrides": {
+    "minimatch": "^10.2.1"
+  },
   "scripts": {
     "build": "tsc",
     "lint": "eslint src/**/*.ts",

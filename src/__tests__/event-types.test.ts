@@ -115,7 +115,6 @@ describe('Event Type Guards', () => {
         tool_name: 'terminal',
         tool_call_id: 'call_1',
         error: 'Command failed',
-        action_id: 'action_1',
       };
 
       expect(isAgentErrorEvent(event)).toBe(true);
@@ -170,11 +169,10 @@ describe('Event Type Guards', () => {
         timestamp: new Date().toISOString(),
         source: 'agent',
         summary: 'Conversation summary here',
-        events_condensed: 10,
       };
 
       expect(event.kind).toBe('CondensationSummaryEvent');
-      expect(event.events_condensed).toBe(10);
+      expect(event.summary).toBe('Conversation summary here');
     });
   });
 
@@ -215,7 +213,6 @@ describe('Event Type Guards', () => {
         tool_name: 'terminal',
         tool_call_id: 'call_1',
         error: 'Failed',
-        action_id: 'action_1',
       };
 
       const reject: UserRejectObservation = {
@@ -306,20 +303,18 @@ describe('Event Structure', () => {
   });
 
   describe('TokenEvent', () => {
-    it('should contain token streaming information', () => {
+    it('should contain token IDs information', () => {
       const event: TokenEvent = {
         id: generateEventId(),
         kind: 'TokenEvent',
         timestamp: new Date().toISOString(),
         source: 'agent',
-        token: 'partial',
-        index: 5,
-        is_final: false,
+        prompt_token_ids: [1, 2, 3],
+        response_token_ids: [4, 5, 6],
       };
 
-      expect(event.token).toBe('partial');
-      expect(event.index).toBe(5);
-      expect(event.is_final).toBe(false);
+      expect(event.prompt_token_ids).toEqual([1, 2, 3]);
+      expect(event.response_token_ids).toEqual([4, 5, 6]);
     });
   });
 

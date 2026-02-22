@@ -66,6 +66,8 @@ export {
   isObservationEvent,
   isAgentErrorEvent,
   isObservationLike,
+  isConversationErrorEvent,
+  isCondensationEvent,
 } from './events/types';
 export type {
   EventID,
@@ -79,7 +81,10 @@ export type {
   PauseEvent as TypedPauseEvent,
   CondensationRequestEvent,
   CondensationSummaryEvent,
+  CondensationEvent,
   ConversationStateUpdateEvent,
+  ConversationErrorEvent,
+  LLMCompletionLogEvent,
   UserRejectObservation,
   ConfirmationRequestEvent,
   ConfirmationResponseEvent,
