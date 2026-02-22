@@ -217,7 +217,8 @@ export class RemoteWorkspace implements IWorkspace {
       return response.data;
     } catch (error) {
       throw new Error(
-        `Failed to get git changes: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to get git changes: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
       );
     }
   }
@@ -230,7 +231,8 @@ export class RemoteWorkspace implements IWorkspace {
       return response.data;
     } catch (error) {
       throw new Error(
-        `Failed to get git diff: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to get git diff: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
       );
     }
   }
