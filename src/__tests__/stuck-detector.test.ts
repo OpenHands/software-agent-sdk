@@ -59,7 +59,7 @@ function createObservationEvent(
   };
 }
 
-function createErrorEvent(actionId: string, toolName: string, error: string): AgentErrorEvent {
+function createErrorEvent(_actionId: string, toolName: string, error: string): AgentErrorEvent {
   return {
     id: generateEventId(),
     kind: 'AgentErrorEvent',
@@ -68,7 +68,6 @@ function createErrorEvent(actionId: string, toolName: string, error: string): Ag
     tool_name: toolName,
     tool_call_id: `call_${Math.random().toString(36).substr(2, 9)}`,
     error,
-    action_id: actionId,
   };
 }
 
