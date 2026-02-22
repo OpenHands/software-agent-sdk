@@ -25,6 +25,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -541,8 +542,6 @@ class _EventSubscriber(Subscriber):
         # published during startup/state changes and doesn't represent actual
         # conversation activity. This prevents updated_at from being reset
         # on every server restart.
-        from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-
         if isinstance(_event, ConversationStateUpdateEvent):
             return
         self.service.stored.updated_at = utc_now()
