@@ -224,7 +224,10 @@ describe('Event Type Guards', () => {
         timestamp: new Date().toISOString(),
         source: 'user',
         action_id: 'action_1',
-        reason: 'Too risky',
+        tool_name: 'execute_command',
+        tool_call_id: 'tool_call_1',
+        rejection_reason: 'Too risky',
+        rejection_source: 'user',
       };
 
       expect(isObservationLike(obs)).toBe(true);
@@ -328,11 +331,17 @@ describe('Event Structure', () => {
         timestamp: new Date().toISOString(),
         source: 'user',
         action_id: 'action_789',
-        reason: 'This action is too risky',
+        tool_name: 'execute_command',
+        tool_call_id: 'tool_call_789',
+        rejection_reason: 'This action is too risky',
+        rejection_source: 'user',
       };
 
       expect(event.action_id).toBe('action_789');
-      expect(event.reason).toBe('This action is too risky');
+      expect(event.tool_name).toBe('execute_command');
+      expect(event.tool_call_id).toBe('tool_call_789');
+      expect(event.rejection_reason).toBe('This action is too risky');
+      expect(event.rejection_source).toBe('user');
     });
   });
 });
