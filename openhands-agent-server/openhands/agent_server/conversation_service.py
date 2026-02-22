@@ -348,8 +348,9 @@ class ConversationService:
         if event_service is None:
             return False
 
-        # Update the title in stored conversation
+        # Update the title and timestamp in stored conversation
         event_service.stored.title = request.title.strip()
+        event_service.stored.updated_at = utc_now()
         # Save the updated metadata to disk
         await event_service.save_meta()
 

@@ -1033,6 +1033,37 @@ class TestConversationServiceUpdateConversation:
         # Verify save_meta was called three times
         assert mock_service.save_meta.call_count == 3
 
+    @pytest.mark.asyncio
+    async def test_update_conversation_sets_updated_at(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Test that update_conversation advances updated_at.
+
+        Renaming a conversation is a meaningful change; the timestamp must
+        reflect when it happened rather than staying at the value set at
+        conversation creation time.
+        """
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        original_updated_at = mock_service.stored.updated_at
+
+        request = UpdateConversationRequest(title="New Title")
+        await conversation_service.update_conversation(conversation_id, request)
+
+        assert mock_service.stored.updated_at > original_updated_at
+
 
 class TestConversationServiceDeleteConversation:
     """Test cases for ConversationService.delete_conversation method."""
