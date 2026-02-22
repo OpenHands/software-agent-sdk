@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -691,15 +692,56 @@ class LocalConversation(BaseConversation):
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation.
 
+        This method:
+        1. Updates the secret_registry for environment variable injection during
+           command execution
+        2. Updates agent.agent_context.secrets so secret names and descriptions
+           appear in the system prompt
+
         Args:
             secrets: Dictionary mapping secret keys to values or no-arg callables.
                      SecretValue = str | Callable[[], str]. Callables are invoked lazily
                      when a command references the secret key.
         """
-
+        # Update secret_registry for command execution (env var injection)
         secret_registry = self._state.secret_registry
         secret_registry.update_secrets(secrets)
+
+        # Also update agent.agent_context.secrets for prompt inclusion
+        # This ensures the agent knows about available secrets in its system prompt
+        self._update_agent_context_secrets(secrets)
+
         logger.info(f"Added {len(secrets)} secrets to conversation")
+
+    def _update_agent_context_secrets(
+        self, secrets: Mapping[str, SecretValue]
+    ) -> None:
+        """Update agent.agent_context.secrets with new secrets.
+
+        This ensures secret names and descriptions appear in the system prompt.
+        """
+        # Get existing secrets from agent_context, or empty dict if none
+        existing_secrets: dict[str, SecretValue] = {}
+        if self.agent.agent_context and self.agent.agent_context.secrets:
+            existing_secrets = dict(self.agent.agent_context.secrets)
+
+        # Merge new secrets (new ones override existing)
+        existing_secrets.update(secrets)
+
+        # Create or update agent_context with merged secrets
+        if self.agent.agent_context:
+            updated_context = self.agent.agent_context.model_copy(
+                update={"secrets": existing_secrets}
+            )
+        else:
+            updated_context = AgentContext(secrets=existing_secrets)
+
+        # Update the agent with the new context
+        self.agent = self.agent.model_copy(update={"agent_context": updated_context})
+
+        # Also update the agent in _state so it persists and API responses reflect it
+        with self._state:
+            self._state.agent = self.agent
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the conversation."""

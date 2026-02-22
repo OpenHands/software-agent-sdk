@@ -7,10 +7,11 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM
-from openhands.sdk.secret import LookupSecret, SecretSource
+from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.terminal.definition import TerminalAction
@@ -316,3 +317,145 @@ def test_masking_persists(
 
     finally:
         terminal_executor.close()
+
+
+# -----------------------
+# Tests for secrets in system prompt
+# -----------------------
+
+
+def test_update_secrets_adds_to_agent_context(conversation: LocalConversation):
+    """Test that update_secrets adds secrets to agent.agent_context for prompt inclusion."""
+    # Initially no agent_context or empty secrets
+    initial_context = conversation.agent.agent_context
+
+    # Add secrets
+    conversation.update_secrets(
+        {
+            "API_KEY": StaticSecret(
+                value=SecretStr("test-key"), description="API authentication key"
+            ),
+            "DB_PASSWORD": "plain-secret-value",
+        }
+    )
+
+    # Verify secrets are now in agent_context
+    assert conversation.agent.agent_context is not None
+    assert conversation.agent.agent_context.secrets is not None
+    assert "API_KEY" in conversation.agent.agent_context.secrets
+    assert "DB_PASSWORD" in conversation.agent.agent_context.secrets
+
+
+def test_update_secrets_appears_in_system_prompt(conversation: LocalConversation):
+    """Test that secrets added via update_secrets appear in the system prompt."""
+    # Add secrets with descriptions
+    conversation.update_secrets(
+        {
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("ghp_xxx"), description="GitHub authentication token"
+            ),
+            "OPENAI_API_KEY": StaticSecret(
+                value=SecretStr("sk-xxx"), description="OpenAI API key for LLM calls"
+            ),
+        }
+    )
+
+    # Get the system message suffix (which includes secrets)
+    suffix = conversation.agent.agent_context.get_system_message_suffix()
+
+    # Verify secrets appear in the prompt
+    assert suffix is not None
+    assert "<CUSTOM_SECRETS>" in suffix
+    assert "GITHUB_TOKEN" in suffix
+    assert "GitHub authentication token" in suffix
+    assert "OPENAI_API_KEY" in suffix
+    assert "OpenAI API key for LLM calls" in suffix
+    assert "</CUSTOM_SECRETS>" in suffix
+
+
+def test_update_secrets_merges_with_existing_context(llm: LLM, tmp_path):
+    """Test that update_secrets merges with existing agent_context secrets."""
+    # Create agent with existing context and secrets
+    existing_secrets = {
+        "EXISTING_SECRET": StaticSecret(
+            value=SecretStr("existing-value"), description="Pre-existing secret"
+        ),
+    }
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        agent_context=AgentContext(
+            secrets=existing_secrets,
+            system_message_suffix="Custom instructions here",
+        ),
+    )
+    conversation = LocalConversation(agent, workspace=str(tmp_path))
+
+    # Add new secrets
+    conversation.update_secrets(
+        {
+            "NEW_SECRET": StaticSecret(
+                value=SecretStr("new-value"), description="Newly added secret"
+            ),
+        }
+    )
+
+    # Verify both old and new secrets exist
+    assert conversation.agent.agent_context is not None
+    assert "EXISTING_SECRET" in conversation.agent.agent_context.secrets
+    assert "NEW_SECRET" in conversation.agent.agent_context.secrets
+
+    # Verify existing context properties are preserved
+    assert conversation.agent.agent_context.system_message_suffix == "Custom instructions here"
+
+    conversation.close()
+
+
+def test_update_secrets_overrides_existing_secret(conversation: LocalConversation):
+    """Test that update_secrets overrides existing secrets with the same key."""
+    # Add initial secret
+    conversation.update_secrets(
+        {
+            "API_KEY": StaticSecret(
+                value=SecretStr("old-key"), description="Old description"
+            ),
+        }
+    )
+
+    # Update with new value
+    conversation.update_secrets(
+        {
+            "API_KEY": StaticSecret(
+                value=SecretStr("new-key"), description="New description"
+            ),
+        }
+    )
+
+    # Verify the secret was updated
+    suffix = conversation.agent.agent_context.get_system_message_suffix()
+    assert "New description" in suffix
+
+
+def test_secrets_via_constructor_appear_in_prompt(llm: LLM, tmp_path):
+    """Test that secrets passed via constructor also appear in the prompt."""
+    agent = Agent(llm=llm, tools=[])
+    secrets = {
+        "CONSTRUCTOR_SECRET": StaticSecret(
+            value=SecretStr("constructor-value"),
+            description="Secret passed via constructor",
+        ),
+    }
+    conversation = LocalConversation(
+        agent, workspace=str(tmp_path), secrets=secrets
+    )
+
+    # Verify secrets appear in agent_context
+    assert conversation.agent.agent_context is not None
+    assert "CONSTRUCTOR_SECRET" in conversation.agent.agent_context.secrets
+
+    # Verify secrets appear in the prompt
+    suffix = conversation.agent.agent_context.get_system_message_suffix()
+    assert "CONSTRUCTOR_SECRET" in suffix
+    assert "Secret passed via constructor" in suffix
+
+    conversation.close()
