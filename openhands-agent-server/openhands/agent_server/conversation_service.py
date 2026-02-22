@@ -537,6 +537,14 @@ class _EventSubscriber(Subscriber):
     service: EventService
 
     async def __call__(self, _event: Event):
+        # Skip updating timestamp for ConversationStateUpdateEvent, which is
+        # published during startup/state changes and doesn't represent actual
+        # conversation activity. This prevents updated_at from being reset
+        # on every server restart.
+        from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+
+        if isinstance(_event, ConversationStateUpdateEvent):
+            return
         self.service.stored.updated_at = utc_now()
         update_last_execution_time()
 
