@@ -8,7 +8,12 @@ You will probably want the following features:
   * host and password for agent-server
   * LLM model and key
 * a chat input
-* the ability to display both messages and actions from the agent
+* the ability to display both messages and events from the agent
+  * events typically come in action/observation pairs. it's usually best to only show one UI element per pair, depending on status
+  * events can contain a lot of information. good to make the display collapsed by default, with a small summary, but expandable to see full details
+  * condensation events should get displayed like other events
+* a list of conversations the user can navigate between
+  *  there are APIs for automatically setting a conversation title after the first user message is sent, use them
 
 ## Packages
 
