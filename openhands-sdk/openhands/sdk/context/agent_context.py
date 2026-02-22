@@ -262,16 +262,10 @@ class AgentContext(BaseModel):
         secret_infos = self.get_secret_infos()
         if additional_secret_infos:
             # Merge: additional secrets override agent_context secrets by name
-            existing_names = {s["name"] for s in secret_infos}
+            secret_dict = {s["name"]: s for s in secret_infos}
             for additional in additional_secret_infos:
-                if additional["name"] not in existing_names:
-                    secret_infos.append(additional)
-                else:
-                    # Override existing secret info with additional
-                    secret_infos = [
-                        additional if s["name"] == additional["name"] else s
-                        for s in secret_infos
-                    ]
+                secret_dict[additional["name"]] = additional
+            secret_infos = list(secret_dict.values())
         formatted_datetime = self.get_formatted_datetime()
         has_content = (
             repo_skills
