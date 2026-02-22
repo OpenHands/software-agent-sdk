@@ -715,22 +715,57 @@ def load_user_skills() -> list[Skill]:
     return all_skills
 
 
+def _find_git_repo_root(path: Path) -> Path | None:
+    """Find the nearest ancestor directory that looks like a Git repository root.
+
+    We intentionally don't shell out to `git`, so this works even when git isn't
+    installed. A directory is considered a git root if it contains a `.git`
+    entry (directory *or* file, to support worktrees/submodules).
+    """
+
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _merge_loaded_skills(
+    *,
+    source_dir: Path,
+    loaded_skills: list[dict[str, Skill]],
+    seen_names: set[str],
+    all_skills: list[Skill],
+) -> None:
+    for skills_dict in loaded_skills:
+        for name, skill in skills_dict.items():
+            if name not in seen_names:
+                all_skills.append(skill)
+                seen_names.add(name)
+            else:
+                logger.warning(f"Skipping duplicate skill '{name}' from {source_dir}")
+
+
 def load_project_skills(work_dir: str | Path) -> list[Skill]:
     """Load skills from project-specific directories.
 
-    Searches for skills in {work_dir}/.agents/skills/,
-    {work_dir}/.openhands/skills/, and {work_dir}/.openhands/microagents/
-    (legacy). Skills are merged in priority order, with earlier directories
-    taking precedence for duplicate names.
+    Searches for skills in {work_dir}/.agents/skills/, {work_dir}/.openhands/skills/,
+    and {work_dir}/.openhands/microagents/ (legacy).
 
-    Use .agents/skills for new skills. .openhands/skills is the legacy
-    OpenHands location, and .openhands/microagents is deprecated.
+    If the working directory is inside a Git repository, this function also loads
+    skills from the Git repo root, so running from a subdirectory still picks up
+    repo-level guidance (e.g., AGENTS.md).
 
-    Example: If "my-skill" exists in both .agents/skills/ and
-    .openhands/skills/, the version from .agents/skills/ is used.
+    Skills are merged in priority order, with the *working directory* taking
+    precedence over the Git repo root when duplicates exist.
 
-    Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
-    directly from the work directory.
+    Use .agents/skills for new skills. .openhands/skills is the legacy OpenHands
+    location, and .openhands/microagents is deprecated.
+
+    Example: If "my-skill" exists in both .agents/skills/ and .openhands/skills/,
+    the version from .agents/skills/ is used.
+
+    Also loads third-party skill files (AGENTS.md, .cursorrules, etc.) from the
+    working directory and (if different) the git repo root.
 
     Args:
         work_dir: Path to the project/working directory.
@@ -745,58 +780,63 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
     all_skills = []
     seen_names: set[str] = set()
 
-    # First, load third-party skill files directly from work directory
-    # This ensures they are loaded even if .openhands/skills doesn't exist
-    third_party_files = find_third_party_files(
-        work_dir, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
-    )
-    for path in third_party_files:
-        try:
-            skill = Skill.load(path)
-            if skill.name not in seen_names:
-                all_skills.append(skill)
-                seen_names.add(skill.name)
-                logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-        except (SkillError, OSError) as e:
-            logger.warning(f"Failed to load third-party skill from {path}: {e}")
+    git_root = _find_git_repo_root(work_dir)
+
+    # Working dir takes precedence (more local rules override repo root rules)
+    search_roots: list[Path] = [work_dir]
+    if git_root is not None and git_root != work_dir:
+        search_roots.append(git_root)
+
+    # First, load third-party skill files (AGENTS.md, .cursorrules, etc.) from each
+    # search root. This ensures they are loaded even if .openhands/skills doesn't
+    # exist.
+    for root in search_roots:
+        third_party_files = find_third_party_files(
+            root, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+        )
+        for path in third_party_files:
+            try:
+                skill = Skill.load(path)
+                if skill.name not in seen_names:
+                    all_skills.append(skill)
+                    seen_names.add(skill.name)
+                    logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
+            except (SkillError, OSError) as e:
+                logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load project-specific skills from .agents/skills, .openhands/skills,
     # and legacy microagents (priority order; first wins for duplicates)
-    project_skills_dirs = [
-        work_dir / ".agents" / "skills",
-        work_dir / ".openhands" / "skills",
-        work_dir / ".openhands" / "microagents",  # Legacy support
-    ]
+    for root in search_roots:
+        project_skills_dirs = [
+            root / ".agents" / "skills",
+            root / ".openhands" / "skills",
+            root / ".openhands" / "microagents",  # Legacy support
+        ]
 
-    for project_skills_dir in project_skills_dirs:
-        if not project_skills_dir.exists():
-            logger.debug(
-                f"Project skills directory does not exist: {project_skills_dir}"
-            )
-            continue
+        for project_skills_dir in project_skills_dirs:
+            if not project_skills_dir.exists():
+                logger.debug(
+                    f"Project skills directory does not exist: {project_skills_dir}"
+                )
+                continue
 
-        try:
-            logger.debug(f"Loading project skills from {project_skills_dir}")
-            repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
-                project_skills_dir
-            )
+            try:
+                logger.debug(f"Loading project skills from {project_skills_dir}")
+                repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
+                    project_skills_dir
+                )
 
-            # Merge all skill categories (skip duplicates including third-party)
-            for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
-                for name, skill in skills_dict.items():
-                    if name not in seen_names:
-                        all_skills.append(skill)
-                        seen_names.add(name)
-                    else:
-                        logger.warning(
-                            f"Skipping duplicate skill '{name}' from "
-                            f"{project_skills_dir}"
-                        )
+                _merge_loaded_skills(
+                    source_dir=project_skills_dir,
+                    loaded_skills=[repo_skills, knowledge_skills, agent_skills],
+                    seen_names=seen_names,
+                    all_skills=all_skills,
+                )
 
-        except Exception as e:
-            logger.warning(
-                f"Failed to load project skills from {project_skills_dir}: {str(e)}"
-            )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load project skills from {project_skills_dir}: {str(e)}"
+                )
 
     logger.debug(
         f"Loaded {len(all_skills)} project skills: {[s.name for s in all_skills]}"
