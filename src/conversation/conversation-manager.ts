@@ -9,6 +9,7 @@ import {
   ConversationInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
+  UpdateConversationRequest,
 } from '../models/conversation';
 import { AgentBase, ConversationID, Success } from '../types/base';
 
@@ -139,6 +140,20 @@ export class ConversationManager {
    */
   async deleteConversation(conversationId: ConversationID): Promise<void> {
     await this.client.delete<Success>(`/api/conversations/${conversationId}`);
+  }
+
+  /**
+   * Update conversation metadata (e.g. title)
+   */
+  async updateConversation(
+    conversationId: ConversationID,
+    update: UpdateConversationRequest
+  ): Promise<ConversationInfo> {
+    const response = await this.client.patch<ConversationInfo>(
+      `/api/conversations/${conversationId}`,
+      update
+    );
+    return response.data;
   }
 
   /**

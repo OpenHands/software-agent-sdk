@@ -73,6 +73,10 @@ export interface GenerateTitleResponse {
   title: string;
 }
 
+export interface UpdateConversationRequest {
+  title: string;
+}
+
 export interface StaticSecret {
   kind: 'StaticSecret';
   value: string;

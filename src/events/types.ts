@@ -153,8 +153,14 @@ export interface UserRejectObservation extends BaseEvent {
   kind: 'UserRejectObservation';
   /** ID of the rejected action */
   action_id: string;
+  /** Name of the tool that was rejected */
+  tool_name: string;
+  /** ID of the tool call that was rejected */
+  tool_call_id: string;
   /** Reason for rejection */
-  reason: string;
+  rejection_reason: string;
+  /** Source of the rejection */
+  rejection_source: 'user' | 'system';
 }
 
 /**
