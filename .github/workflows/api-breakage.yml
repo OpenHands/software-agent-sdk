@@ -4,9 +4,6 @@ name: API breakage checks
 on:
     pull_request:
         branches: [main]
-        # Only run on release PRs created by prepare-release.yml (rel-X.Y.Z branches)
-        # We enforce version-bump policy here, which does not apply to everyday PRs.
-        head-branches: [rel-*]
 
 jobs:
     sdk-api:
@@ -15,9 +12,6 @@ jobs:
         permissions:
             contents: read
             pull-requests: write
-        # Non-blocking for now — report failures but don't gate releases.
-        # Remove continue-on-error once validated in production.
-        continue-on-error: true
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -31,7 +25,9 @@ jobs:
               run: uv sync --frozen --group dev
             - name: Run SDK API breakage check
               id: api_breakage
-              continue-on-error: true
+              # Release PRs (rel-*) must block on breakage.
+              # Other PRs should still report failures via PR comment, but not gate merges.
+              continue-on-error: ${{ !startsWith(github.head_ref, 'rel-') }}
               run: |
                   uv run python .github/scripts/check_sdk_api_breakage.py 2>&1 | tee api-breakage.log
                   echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
