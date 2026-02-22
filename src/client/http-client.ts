@@ -49,7 +49,11 @@ export class HttpClient {
   }
 
   async request<T = any>(options: RequestOptions): Promise<HttpResponse<T>> {
-    const url = new URL(options.url, this.baseUrl);
+    // Strip leading slash so the path is resolved relative to the full baseUrl
+    // (including any path prefix), not just the origin. This allows serverUrl
+    // values like "https://example.com/apps/assistant/api" to work correctly.
+    const relativePath = options.url.startsWith('/') ? options.url.slice(1) : options.url;
+    const url = new URL(relativePath, this.baseUrl + '/');
 
     // Add query parameters
     if (options.params) {
