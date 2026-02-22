@@ -149,52 +149,11 @@ class EventService:
             except Exception:
                 return None
 
-        if sort_order == EventSortOrder.TIMESTAMP:
-            # Ascending: resolve page cursor in O(1) via the index map, then
-            # read events in parallel and stop as soon as limit matches are found.
-            start_idx = 0
-            if page_id is not None:
-                if hasattr(event_log, "get_index"):
-                    try:
-                        start_idx = event_log.get_index(page_id)
-                    except KeyError:
-                        pass
-                else:
-                    for i in range(event_count):
-                        if event_log[i].id == page_id:
-                            start_idx = i
-                            break
-
-            executor = ThreadPoolExecutor(max_workers=8)
-            try:
-                futures = [
-                    executor.submit(read_event, i)
-                    for i in range(start_idx, event_count)
-                ]
-                items: list[Event] = []
-                next_page_id = None
-                for future in futures:
-                    event = future.result()
-                    if event is None:
-                        continue
-                    if not self._event_passes_filters(
-                        event, kind, source, body, timestamp_gte_str, timestamp_lt_str
-                    ):
-                        continue
-                    if len(items) >= limit:
-                        next_page_id = event.id
-                        break
-                    items.append(event)
-            finally:
-                executor.shutdown(wait=False, cancel_futures=True)
-
-            return EventPage(items=items, next_page_id=next_page_id)
-
-        # TIMESTAMP_DESC: read all events in parallel outside the lock, filter,
-        # sort descending, then paginate.
+        # Read all events in parallel outside the lock
         with ThreadPoolExecutor(max_workers=8) as executor:
             all_raw = list(executor.map(read_event, range(event_count)))
 
+        # Filter events
         all_events = [
             e
             for e in all_raw
@@ -203,8 +162,14 @@ class EventService:
                 e, kind, source, body, timestamp_gte_str, timestamp_lt_str
             )
         ]
-        all_events.sort(key=lambda x: x.timestamp, reverse=True)
 
+        # Sort events based on sort_order
+        if sort_order == EventSortOrder.TIMESTAMP:
+            all_events.sort(key=lambda x: x.timestamp)
+        elif sort_order == EventSortOrder.TIMESTAMP_DESC:
+            all_events.sort(key=lambda x: x.timestamp, reverse=True)
+
+        # Find the starting point if page_id is provided
         start_index = 0
         if page_id is not None:
             for i, event in enumerate(all_events):
@@ -212,6 +177,7 @@ class EventService:
                     start_index = i
                     break
 
+        # Collect items for this page
         items = []
         next_page_id = None
         for i in range(start_index, len(all_events)):
