@@ -34,13 +34,71 @@ from openhands.tools.file_editor.utils.encoding import (
     with_encoding,
 )
 from openhands.tools.file_editor.utils.history import FileHistoryManager
-from openhands.tools.file_editor.utils.shell import run_shell_cmd
 
 
 logger = get_logger(__name__)
 
 # Supported image extensions for viewing as base64-encoded content
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def _is_hidden(path: Path) -> bool:
+    """Check if a path is hidden (starts with '.')."""
+    return path.name.startswith(".")
+
+
+def _list_directory_contents(
+    base_path: Path, max_depth: int = 2, exclude_hidden: bool = True
+) -> tuple[list[str], int]:
+    """List directory contents up to max_depth levels deep.
+
+    Args:
+        base_path: The directory to list
+        max_depth: Maximum depth to traverse (default 2)
+        exclude_hidden: Whether to exclude hidden files/dirs (default True)
+
+    Returns:
+        Tuple of (list of paths with forward slashes, count of hidden items at depth 1)
+    """
+    result_paths: list[str] = []
+    hidden_count = 0
+
+    def _normalize_path(p: Path) -> str:
+        """Normalize path to use forward slashes for consistent output."""
+        return str(p).replace("\\", "/")
+
+    def _walk(current_path: Path, depth: int) -> None:
+        nonlocal hidden_count
+        if depth > max_depth:
+            return
+
+        try:
+            entries = sorted(current_path.iterdir(), key=lambda p: str(p).lower())
+        except PermissionError:
+            return
+
+        for entry in entries:
+            is_hidden = _is_hidden(entry)
+
+            # Count hidden items at depth 1 only
+            if depth == 1 and is_hidden:
+                hidden_count += 1
+
+            # Skip hidden entries if excluding
+            if exclude_hidden and is_hidden:
+                continue
+
+            result_paths.append(_normalize_path(entry))
+
+            # Recurse into directories
+            if entry.is_dir() and depth < max_depth:
+                _walk(entry, depth + 1)
+
+    # Add the base path itself
+    result_paths.append(_normalize_path(base_path))
+    _walk(base_path, 1)
+
+    return result_paths, hidden_count
 
 
 class FileEditor:
@@ -283,32 +341,12 @@ class FileEditor:
                     "a directory.",
                 )
 
-            # First count hidden files/dirs in current directory only
-            # -mindepth 1 excludes . and .. automatically
-            _, hidden_stdout, _ = run_shell_cmd(
-                rf"find -L {path} -mindepth 1 -maxdepth 1 -name '.*'"
-            )
-            hidden_count = (
-                len(hidden_stdout.strip().split("\n")) if hidden_stdout.strip() else 0
+            # Use Python-based directory listing (works on all platforms)
+            paths, hidden_count = _list_directory_contents(
+                path, max_depth=2, exclude_hidden=True
             )
 
-            # Then get files/dirs up to 2 levels deep, excluding hidden entries at
-            # both depth 1 and 2
-            _, stdout, stderr = run_shell_cmd(
-                rf"find -L {path} -maxdepth 2 -not \( -path '{path}/\.*' -o "
-                rf"-path '{path}/*/\.*' \) | sort",
-                truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
-            )
-            if stderr:
-                return FileEditorObservation.from_text(
-                    text=stderr,
-                    command="view",
-                    is_error=True,
-                    path=str(path),
-                    prev_exist=True,
-                )
             # Add trailing slashes to directories
-            paths = stdout.strip().split("\n") if stdout.strip() else []
             formatted_paths = []
             for p in paths:
                 if Path(p).is_dir():
@@ -316,14 +354,24 @@ class FileEditor:
                 else:
                     formatted_paths.append(p)
 
+            # Truncate if needed
+            output = "\n".join(formatted_paths)
+            output = maybe_truncate(
+                output,
+                truncate_after=MAX_RESPONSE_LEN_CHAR,
+                truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
+            )
+
+            # Normalize header path for consistent output
+            normalized_path = str(path).replace("\\", "/")
             msg = [
-                f"Here's the files and directories up to 2 levels deep in {path}, "
-                "excluding hidden items:\n" + "\n".join(formatted_paths)
+                f"Here's the files and directories up to 2 levels deep in "
+                f"{normalized_path}, excluding hidden items:\n{output}"
             ]
             if hidden_count > 0:
                 msg.append(
                     f"\n{hidden_count} hidden files/directories in this directory "
-                    f"are excluded. You can use 'ls -la {path}' to see them."
+                    f"are excluded. You can use 'ls -la {normalized_path}' to see them."
                 )
             stdout = "\n".join(msg)
             return FileEditorObservation.from_text(

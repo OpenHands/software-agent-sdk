@@ -336,7 +336,7 @@ def generate_structured_results(
     os.makedirs(output_dir, exist_ok=True)
     results_file = os.path.join(output_dir, "results.json")
 
-    with open(results_file, "w") as f:
+    with open(results_file, "w", encoding="utf-8") as f:
         f.write(structured_results.model_dump_json(indent=2))
 
     # Copy log files to output directory

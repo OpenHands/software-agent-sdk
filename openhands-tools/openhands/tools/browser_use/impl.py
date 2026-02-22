@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -27,6 +28,15 @@ from openhands.tools.browser_use.definition import (
 )
 from openhands.tools.browser_use.server import CustomBrowserUseServer
 from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
+
+
+def get_browser_executor_class() -> type[BrowserToolExecutor]:
+    """Get the platform-appropriate browser executor class."""
+    if sys.platform == "win32":
+        from openhands.tools.browser_use.impl_windows import WindowsBrowserToolExecutor
+
+        return WindowsBrowserToolExecutor
+    return BrowserToolExecutor
 
 
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
