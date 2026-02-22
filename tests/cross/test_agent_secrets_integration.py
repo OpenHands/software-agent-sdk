@@ -324,11 +324,8 @@ def test_masking_persists(
 # -----------------------
 
 
-def test_update_secrets_adds_to_agent_context(conversation: LocalConversation):
-    """Test that update_secrets adds secrets to agent.agent_context for prompt inclusion."""
-    # Initially no agent_context or empty secrets
-    initial_context = conversation.agent.agent_context
-
+def test_update_secrets_adds_to_registry(conversation: LocalConversation):
+    """Test that update_secrets adds secrets to the secret_registry."""
     # Add secrets
     conversation.update_secrets(
         {
@@ -339,15 +336,15 @@ def test_update_secrets_adds_to_agent_context(conversation: LocalConversation):
         }
     )
 
-    # Verify secrets are now in agent_context
-    assert conversation.agent.agent_context is not None
-    assert conversation.agent.agent_context.secrets is not None
-    assert "API_KEY" in conversation.agent.agent_context.secrets
-    assert "DB_PASSWORD" in conversation.agent.agent_context.secrets
+    # Verify secrets are in secret_registry
+    secret_infos = conversation.state.secret_registry.get_secret_infos()
+    secret_names = [s["name"] for s in secret_infos]
+    assert "API_KEY" in secret_names
+    assert "DB_PASSWORD" in secret_names
 
 
-def test_update_secrets_appears_in_system_prompt(conversation: LocalConversation):
-    """Test that secrets added via update_secrets appear in the system prompt."""
+def test_update_secrets_appears_in_dynamic_context(conversation: LocalConversation):
+    """Test that secrets added via update_secrets appear in agent's dynamic context."""
     # Add secrets with descriptions
     conversation.update_secrets(
         {
@@ -360,21 +357,22 @@ def test_update_secrets_appears_in_system_prompt(conversation: LocalConversation
         }
     )
 
-    # Get the system message suffix (which includes secrets)
-    suffix = conversation.agent.agent_context.get_system_message_suffix()
+    # Agent pulls secrets from state when building dynamic context
+    agent = cast(Agent, conversation.agent)
+    dynamic_context = agent.get_dynamic_context(conversation.state)
 
-    # Verify secrets appear in the prompt
-    assert suffix is not None
-    assert "<CUSTOM_SECRETS>" in suffix
-    assert "GITHUB_TOKEN" in suffix
-    assert "GitHub authentication token" in suffix
-    assert "OPENAI_API_KEY" in suffix
-    assert "OpenAI API key for LLM calls" in suffix
-    assert "</CUSTOM_SECRETS>" in suffix
+    # Verify secrets appear in the dynamic context
+    assert dynamic_context is not None
+    assert "<CUSTOM_SECRETS>" in dynamic_context
+    assert "GITHUB_TOKEN" in dynamic_context
+    assert "GitHub authentication token" in dynamic_context
+    assert "OPENAI_API_KEY" in dynamic_context
+    assert "OpenAI API key for LLM calls" in dynamic_context
+    assert "</CUSTOM_SECRETS>" in dynamic_context
 
 
-def test_update_secrets_merges_with_existing_context(llm: LLM, tmp_path):
-    """Test that update_secrets merges with existing agent_context secrets."""
+def test_secrets_merges_with_existing_context(llm: LLM, tmp_path):
+    """Test that registry secrets merge with existing agent_context secrets."""
     # Create agent with existing context and secrets
     existing_secrets = {
         "EXISTING_SECRET": StaticSecret(
@@ -391,7 +389,7 @@ def test_update_secrets_merges_with_existing_context(llm: LLM, tmp_path):
     )
     conversation = LocalConversation(agent, workspace=str(tmp_path))
 
-    # Add new secrets
+    # Add new secrets via update_secrets (goes to registry)
     conversation.update_secrets(
         {
             "NEW_SECRET": StaticSecret(
@@ -400,13 +398,18 @@ def test_update_secrets_merges_with_existing_context(llm: LLM, tmp_path):
         }
     )
 
-    # Verify both old and new secrets exist
-    assert conversation.agent.agent_context is not None
-    assert "EXISTING_SECRET" in conversation.agent.agent_context.secrets
-    assert "NEW_SECRET" in conversation.agent.agent_context.secrets
+    # Agent should merge secrets from agent_context and registry
+    dynamic_context = agent.get_dynamic_context(conversation.state)
+
+    # Both secrets should appear in dynamic context
+    assert dynamic_context is not None
+    assert "EXISTING_SECRET" in dynamic_context
+    assert "Pre-existing secret" in dynamic_context
+    assert "NEW_SECRET" in dynamic_context
+    assert "Newly added secret" in dynamic_context
 
     # Verify existing context properties are preserved
-    assert conversation.agent.agent_context.system_message_suffix == "Custom instructions here"
+    assert "Custom instructions here" in dynamic_context
 
     conversation.close()
 
@@ -431,13 +434,15 @@ def test_update_secrets_overrides_existing_secret(conversation: LocalConversatio
         }
     )
 
-    # Verify the secret was updated
-    suffix = conversation.agent.agent_context.get_system_message_suffix()
-    assert "New description" in suffix
+    # Verify the secret was updated in dynamic context
+    agent = cast(Agent, conversation.agent)
+    dynamic_context = agent.get_dynamic_context(conversation.state)
+    assert dynamic_context is not None
+    assert "New description" in dynamic_context
 
 
 def test_secrets_via_constructor_appear_in_prompt(llm: LLM, tmp_path):
-    """Test that secrets passed via constructor also appear in the prompt."""
+    """Test that secrets passed via constructor appear in the prompt."""
     agent = Agent(llm=llm, tools=[])
     secrets = {
         "CONSTRUCTOR_SECRET": StaticSecret(
@@ -445,17 +450,17 @@ def test_secrets_via_constructor_appear_in_prompt(llm: LLM, tmp_path):
             description="Secret passed via constructor",
         ),
     }
-    conversation = LocalConversation(
-        agent, workspace=str(tmp_path), secrets=secrets
-    )
+    conversation = LocalConversation(agent, workspace=str(tmp_path), secrets=secrets)
 
-    # Verify secrets appear in agent_context
-    assert conversation.agent.agent_context is not None
-    assert "CONSTRUCTOR_SECRET" in conversation.agent.agent_context.secrets
+    # Verify secrets are in registry
+    secret_infos = conversation.state.secret_registry.get_secret_infos()
+    secret_names = [s["name"] for s in secret_infos]
+    assert "CONSTRUCTOR_SECRET" in secret_names
 
-    # Verify secrets appear in the prompt
-    suffix = conversation.agent.agent_context.get_system_message_suffix()
-    assert "CONSTRUCTOR_SECRET" in suffix
-    assert "Secret passed via constructor" in suffix
+    # Verify secrets appear in dynamic context
+    dynamic_context = agent.get_dynamic_context(conversation.state)
+    assert dynamic_context is not None
+    assert "CONSTRUCTOR_SECRET" in dynamic_context
+    assert "Secret passed via constructor" in dynamic_context
 
     conversation.close()
