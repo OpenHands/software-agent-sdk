@@ -425,7 +425,8 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent = Agent.model_validate(
+        agent_cls = type(self.stored.agent)
+        agent = agent_cls.model_validate(
             self.stored.agent.model_dump(context={"expose_secrets": True}),
         )
 
@@ -605,7 +606,7 @@ class EventService:
         await self._pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._conversation.close)
+            await loop.run_in_executor(None, self._conversation.close)
 
     async def generate_title(
         self, llm: "LLM | None" = None, max_length: int = 50

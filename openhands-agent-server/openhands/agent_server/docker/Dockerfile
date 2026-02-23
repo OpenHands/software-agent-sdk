@@ -78,7 +78,10 @@ RUN set -eux; \
     chown -R ${USERNAME}:${USERNAME} /workspace; \
     rm -rf /var/lib/apt/lists/*
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here, 
+# Pre-install claude-code-acp for ACPAgent support
+RUN npm install -g @zed-industries/claude-code-acp
+
+# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
