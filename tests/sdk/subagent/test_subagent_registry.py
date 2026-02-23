@@ -46,10 +46,10 @@ def test_register_file_agents_project_priority(tmp_path: Path) -> None:
     )
 
     # User ~/.agents/ (using a separate temp dir)
-    user_home = tmp_path / "fake_home" / "agents"
+    user_home = tmp_path / "fake_home"
     user_home.mkdir(parents=True)
-    user_agents_dir = user_home / ".agents"
-    user_agents_dir.mkdir()
+    user_agents_dir = user_home / ".agents" / "agents"
+    user_agents_dir.mkdir(parents=True)
     (user_agents_dir / "shared-agent.md").write_text(
         "---\nname: shared-agent\ndescription: User version\n---\n\nUser prompt."
     )

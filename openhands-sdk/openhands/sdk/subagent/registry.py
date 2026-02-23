@@ -2,7 +2,7 @@
 Simple API for users to register custom agents.
 
 Example usage:
-    from openhands.tools.delegate import register_agent, Skill
+    from openhands.sdk import register_agent, Skill
 
     # Define a custom security expert factory
     def create_security_expert(llm):
