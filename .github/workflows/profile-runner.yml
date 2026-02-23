@@ -241,38 +241,64 @@ jobs:
                   echo "  VENV_DIR: $VENV_DIR"
                   echo "  SITE_PACKAGES: $SITE_PACKAGES"
 
-                  # First, test running the script directly with the full path to verify import
-                  echo "Testing script import with full module path..."
+                  # First, test running the script directly
+                  echo "Testing script import..."
                   "$PYTHON_PATH" -c "
                   import sys
-                  print('sys.path:', sys.path[:5])
                   sys.path.insert(0, '.')
                   from scripts.profile_conversation import main
-                  print('Import OK, main found')
+                  print('Import OK')
                   " || echo "Import test failed with code $?"
 
-                  # Create a wrapper script that sets up the environment correctly
-                  # This avoids issues with sudo stripping env vars
-                  echo "Creating wrapper script..."
-                  cat > /tmp/run_profile.sh << WRAPPER
-                  #!/bin/bash
-                  export LLM_API_KEY="$LLM_API_KEY"
-                  export LLM_BASE_URL="$LLM_BASE_URL"
-                  export LLM_CONFIG='$LLM_CONFIG'
-                  export MAX_ITERATIONS="$MAX_ITERATIONS"
-                  cd "$(pwd)"
-                  exec "$PYTHON_PATH" scripts/profile_conversation.py "\$@"
-                  WRAPPER
-                  chmod +x /tmp/run_profile.sh
-                  echo "Wrapper contents:"
-                  cat /tmp/run_profile.sh | head -10
+                  # Create a Python wrapper script that sets env vars programmatically
+                  # Austin needs to profile a Python script directly
+                  echo "Creating Python wrapper script..."
+                  cat > /tmp/profile_wrapper.py << 'PYWRAPPER'
+                  #!/usr/bin/env python3
+                  """Wrapper script that sets environment variables before importing the profiled code."""
+                  import os
+                  import sys
 
-                  # Test wrapper script
+                  # Set environment variables from command line args (passed by Austin via sudo)
+                  # Format: VAR1=val1 VAR2=val2 ...
+                  for i, arg in enumerate(sys.argv[1:]):
+                      if '=' in arg:
+                          key, _, value = arg.partition('=')
+                          os.environ[key] = value
+                      else:
+                          # Remaining args are not env vars, pass to script
+                          break
+                  else:
+                      i = len(sys.argv) - 1
+
+                  # Change to the SDK directory (passed as SDK_DIR env var)
+                  sdk_dir = os.environ.get('SDK_DIR', '.')
+                  os.chdir(sdk_dir)
+                  sys.path.insert(0, sdk_dir)
+
+                  # Print debug info
+                  print(f"[Wrapper] CWD: {os.getcwd()}", flush=True)
+                  print(f"[Wrapper] LLM_API_KEY present: {'LLM_API_KEY' in os.environ}", flush=True)
+                  print(f"[Wrapper] LLM_BASE_URL: {os.environ.get('LLM_BASE_URL', 'not set')}", flush=True)
+
+                  # Import and run the profile script
+                  from scripts.profile_conversation import main
+                  main()
+                  PYWRAPPER
+                  chmod +x /tmp/profile_wrapper.py
+
+                  # Test wrapper script (with timeout since it will try to run an LLM call)
                   echo "Testing wrapper script..."
-                  timeout 10s /tmp/run_profile.sh 2>&1 | head -20 || echo "Wrapper test finished"
+                  timeout 15s "$PYTHON_PATH" /tmp/profile_wrapper.py \
+                      "LLM_API_KEY=$LLM_API_KEY" \
+                      "LLM_BASE_URL=$LLM_BASE_URL" \
+                      "LLM_CONFIG=$LLM_CONFIG" \
+                      "MAX_ITERATIONS=$MAX_ITERATIONS" \
+                      "SDK_DIR=$(pwd)" \
+                      2>&1 | head -30 || echo "Wrapper test completed (timeout expected)"
 
-                  # Run Austin to profile the wrapper script
-                  # Note: We use the wrapper script which has the right env vars baked in
+                  # Run Austin to profile the Python wrapper directly
+                  # Pass env vars as arguments to the wrapper script
                   echo "Running Austin profiler..."
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
@@ -280,7 +306,12 @@ jobs:
                       --full \
                       --children \
                       -- \
-                      /tmp/run_profile.sh \
+                      "$PYTHON_PATH" /tmp/profile_wrapper.py \
+                      "LLM_API_KEY=$LLM_API_KEY" \
+                      "LLM_BASE_URL=$LLM_BASE_URL" \
+                      "LLM_CONFIG=$LLM_CONFIG" \
+                      "MAX_ITERATIONS=$MAX_ITERATIONS" \
+                      "SDK_DIR=$(pwd)" \
                       2>&1 || {
                       echo "Austin exited with code $?"
                   }
