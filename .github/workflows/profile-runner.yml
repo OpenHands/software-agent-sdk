@@ -205,7 +205,6 @@ jobs:
           from openhands.tools.preset.default import get_default_tools
 
           def main():
-              # Parse LLM config from environment
               llm_config_json = os.environ.get("LLM_CONFIG", '{}')
               llm_config = json.loads(llm_config_json)
 
@@ -214,68 +213,32 @@ jobs:
                   temperature=llm_config.get("temperature", 0.0),
               )
 
-              # Get default tools (similar to SWE-bench workload)
               tools = get_default_tools()
 
               agent = Agent(
                   llm=llm,
                   tools=tools,
-                  system_message="""You are a coding assistant. Help debug and fix issues.
-          When given a task, analyze the problem, explore the codebase, and implement a fix.
-          Use the available tools to read files, list directories, and edit code.""",
+                  system_message="You are a coding assistant. Help debug and fix issues.",
               )
 
-              # Create a realistic coding task (SWE-bench style)
-              task = """
-          Debug and fix this issue:
+              task = "Debug the file at /tmp/test_project/calculator.py - the divide function needs error handling for division by zero. First list the directory, then read and fix the file."
 
-          There's a Python module at /tmp/test_project/calculator.py with a bug.
-          The divide function doesn't handle division by zero properly.
-
-          Steps:
-          1. List the directory to see the files
-          2. Read the calculator.py file
-          3. Fix the bug by adding proper error handling
-          4. Verify the fix looks correct
-
-          Start by exploring the files.
-          """
-
-              # Set up test directory
-              import os
               os.makedirs("/tmp/test_project", exist_ok=True)
               with open("/tmp/test_project/calculator.py", "w") as f:
-                  f.write('''
-          def add(a, b):
-              return a + b
-
-          def subtract(a, b):
-              return a - b
-
-          def multiply(a, b):
-              return a * b
-
-          def divide(a, b):
-              # BUG: No handling for division by zero
-              return a / b
-          ''')
+                  f.write("def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b\n")
 
               max_iterations = int(os.environ.get("MAX_ITERATIONS", "10"))
 
-              print(f"Starting SWE-bench style conversation with {len(tools)} tools")
-              print(f"LLM model: {llm.model}")
-              print(f"Max iterations: {max_iterations}")
+              print(f"Starting with {len(tools)} tools, model: {llm.model}, max: {max_iterations}")
 
               conversation = Conversation(agent=agent, initial_message=task)
 
-              # Run conversation with iteration limit
               for i, response in enumerate(conversation):
-                  print(f"Iteration {i+1}: {response.model_dump_json()[:200]}...")
+                  print(f"Iteration {i+1}")
                   if i >= max_iterations - 1:
-                      print(f"Reached max iterations ({max_iterations})")
                       break
 
-              print("Conversation completed successfully")
+              print("Completed")
 
           if __name__ == "__main__":
               main()
