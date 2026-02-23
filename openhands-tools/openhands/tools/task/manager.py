@@ -31,13 +31,16 @@ class TaskStatus(StrEnum):
     """The task failed to complete due to an unhandled exception or system fault."""
 
 
-class TaskState(BaseModel):
-    """Result of a completed sub-agent task."""
+class Task(BaseModel):
+    """Represents a task."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str = Field(description="Unique identifier of the task.")
     status: TaskStatus = Field(description="Task status.")
+    conversation_id: uuid.UUID = Field(
+        description="Conversation ID. Used to identify the conversation."
+    )
     result: str | None = Field(default=None, description="Result of the task.")
     error: str | None = Field(default=None, description="Error if task failed.")
     conversation: LocalConversation | None = Field(
@@ -60,15 +63,13 @@ class TaskState(BaseModel):
 
 
 class TaskManager:
-    """Manage blocking sub-agent tasks."""
+    """Manage sub-agent tasks."""
 
     def __init__(self):
         self._parent_conversation: LocalConversation | None = None
 
-        # takes track of task completed and persisted
-        self._inactive_tasks: set[str] = set()
-        # map from agent friendly task_id to uuid
-        self._task_id_to_uuid: dict[str, uuid.UUID] = {}
+        self._tasks: dict[str, Task] = {}
+
         # tmp directory to save task to eventually resume it later
         self._tmp_dir = Path(tempfile.mkdtemp(prefix="openhands_tasks_"))
 
@@ -87,23 +88,19 @@ class TaskManager:
             )
         return self._parent_conversation
 
-    def _generate_task_id(self) -> str:
-        """Generate a unique task ID."""
+    def _generate_ids(self) -> tuple[str, uuid.UUID]:
+        """Generate a unique task ID, and a conversation ID."""
         self._task_counter += 1
         task_id = f"task_{self._task_counter:08x}"
         uuid_ = uuid.uuid4()
-        self._task_id_to_uuid[task_id] = uuid_
-        return task_id
+        return task_id, uuid_
 
-    def _evict_task(self, task: TaskState) -> None:
-        """
-        Stop the conversation linked to the task and persist it to disk.
-        The task is moved to inactive so it can be resumed later.
-        """
+    def _evict_task(self, task: Task) -> None:
         if task.conversation:
             task.conversation.pause()
             task.conversation.close()
-        self._inactive_tasks.add(task.id)
+        # evict in-memory conversation
+        self._tasks[task.id] = task.model_copy(update={"conversation": None})
 
     def start_task(
         self,
@@ -113,7 +110,7 @@ class TaskManager:
         max_turns: int | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
-    ) -> TaskState:
+    ) -> Task:
         """Start a blocking sub-agent task.
 
         Args:
@@ -147,55 +144,64 @@ class TaskManager:
             prompt=prompt,
         )
 
-    def _resume_task(self, resume: str, subagent_type: str) -> TaskState:
+    def _resume_task(self, resume: str, subagent_type: str) -> Task:
         """Resume a sub-agent task."""
-        if resume not in self._inactive_tasks:
+        if resume not in self._tasks:
             raise ValueError(
                 f"Task '{resume}' not found. "
-                f"Available tasks: {', '.join(list(self._inactive_tasks))}"
+                f"Available tasks: {', '.join(sorted(self._tasks))}"
             )
 
         worker_agent = self._get_sub_agent(subagent_type)
+        conversation_id = self._tasks[resume].conversation_id
         conversation = LocalConversation(
             agent=worker_agent,
             workspace=self.parent_conversation.state.workspace.working_dir,
             persistence_dir=self._tmp_dir,
-            conversation_id=self._task_id_to_uuid[resume],
+            conversation_id=conversation_id,
             delete_on_close=False,
         )
 
-        return TaskState(
-            id=resume,
-            conversation=conversation,
-            status=TaskStatus.RUNNING,
+        self._tasks[resume] = self._tasks[resume].model_copy(
+            update={
+                "conversation": conversation,
+                "status": TaskStatus.RUNNING,
+            }
         )
+
+        return self._tasks[resume]
 
     def _create_task(
         self,
         subagent_type: str,
         description: str | None,
         max_turns: int | None,
-    ) -> TaskState:
+    ) -> Task:
         """Create a fresh task."""
-        task_id = self._generate_task_id()
+        task_id, conversation_id = self._generate_ids()
         worker_agent = self._get_sub_agent(subagent_type)
         sub_conversation = self._get_conversation(
             description=description,
             max_turns=max_turns,
             task_id=task_id,
             worker_agent=worker_agent,
+            conversation_id=conversation_id,
         )
-        return TaskState(
+
+        self._tasks[task_id] = Task(
             id=task_id,
+            conversation_id=conversation_id,
             conversation=sub_conversation,
             status=TaskStatus.RUNNING,
         )
+        return self._tasks[task_id]
 
     def _get_conversation(
         self,
         description: str | None,
         max_turns: int | None,
         task_id: str,
+        conversation_id: uuid.UUID,
         worker_agent: Agent,
     ) -> LocalConversation:
         parent = self.parent_conversation
@@ -211,7 +217,7 @@ class TaskManager:
             workspace=parent.state.workspace.working_dir,
             visualizer=visualizer,
             persistence_dir=self._tmp_dir,
-            conversation_id=self._task_id_to_uuid[task_id],
+            conversation_id=conversation_id,
             max_iteration_per_run=max_turns or 500,
             delete_on_close=False,
         )
@@ -232,7 +238,7 @@ class TaskManager:
 
         return factory.factory_func(sub_agent_llm)
 
-    def _run_task(self, task: TaskState, prompt: str) -> TaskState:
+    def _run_task(self, task: Task, prompt: str) -> Task:
         """Run a task synchronously."""
         if task.conversation is None:
             raise RuntimeError(f"Task '{task.id}' has no conversation to run.")
@@ -261,5 +267,4 @@ class TaskManager:
         if self._tmp_dir.exists():
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
-        self._inactive_tasks.clear()
-        self._task_id_to_uuid.clear()
+        self._tasks.clear()

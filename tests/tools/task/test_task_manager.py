@@ -12,8 +12,8 @@ from openhands.tools.delegate.registration import (
     register_agent,
 )
 from openhands.tools.task.manager import (
+    Task,
     TaskManager,
-    TaskState,
     TaskStatus,
 )
 
@@ -62,33 +62,42 @@ class TestTaskState:
 
     def test_initial_state(self):
         """TaskState should start with 'running' status."""
-        state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
+        state = Task(
+            id="test_1",
+            conversation=None,
+            status=TaskStatus.RUNNING,
+            conversation_id=uuid.uuid4(),
+        )
         assert state.status == "running"
         assert state.result is None
         assert state.error is None
 
-    def test_set_completed(self):
+    @pytest.mark.parametrize("result", ["Done!", ""])
+    def test_set_completed(self, result):
         """set_completed should update status and result."""
-        state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
-        state.set_result("Done!")
+        state = Task(
+            id="test_1",
+            conversation=None,
+            status=TaskStatus.RUNNING,
+            conversation_id=uuid.uuid4(),
+        )
+        state.set_result(result)
         assert state.status == "completed"
-        assert state.result == "Done!"
+        assert state.result == result
         assert state.error is None
 
     def test_set_error(self):
         """set_error should update status, error, and result."""
-        state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
+        state = Task(
+            id="test_1",
+            conversation=None,
+            status=TaskStatus.RUNNING,
+            conversation_id=uuid.uuid4(),
+        )
         state.set_error("Something went wrong")
         assert state.status == "error"
         assert state.error == "Something went wrong"
         assert state.result is None
-
-    def test_empty_string_gives_empty_success(self):
-        task = TaskState(id="t1", status=TaskStatus.RUNNING, conversation=None)
-        task.set_result("")
-        assert task.status == TaskStatus.COMPLETED
-        assert task.result == ""
-        assert task.error is None
 
 
 class TestTaskManager:
@@ -103,8 +112,7 @@ class TestTaskManager:
     def test_init_defaults(self):
         """Manager should initialize with correct defaults."""
         manager = TaskManager()
-        assert len(manager._inactive_tasks) == 0
-        assert len(manager._task_id_to_uuid) == 0
+        assert len(manager._tasks) == 0
         assert manager._task_counter == 0
         assert manager._parent_conversation is None
 
@@ -117,12 +125,16 @@ class TestTaskManager:
     def test_generate_task_id(self):
         """Generated task IDs should be unique and prefixed."""
         manager = TaskManager()
-        id1 = manager._generate_task_id()
-        id2 = manager._generate_task_id()
+        assert manager._task_counter == 0
 
-        assert id1.startswith("task_")
-        assert id2.startswith("task_")
-        assert id1 != id2
+        tasks_ids: list[str] = []
+        for j in range(10):
+            id_, _ = manager._generate_ids()
+            tasks_ids.append(id_)
+            assert id_.startswith("task_")
+            assert manager._task_counter == j + 1
+
+        assert len(tasks_ids) == len(set(tasks_ids))
 
     def test_parent_conversation_raises_before_set(self):
         """Accessing parent_conversation before first call should raise."""
@@ -140,7 +152,8 @@ class TestTaskManager:
         assert manager._parent_conversation is conv1
 
         manager._ensure_parent(conv2)
-        assert manager._parent_conversation is conv1  # Still the first one
+        # Still the first one
+        assert manager._parent_conversation is conv1
 
     def test_returns_running_task_state(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
@@ -149,31 +162,20 @@ class TestTaskManager:
             description="test task",
             max_turns=3,
         )
-        assert isinstance(task, TaskState)
+        assert isinstance(task, Task)
         assert task.status == TaskStatus.RUNNING
         assert task.id.startswith("task_")
         assert task.conversation is not None
         assert task.result is None
         assert task.error is None
 
-    def test_increments_counter(self, tmp_path):
-        manager, _ = _manager_with_parent(tmp_path)
-        t1 = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
-        )
-        t2 = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
-        )
-        assert t1.id != t2.id
-        assert manager._task_counter == 2
-
     def test_registers_uuid(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         task = manager._create_task(
             subagent_type="default", description=None, max_turns=None
         )
-        assert task.id in manager._task_id_to_uuid
-        assert isinstance(manager._task_id_to_uuid[task.id], uuid.UUID)
+        assert task.id in manager._tasks
+        assert isinstance(manager._tasks[task.id].conversation_id, uuid.UUID)
 
     def test_resume_unknown_task_raises(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
@@ -189,15 +191,14 @@ class TestTaskManager:
             subagent_type="default", description=None, max_turns=None
         )
         original_id = task.id
+        original_uuid = task.conversation_id
         manager._evict_task(task)
-        assert original_id in manager._inactive_tasks
-        assert original_id in manager._task_id_to_uuid
-
-        original_uuid = manager._task_id_to_uuid[task.id]
+        assert original_id in manager._tasks
 
         # Resume it
         resumed = manager._resume_task(resume=original_id, subagent_type="default")
         assert resumed.id == original_id
+        assert resumed.conversation_id == original_uuid
         assert resumed.status == TaskStatus.RUNNING
         assert resumed.conversation is not None
         assert resumed.conversation.state.id == original_uuid
@@ -238,18 +239,20 @@ class TestTaskManager:
         manager = TaskManager()
         assert manager._tmp_dir.exists()
 
-        manager._inactive_tasks.add("task_abc123")
-        manager._task_id_to_uuid["task_abc123"] = uuid.uuid4()
+        manager._tasks["tasks_123"] = Task(
+            id="tasks_123",
+            conversation_id=uuid.uuid4(),
+            status=TaskStatus.RUNNING,
+        )
 
         manager.close()
 
         assert not manager._tmp_dir.exists()
-        assert len(manager._inactive_tasks) == 0
-        assert len(manager._task_id_to_uuid) == 0
+        assert len(manager._tasks) == 0
 
     def test_returns_local_conversation(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
-        task_id = manager._generate_task_id()
+        task_id, conversation_id = manager._generate_ids()
         agent = manager._get_sub_agent("default")
 
         conv = manager._get_conversation(
@@ -257,13 +260,14 @@ class TestTaskManager:
             task_id=task_id,
             worker_agent=agent,
             max_turns=None,
+            conversation_id=conversation_id,
         )
         assert isinstance(conv, LocalConversation)
         assert conv.max_iteration_per_run == 500
 
     def test_persistence_dir_is_tmp_dir(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
-        task_id = manager._generate_task_id()
+        task_id, conversation_id = manager._generate_ids()
         agent = manager._get_sub_agent("default")
 
         conv = manager._get_conversation(
@@ -271,6 +275,7 @@ class TestTaskManager:
             max_turns=None,
             task_id=task_id,
             worker_agent=agent,
+            conversation_id=conversation_id,
         )
         # The conversation's persistence dir should be under the manager's tmp_dir
         persistence_dir = conv.state.persistence_dir
@@ -280,13 +285,14 @@ class TestTaskManager:
 
     def test_no_visualizer_when_parent_has_none(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
-        task_id = manager._generate_task_id()
+        task_id, conversation_id = manager._generate_ids()
         agent = manager._get_sub_agent("default")
 
         conv = manager._get_conversation(
             description="test",
             max_turns=None,
             task_id=task_id,
+            conversation_id=conversation_id,
             worker_agent=agent,
         )
         assert conv._visualizer is None
