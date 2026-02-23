@@ -34,7 +34,7 @@ from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import ACPToolCallEvent, MessageEvent
+from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool  # noqa: TC002
@@ -373,9 +373,25 @@ class ACPAgent(AgentBase):
     def init_state(
         self,
         state: ConversationState,
-        on_event: ConversationCallbackType,  # noqa: ARG002
+        on_event: ConversationCallbackType,
     ) -> None:
         """Spawn the ACP server and initialize a session."""
+        # Emit a placeholder system prompt so the visualizer shows a section
+        # even though the real system prompt is managed by the ACP server.
+        on_event(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(
+                    text=(
+                        "This conversation is powered by an ACP server. "
+                        "The system prompt and tools are managed by the "
+                        "ACP server and are not available for display."
+                    )
+                ),
+                tools=[],
+            )
+        )
+
         # Validate no unsupported features
         if self.tools:
             raise NotImplementedError(

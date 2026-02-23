@@ -160,7 +160,7 @@ class TestACPAgentValidation:
 
 
 class TestACPAgentInitState:
-    def test_init_state_emits_no_events(self, tmp_path):
+    def test_init_state_emits_system_prompt_placeholder(self, tmp_path):
         agent = _make_agent()
         state = _make_state(tmp_path)
         events: list = []
@@ -170,7 +170,10 @@ class TestACPAgentInitState:
         ):
             agent.init_state(state, on_event=events.append)
 
-        assert len(events) == 0
+        assert len(events) == 1
+        assert isinstance(events[0], SystemPromptEvent)
+        assert "ACP server" in events[0].system_prompt.text
+        assert events[0].tools == []
 
 
 # ---------------------------------------------------------------------------
