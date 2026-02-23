@@ -11,8 +11,10 @@ See https://agentclientprotocol.com/protocol/overview
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
+import uuid
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
@@ -34,8 +36,15 @@ from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.event import (
+    ACPToolCallEvent,
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+    SystemPromptEvent,
+)
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool  # noqa: TC002
 
@@ -563,6 +572,37 @@ class ACPAgent(AgentBase):
                 llm_message=message,
             )
             on_event(msg_event)
+
+            # Emit FinishAction so evaluation frameworks (SWE-bench, etc.)
+            # recognize that the agent has completed its task.  The regular
+            # Agent emits this when the LLM calls the "finish" tool; for
+            # ACPAgent each step() is a complete turn, so we always finish.
+            finish_action = FinishAction(message=response_text)
+            tc_id = str(uuid.uuid4())
+            action_event = ActionEvent(
+                source="agent",
+                thought=[],
+                action=finish_action,
+                tool_name="finish",
+                tool_call_id=tc_id,
+                tool_call=MessageToolCall(
+                    id=tc_id,
+                    name="finish",
+                    arguments=json.dumps({"message": response_text}),
+                    origin="completion",
+                ),
+                llm_response_id=str(uuid.uuid4()),
+            )
+            on_event(action_event)
+            on_event(
+                ObservationEvent(
+                    observation=FinishObservation.from_text(text=response_text),
+                    action_id=action_event.id,
+                    tool_name="finish",
+                    tool_call_id=tc_id,
+                )
+            )
+
             state.execution_status = ConversationExecutionStatus.FINISHED
 
         except Exception as e:
