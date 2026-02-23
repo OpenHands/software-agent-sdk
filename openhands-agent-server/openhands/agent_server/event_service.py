@@ -101,7 +101,12 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> EventPage:
-        """Private sync function to search events with state lock."""
+        """Search events with filtering and pagination.
+
+        Optimized to avoid holding locks during I/O and to support early exit
+        when limit is reached. The kind filter accepts simple class names
+        (e.g., 'MessageEvent') for usability.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -109,64 +114,88 @@ class EventService:
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
-        # Collect all events
-        all_events = []
-        with self._conversation._state as state:
-            for event in state.events:
-                # Apply kind filter if provided
-                if (
-                    kind is not None
-                    and f"{event.__class__.__module__}.{event.__class__.__name__}"
-                    != kind
-                ):
-                    continue
+        # Snapshot event log length without holding lock (GIL makes int read atomic)
+        event_log = self._conversation._state.events
+        event_count = len(event_log)
 
-                # Apply source filter if provided
-                if source is not None and event.source != source:
-                    continue
+        # Determine iteration order based on sort order
+        # For DESC order, iterate from end for efficiency
+        if sort_order == EventSortOrder.TIMESTAMP_DESC:
+            indices = range(event_count - 1, -1, -1)
+        else:
+            indices = range(event_count)
 
-                # Apply body filter if provided (case-insensitive substring match)
-                if body is not None:
-                    if not self._event_matches_body(event, body):
-                        continue
-
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
-
-                all_events.append(event)
-
-        # Sort events based on sort_order
-        if sort_order == EventSortOrder.TIMESTAMP:
-            all_events.sort(key=lambda x: x.timestamp)
-        elif sort_order == EventSortOrder.TIMESTAMP_DESC:
-            all_events.sort(key=lambda x: x.timestamp, reverse=True)
-
-        # Handle pagination
-        items = []
-        start_index = 0
-
-        # Find the starting point if page_id is provided
+        # Find starting index if page_id is provided (O(1) lookup if EventLog)
+        start_idx = None
         if page_id:
-            for i, event in enumerate(all_events):
-                if event.id == page_id:
-                    start_index = i
-                    break
+            # Try O(1) lookup via get_index if available (EventLog)
+            if hasattr(event_log, "get_index"):
+                try:
+                    start_idx = event_log.get_index(page_id)
+                except KeyError:
+                    start_idx = None
+            else:
+                # Fallback to linear search for list-like objects (test mocks)
+                for i, evt in enumerate(event_log):
+                    if evt.id == page_id:
+                        start_idx = i
+                        break
 
-        # Collect items for this page
-        next_page_id = None
-        for i in range(start_index, len(all_events)):
-            if len(items) >= limit:
-                # We have more items, set next_page_id
-                if i < len(all_events):
-                    next_page_id = all_events[i].id
+        # Collect matching events
+        items: list[Event] = []
+        found_cursor = start_idx is None  # If no cursor, start immediately
+
+        for i in indices:
+            # Skip until we reach the cursor position (inclusive)
+            if not found_cursor:
+                if i == start_idx:
+                    found_cursor = True
+                else:
+                    continue
+
+            # Read event from storage
+            try:
+                event = event_log[i]
+            except (IndexError, FileNotFoundError):
+                continue
+
+            # Apply kind filter - use simple class name for usability
+            if kind is not None and event.__class__.__name__ != kind:
+                continue
+
+            # Apply source filter
+            if source is not None and event.source != source:
+                continue
+
+            # Apply body filter (case-insensitive substring match)
+            if body is not None and not self._event_matches_body(event, body):
+                continue
+
+            # Apply timestamp filters (ISO string comparison)
+            if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
+                # For ASC order, we can't break early because events aren't sorted
+                # For DESC order, once we hit older timestamps, we can stop
+                if sort_order == EventSortOrder.TIMESTAMP_DESC:
+                    break
+                continue
+
+            if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                # For ASC order, once we hit newer timestamps, we can stop
+                if sort_order == EventSortOrder.TIMESTAMP:
+                    break
+                continue
+
+            items.append(event)
+
+            # Early exit when limit is reached
+            if len(items) >= limit + 1:
                 break
-            items.append(all_events[i])
+
+        # Handle pagination - if we have more than limit, set next_page_id
+        next_page_id = None
+        if len(items) > limit:
+            next_page_id = items[limit].id
+            items = items[:limit]
 
         return EventPage(items=items, next_page_id=next_page_id)
 
@@ -205,7 +234,11 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> int:
-        """Private sync function to count events with state lock."""
+        """Count events matching the given filters.
+
+        The kind filter accepts simple class names (e.g., 'MessageEvent')
+        for usability.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -213,36 +246,36 @@ class EventService:
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
+        # Snapshot event log without holding lock
+        event_log = self._conversation._state.events
+        event_count = len(event_log)
+
         count = 0
-        with self._conversation._state as state:
-            for event in state.events:
-                # Apply kind filter if provided
-                if (
-                    kind is not None
-                    and f"{event.__class__.__module__}.{event.__class__.__name__}"
-                    != kind
-                ):
-                    continue
+        for i in range(event_count):
+            try:
+                event = event_log[i]
+            except (IndexError, FileNotFoundError):
+                continue
 
-                # Apply source filter if provided
-                if source is not None and event.source != source:
-                    continue
+            # Apply kind filter - use simple class name for usability
+            if kind is not None and event.__class__.__name__ != kind:
+                continue
 
-                # Apply body filter if provided (case-insensitive substring match)
-                if body is not None:
-                    if not self._event_matches_body(event, body):
-                        continue
+            # Apply source filter
+            if source is not None and event.source != source:
+                continue
 
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
+            # Apply body filter (case-insensitive substring match)
+            if body is not None and not self._event_matches_body(event, body):
+                continue
 
-                count += 1
+            # Apply timestamp filters (ISO string comparison)
+            if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
+                continue
+            if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                continue
+
+            count += 1
 
         return count
 

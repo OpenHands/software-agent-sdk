@@ -163,10 +163,8 @@ class TestEventServiceSearchEvents:
         result = await event_service.search_events(kind="ActionEvent")
         assert len(result.items) == 0
 
-        # Test filtering by MessageEvent
-        result = await event_service.search_events(
-            kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
-        )
+        # Test filtering by MessageEvent (simple class name)
+        result = await event_service.search_events(kind="MessageEvent")
         assert len(result.items) == 5
         for event in result.items:
             assert event.__class__.__name__ == "MessageEvent"
@@ -225,9 +223,9 @@ class TestEventServiceSearchEvents:
         """Test combining kind filtering with sorting."""
         event_service._conversation = mock_conversation_with_events
 
-        # Filter by ActionEvent and sort by TIMESTAMP_DESC
+        # Filter by MessageEvent and sort by TIMESTAMP_DESC
         result = await event_service.search_events(
-            kind="openhands.sdk.event.llm_convertible.message.MessageEvent",
+            kind="MessageEvent",
             sort_order=EventSortOrder.TIMESTAMP_DESC,
         )
 
@@ -245,16 +243,14 @@ class TestEventServiceSearchEvents:
         event_service._conversation = mock_conversation_with_events
 
         # Filter by MessageEvent with limit 1
-        result = await event_service.search_events(
-            kind="openhands.sdk.event.llm_convertible.message.MessageEvent", limit=1
-        )
+        result = await event_service.search_events(kind="MessageEvent", limit=1)
         assert len(result.items) == 1
         assert result.items[0].__class__.__name__ == "MessageEvent"
         assert result.next_page_id is not None
 
         # Get second page
         result = await event_service.search_events(
-            kind="openhands.sdk.event.llm_convertible.message.MessageEvent",
+            kind="MessageEvent",
             page_id=result.next_page_id,
             limit=4,
         )
@@ -486,10 +482,8 @@ class TestEventServiceCountEvents:
         result = await event_service.count_events()
         assert result == 5
 
-        # Count ActionEvent events (should be 5)
-        result = await event_service.count_events(
-            kind="openhands.sdk.event.llm_convertible.message.MessageEvent"
-        )
+        # Count MessageEvent events (should be 5)
+        result = await event_service.count_events(kind="MessageEvent")
         assert result == 5
 
         # Count non-existent event type (should be 0)
