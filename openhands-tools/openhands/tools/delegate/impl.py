@@ -6,15 +6,22 @@ from typing import TYPE_CHECKING
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
+from openhands.sdk.subagent import get_agent_factory
+from openhands.sdk.subagent.registration import AgentFactory
 from openhands.sdk.tool.tool import ToolExecutor
+from openhands.tools import get_default_agent
 from openhands.tools.delegate.definition import DelegateObservation
-from openhands.tools.delegate.registration import get_agent_factory
 
 
 if TYPE_CHECKING:
     from openhands.tools.delegate.definition import DelegateAction
 
 logger = get_logger(__name__)
+
+_DEFAULT_FACTORY = AgentFactory(
+    factory_func=get_default_agent,
+    description="Default general-purpose agent",
+)
 
 
 class DelegateExecutor(ToolExecutor):
@@ -126,7 +133,9 @@ class DelegateExecutor(ToolExecutor):
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
-                factory = get_agent_factory(agent_type)
+                factory = get_agent_factory(
+                    name=agent_type, default_factory=_DEFAULT_FACTORY
+                )
                 worker_agent = factory.factory_func(sub_agent_llm)
 
                 # Use parent visualizer's create_sub_visualizer method if available

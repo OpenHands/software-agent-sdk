@@ -8,14 +8,14 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
-from openhands.sdk.agent.agent_loader import agent_definition_to_factory
-from openhands.sdk.plugin.types import AgentDefinition
-from openhands.tools.delegate.registration import (
+from openhands.sdk.subagent.registration import (
+    _agent_definition_to_factory,
     _reset_registry_for_tests,
     get_agent_factory,
     register_agent,
     register_agent_if_absent,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 
 
 def setup_function() -> None:
@@ -122,7 +122,7 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     assert agent_def.tools == ["ReadTool", "GrepTool"]
 
     # Convert to factory
-    factory = agent_definition_to_factory(agent_def)
+    factory = _agent_definition_to_factory(agent_def)
 
     # Register
     result = register_agent_if_absent(

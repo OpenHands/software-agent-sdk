@@ -14,7 +14,6 @@ from openhands.sdk.plugin.fetch import (
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import (
-    AgentDefinition,
     CommandDefinition,
     Marketplace,
     MarketplaceMetadata,
@@ -26,6 +25,7 @@ from openhands.sdk.plugin.types import (
     PluginSource,
     ResolvedPluginSource,
 )
+from openhands.sdk.subagent import AgentDefinition
 
 
 __all__ = [
