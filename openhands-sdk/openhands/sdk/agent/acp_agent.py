@@ -282,13 +282,17 @@ class ACPAgent(AgentBase):
 
     Two transport modes are supported (mutually exclusive):
 
-    **Subprocess mode** — the agent spawns the ACP server as a child process
-    and communicates via stdin/stdout JSON-RPC::
+    **Subprocess mode** (standard ACP stdio transport) — the agent spawns
+    the ACP server as a child process and communicates via stdin/stdout
+    JSON-RPC::
 
         agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
 
-    **TCP mode** — the agent connects to an already-running ACP server over
-    the network::
+    **TCP mode** (custom transport) — the agent connects to an already-running
+    server over the network via a raw TCP socket.  This is **not** a
+    transport defined by the ACP specification (which currently standardises
+    stdio and draft Streamable HTTP); the remote server must speak
+    newline-delimited JSON-RPC over TCP (stdio-style framing)::
 
         agent = ACPAgent(acp_host="acp-server.internal", acp_port=4001)
     """
@@ -309,12 +313,17 @@ class ACPAgent(AgentBase):
     acp_host: str | None = Field(
         default=None,
         description=(
-            "Hostname of a remote ACP server. Mutually exclusive with acp_command."
+            "Hostname of a remote ACP server (custom TCP transport — "
+            "requires newline-delimited JSON-RPC). Mutually exclusive with acp_command."
         ),
     )
     acp_port: int | None = Field(
         default=None,
         description="Port of the remote ACP server. Required when acp_host is set.",
+    )
+    acp_tcp_connect_timeout: float = Field(
+        default=30.0,
+        description="Timeout in seconds for the TCP connection attempt.",
     )
 
     @model_validator(mode="before")
@@ -330,6 +339,12 @@ class ACPAgent(AgentBase):
             raise ValueError("Either acp_command or acp_host must be provided")
         if has_host and data.get("acp_port") is None:
             raise ValueError("acp_port is required when acp_host is set")
+        if not has_host and data.get("acp_port") is not None:
+            raise ValueError("acp_port requires acp_host to be set")
+        # Guard against empty command list which would blow up later
+        cmd = data.get("acp_command")
+        if cmd is not None and (not isinstance(cmd, list) or len(cmd) == 0):
+            raise ValueError("acp_command must be a non-empty list")
         return data
 
     acp_args: list[str] = Field(
@@ -437,9 +452,14 @@ class ACPAgent(AgentBase):
         """Start the ACP connection and initialize the session.
 
         In subprocess mode (``acp_command``), spawns the server as a child
-        process and communicates via stdin/stdout.  In TCP mode
-        (``acp_host``/``acp_port``), connects to an already-running server
-        over the network.
+        process and communicates via stdin/stdout (standard ACP stdio
+        transport).
+
+        In TCP mode (``acp_host``/``acp_port``), connects to an
+        already-running server over a raw TCP socket.  The remote server
+        must use the same newline-delimited JSON-RPC framing as the stdio
+        transport (one JSON object per line, no embedded newlines).
+        Non-JSON-RPC lines are filtered in both modes.
         """
         client = _OpenHandsACPBridge()
         client._llm_ref = self.llm
@@ -448,15 +468,26 @@ class ACPAgent(AgentBase):
         working_dir = str(state.workspace.working_dir)
 
         if self.acp_host is not None:
-            # --- TCP mode ---
+            # --- TCP mode (custom transport) ---
+            timeout = self.acp_tcp_connect_timeout
+
             async def _init_tcp() -> tuple[Any, str, Any]:
-                reader, writer = await asyncio.open_connection(
-                    self.acp_host, self.acp_port
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(self.acp_host, self.acp_port),
+                    timeout=timeout,
                 )
+
+                # Apply the same JSON-RPC line filter used in subprocess
+                # mode — TCP peers may also emit non-protocol output.
+                filtered_reader = asyncio.StreamReader()
+                asyncio.get_event_loop().create_task(
+                    _filter_jsonrpc_lines(reader, filtered_reader)
+                )
+
                 conn = ClientSideConnection(
                     client,
                     writer,  # input_stream (write to server)
-                    reader,  # output_stream (read from server)
+                    filtered_reader,  # output_stream (read from server)
                 )
                 await conn.initialize(protocol_version=1)
                 response = await conn.new_session(cwd=working_dir)
@@ -647,6 +678,8 @@ class ACPAgent(AgentBase):
         if self._tcp_writer is not None:
             try:
                 self._tcp_writer.close()
+                if self._executor is not None:
+                    self._executor.run_async(self._tcp_writer.wait_closed())
             except Exception as e:
                 logger.debug("Error closing TCP writer: %s", e)
             self._tcp_writer = None

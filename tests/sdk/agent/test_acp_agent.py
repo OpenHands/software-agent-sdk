@@ -83,6 +83,14 @@ class TestACPAgentInstantiation:
         with pytest.raises(Exception, match="acp_port is required"):
             ACPAgent(acp_host="localhost")
 
+    def test_rejects_port_without_host(self):
+        with pytest.raises(Exception, match="acp_port requires acp_host"):
+            ACPAgent(acp_command=["echo", "test"], acp_port=4001)
+
+    def test_rejects_empty_acp_command(self):
+        with pytest.raises(Exception, match="non-empty list"):
+            ACPAgent(acp_command=[])
+
     def test_acp_command_stored(self):
         agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
         assert agent.acp_command == ["npx", "-y", "claude-code-acp"]
@@ -241,6 +249,57 @@ class TestACPAgentInitState:
         assert agent._tcp_writer is mock_writer
         assert agent._process is None
         assert agent._filtered_reader is None
+
+    def test_tcp_transport_calls_open_connection(self, tmp_path):
+        """TCP mode calls asyncio.open_connection with the correct host/port."""
+        agent = ACPAgent(acp_host="myhost.internal", acp_port=5555)
+        state = _make_state(tmp_path)
+        events: list = []
+
+        mock_reader = asyncio.StreamReader()
+        mock_writer = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        mock_conn_instance = MagicMock()
+        mock_conn_instance.initialize = AsyncMock()
+        mock_session_response = MagicMock()
+        mock_session_response.session_id = "tcp-sess-abc"
+        mock_conn_instance.new_session = AsyncMock(return_value=mock_session_response)
+
+        async def _fake_open_connection(host, port):
+            assert host == "myhost.internal"
+            assert port == 5555
+            return mock_reader, mock_writer
+
+        def _fake_run_async(coro_fn):
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+
+        with (
+            patch(
+                "openhands.sdk.utils.async_executor.AsyncExecutor",
+                return_value=mock_executor,
+            ),
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.open_connection",
+                side_effect=_fake_open_connection,
+            ) as mock_open_conn,
+            patch(
+                "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                return_value=mock_conn_instance,
+            ),
+        ):
+            agent.init_state(state, on_event=events.append)
+
+        mock_open_conn.assert_called_once()
+        assert agent._session_id == "tcp-sess-abc"
+        assert agent._tcp_writer is mock_writer
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +619,7 @@ class TestACPAgentCleanup:
     def test_close_closes_tcp_writer(self):
         agent = _make_tcp_agent()
         mock_writer = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
         agent._tcp_writer = mock_writer
         agent._executor = MagicMock()
         agent._conn = None
