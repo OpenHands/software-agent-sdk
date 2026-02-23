@@ -250,90 +250,44 @@ jobs:
                   print('Import OK')
                   " || echo "Import test failed with code $?"
 
-                  # Create a Python wrapper script that sets env vars programmatically
-                  # Austin needs to profile a Python script directly
-                  echo "Creating Python wrapper script..."
-                  cat > /tmp/profile_wrapper.py << 'PYWRAPPER'
-                  #!/usr/bin/env python3
-                  """Wrapper script that sets environment variables before importing the profiled code."""
-                  import os
-                  import sys
-
-                  # Set environment variables from command line args (passed by Austin via sudo)
-                  # Format: VAR1=val1 VAR2=val2 ...
-                  for i, arg in enumerate(sys.argv[1:]):
-                      if '=' in arg:
-                          key, _, value = arg.partition('=')
-                          os.environ[key] = value
-                      else:
-                          # Remaining args are not env vars, pass to script
-                          break
-                  else:
-                      i = len(sys.argv) - 1
-
-                  # Get SDK directory and site-packages path
-                  sdk_dir = os.environ.get('SDK_DIR', '.')
-                  site_packages = os.environ.get('SITE_PACKAGES', '')
-
-                  # Print debug info
-                  print(f"[Wrapper] sys.executable: {sys.executable}", flush=True)
-                  print(f"[Wrapper] sys.path (before): {sys.path[:3]}", flush=True)
-
-                  # Add site-packages to Python path FIRST (before sdk_dir)
-                  # This is crucial when running under sudo austin
-                  if site_packages and site_packages not in sys.path:
-                      sys.path.insert(0, site_packages)
-
-                  # Change to the SDK directory and add to path
-                  os.chdir(sdk_dir)
-                  sys.path.insert(0, sdk_dir)
-
-                  print(f"[Wrapper] sys.path (after): {sys.path[:5]}", flush=True)
-                  print(f"[Wrapper] CWD: {os.getcwd()}", flush=True)
-                  print(f"[Wrapper] LLM_API_KEY present: {'LLM_API_KEY' in os.environ}", flush=True)
-
-                  # Import and run the profile script
-                  from scripts.profile_conversation import main
-                  main()
-                  PYWRAPPER
-                  chmod +x /tmp/profile_wrapper.py
-
-                  # Test wrapper script (with timeout since it will try to run an LLM call)
-                  echo "Testing wrapper script..."
-                  timeout 15s "$PYTHON_PATH" /tmp/profile_wrapper.py \
-                      "LLM_API_KEY=$LLM_API_KEY" \
-                      "LLM_BASE_URL=$LLM_BASE_URL" \
-                      "LLM_CONFIG=$LLM_CONFIG" \
-                      "MAX_ITERATIONS=$MAX_ITERATIONS" \
-                      "SDK_DIR=$(pwd)" \
-                      "SITE_PACKAGES=$SITE_PACKAGES" \
-                      2>&1 | head -30 || echo "Wrapper test completed (timeout expected)"
-
-                  # Run Austin to profile the Python wrapper directly
-                  # Pass env vars as arguments to the wrapper script
-                  echo "Running Austin profiler..."
-
                   # Get the ACTUAL Python binary path (follow all symlinks)
                   ABSOLUTE_PYTHON=$(readlink -f "$PYTHON_PATH")
                   echo "  Venv Python: $PYTHON_PATH"
                   echo "  Absolute Python: $ABSOLUTE_PYTHON"
                   "$ABSOLUTE_PYTHON" --version
 
-                  # Austin needs the absolute path to the actual Python binary
-                  # because sudo doesn't follow symlinks the same way
+                  # Copy the profile script and make it executable
+                  # Use absolute path to the script
+                  PROFILE_SCRIPT="$(pwd)/scripts/profile_conversation.py"
+                  echo "  Profile script: $PROFILE_SCRIPT"
+
+                  # Test the profile script with CLI args
+                  echo "Testing profile script with CLI args..."
+                  timeout 15s "$PYTHON_PATH" "$PROFILE_SCRIPT" \
+                      --site-packages="$SITE_PACKAGES" \
+                      --sdk-dir="$(pwd)" \
+                      --llm-api-key="$LLM_API_KEY" \
+                      --llm-base-url="$LLM_BASE_URL" \
+                      --llm-config="$LLM_CONFIG" \
+                      --max-iterations="$MAX_ITERATIONS" \
+                      2>&1 | head -30 || echo "Test completed (timeout expected)"
+
+                  # Run Austin profiler using the actual Python binary
+                  # The profile script now handles CLI args for site-packages and sdk-dir
+                  echo "Running Austin profiler..."
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.mojo \
                       --full \
                       --children \
                       -- \
-                      "$ABSOLUTE_PYTHON" /tmp/profile_wrapper.py \
-                      "LLM_API_KEY=$LLM_API_KEY" \
-                      "LLM_BASE_URL=$LLM_BASE_URL" \
-                      "LLM_CONFIG=$LLM_CONFIG" \
-                      "MAX_ITERATIONS=$MAX_ITERATIONS" \
-                      "SDK_DIR=$(pwd)" \
-                      "SITE_PACKAGES=$SITE_PACKAGES" \
+                      "$ABSOLUTE_PYTHON" "$PROFILE_SCRIPT" \
+                      --site-packages="$SITE_PACKAGES" \
+                      --sdk-dir="$(pwd)" \
+                      --llm-api-key="$LLM_API_KEY" \
+                      --llm-base-url="$LLM_BASE_URL" \
+                      --llm-config="$LLM_CONFIG" \
+                      --max-iterations="$MAX_ITERATIONS" \
                       2>&1 || {
                       echo "Austin exited with code $?"
                   }

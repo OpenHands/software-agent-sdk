@@ -8,9 +8,16 @@ This script creates a realistic coding task to profile the SDK's core code paths
 - Conversation iteration loop
 
 Usage:
+    # Standard mode (env vars):
     LLM_CONFIG='{"model": "...", "temperature": 0.0}' \
     MAX_ITERATIONS=10 \
     python scripts/profile_conversation.py
+
+    # CLI mode (for profiling under sudo):
+    python scripts/profile_conversation.py \
+        --llm-api-key="..." --llm-base-url="..." \
+        --llm-config='{"model": "..."}' --max-iterations=10 \
+        --site-packages="/path/to/site-packages" --sdk-dir="/path/to/sdk"
 """
 
 import json
@@ -19,8 +26,37 @@ import sys
 import traceback
 
 
+def setup_from_args() -> None:
+    """Parse command-line arguments and set up environment for profiling."""
+    # Support for command-line arguments to work around sudo stripping env vars
+    for arg in sys.argv[1:]:
+        if arg.startswith("--llm-api-key="):
+            os.environ["LLM_API_KEY"] = arg.split("=", 1)[1]
+        elif arg.startswith("--llm-base-url="):
+            os.environ["LLM_BASE_URL"] = arg.split("=", 1)[1]
+        elif arg.startswith("--llm-config="):
+            os.environ["LLM_CONFIG"] = arg.split("=", 1)[1]
+        elif arg.startswith("--max-iterations="):
+            os.environ["MAX_ITERATIONS"] = arg.split("=", 1)[1]
+        elif arg.startswith("--site-packages="):
+            site_packages = arg.split("=", 1)[1]
+            if site_packages and site_packages not in sys.path:
+                sys.path.insert(0, site_packages)
+        elif arg.startswith("--sdk-dir="):
+            sdk_dir = arg.split("=", 1)[1]
+            if sdk_dir:
+                os.chdir(sdk_dir)
+                if sdk_dir not in sys.path:
+                    sys.path.insert(0, sdk_dir)
+
+
+# Process CLI args FIRST (before imports) to set up paths
+setup_from_args()
+
 # Debug: Verify script is starting (before heavy imports)
 print("[DEBUG] profile_conversation.py: Starting imports...", flush=True)
+print(f"[DEBUG] sys.path[:5]: {sys.path[:5]}", flush=True)
+print(f"[DEBUG] CWD: {os.getcwd()}", flush=True)
 
 try:
     from openhands.sdk import LLM, Agent, Conversation, Tool
