@@ -18,9 +18,22 @@ import os
 import sys
 import traceback
 
-from openhands.sdk import LLM, Agent, Conversation, Tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
+
+# Debug: Verify script is starting (before heavy imports)
+print("[DEBUG] profile_conversation.py: Starting imports...", flush=True)
+
+try:
+    from openhands.sdk import LLM, Agent, Conversation, Tool
+    from openhands.tools.file_editor import FileEditorTool
+    from openhands.tools.terminal import TerminalTool
+
+    print("[DEBUG] profile_conversation.py: Imports successful", flush=True)
+except Exception as e:
+    print(
+        f"[ERROR] Import failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True
+    )
+    traceback.print_exc()
+    sys.exit(1)
 
 
 def main() -> None:
