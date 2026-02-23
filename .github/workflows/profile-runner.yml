@@ -235,41 +235,54 @@ jobs:
                   echo "  Working directory: $(pwd)"
                   echo "  Python: $PYTHON_PATH"
 
-                  # Get PYTHONPATH and VIRTUAL_ENV from the venv
+                  # Get venv directory info
                   VENV_DIR="$(dirname "$(dirname "$PYTHON_PATH")")"
                   SITE_PACKAGES="$VENV_DIR/lib/python3.13/site-packages"
                   echo "  VENV_DIR: $VENV_DIR"
                   echo "  SITE_PACKAGES: $SITE_PACKAGES"
 
-                  # First, test running the script directly without Austin
-                  echo "Testing script directly (without Austin)..."
-                  timeout 30s "$PYTHON_PATH" -c "
+                  # First, test running the script directly with the full path to verify import
+                  echo "Testing script import with full module path..."
+                  "$PYTHON_PATH" -c "
                   import sys
-                  print('sys.path:', sys.path[:3])
+                  print('sys.path:', sys.path[:5])
+                  sys.path.insert(0, '.')
                   from scripts.profile_conversation import main
-                  print('main function found:', main)
-                  " || echo "Direct test exited with code $?"
+                  print('Import OK, main found')
+                  " || echo "Import test failed with code $?"
 
-                  # Run Austin with explicit environment variables
-                  # We need to pass env vars through sudo explicitly
-                  echo "Running profile script with Austin and explicit env vars..."
-                  sudo \
-                      LLM_API_KEY="$LLM_API_KEY" \
-                      LLM_BASE_URL="$LLM_BASE_URL" \
-                      LLM_CONFIG="$LLM_CONFIG" \
-                      MAX_ITERATIONS="$MAX_ITERATIONS" \
-                      PYTHONPATH=".:$SITE_PACKAGES" \
-                      HOME="$HOME" \
-                      austin \
+                  # Create a wrapper script that sets up the environment correctly
+                  # This avoids issues with sudo stripping env vars
+                  echo "Creating wrapper script..."
+                  cat > /tmp/run_profile.sh << WRAPPER
+                  #!/bin/bash
+                  export LLM_API_KEY="$LLM_API_KEY"
+                  export LLM_BASE_URL="$LLM_BASE_URL"
+                  export LLM_CONFIG='$LLM_CONFIG'
+                  export MAX_ITERATIONS="$MAX_ITERATIONS"
+                  cd "$(pwd)"
+                  exec "$PYTHON_PATH" scripts/profile_conversation.py "\$@"
+                  WRAPPER
+                  chmod +x /tmp/run_profile.sh
+                  echo "Wrapper contents:"
+                  cat /tmp/run_profile.sh | head -10
+
+                  # Test wrapper script
+                  echo "Testing wrapper script..."
+                  timeout 10s /tmp/run_profile.sh 2>&1 | head -20 || echo "Wrapper test finished"
+
+                  # Run Austin to profile the wrapper script
+                  # Note: We use the wrapper script which has the right env vars baked in
+                  echo "Running Austin profiler..."
+                  sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.mojo \
                       --full \
                       --children \
                       -- \
-                      "$PYTHON_PATH" scripts/profile_conversation.py \
+                      /tmp/run_profile.sh \
                       2>&1 || {
-                      echo "Profiling command exited with code $?"
-                      echo "Checking if any output was captured..."
+                      echo "Austin exited with code $?"
                   }
 
                   echo "Profiling complete."
