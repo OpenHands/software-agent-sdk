@@ -248,9 +248,10 @@ jobs:
                   ls -la ../profile_outputs/
 
                   # Convert MOJO to collapsed format using austin-python
+                  # mojo2austin takes input and output file arguments
                   echo "Converting MOJO to collapsed format..."
                   if [ -s ../profile_outputs/swebench.mojo ]; then
-                      mojo2austin ../profile_outputs/swebench.mojo > ../profile_outputs/swebench.austin || {
+                      mojo2austin ../profile_outputs/swebench.mojo ../profile_outputs/swebench.austin || {
                           echo "mojo2austin conversion failed, trying alternative..."
                           # Fallback: try using it as collapsed format directly
                           cp ../profile_outputs/swebench.mojo ../profile_outputs/swebench.austin

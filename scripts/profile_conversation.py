@@ -26,9 +26,15 @@ def main() -> None:
     llm_config_json = os.environ.get("LLM_CONFIG", "{}")
     llm_config = json.loads(llm_config_json)
 
+    # Get LLM credentials from environment (set by workflow)
+    api_key = os.environ.get("LLM_API_KEY")
+    base_url = os.environ.get("LLM_BASE_URL")
+
     llm = LLM(
         model=llm_config.get("model", "gpt-4o-mini"),
         temperature=llm_config.get("temperature", 0.0),
+        api_key=api_key,
+        base_url=base_url,
     )
 
     # Set up tools (similar to SWE-bench workload)
