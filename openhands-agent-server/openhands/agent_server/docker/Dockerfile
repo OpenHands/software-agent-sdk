@@ -57,6 +57,12 @@ RUN test -x /agent-server/dist/openhands-agent-server
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
 
+
+ARG OPENHANDS_BUILD_GIT_SHA=unknown
+ARG OPENHANDS_BUILD_GIT_REF=unknown
+ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
+ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
+
 # Install base packages and create user
 RUN set -eux; \
     # Install base packages (works for both Debian-based images)
