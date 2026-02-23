@@ -92,7 +92,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description=(
             "Timeout in seconds for MCP server connections. "
             "OAuth-based MCP servers may require longer timeouts. "
-            "Individual server timeouts in mcp_config take precedence."
+            "The effective timeout is the maximum of this value and any "
+            "per-server timeouts specified in mcp_config."
         ),
     )
     filter_tools_regex: str | None = Field(
