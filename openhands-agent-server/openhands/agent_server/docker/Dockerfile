@@ -88,6 +88,11 @@ RUN set -eux; \
     fi; \
     npm install -g @zed-industries/claude-code-acp
 
+# Configure Claude Code managed settings for headless operation:
+# Allow all tool permissions (no human in the loop to approve).
+RUN mkdir -p /etc/claude-code && \
+    echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
+
 # NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
