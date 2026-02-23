@@ -97,15 +97,22 @@ jobs:
 
             - name: Install Austin profiler
               run: |
-                  # Install Austin from apt (Ubuntu 24.04 has it in universe)
-                  sudo apt-get update
-                  sudo apt-get install -y austin
+                  # Install Austin from PyPI (austin-dist package) for latest version
+                  # This provides Austin v4.0+ with MOJO format support
+                  pip install austin-dist austin-python
 
                   # Verify installation
-                  austin --version || echo "Austin version check"
+                  echo "Austin version:"
+                  austin --version || which austin
 
                   # Enable ptrace for Austin (required for profiling)
+                  echo "Enabling ptrace..."
                   echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+
+                  # Set capabilities if needed
+                  AUSTIN_PATH=$(which austin)
+                  echo "Austin path: $AUSTIN_PATH"
+                  sudo setcap cap_sys_ptrace+ep "$AUSTIN_PATH" || echo "setcap not available"
 
             - name: Install Perl and flamegraph.pl
               run: |
@@ -198,29 +205,66 @@ jobs:
                   echo "Starting Austin profiled SWE-bench style run..."
                   echo "Max iterations: $MAX_ITERATIONS"
 
-                  # First test that the script can run without Austin
-                  echo "Testing script can import and run..."
-                  "$PYTHON_PATH" -c "import scripts.profile_conversation; print('Import OK')" || {
-                      echo "Import failed, trying direct path..."
-                      "$PYTHON_PATH" scripts/profile_conversation.py --help 2>&1 || true
+                  # First test that the script can import
+                  echo "Testing script import..."
+                  "$PYTHON_PATH" -c "
+                  import sys
+                  sys.path.insert(0, '.')
+                  from scripts.profile_conversation import main
+                  print('Import OK')
+                  " || {
+                      echo "Import failed!"
+                      exit 1
                   }
 
+                  # Test Austin with a simple Python script first
+                  echo "Testing Austin with simple Python script..."
+                  echo 'import time; print("Start"); time.sleep(2); print("Done")' > /tmp/test_austin.py
+                  sudo austin --version
+                  echo "Running Austin test..."
+                  sudo austin -i 1000 -o /tmp/austin_test.mojo "$PYTHON_PATH" /tmp/test_austin.py || echo "Austin test exited"
+                  echo "Austin test output size:"
+                  wc -c /tmp/austin_test.mojo || true
+                  hexdump -C /tmp/austin_test.mojo | head -20 || true
+
+                  # Install austin-python for MOJO -> collapsed conversion
+                  echo "Installing austin-python for format conversion..."
+                  uv pip install austin-python || pip install austin-python
+
                   # Run the profiling script with Austin
-                  # Use the -p flag to spawn a new process
-                  echo "Running with Austin..."
+                  # Austin 4.0+ uses MOJO binary format by default
+                  echo "Running profile script with Austin..."
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
-                      --output ../profile_outputs/swebench.austin \
+                      --output ../profile_outputs/swebench.mojo \
                       --full \
-                      --pipe \
+                      --children \
                       -- \
                       "$PYTHON_PATH" scripts/profile_conversation.py \
-                      2>&1 || echo "Profiling completed (may have partial results)"
+                      2>&1 || {
+                      echo "Profiling command exited with code $?"
+                      echo "Checking if any output was captured..."
+                  }
 
                   echo "Profiling complete."
                   ls -la ../profile_outputs/
-                  echo "Austin output size:"
-                  wc -c ../profile_outputs/swebench.austin || true
+
+                  # Convert MOJO to collapsed format using austin-python
+                  echo "Converting MOJO to collapsed format..."
+                  if [ -s ../profile_outputs/swebench.mojo ]; then
+                      uv run mojo2austin ../profile_outputs/swebench.mojo > ../profile_outputs/swebench.austin || {
+                          echo "mojo2austin conversion failed, trying alternative..."
+                          # Fallback: try using it as collapsed format directly
+                          cp ../profile_outputs/swebench.mojo ../profile_outputs/swebench.austin
+                      }
+                      echo "Converted output size:"
+                      wc -c ../profile_outputs/swebench.austin || true
+                      echo "First 20 lines of collapsed output:"
+                      head -20 ../profile_outputs/swebench.austin || true
+                  else
+                      echo "No MOJO output captured"
+                      touch ../profile_outputs/swebench.austin
+                  fi
 
             - name: Run profiled SDK example
               if: steps.params.outputs.profile_target == 'example'

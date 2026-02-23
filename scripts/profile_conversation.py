@@ -15,10 +15,10 @@ Usage:
 
 import json
 import os
-import sys
 
-from openhands.sdk import LLM, Agent, Conversation
-from openhands.tools.preset.default import get_default_tools
+from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 def main() -> None:
@@ -31,14 +31,13 @@ def main() -> None:
         temperature=llm_config.get("temperature", 0.0),
     )
 
-    # Get default tools (similar to SWE-bench workload)
-    tools = get_default_tools()
+    # Set up tools (similar to SWE-bench workload)
+    tools = [
+        Tool(name=TerminalTool.name),
+        Tool(name=FileEditorTool.name),
+    ]
 
-    agent = Agent(
-        llm=llm,
-        tools=tools,
-        system_message="You are a coding assistant. Help debug and fix issues.",
-    )
+    agent = Agent(llm=llm, tools=tools)
 
     # Create a realistic coding task (SWE-bench style)
     task = (
@@ -61,16 +60,19 @@ def main() -> None:
 
     max_iterations = int(os.environ.get("MAX_ITERATIONS", "10"))
 
-    print(f"Starting with {len(tools)} tools, model: {llm.model}, max: {max_iterations}")
+    print(
+        f"Starting with {len(tools)} tools, model: {llm.model}, max: {max_iterations}"
+    )
 
-    conversation = Conversation(agent=agent, initial_message=task)
+    # Create conversation with workspace
+    cwd = os.getcwd()
+    conversation = Conversation(agent=agent, workspace=cwd)
+
+    # Send the task message
+    conversation.send_message(task)
 
     # Run conversation with iteration limit
-    for i, response in enumerate(conversation):
-        print(f"Iteration {i + 1}")
-        if i >= max_iterations - 1:
-            print(f"Reached max iterations ({max_iterations})")
-            break
+    conversation.run(max_iterations=max_iterations)
 
     print("Completed successfully")
 
