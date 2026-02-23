@@ -40,34 +40,11 @@ async def _connect_and_list_tools(client: MCPClient) -> None:
         client._tools.extend(tool_sequence)
 
 
-def _get_effective_timeout(config: MCPConfig, default_timeout: float) -> float:
-    """Determine the effective timeout from config, respecting per-server timeouts.
-
-    If any server specifies a timeout, use the maximum of all specified timeouts
-    and the default. This ensures slow servers (e.g., OAuth-based) have enough time.
-    """
-    if not config.mcpServers:
-        return default_timeout
-
-    max_server_timeout = default_timeout
-    for server_config in config.mcpServers.values():
-        server_timeout = getattr(server_config, "timeout", None)
-        if server_timeout is not None:
-            max_server_timeout = max(max_server_timeout, server_timeout)
-
-    return max_server_timeout
-
-
 def create_mcp_tools(
     config: dict | MCPConfig,
-    timeout: float = 60.0,
+    timeout: float = 30.0,
 ) -> MCPClient:
     """Create MCP tools from MCP configuration.
-
-    Args:
-        config: MCP configuration dict or MCPConfig object.
-        timeout: Default timeout in seconds for MCP connections.
-            Individual server timeouts in config take precedence.
 
     Returns an MCPClient with tools populated. Use as a context manager:
 
@@ -78,30 +55,28 @@ def create_mcp_tools(
     """
     if isinstance(config, dict):
         config = MCPConfig.model_validate(config)
-
-    effective_timeout = _get_effective_timeout(config, timeout)
     client = MCPClient(config, log_handler=log_handler)
 
     try:
         client.call_async_from_sync(
-            _connect_and_list_tools, timeout=effective_timeout, client=client
+            _connect_and_list_tools, timeout=timeout, client=client
         )
     except TimeoutError as e:
         client.sync_close()
+        # Extract server names from config for better error message
         server_names = (
             list(config.mcpServers.keys()) if config.mcpServers else ["unknown"]
         )
         error_msg = (
-            f"MCP tool listing timed out after {effective_timeout} seconds.\n"
+            f"MCP tool listing timed out after {timeout} seconds.\n"
             f"MCP servers configured: {', '.join(server_names)}\n\n"
             "Possible solutions:\n"
-            f"  1. Set mcp_timeout in your agent config (current: {effective_timeout}s)\n"
-            "  2. Set timeout per-server in mcp_config\n"
-            "  3. Check if the MCP server is running and responding\n"
-            "  4. Verify network connectivity to the MCP server\n"
+            "  1. Increase the timeout value (default is 30 seconds)\n"
+            "  2. Check if the MCP server is running and responding\n"
+            "  3. Verify network connectivity to the MCP server\n"
         )
         raise MCPTimeoutError(
-            error_msg, timeout=effective_timeout, config=config.model_dump()
+            error_msg, timeout=timeout, config=config.model_dump()
         ) from e
     except BaseException:
         try:
