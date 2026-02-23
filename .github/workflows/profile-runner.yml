@@ -250,18 +250,11 @@ jobs:
                   print('Import OK')
                   " || echo "Import test failed with code $?"
 
-                  # Get the ACTUAL Python binary path (follow all symlinks)
-                  ABSOLUTE_PYTHON=$(readlink -f "$PYTHON_PATH")
-                  echo "  Venv Python: $PYTHON_PATH"
-                  echo "  Absolute Python: $ABSOLUTE_PYTHON"
-                  "$ABSOLUTE_PYTHON" --version
-
-                  # Copy the profile script and make it executable
-                  # Use absolute path to the script
+                  # Use absolute path to the profile script
                   PROFILE_SCRIPT="$(pwd)/scripts/profile_conversation.py"
                   echo "  Profile script: $PROFILE_SCRIPT"
 
-                  # Test the profile script with CLI args
+                  # Test the profile script with CLI args (quick validation)
                   echo "Testing profile script with CLI args..."
                   timeout 15s "$PYTHON_PATH" "$PROFILE_SCRIPT" \
                       --site-packages="$SITE_PACKAGES" \
@@ -272,25 +265,47 @@ jobs:
                       --max-iterations="$MAX_ITERATIONS" \
                       2>&1 | head -30 || echo "Test completed (timeout expected)"
 
-                  # Run Austin profiler using the actual Python binary
-                  # The profile script now handles CLI args for site-packages and sdk-dir
-                  echo "Running Austin profiler..."
-                  sudo austin \
-                      --interval "$SAMPLING_INTERVAL" \
-                      --output ../profile_outputs/swebench.mojo \
-                      --full \
-                      --children \
-                      -- \
-                      "$ABSOLUTE_PYTHON" "$PROFILE_SCRIPT" \
+                  # Use Austin's ATTACH mode to profile a running Python process
+                  # This avoids the issue of Austin launching the wrong Python version
+                  echo "Starting profile script in background for Austin attach..."
+
+                  # Start the profile script in the background
+                  "$PYTHON_PATH" "$PROFILE_SCRIPT" \
                       --site-packages="$SITE_PACKAGES" \
                       --sdk-dir="$(pwd)" \
                       --llm-api-key="$LLM_API_KEY" \
                       --llm-base-url="$LLM_BASE_URL" \
                       --llm-config="$LLM_CONFIG" \
                       --max-iterations="$MAX_ITERATIONS" \
-                      2>&1 || {
-                      echo "Austin exited with code $?"
-                  }
+                      &
+                  PROFILE_PID=$!
+                  echo "  Started profile script with PID: $PROFILE_PID"
+
+                  # Brief delay to let Python start up
+                  sleep 0.5
+
+                  # Check if process is still running
+                  if ps -p $PROFILE_PID > /dev/null 2>&1; then
+                      echo "  Process $PROFILE_PID is running, attaching Austin..."
+
+                      # Use Austin in attach mode (--pid)
+                      # ptrace_scope should be 0 from earlier setup
+                      sudo austin \
+                          --interval "$SAMPLING_INTERVAL" \
+                          --output ../profile_outputs/swebench.mojo \
+                          --full \
+                          --children \
+                          --pid $PROFILE_PID \
+                          2>&1 || {
+                          echo "Austin attach exited with code $?"
+                      }
+
+                      # Wait for the profile script to complete
+                      wait $PROFILE_PID 2>/dev/null || echo "Profile script completed"
+                  else
+                      echo "  ERROR: Profile script exited before Austin could attach"
+                      wait $PROFILE_PID 2>/dev/null
+                  fi
 
                   echo "Profiling complete."
                   ls -la ../profile_outputs/
