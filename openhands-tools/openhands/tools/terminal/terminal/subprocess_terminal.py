@@ -307,6 +307,13 @@ class SubprocessTerminal(TerminalInterface):
 
     # ------------------------- Public API -------------------------
 
+    # Threshold for "long" multi-line commands that need line-by-line sending
+    # to avoid overwhelming the PTY input buffer (see GitHub issue #2181)
+    _MULTILINE_THRESHOLD: int = 20
+
+    # Delay between lines when sending long multi-line commands (seconds)
+    _MULTILINE_DELAY: float = 0.01
+
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send keystrokes to the PTY.
 
@@ -315,6 +322,10 @@ class SubprocessTerminal(TerminalInterface):
           - Ctrl sequences: 'C-a'..'C-z' (Ctrl+C sends ^C byte)
           - Special names: 'ENTER','TAB','BS','ESC','UP','DOWN','LEFT','RIGHT',
                            'HOME','END','PGUP','PGDN','C-L','C-D'
+
+        For multi-line commands exceeding _MULTILINE_THRESHOLD lines, sends
+        line-by-line with small delays to avoid overwhelming the PTY buffer
+        (fixes heredoc hang issue on macOS).
         """
         if not self._initialized:
             raise RuntimeError("PTY terminal is not initialized")
@@ -353,8 +364,14 @@ class SubprocessTerminal(TerminalInterface):
             else:
                 # Unknown form; fall back to raw text
                 payload = text.encode("utf-8", "ignore")
-            append_eol = False  # ctrl combos are “instant”
+            append_eol = False  # ctrl combos are "instant"
         else:
+            # Check if this is a long multi-line command that needs chunked sending
+            input_lines = text.split("\n")
+            if len(input_lines) > self._MULTILINE_THRESHOLD:
+                self._send_multiline_chunked(input_lines, enter)
+                return
+
             raw = text.encode("utf-8", "ignore")
             payload = _normalize_eols(raw) if enter else raw
             append_eol = enter and not payload.endswith(ENTER)
@@ -366,6 +383,28 @@ class SubprocessTerminal(TerminalInterface):
         self._current_command_running = self._current_command_running or (
             append_eol or payload.endswith(ENTER)
         )
+
+    def _send_multiline_chunked(self, lines: list[str], enter: bool) -> None:
+        """Send multi-line command line-by-line with delays.
+
+        This avoids overwhelming the PTY input buffer when sending long
+        heredocs or other multi-line commands, which can cause hangs on macOS.
+        """
+        for i, line in enumerate(lines):
+            is_last = i == len(lines) - 1
+            payload = line.encode("utf-8", "ignore")
+
+            # Add newline between lines, and at the end if enter=True
+            if not is_last or enter:
+                payload += ENTER
+
+            self._write_pty(payload)
+
+            # Small delay between lines to let the PTY process input
+            if not is_last:
+                time.sleep(self._MULTILINE_DELAY)
+
+        self._current_command_running = True
 
     def read_screen(self) -> str:
         """Read the current terminal screen content.
