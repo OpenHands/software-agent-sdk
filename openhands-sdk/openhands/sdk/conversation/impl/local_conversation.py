@@ -46,6 +46,11 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.subagent import (
+    AgentDefinition,
+    register_file_agents,
+    register_plugin_agents,
+)
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -310,7 +315,7 @@ class LocalConversation(BaseConversation):
             return
 
         all_plugin_hooks: list[HookConfig] = []
-        all_plugin_agents: list = []  # AgentDefinition instances from plugins
+        all_plugin_agents: list[AgentDefinition] = []
 
         # Load plugins if specified
         if self._plugin_specs:
@@ -367,12 +372,6 @@ class LocalConversation(BaseConversation):
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Register plugin and file-based agent definitions into delegate registry
-        # Import deferred to avoid circular import
-        from openhands.sdk.subagent.registry import (
-            register_file_agents,
-            register_plugin_agents,
-        )
-
         if all_plugin_agents:
             register_plugin_agents(all_plugin_agents)
 

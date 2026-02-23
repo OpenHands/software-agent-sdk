@@ -123,11 +123,11 @@ def _load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
     definitions: list[AgentDefinition] = []
     for md_file in sorted(agents_dir.iterdir()):
         # Only top-level .md files; skip subdirectories and README
-        if md_file.is_dir():
-            continue
-        if md_file.suffix.lower() != ".md":
-            continue
-        if md_file.name in _SKIP_FILES:
+        if (
+            md_file.is_dir()
+            or md_file.suffix.lower() != ".md"
+            or md_file.name in _SKIP_FILES
+        ):
             continue
 
         try:

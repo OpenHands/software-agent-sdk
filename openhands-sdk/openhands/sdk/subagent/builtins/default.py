@@ -1,17 +1,20 @@
+from functools import cache
+
 from openhands.sdk.subagent.registry import AgentFactory, _agent_definition_to_factory
 from openhands.sdk.subagent.schema import AgentDefinition
 
 
+@cache
 def _build_default_agent_factory(
     enable_browser: bool = True,
-) -> "AgentFactory":
-    """Return an AgentDefinition class describing the default agent.
+) -> AgentFactory:
+    """Return an AgentFactory class describing for the default agent.
 
     Args:
         enable_browser: Whether to include browser tools.
 
     Returns:
-        An AgentDefinition class describing the default agent.
+        An AgentFactory class describing the default agent.
     """
 
     tool_names = ["terminal", "file_editor", "task_tracker"]
