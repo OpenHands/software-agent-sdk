@@ -60,6 +60,7 @@ from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
     ThinkAction,
+    ThinkTool,
 )
 
 
@@ -210,6 +211,10 @@ class Agent(CriticMixin, AgentBase):
     ):
         for action_event in action_events:
             self._execute_action_event(conversation, action_event, on_event=on_event)
+
+    def _has_non_default_tools(self) -> bool:
+        default_tool_names = {FinishTool.name, ThinkTool.name}
+        return any(name not in default_tool_names for name in self.tools_map)
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -374,9 +379,37 @@ class Agent(CriticMixin, AgentBase):
         # Emit VLLM token ids if enabled
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 
-        # Finish conversation if LLM produced content (awaits user input)
-        # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
+        # Finish conversation if LLM produced content (awaits user input).
+        #
+        # If the agent has non-default tools available (i.e., tools beyond the
+        # built-in finish/think tools), a message-only response is usually an invalid
+        # intermediate step. In that case, keep the agent loop running so it can
+        # retry and emit proper tool calls (or call `finish`).
         if has_content:
+            if self._has_non_default_tools():
+                logger.debug(
+                    "LLM produced content without tool calls; continuing agent loop"
+                )
+                on_event(
+                    MessageEvent(
+                        source="environment",
+                        llm_message=Message(
+                            role="user",
+                            content=[
+                                TextContent(
+                                    text=(
+                                        "Your last response did not include any "
+                                        "tool calls. "
+                                        "Please continue by calling a tool, "
+                                        "or call `finish` to end the task."
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                )
+                return
+
             logger.debug("LLM produced a message response - awaits user input")
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
