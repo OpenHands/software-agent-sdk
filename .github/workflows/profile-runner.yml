@@ -34,7 +34,7 @@ on:
             model_id:
                 description: Model ID to use (from resolve_model_config.py)
                 required: false
-                default: claude-haiku-4-5
+                default: claude-sonnet-4-6
                 type: string
             sampling_interval:
                 description: Austin sampling interval in microseconds (default 100)
@@ -124,7 +124,7 @@ jobs:
               id: resolve-model
               working-directory: sdk
               env:
-                  MODEL_ID: ${{ github.event.inputs.model_id || 'claude-haiku-4-5' }}
+                  MODEL_ID: ${{ github.event.inputs.model_id || 'claude-sonnet-4-6' }}
               run: |
                   MODEL_CONFIG=$(python3 << EOF
                   import json
@@ -172,7 +172,7 @@ jobs:
 
                       - Target: `${{ steps.params.outputs.profile_target }}`
                       - Instance IDs: `${{ steps.params.outputs.instance_ids }}`
-                      - Model: `${{ github.event.inputs.model_id || 'claude-haiku-4-5' }}`
+                      - Model: `${{ github.event.inputs.model_id || 'claude-sonnet-4-6' }}`
                       - Max iterations: `${{ github.event.inputs.max_iterations || '30' }}`
                       - Sampling interval: `${{ github.event.inputs.sampling_interval || '100' }}µs`
 
