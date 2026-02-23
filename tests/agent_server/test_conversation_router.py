@@ -1284,6 +1284,75 @@ def test_start_conversation_without_tool_module_qualnames(
         client.app.dependency_overrides.clear()
 
 
+def test_start_conversation_autotitle_defaults_to_true(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """autotitle defaults to True when not supplied in the request."""
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert request_arg.autotitle is True
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_autotitle_false(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """autotitle=False is forwarded correctly to the service."""
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "autotitle": False,
+        }
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert request_arg.autotitle is False
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_set_conversation_security_analyzer_success(
     client,
     sample_conversation_id,
