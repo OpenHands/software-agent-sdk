@@ -31,16 +31,9 @@ class TaskExecutor(ToolExecutor):
                 conversation=conversation,
             )
             match task.status:
-                case TaskStatus.SUCCEEDED:
+                case TaskStatus.COMPLETED:
                     return TaskObservation.from_text(
-                        text=task.result or "Task succeeded.",
-                        task_id=task.id,
-                        subagent=action.subagent_type,
-                        status=task.status,
-                    )
-                case TaskStatus.EMPTY_SUCCESS:
-                    return TaskObservation.from_text(
-                        text="Task completed with no result.",
+                        text=task.result or "Task completed with no result.",
                         task_id=task.id,
                         subagent=action.subagent_type,
                         status=task.status,

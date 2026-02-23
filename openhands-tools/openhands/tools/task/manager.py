@@ -24,11 +24,8 @@ class TaskStatus(StrEnum):
     RUNNING = "running"
     """The task is currently being processed by an agent."""
 
-    SUCCEEDED = "succeeded"
-    """The task finished successfully and returned a valid result or response."""
-
-    EMPTY_SUCCESS = "empty_success"
-    """The task finished without errors, but produced no data or expected output."""
+    COMPLETED = "completed"
+    """The task completed successfully and returned a valid result or response."""
 
     ERROR = "error"
     """The task failed to complete due to an unhandled exception or system fault."""
@@ -53,10 +50,7 @@ class TaskState(BaseModel):
         """Set task as successful."""
         self.result = result
         self.error = None
-        if self.result:
-            self.status = TaskStatus.SUCCEEDED
-        else:
-            self.status = TaskStatus.EMPTY_SUCCESS
+        self.status = TaskStatus.COMPLETED
 
     def set_error(self, error: str) -> None:
         """Set task as failed with an error."""

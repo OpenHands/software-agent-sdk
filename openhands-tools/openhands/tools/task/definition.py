@@ -84,9 +84,10 @@ class TaskObservation(Observation):
         Default content formatting for converting observation to LLM readable content.
         Subclasses can override to provide richer content (e.g., images, diffs).
         """
-        llm_content: list[TextContent | ImageContent] = []
+        llm_content: list[TextContent | ImageContent] = [
+            TextContent(text=self._get_task_info())
+        ]
 
-        llm_content.append(TextContent(text=self._get_task_info()))
         # If is_error is true, prepend error message
         if self.is_error:
             llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))

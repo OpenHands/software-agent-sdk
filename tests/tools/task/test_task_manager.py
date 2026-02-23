@@ -49,8 +49,7 @@ def _manager_with_parent(tmp_path: Path) -> tuple[TaskManager, LocalConversation
 class TestTaskStatusEnum:
     def test_all_values(self):
         assert TaskStatus.RUNNING == "running"
-        assert TaskStatus.SUCCEEDED == "succeeded"
-        assert TaskStatus.EMPTY_SUCCESS == "empty_success"
+        assert TaskStatus.COMPLETED == "completed"
         assert TaskStatus.ERROR == "error"
 
     def test_is_str_enum(self):
@@ -72,7 +71,7 @@ class TestTaskState:
         """set_completed should update status and result."""
         state = TaskState(id="test_1", conversation=None, status=TaskStatus.RUNNING)
         state.set_result("Done!")
-        assert state.status == "succeeded"
+        assert state.status == "completed"
         assert state.result == "Done!"
         assert state.error is None
 
@@ -87,7 +86,7 @@ class TestTaskState:
     def test_empty_string_gives_empty_success(self):
         task = TaskState(id="t1", status=TaskStatus.RUNNING, conversation=None)
         task.set_result("")
-        assert task.status == TaskStatus.EMPTY_SUCCESS
+        assert task.status == TaskStatus.COMPLETED
         assert task.result == ""
         assert task.error is None
 
