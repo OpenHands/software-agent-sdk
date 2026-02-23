@@ -241,11 +241,6 @@ jobs:
                   echo "  VENV_DIR: $VENV_DIR"
                   echo "  SITE_PACKAGES: $SITE_PACKAGES"
 
-                  # Resolve the ACTUAL Python binary path (not the symlink)
-                  # The venv python is a symlink, but sudo+austin may not follow it correctly
-                  REAL_PYTHON_PATH=$("$PYTHON_PATH" -c "import sys; print(sys.executable)")
-                  echo "  Real Python: $REAL_PYTHON_PATH"
-
                   # First, test running the script directly
                   echo "Testing script import..."
                   "$PYTHON_PATH" -c "
@@ -316,15 +311,23 @@ jobs:
 
                   # Run Austin to profile the Python wrapper directly
                   # Pass env vars as arguments to the wrapper script
-                  # Use REAL_PYTHON_PATH (actual binary) not the venv symlink
                   echo "Running Austin profiler..."
+
+                  # Get the ACTUAL Python binary path (follow all symlinks)
+                  ABSOLUTE_PYTHON=$(readlink -f "$PYTHON_PATH")
+                  echo "  Venv Python: $PYTHON_PATH"
+                  echo "  Absolute Python: $ABSOLUTE_PYTHON"
+                  "$ABSOLUTE_PYTHON" --version
+
+                  # Austin needs the absolute path to the actual Python binary
+                  # because sudo doesn't follow symlinks the same way
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.mojo \
                       --full \
                       --children \
                       -- \
-                      "$REAL_PYTHON_PATH" /tmp/profile_wrapper.py \
+                      "$ABSOLUTE_PYTHON" /tmp/profile_wrapper.py \
                       "LLM_API_KEY=$LLM_API_KEY" \
                       "LLM_BASE_URL=$LLM_BASE_URL" \
                       "LLM_CONFIG=$LLM_CONFIG" \
