@@ -212,15 +212,19 @@ jobs:
                   echo "Model: $LLM_MODEL"
                   echo "Max iterations: $MAX_ITERATIONS"
 
-                  # Run single instance with Austin profiling
-                  # Use the swebench-infer entry point from benchmarks
+                  # Get the Python path from uv
+                  PYTHON_PATH=$(uv run which python)
+                  echo "Python path: $PYTHON_PATH"
+
+                  # Run with Austin using the direct Python interpreter
+                  # This avoids the uv wrapper process issue
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.austin \
                       --full \
                       --children \
                       -- \
-                      uv run swebench-infer \
+                      "$PYTHON_PATH" -m benchmarks.swebench.run_infer \
                           --model "$LLM_MODEL" \
                           --instance-ids "$INSTANCE_IDS" \
                           --max-iterations "$MAX_ITERATIONS" \
@@ -242,13 +246,17 @@ jobs:
 
                   echo "Running profiled iterative refinement example..."
 
-                  # Run realistic example with Austin profiling
+                  # Get the Python path from uv
+                  PYTHON_PATH=$(uv run which python)
+                  echo "Python path: $PYTHON_PATH"
+
+                  # Run realistic example with Austin profiling using direct Python
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/example.austin \
                       --full \
                       -- \
-                      uv run python examples/01_standalone_sdk/31_iterative_refinement.py \
+                      "$PYTHON_PATH" examples/01_standalone_sdk/31_iterative_refinement.py \
                       || echo "Example completed"
 
                   echo "Profiling complete."
