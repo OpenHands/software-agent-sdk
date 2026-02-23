@@ -199,9 +199,10 @@ jobs:
 
                   echo "Setting up benchmarks environment..."
 
-                  # Update SDK submodule to point to our checked out SDK
-                  rm -rf agent-sdk
-                  ln -sf "$SDK_PATH" agent-sdk
+                  # The benchmarks repo expects SDK at vendor/software-agent-sdk/
+                  mkdir -p vendor
+                  rm -rf vendor/software-agent-sdk
+                  ln -sf "$SDK_PATH" vendor/software-agent-sdk
 
                   # Install benchmarks dependencies
                   uv sync
@@ -212,14 +213,14 @@ jobs:
                   echo "Max iterations: $MAX_ITERATIONS"
 
                   # Run single instance with Austin profiling
-                  # The benchmarks repo has scripts for running inference
+                  # Use the swebench-infer entry point from benchmarks
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.austin \
                       --full \
                       --children \
                       -- \
-                      uv run python -m swebench.run_infer \
+                      uv run swebench-infer \
                           --model "$LLM_MODEL" \
                           --instance-ids "$INSTANCE_IDS" \
                           --max-iterations "$MAX_ITERATIONS" \
