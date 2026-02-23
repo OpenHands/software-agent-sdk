@@ -44,7 +44,7 @@ with APIRemoteWorkspace(
     runtime_api_key=runtime_api_key,
     server_image=server_image,
     image_pull_policy="Always",
-    target_type="source",  # Use source target (not binary) for the agent server
+    target_type="binary",  # CI builds binary target images
     forward_env=["ANTHROPIC_API_KEY"],
 ) as workspace:
     agent = ACPAgent(
