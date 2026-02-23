@@ -1,9 +1,10 @@
 """Router for LLM model and provider information endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from openhands.sdk.llm.utils.unverified_models import (
+    _extract_model_and_provider,
     _get_litellm_provider_names,
     get_supported_llm_models,
 )
@@ -39,12 +40,31 @@ async def list_providers() -> ProvidersResponse:
 
 
 @llm_router.get("/models", response_model=ModelsResponse)
-async def list_models() -> ModelsResponse:
+async def list_models(
+    provider: str | None = Query(
+        default=None,
+        description="Filter models by provider (e.g., 'openai', 'anthropic')",
+    ),
+) -> ModelsResponse:
     """List all available LLM models supported by LiteLLM.
+
+    Args:
+        provider: Optional provider name to filter models by.
 
     Note: Bedrock models are excluded unless AWS credentials are configured.
     """
-    models = sorted(set(get_supported_llm_models()))
+    all_models = get_supported_llm_models()
+
+    if provider is None:
+        models = sorted(set(all_models))
+    else:
+        filtered_models = []
+        for model in all_models:
+            model_provider, model_id, separator = _extract_model_and_provider(model)
+            if model_provider == provider:
+                filtered_models.append(model)
+        models = sorted(set(filtered_models))
+
     return ModelsResponse(models=models)
 
 

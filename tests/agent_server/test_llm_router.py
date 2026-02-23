@@ -34,9 +34,26 @@ async def test_list_providers():
 @pytest.mark.asyncio
 async def test_list_models():
     """Test listing models directly."""
-    response = await list_models()
+    response = await list_models(provider=None)
     assert len(response.models) > 0
     assert response.models == sorted(set(response.models))
+
+
+@pytest.mark.asyncio
+async def test_list_models_filtered_by_provider():
+    """Test listing models filtered by provider."""
+    response = await list_models(provider="openai")
+    assert len(response.models) > 0
+    # Verify filtering works - there should be fewer models than unfiltered
+    all_models_response = await list_models(provider=None)
+    assert len(response.models) < len(all_models_response.models)
+
+
+@pytest.mark.asyncio
+async def test_list_models_unknown_provider():
+    """Test listing models with an unknown provider returns empty list."""
+    response = await list_models(provider="unknown_provider_xyz")
+    assert response.models == []
 
 
 @pytest.mark.asyncio
@@ -65,6 +82,24 @@ def test_models_endpoint_integration(client):
     data = response.json()
     assert "models" in data
     assert len(data["models"]) > 0
+
+
+def test_models_endpoint_with_provider_filter(client):
+    """Test models endpoint with provider query parameter."""
+    response = client.get("/api/llm/models?provider=openai")
+    assert response.status_code == 200
+    data = response.json()
+    assert "models" in data
+    assert len(data["models"]) > 0
+
+
+def test_models_endpoint_with_unknown_provider(client):
+    """Test models endpoint with unknown provider returns empty list."""
+    response = client.get("/api/llm/models?provider=unknown_provider_xyz")
+    assert response.status_code == 200
+    data = response.json()
+    assert "models" in data
+    assert data["models"] == []
 
 
 def test_verified_models_endpoint_integration(client):
