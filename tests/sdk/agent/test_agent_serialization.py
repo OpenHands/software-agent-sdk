@@ -326,3 +326,57 @@ def test_include_default_tools_deserialization_from_dict() -> None:
     # Should have ThinkTool
     assert isinstance(agent, Agent)
     assert agent.include_default_tools == ["ThinkTool"]
+
+
+def test_mcp_timeout_default_value() -> None:
+    """Test that mcp_timeout has the correct default value."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[])
+
+    # Default value should be 60.0 seconds
+    assert agent.mcp_timeout == 60.0
+
+
+def test_mcp_timeout_custom_value() -> None:
+    """Test that mcp_timeout can be set to a custom value."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], mcp_timeout=120.0)
+
+    assert agent.mcp_timeout == 120.0
+
+
+def test_mcp_timeout_serialization_roundtrip() -> None:
+    """Test that mcp_timeout serializes and deserializes correctly."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], mcp_timeout=90.0)
+
+    # Serialize to JSON
+    agent_json = agent.model_dump_json()
+    agent_dict = json.loads(agent_json)
+
+    # mcp_timeout should be in the serialized output
+    assert agent_dict["mcp_timeout"] == 90.0
+
+    # Deserialize from JSON
+    deserialized_agent = AgentBase.model_validate_json(agent_json)
+
+    # Should have the same mcp_timeout
+    assert isinstance(deserialized_agent, Agent)
+    assert deserialized_agent.mcp_timeout == 90.0
+
+
+def test_mcp_timeout_deserialization_from_dict() -> None:
+    """Test that mcp_timeout deserializes correctly from dict."""
+    agent_dict = {
+        "llm": {"model": "test-model", "usage_id": "test-llm"},
+        "tools": [],
+        "mcp_timeout": 180.0,
+        "kind": "Agent",
+    }
+
+    # Deserialize from dict
+    agent = AgentBase.model_validate(agent_dict)
+
+    # Should have custom mcp_timeout
+    assert isinstance(agent, Agent)
+    assert agent.mcp_timeout == 180.0

@@ -441,3 +441,47 @@ def test_create_mcp_tools_timeout_error_message():
 
         assert exc_info.value.timeout == 30.0
         assert exc_info.value.config is not None
+
+
+def test_create_mcp_tools_custom_timeout(http_mcp_server: MCPTestServer):
+    """Test that custom timeout value is used for MCP initialization."""
+    config = {
+        "mcpServers": {
+            "http_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            }
+        }
+    }
+
+    # Test with custom timeout (longer than default)
+    tools = create_mcp_tools(config, timeout=120.0)
+    assert len(tools) == 2
+
+
+def test_create_mcp_tools_passes_init_timeout_to_client(http_mcp_server: MCPTestServer):
+    """Test that timeout is passed as init_timeout to MCPClient constructor."""
+    config = {
+        "mcpServers": {
+            "http_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            }
+        }
+    }
+
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.call_async_from_sync.return_value = None
+        mock_client.tools = []
+
+        try:
+            create_mcp_tools(config, timeout=90.0)
+        except Exception:
+            pass  # We just want to check the constructor call
+
+        # Verify init_timeout was passed to MCPClient constructor
+        mock_client_class.assert_called_once()
+        call_kwargs = mock_client_class.call_args[1]
+        assert call_kwargs.get("init_timeout") == 90.0
