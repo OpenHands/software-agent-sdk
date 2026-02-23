@@ -33,6 +33,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -429,6 +430,123 @@ class LocalConversation(BaseConversation):
 
             self._agent_ready = True
 
+    @staticmethod
+    def _parse_model_command(text: str) -> tuple[str, str | None] | None:
+        """Parse a /model command from user text.
+
+        Returns:
+            None if the text is not a /model command.
+            ("", None) for bare "/model" (info request).
+            ("profile_name", remaining_text_or_None) otherwise.
+        """
+        stripped = text.strip()
+        if stripped == "/model":
+            return "", None
+        if not stripped.startswith("/model "):
+            return None
+        rest = stripped[len("/model ") :].strip()
+        if not rest:
+            return "", None
+        # Split into profile name and optional remaining message
+        parts = rest.split(None, 1)
+        profile_name = parts[0]
+        remaining = parts[1] if len(parts) > 1 else None
+        return profile_name, remaining
+
+    def _switch_model_profile(self, profile_name: str) -> None:
+        """Load a model profile and swap the agent's LLM.
+
+        Args:
+            profile_name: Name of the profile to load from LLMProfileStore.
+
+        Raises:
+            FileNotFoundError: If the profile does not exist.
+            ValueError: If the profile is corrupted or invalid.
+        """
+        store = LLMProfileStore()
+        new_llm = store.load(profile_name)
+
+        usage_id = f"model-profile-{profile_name}"
+        try:
+            new_llm = self.llm_registry.get(usage_id)
+        except KeyError:
+            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
+            self.llm_registry.add(new_llm)
+
+        self.agent = self.agent.model_copy(update={"llm": new_llm})
+        with self._state:
+            self._state.agent = self.agent
+
+    def _emit_model_info(self) -> None:
+        """Emit an environment message with current model and available profiles."""
+        current_model = self.agent.llm.model
+        try:
+            store = LLMProfileStore()
+            profiles = store.list()
+        except Exception:
+            profiles = []
+
+        profile_list = ", ".join(profiles) if profiles else "none"
+        info_text = (
+            f"Current model: {current_model}\nAvailable profiles: {profile_list}"
+        )
+        info_event = MessageEvent(
+            source="environment",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text=info_text)],
+            ),
+        )
+        self._on_event(info_event)
+
+    def _handle_model_command(
+        self,
+        profile_name: str,
+        remaining_text: str | None,
+        sender: str | None,
+    ) -> None:
+        """Handle a parsed /model command.
+
+        Args:
+            profile_name: Profile name ("" for info request).
+            remaining_text: Optional message to send after switching.
+            sender: Optional sender identifier.
+        """
+        if not profile_name:
+            self._emit_model_info()
+            return
+
+        try:
+            self._switch_model_profile(profile_name)
+        except (FileNotFoundError, ValueError) as e:
+            error_event = MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text=str(e))],
+                ),
+            )
+            self._on_event(error_event)
+            return
+
+        # Emit confirmation
+        confirm_event = MessageEvent(
+            source="environment",
+            llm_message=Message(
+                role="user",
+                content=[
+                    TextContent(
+                        text=f"Switched to model profile `{profile_name}` "
+                        f"(model: {self.agent.llm.model})"
+                    )
+                ],
+            ),
+        )
+        self._on_event(confirm_event)
+
+        if remaining_text:
+            self.send_message(remaining_text, sender=sender)
+
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
@@ -444,8 +562,13 @@ class LocalConversation(BaseConversation):
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
 
-        # Convert string to Message if needed
+        # Intercept /model commands before converting to Message
         if isinstance(message, str):
+            parsed = self._parse_model_command(message)
+            if parsed is not None:
+                profile_name, remaining_text = parsed
+                self._handle_model_command(profile_name, remaining_text, sender)
+                return
             message = Message(role="user", content=[TextContent(text=message)])
 
         assert message.role == "user", (
