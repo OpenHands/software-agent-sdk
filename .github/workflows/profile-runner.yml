@@ -189,7 +189,7 @@ jobs:
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
-                  LLM_MODEL: ${{ fromJson(steps.resolve-model.outputs.llm_config).model }}
+                  LLM_CONFIG: ${{ steps.resolve-model.outputs.llm_config }}
                   INSTANCE_IDS: ${{ steps.params.outputs.instance_ids }}
                   SAMPLING_INTERVAL: ${{ github.event.inputs.sampling_interval || '100' }}
                   MAX_ITERATIONS: ${{ github.event.inputs.max_iterations || '30' }}
@@ -207,17 +207,26 @@ jobs:
                   # Install benchmarks dependencies
                   uv sync
 
+                  # Create LLM config file (required by swebench-infer)
+                  echo "$LLM_CONFIG" > /tmp/llm_config.json
+                  echo "LLM Config:"
+                  cat /tmp/llm_config.json
+
                   echo "Running profiled SWE-bench evaluation..."
                   echo "Instances: $INSTANCE_IDS"
-                  echo "Model: $LLM_MODEL"
                   echo "Max iterations: $MAX_ITERATIONS"
 
                   # Get the Python path from uv
                   PYTHON_PATH=$(uv run which python)
                   echo "Python path: $PYTHON_PATH"
 
+                  # Create a text file with instance IDs (one per line)
+                  echo "$INSTANCE_IDS" | tr ',' '\n' > /tmp/instance_ids.txt
+                  echo "Instance IDs file:"
+                  cat /tmp/instance_ids.txt
+
                   # Run with Austin using the direct Python interpreter
-                  # This avoids the uv wrapper process issue
+                  # swebench-infer requires: llm_config_path as first positional arg
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.austin \
@@ -225,10 +234,11 @@ jobs:
                       --children \
                       -- \
                       "$PYTHON_PATH" -m benchmarks.swebench.run_infer \
-                          --model "$LLM_MODEL" \
-                          --instance-ids "$INSTANCE_IDS" \
+                          /tmp/llm_config.json \
+                          --select /tmp/instance_ids.txt \
                           --max-iterations "$MAX_ITERATIONS" \
                           --output-dir ../profile_outputs/swebench_results \
+                          --num-workers 1 \
                       || echo "Inference completed (may have partial results)"
 
                   echo "Profiling complete."
