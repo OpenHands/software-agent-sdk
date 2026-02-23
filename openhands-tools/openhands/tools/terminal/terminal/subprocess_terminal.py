@@ -317,10 +317,12 @@ class SubprocessTerminal(TerminalInterface):
     # Timeout for select() when waiting for PTY to be writable (seconds).
     _SELECT_WRITE_TIMEOUT: float = 0.05
 
-    # Small delay between lines for pacing (seconds). This is needed because
-    # select() only checks kernel buffer availability, not whether the shell's
-    # line discipline can keep up with input processing. A small delay prevents
-    # overwhelming the shell even when the fd appears writable.
+    # Small delay between lines for pacing (seconds). This delay is intentional
+    # and cannot be replaced by select() alone: select() only checks kernel
+    # buffer availability, but the PTY is almost always writable. The actual
+    # bottleneck is the shell's line discipline which can't process input fast
+    # enough. Without this delay, long heredocs hang on macOS even though
+    # select() reports the fd as writable. (See GitHub issue #2181)
     _LINE_PACING_DELAY: float = 0.002
 
     def send_keys(self, text: str, enter: bool = True) -> None:
@@ -332,9 +334,9 @@ class SubprocessTerminal(TerminalInterface):
           - Special names: 'ENTER','TAB','BS','ESC','UP','DOWN','LEFT','RIGHT',
                            'HOME','END','PGUP','PGDN','C-L','C-D'
 
-        For multi-line commands exceeding _MULTILINE_THRESHOLD lines, uses
-        select()-based flow control to write line-by-line, only adding delays
-        when the PTY buffer is full (fixes heredoc hang issue on macOS).
+        For multi-line commands exceeding _MULTILINE_THRESHOLD lines, sends
+        line-by-line with pacing to prevent overwhelming the shell's input
+        processing (fixes heredoc hang issue on macOS, see #2181).
         """
         if not self._initialized:
             raise RuntimeError("PTY terminal is not initialized")
