@@ -231,11 +231,36 @@ jobs:
 
                   # Run the profiling script with Austin
                   # Austin 4.0+ uses MOJO binary format by default
-                  # Use sudo -E to preserve environment variables for LLM credentials
                   echo "Running profile script with Austin..."
                   echo "  Working directory: $(pwd)"
                   echo "  Python: $PYTHON_PATH"
-                  sudo -E austin \
+
+                  # Get PYTHONPATH and VIRTUAL_ENV from the venv
+                  VENV_DIR="$(dirname "$(dirname "$PYTHON_PATH")")"
+                  SITE_PACKAGES="$VENV_DIR/lib/python3.13/site-packages"
+                  echo "  VENV_DIR: $VENV_DIR"
+                  echo "  SITE_PACKAGES: $SITE_PACKAGES"
+
+                  # First, test running the script directly without Austin
+                  echo "Testing script directly (without Austin)..."
+                  timeout 30s "$PYTHON_PATH" -c "
+                  import sys
+                  print('sys.path:', sys.path[:3])
+                  from scripts.profile_conversation import main
+                  print('main function found:', main)
+                  " || echo "Direct test exited with code $?"
+
+                  # Run Austin with explicit environment variables
+                  # We need to pass env vars through sudo explicitly
+                  echo "Running profile script with Austin and explicit env vars..."
+                  sudo \
+                      LLM_API_KEY="$LLM_API_KEY" \
+                      LLM_BASE_URL="$LLM_BASE_URL" \
+                      LLM_CONFIG="$LLM_CONFIG" \
+                      MAX_ITERATIONS="$MAX_ITERATIONS" \
+                      PYTHONPATH=".:$SITE_PACKAGES" \
+                      HOME="$HOME" \
+                      austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.mojo \
                       --full \
