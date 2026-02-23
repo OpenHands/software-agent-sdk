@@ -191,59 +191,6 @@ jobs:
               run: |
                   set -eo pipefail
 
-                  echo "Creating SWE-bench style profiling script..."
-
-                  # Create a test script that simulates SWE-bench workload
-                  # This profiles the SDK's core conversation/tool loop
-                  cat > /tmp/profile_swebench_style.py << 'SCRIPT_EOF'
-          import os
-          import sys
-          import json
-
-          from openhands.sdk import LLM, Agent, Conversation
-          from openhands.sdk.tool import Tool
-          from openhands.tools.preset.default import get_default_tools
-
-          def main():
-              llm_config_json = os.environ.get("LLM_CONFIG", '{}')
-              llm_config = json.loads(llm_config_json)
-
-              llm = LLM(
-                  model=llm_config.get("model", "gpt-4o-mini"),
-                  temperature=llm_config.get("temperature", 0.0),
-              )
-
-              tools = get_default_tools()
-
-              agent = Agent(
-                  llm=llm,
-                  tools=tools,
-                  system_message="You are a coding assistant. Help debug and fix issues.",
-              )
-
-              task = "Debug the file at /tmp/test_project/calculator.py - the divide function needs error handling for division by zero. First list the directory, then read and fix the file."
-
-              os.makedirs("/tmp/test_project", exist_ok=True)
-              with open("/tmp/test_project/calculator.py", "w") as f:
-                  f.write("def add(a, b):\n    return a + b\n\ndef divide(a, b):\n    return a / b\n")
-
-              max_iterations = int(os.environ.get("MAX_ITERATIONS", "10"))
-
-              print(f"Starting with {len(tools)} tools, model: {llm.model}, max: {max_iterations}")
-
-              conversation = Conversation(agent=agent, initial_message=task)
-
-              for i, response in enumerate(conversation):
-                  print(f"Iteration {i+1}")
-                  if i >= max_iterations - 1:
-                      break
-
-              print("Completed")
-
-          if __name__ == "__main__":
-              main()
-          SCRIPT_EOF
-
                   # Get the Python path from uv
                   PYTHON_PATH=$(uv run which python)
                   echo "Python path: $PYTHON_PATH"
@@ -251,14 +198,15 @@ jobs:
                   echo "Starting Austin profiled SWE-bench style run..."
                   echo "Max iterations: $MAX_ITERATIONS"
 
-                  # Run with Austin profiling
+                  # Run the profiling script with Austin
+                  # working-directory is sdk/ which is the repo checkout
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.austin \
                       --full \
                       --children \
                       -- \
-                      "$PYTHON_PATH" /tmp/profile_swebench_style.py \
+                      "$PYTHON_PATH" scripts/profile_conversation.py \
                       2>&1 || echo "Profiling completed (may have partial results)"
 
                   echo "Profiling complete."
