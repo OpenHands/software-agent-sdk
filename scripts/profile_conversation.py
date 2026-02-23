@@ -15,6 +15,8 @@ Usage:
 
 import json
 import os
+import sys
+import traceback
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.tools.file_editor import FileEditorTool
@@ -22,6 +24,8 @@ from openhands.tools.terminal import TerminalTool
 
 
 def main() -> None:
+    # Force immediate output
+    print("profile_conversation.py: Starting...", flush=True)
     # Parse LLM config from environment
     llm_config_json = os.environ.get("LLM_CONFIG", "{}")
     llm_config = json.loads(llm_config_json)
@@ -84,4 +88,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc()
+        sys.exit(1)
