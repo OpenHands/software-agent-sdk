@@ -2,10 +2,12 @@
 
 import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -17,6 +19,8 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 
 class GlobAction(Action):
@@ -47,20 +51,6 @@ class GlobObservation(Observation):
     )
 
 
-TOOL_DESCRIPTION = """Fast file pattern matching tool.
-* Supports glob patterns like "**/*.js" or "src/**/*.ts"
-* Use this tool when you need to find files by name patterns
-* Returns matching file paths sorted by modification time
-* Only the first 100 results are returned. Consider narrowing your search with stricter glob patterns or provide path parameter if you need more results.
-
-Examples:
-- Find all JavaScript files: "**/*.js"
-- Find TypeScript files in src: "src/**/*.ts"
-- Find Python test files: "**/test_*.py"
-- Find configuration files: "**/*.{json,yaml,yml,toml}"
-"""  # noqa
-
-
 class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
     """A ToolDefinition subclass that automatically initializes a GlobExecutor."""
 
@@ -86,17 +76,16 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
         # Initialize the executor
         executor = GlobExecutor(working_dir=working_dir)
 
-        # Add working directory information to the tool description
-        enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
-            f"Your current working directory is: {working_dir}\n"
-            f"When searching for files, patterns are relative to this directory."
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+            working_dir=working_dir,
         )
 
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                description=enhanced_description,
+                description=tool_description,
                 action_type=GlobAction,
                 observation_type=GlobObservation,
                 annotations=ToolAnnotations(

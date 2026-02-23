@@ -1,0 +1,19 @@
+Writes content to a specified file in the local filesystem.
+
+This tool overwrites the entire content of the file. If the file doesn't exist,
+it will be created. If it exists, all previous content will be replaced.
+
+This is useful for:
+- Creating new files
+- Completely rewriting files when many changes are needed
+- Setting initial file content
+
+For smaller edits to existing files, consider using the 'edit' tool instead,
+which allows targeted find/replace operations.
+
+Examples:
+- Create new file: write_file(file_path="/path/to/new.py", content="print('hello')")
+- Overwrite file: write_file(file_path="/path/to/existing.py", content="new content")
+
+Your current working directory is: {{ working_dir }}
+File paths can be absolute or relative to this directory.

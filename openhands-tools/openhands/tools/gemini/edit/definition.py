@@ -1,11 +1,13 @@
 """Edit tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field, PrivateAttr
 from rich.text import Text
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -17,6 +19,8 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 
 class EditAction(Action):
@@ -101,34 +105,6 @@ class EditObservation(Observation):
         return text
 
 
-TOOL_DESCRIPTION = """Replaces text within a file.
-
-By default, replaces a single occurrence, but can replace multiple occurrences
-when `expected_replacements` is specified. The edit will fail if the actual
-number of occurrences doesn't match the expected count.
-
-This tool is useful for making targeted changes to files without rewriting
-the entire content.
-
-Key behaviors:
-- To create a new file: use an empty string for `old_string`
-- The `old_string` must match EXACTLY (including whitespace and indentation)
-- If 0 occurrences are found, the edit fails with an error
-- If the number of occurrences doesn't match `expected_replacements`, the edit fails
-- If `old_string` equals `new_string`, no changes are made
-
-Tips for success:
-- Include enough context (3-5 lines) to make `old_string` unique
-- Use the `read_file` tool first to verify the exact text to replace
-- For large changes affecting many lines, consider `write_file` instead
-
-Examples:
-- Simple replacement: edit(file_path="test.py", old_string="old text", new_string="new text")
-- Create file: edit(file_path="new.py", old_string="", new_string="print('hello')")
-- Multiple replacements: edit(file_path="test.py", old_string="foo", new_string="bar", expected_replacements=3)
-"""  # noqa: E501
-
-
 class EditTool(ToolDefinition[EditAction, EditObservation]):
     """Tool for editing files via find/replace."""
 
@@ -147,17 +123,17 @@ class EditTool(ToolDefinition[EditAction, EditObservation]):
         executor = EditExecutor(workspace_root=conv_state.workspace.working_dir)
 
         working_dir = conv_state.workspace.working_dir
-        enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
-            f"Your current working directory is: {working_dir}\n"
-            f"File paths can be absolute or relative to this directory."
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+            working_dir=working_dir,
         )
 
         return [
             cls(
                 action_type=EditAction,
                 observation_type=EditObservation,
-                description=enhanced_description,
+                description=tool_description,
                 annotations=ToolAnnotations(
                     title="edit",
                     readOnlyHint=False,

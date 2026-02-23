@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -23,6 +24,8 @@ from .core import Commit, DiffError, process_patch
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 
 class ApplyPatchAction(Action):
@@ -120,12 +123,6 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
             return ApplyPatchObservation.from_text(text=str(e), is_error=True)
 
 
-_DESCRIPTION = (
-    "Apply unified text patches to files in the workspace. "
-    "Input must start with '*** Begin Patch' and end with '*** End Patch'."
-)
-
-
 class ApplyPatchTool(ToolDefinition[ApplyPatchAction, ApplyPatchObservation]):
     """ToolDefinition for applying unified text patches.
 
@@ -138,9 +135,13 @@ class ApplyPatchTool(ToolDefinition[ApplyPatchAction, ApplyPatchObservation]):
     def create(cls, conv_state: ConversationState) -> Sequence[ApplyPatchTool]:
         """Initialize the tool for the active conversation state."""
         executor = ApplyPatchExecutor(workspace_root=conv_state.workspace.working_dir)
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+        )
         return [
             cls(
-                description=_DESCRIPTION,
+                description=tool_description,
                 action_type=ApplyPatchAction,
                 observation_type=ApplyPatchObservation,
                 annotations=ToolAnnotations(

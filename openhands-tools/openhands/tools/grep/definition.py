@@ -2,10 +2,12 @@
 
 import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -17,6 +19,8 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 
 class GrepAction(Action):
@@ -53,16 +57,6 @@ class GrepObservation(Observation):
     )
 
 
-TOOL_DESCRIPTION = """Fast content search tool.
-* Searches file contents using regular expressions
-* Supports full regex syntax (eg. "log.*Error", "function\\s+\\w+", etc.)
-* Filter files by pattern with the include parameter (eg. "*.js", "*.{ts,tsx}")
-* Returns matching file paths sorted by modification time.
-* Only the first 100 results are returned. Consider narrowing your search with stricter regex patterns or provide path parameter if you need more results.
-* Use this tool when you need to find files containing specific patterns.
-"""  # noqa
-
-
 class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     """A ToolDefinition subclass that automatically initializes a GrepExecutor."""
 
@@ -88,17 +82,16 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
         # Initialize the executor
         executor = GrepExecutor(working_dir=working_dir)
 
-        # Add working directory information to the tool description
-        enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
-            f"Your current working directory is: {working_dir}\n"
-            f"When searching for content, searches are performed in this directory."
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+            working_dir=working_dir,
         )
 
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                description=enhanced_description,
+                description=tool_description,
                 action_type=GrepAction,
                 observation_type=GrepObservation,
                 annotations=ToolAnnotations(

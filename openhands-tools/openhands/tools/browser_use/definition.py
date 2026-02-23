@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import Field
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool import (
     Action,
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 # Directory where browser session recordings are saved
 BROWSER_RECORDING_OUTPUT_DIR = os.path.join(".agent_tmp", "browser_observations")
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 # Mapping of base64 prefixes to MIME types for image detection
 BASE64_IMAGE_PREFIXES = {
@@ -154,18 +156,10 @@ class BrowserNavigateAction(BrowserAction):
     )
 
 
-BROWSER_NAVIGATE_DESCRIPTION = """Navigate to a URL in the browser.
-
-This tool allows you to navigate to any web page. You can optionally open the URL in a new tab.
-
-Parameters:
-- url: The URL to navigate to (required)
-- new_tab: Whether to open in a new tab (optional, default: False)
-
-Examples:
-- Navigate to Google: url="https://www.google.com"
-- Open GitHub in new tab: url="https://github.com", new_tab=True
-"""  # noqa: E501
+BROWSER_NAVIGATE_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_navigate_description.j2",
+)
 
 
 class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservation]):
@@ -205,17 +199,10 @@ class BrowserClickAction(BrowserAction):
     )
 
 
-BROWSER_CLICK_DESCRIPTION = """Click an element on the page by its index.
-
-Use this tool to click on interactive elements like buttons, links, or form controls. 
-The index comes from the browser_get_state tool output.
-
-Parameters:
-- index: The index of the element to click (from browser_get_state)
-- new_tab: Whether to open any resulting navigation in a new tab (optional)
-
-Important: Only use indices that appear in your current browser_get_state output.
-"""  # noqa: E501
+BROWSER_CLICK_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_click_description.j2",
+)
 
 
 class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
@@ -252,17 +239,10 @@ class BrowserTypeAction(BrowserAction):
     text: str = Field(description="The text to type")
 
 
-BROWSER_TYPE_DESCRIPTION = """Type text into an input field.
-
-Use this tool to enter text into form fields, search boxes, or other text input elements.
-The index comes from the browser_get_state tool output.
-
-Parameters:
-- index: The index of the input element (from browser_get_state)
-- text: The text to type
-
-Important: Only use indices that appear in your current browser_get_state output.
-"""  # noqa: E501
+BROWSER_TYPE_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_type_description.j2",
+)
 
 
 class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
@@ -299,14 +279,10 @@ class BrowserGetStateAction(BrowserAction):
     )
 
 
-BROWSER_GET_STATE_DESCRIPTION = """Get the current state of the page including all interactive elements.
-
-This tool returns the current page content with numbered interactive elements that you can 
-click or type into. Use this frequently to understand what's available on the page.
-
-Parameters:
-- include_screenshot: Whether to include a screenshot (optional, default: False)
-"""  # noqa: E501
+BROWSER_GET_STATE_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_get_state_description.j2",
+)
 
 
 class BrowserGetStateTool(ToolDefinition[BrowserGetStateAction, BrowserObservation]):
@@ -348,10 +324,10 @@ class BrowserGetContentAction(BrowserAction):
     )
 
 
-BROWSER_GET_CONTENT_DESCRIPTION = """Extract the main content of the current page in clean markdown format. It has been filtered to remove noise and advertising content.
-
-If the content was truncated and you need more information, use start_from_char parameter to continue from where truncation occurred.
-"""  # noqa: E501
+BROWSER_GET_CONTENT_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_get_content_description.j2",
+)
 
 
 class BrowserGetContentTool(
@@ -390,14 +366,10 @@ class BrowserScrollAction(BrowserAction):
     )
 
 
-BROWSER_SCROLL_DESCRIPTION = """Scroll the page up or down.
-
-Use this tool to scroll through page content when elements are not visible or when you need
-to see more content.
-
-Parameters:
-- direction: Direction to scroll - "up" or "down" (optional, default: "down")
-"""  # noqa: E501
+BROWSER_SCROLL_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_scroll_description.j2",
+)
 
 
 class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation]):
@@ -431,11 +403,10 @@ class BrowserGoBackAction(BrowserAction):
     pass
 
 
-BROWSER_GO_BACK_DESCRIPTION = """Go back to the previous page in browser history.
-
-Use this tool to navigate back to the previously visited page, similar to clicking the 
-browser's back button.
-"""  # noqa: E501
+BROWSER_GO_BACK_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_go_back_description.j2",
+)
 
 
 class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation]):
@@ -469,11 +440,10 @@ class BrowserListTabsAction(BrowserAction):
     pass
 
 
-BROWSER_LIST_TABS_DESCRIPTION = """List all open browser tabs.
-
-This tool shows all currently open tabs with their IDs, titles, and URLs. Use the tab IDs
-with browser_switch_tab or browser_close_tab.
-"""  # noqa: E501
+BROWSER_LIST_TABS_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_list_tabs_description.j2",
+)
 
 
 class BrowserListTabsTool(ToolDefinition[BrowserListTabsAction, BrowserObservation]):
@@ -510,13 +480,10 @@ class BrowserSwitchTabAction(BrowserAction):
     )
 
 
-BROWSER_SWITCH_TAB_DESCRIPTION = """Switch to a different browser tab.
-
-Use this tool to switch between open tabs. Get the tab_id from browser_list_tabs.
-
-Parameters:
-- tab_id: 4 Character Tab ID of the tab to switch to
-"""
+BROWSER_SWITCH_TAB_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_switch_tab_description.j2",
+)
 
 
 class BrowserSwitchTabTool(ToolDefinition[BrowserSwitchTabAction, BrowserObservation]):
@@ -552,13 +519,10 @@ class BrowserCloseTabAction(BrowserAction):
     )
 
 
-BROWSER_CLOSE_TAB_DESCRIPTION = """Close a specific browser tab.
-
-Use this tool to close tabs you no longer need. Get the tab_id from browser_list_tabs.
-
-Parameters:
-- tab_id: 4 Character Tab ID of the tab to close
-"""
+BROWSER_CLOSE_TAB_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_close_tab_description.j2",
+)
 
 
 class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservation]):
@@ -592,12 +556,10 @@ class BrowserGetStorageAction(BrowserAction):
     pass
 
 
-BROWSER_GET_STORAGE_DESCRIPTION = """Get browser storage data including cookies,
-local storage, and session storage.
-
-This tool extracts all cookies and storage data from the current browser session.
-Useful for debugging, session management, or extracting authentication tokens.
-"""
+BROWSER_GET_STORAGE_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_get_storage_description.j2",
+)
 
 
 class BrowserGetStorageTool(
@@ -635,17 +597,10 @@ class BrowserSetStorageAction(BrowserAction):
     )
 
 
-BROWSER_SET_STORAGE_DESCRIPTION = """Set browser storage data including cookies,
-local storage, and session storage.
-
-This tool allows you to restore or set the browser's storage state. You can use the
-output from browser_get_storage to restore a previous session.
-
-Parameters:
-- storage_state: A dictionary containing 'cookies' and 'origins'.
-  - cookies: List of cookie objects
-  - origins: List of origin objects containing 'localStorage' and 'sessionStorage'
-"""
+BROWSER_SET_STORAGE_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_set_storage_description.j2",
+)
 
 
 class BrowserSetStorageTool(
@@ -681,21 +636,11 @@ class BrowserStartRecordingAction(BrowserAction):
     pass
 
 
-BROWSER_START_RECORDING_DESCRIPTION = f"""Start recording the browser session.
-
-This tool starts recording all browser interactions using rrweb. The recording
-captures DOM mutations, mouse movements, clicks, scrolls, and other user interactions.
-
-Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
-Format: Recording events are saved as numbered JSON files (1.json, 2.json, etc.)
-containing rrweb event arrays. Events are flushed every 5 seconds or when they
-exceed 1 MB. These files can be replayed using rrweb-player.
-
-Call browser_stop_recording to stop recording and save any remaining events.
-
-Note: Recording persists across page navigations - the recording will automatically
-restart on new pages.
-"""
+BROWSER_START_RECORDING_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_start_recording_description.j2",
+    recording_output_dir=BROWSER_RECORDING_OUTPUT_DIR,
+)
 
 
 class BrowserStartRecordingTool(
@@ -731,17 +676,11 @@ class BrowserStopRecordingAction(BrowserAction):
     pass
 
 
-BROWSER_STOP_RECORDING_DESCRIPTION = f"""Stop recording the browser session.
-
-This tool stops the current recording session and saves any remaining events to disk.
-
-Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
-Format: Events are saved as numbered JSON files (1.json, 2.json, etc.) containing
-rrweb event arrays. These files can be replayed using rrweb-player to visualize
-the recorded session.
-
-Returns a summary message with the total event count, file count, and save directory.
-"""
+BROWSER_STOP_RECORDING_DESCRIPTION = render_template(
+    prompt_dir=str(PROMPT_DIR),
+    template_name="browser_stop_recording_description.j2",
+    recording_output_dir=BROWSER_RECORDING_OUTPUT_DIR,
+)
 
 
 class BrowserStopRecordingTool(

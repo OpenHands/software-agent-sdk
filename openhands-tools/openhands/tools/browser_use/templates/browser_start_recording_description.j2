@@ -1,0 +1,14 @@
+Start recording the browser session.
+
+This tool starts recording all browser interactions using rrweb. The recording
+captures DOM mutations, mouse movements, clicks, scrolls, and other user interactions.
+
+Output Location: {{ recording_output_dir }}/recording-<timestamp>/
+Format: Recording events are saved as numbered JSON files (1.json, 2.json, etc.)
+containing rrweb event arrays. Events are flushed every 5 seconds or when they
+exceed 1 MB. These files can be replayed using rrweb-player.
+
+Call browser_stop_recording to stop recording and save any remaining events.
+
+Note: Recording persists across page navigations - the recording will automatically
+restart on new pages.

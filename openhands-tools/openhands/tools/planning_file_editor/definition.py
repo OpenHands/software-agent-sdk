@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import (
     ToolAnnotations,
@@ -15,13 +16,13 @@ from openhands.sdk.tool import (
     register_tool,
 )
 from openhands.tools.file_editor.definition import (
-    TOOL_DESCRIPTION as FILE_EDITOR_TOOL_DESCRIPTION,
     FileEditorAction,
     FileEditorObservation,
 )
 
 
 logger = get_logger(__name__)
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 # Default config directory and plan filename
 # PLAN.md is now stored in .agents_tmp/ to keep workspace root clean
@@ -43,20 +44,6 @@ class PlanningFileEditorObservation(FileEditorObservation):
 
     Inherits from FileEditorObservation - same structure, just different type.
     """
-
-
-TOOL_DESCRIPTION = (
-    FILE_EDITOR_TOOL_DESCRIPTION
-    + """
-
-IMPORTANT RESTRICTION FOR PLANNING AGENT:
-* You can VIEW any file in the workspace using the 'view' command
-* You can ONLY EDIT the PLAN.md file (all other edit operations will be rejected)
-* PLAN.md is automatically initialized with section headers at the workspace root
-* All editing commands (create, str_replace, insert, undo_edit) are restricted to PLAN.md only
-* The PLAN.md file already contains the required section structure - you just need to fill in the content
-"""  # noqa
-)
 
 
 class PlanningFileEditorTool(
@@ -129,17 +116,17 @@ class PlanningFileEditorTool(
             plan_path=plan_path,
         )
 
-        # Add working directory information to the tool description
-        enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
-            f"Your current working directory: {working_dir}\n"
-            f"Your PLAN.md location: {plan_path}\n"
-            f"This plan file will be accessible to other agents in the workflow."
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+            vision_enabled=conv_state.agent.llm.vision_is_active(),
+            working_dir=working_dir,
+            plan_path=plan_path,
         )
 
         return [
             cls(
-                description=enhanced_description,
+                description=tool_description,
                 action_type=PlanningFileEditorAction,
                 observation_type=PlanningFileEditorObservation,
                 annotations=ToolAnnotations(
