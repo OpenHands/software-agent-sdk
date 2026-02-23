@@ -271,15 +271,26 @@ jobs:
                   else:
                       i = len(sys.argv) - 1
 
-                  # Change to the SDK directory (passed as SDK_DIR env var)
+                  # Get SDK directory and site-packages path
                   sdk_dir = os.environ.get('SDK_DIR', '.')
+                  site_packages = os.environ.get('SITE_PACKAGES', '')
+
+                  # Print debug info
+                  print(f"[Wrapper] sys.executable: {sys.executable}", flush=True)
+                  print(f"[Wrapper] sys.path (before): {sys.path[:3]}", flush=True)
+
+                  # Add site-packages to Python path FIRST (before sdk_dir)
+                  # This is crucial when running under sudo austin
+                  if site_packages and site_packages not in sys.path:
+                      sys.path.insert(0, site_packages)
+
+                  # Change to the SDK directory and add to path
                   os.chdir(sdk_dir)
                   sys.path.insert(0, sdk_dir)
 
-                  # Print debug info
+                  print(f"[Wrapper] sys.path (after): {sys.path[:5]}", flush=True)
                   print(f"[Wrapper] CWD: {os.getcwd()}", flush=True)
                   print(f"[Wrapper] LLM_API_KEY present: {'LLM_API_KEY' in os.environ}", flush=True)
-                  print(f"[Wrapper] LLM_BASE_URL: {os.environ.get('LLM_BASE_URL', 'not set')}", flush=True)
 
                   # Import and run the profile script
                   from scripts.profile_conversation import main
@@ -295,6 +306,7 @@ jobs:
                       "LLM_CONFIG=$LLM_CONFIG" \
                       "MAX_ITERATIONS=$MAX_ITERATIONS" \
                       "SDK_DIR=$(pwd)" \
+                      "SITE_PACKAGES=$SITE_PACKAGES" \
                       2>&1 | head -30 || echo "Wrapper test completed (timeout expected)"
 
                   # Run Austin to profile the Python wrapper directly
@@ -312,6 +324,7 @@ jobs:
                       "LLM_CONFIG=$LLM_CONFIG" \
                       "MAX_ITERATIONS=$MAX_ITERATIONS" \
                       "SDK_DIR=$(pwd)" \
+                      "SITE_PACKAGES=$SITE_PACKAGES" \
                       2>&1 || {
                       echo "Austin exited with code $?"
                   }
