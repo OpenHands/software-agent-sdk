@@ -308,15 +308,20 @@ class SubprocessTerminal(TerminalInterface):
     # ------------------------- Public API -------------------------
 
     # Threshold for multi-line commands that need flow-controlled sending.
-    # Commands with more lines than this use select()-based pacing to avoid
-    # overwhelming the PTY input buffer (see GitHub issue #2181).
-    # Value chosen based on empirical testing: PTY buffer overflow typically
+    # Commands with more lines than this use paced line-by-line sending to avoid
+    # overwhelming the shell's input processing (see GitHub issue #2181).
+    # Value chosen based on empirical testing: shell input overflow typically
     # occurs around 50+ lines on macOS, so 20 provides safety margin.
     _MULTILINE_THRESHOLD: int = 20
 
     # Timeout for select() when waiting for PTY to be writable (seconds).
-    # If the PTY isn't ready within this time, we'll retry.
-    _SELECT_WRITE_TIMEOUT: float = 0.1
+    _SELECT_WRITE_TIMEOUT: float = 0.05
+
+    # Small delay between lines for pacing (seconds). This is needed because
+    # select() only checks kernel buffer availability, not whether the shell's
+    # line discipline can keep up with input processing. A small delay prevents
+    # overwhelming the shell even when the fd appears writable.
+    _LINE_PACING_DELAY: float = 0.002
 
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send keystrokes to the PTY.
@@ -399,11 +404,11 @@ class SubprocessTerminal(TerminalInterface):
         return len(writable) > 0
 
     def _send_multiline_with_flow_control(self, lines: list[str], enter: bool) -> None:
-        """Send multi-line command with select()-based flow control.
+        """Send multi-line command with flow control and pacing.
 
-        Uses select() to wait for the PTY to be ready before each write,
-        avoiding arbitrary delays while still preventing buffer overflow.
-        This is more efficient than fixed delays as it only waits when needed.
+        Uses select() to ensure the PTY is writable, plus a small inter-line
+        delay for pacing. The delay is necessary because select() only checks
+        kernel buffer space, not shell input processing capacity.
         """
         for i, line in enumerate(lines):
             is_last = i == len(lines) - 1
@@ -413,14 +418,14 @@ class SubprocessTerminal(TerminalInterface):
             if not is_last or enter:
                 payload += ENTER
 
-            # Wait for PTY to be writable before sending
-            if not self._wait_for_pty_writable(self._SELECT_WRITE_TIMEOUT):
-                # PTY not ready - wait briefly and retry
-                time.sleep(0.01)
-                if not self._wait_for_pty_writable(self._SELECT_WRITE_TIMEOUT):
-                    logger.warning("PTY write timeout, proceeding anyway")
+            # Wait for PTY to be writable (handles kernel buffer backpressure)
+            self._wait_for_pty_writable(self._SELECT_WRITE_TIMEOUT)
 
             self._write_pty(payload)
+
+            # Add small pacing delay between lines (handles shell processing)
+            if not is_last:
+                time.sleep(self._LINE_PACING_DELAY)
 
         self._current_command_running = True
 
