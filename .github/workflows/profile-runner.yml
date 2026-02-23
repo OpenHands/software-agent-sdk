@@ -225,8 +225,13 @@ jobs:
                   echo "Instance IDs file:"
                   cat /tmp/instance_ids.txt
 
+                  # First, test that the command runs correctly without profiling
+                  echo "Testing swebench-infer command (dry run)..."
+                  "$PYTHON_PATH" -m benchmarks.swebench.run_infer --help || echo "Help check completed"
+
                   # Run with Austin using the direct Python interpreter
                   # swebench-infer requires: llm_config_path as first positional arg
+                  echo "Starting Austin profiled run..."
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.austin \
@@ -239,7 +244,7 @@ jobs:
                           --max-iterations "$MAX_ITERATIONS" \
                           --output-dir ../profile_outputs/swebench_results \
                           --num-workers 1 \
-                      || echo "Inference completed (may have partial results)"
+                      2>&1 || echo "Inference completed (may have partial results)"
 
                   echo "Profiling complete."
                   ls -la ../profile_outputs/
