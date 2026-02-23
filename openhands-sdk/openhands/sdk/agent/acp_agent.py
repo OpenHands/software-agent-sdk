@@ -490,6 +490,12 @@ class ACPAgent(AgentBase):
             response = await conn.new_session(cwd=working_dir)
             session_id = response.session_id
 
+            # Bypass all permission checks so the agent can operate
+            # without human approval (headless / evaluation mode).
+            await conn.set_session_mode(
+                mode_id="bypassPermissions", session_id=session_id
+            )
+
             return conn, process, filtered_reader, session_id
 
         result = self._executor.run_async(_init)
