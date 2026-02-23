@@ -87,6 +87,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
         ],
     )
+    mcp_timeout: float = Field(
+        default=60.0,
+        description=(
+            "Timeout in seconds for MCP server connections. "
+            "OAuth-based MCP servers may require longer timeouts. "
+            "Individual server timeouts in mcp_config take precedence."
+        ),
+    )
     filter_tools_regex: str | None = Field(
         default=None,
         description="Optional regex to filter the tools available to the agent by name."
@@ -330,7 +338,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
             # Submit MCP tools creation if configured
             if self.mcp_config:
-                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                future = executor.submit(
+                    create_mcp_tools, self.mcp_config, self.mcp_timeout
+                )
                 futures.append(future)
 
             # Collect results as they complete

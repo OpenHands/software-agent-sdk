@@ -441,3 +441,72 @@ def test_create_mcp_tools_timeout_error_message():
 
         assert exc_info.value.timeout == 30.0
         assert exc_info.value.config is not None
+
+
+def test_create_mcp_tools_respects_per_server_timeout():
+    """Test that per-server timeout configuration is respected."""
+    from openhands.sdk.mcp.utils import _get_effective_timeout
+    from fastmcp.mcp_config import MCPConfig
+
+    # Config with one server having a longer timeout
+    config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "fast_server": {
+                    "transport": "http",
+                    "url": "http://localhost:8000/mcp",
+                },
+                "slow_oauth_server": {
+                    "transport": "http",
+                    "url": "https://mcp.example.com/mcp",
+                    "timeout": 120,
+                },
+            }
+        }
+    )
+
+    # Should use the max of default (60) and server timeout (120)
+    effective = _get_effective_timeout(config, default_timeout=60.0)
+    assert effective == 120.0
+
+
+def test_create_mcp_tools_default_timeout_when_no_server_timeout():
+    """Test that default timeout is used when no server specifies a timeout."""
+    from openhands.sdk.mcp.utils import _get_effective_timeout
+    from fastmcp.mcp_config import MCPConfig
+
+    config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "server1": {
+                    "transport": "http",
+                    "url": "http://localhost:8000/mcp",
+                },
+            }
+        }
+    )
+
+    effective = _get_effective_timeout(config, default_timeout=60.0)
+    assert effective == 60.0
+
+
+def test_create_mcp_tools_uses_higher_default_when_server_timeout_is_lower():
+    """Test that the higher of default and server timeout is used."""
+    from openhands.sdk.mcp.utils import _get_effective_timeout
+    from fastmcp.mcp_config import MCPConfig
+
+    config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "quick_server": {
+                    "transport": "http",
+                    "url": "http://localhost:8000/mcp",
+                    "timeout": 10,
+                },
+            }
+        }
+    )
+
+    # Default (60) is higher than server timeout (10), should use default
+    effective = _get_effective_timeout(config, default_timeout=60.0)
+    assert effective == 60.0
