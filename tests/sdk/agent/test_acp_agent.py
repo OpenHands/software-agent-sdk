@@ -15,7 +15,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import MessageEvent, SystemPromptEvent
+from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.workspace.local import LocalWorkspace
 
@@ -160,7 +160,7 @@ class TestACPAgentValidation:
 
 
 class TestACPAgentInitState:
-    def test_emits_system_prompt_event(self, tmp_path):
+    def test_init_state_emits_system_prompt_placeholder(self, tmp_path):
         agent = _make_agent()
         state = _make_state(tmp_path)
         events: list = []
@@ -172,7 +172,7 @@ class TestACPAgentInitState:
 
         assert len(events) == 1
         assert isinstance(events[0], SystemPromptEvent)
-        assert events[0].system_prompt.text == "ACP-managed agent"
+        assert "ACP server" in events[0].system_prompt.text
         assert events[0].tools == []
 
 
@@ -790,6 +790,265 @@ class TestACPAgentTelemetry:
         assert client._last_cost == 1.23
         assert client._context_window == 128000
         assert client._llm_ref is not None
+
+
+# ---------------------------------------------------------------------------
+# Tool call accumulation and emission
+# ---------------------------------------------------------------------------
+
+
+class TestACPToolCallAccumulation:
+    """Tests for ToolCallStart/ToolCallProgress accumulation in the bridge."""
+
+    @pytest.mark.asyncio
+    async def test_session_update_accumulates_tool_call_start(self):
+        """ToolCallStart creates an entry in accumulated_tool_calls."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read file"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = {"path": "/tmp/test.py"}
+        start.raw_output = None
+
+        await client.session_update("sess-1", start)
+
+        assert len(client.accumulated_tool_calls) == 1
+        tc = client.accumulated_tool_calls[0]
+        assert tc["tool_call_id"] == "tc-1"
+        assert tc["title"] == "Read file"
+        assert tc["tool_kind"] == "read"
+        assert tc["status"] == "in_progress"
+        assert tc["raw_input"] == {"path": "/tmp/test.py"}
+        assert tc["raw_output"] is None
+
+    @pytest.mark.asyncio
+    async def test_session_update_merges_tool_call_progress(self):
+        """ToolCallProgress merges updates into the existing tool call entry."""
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+
+        # Start
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-2"
+        start.title = "Execute command"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = {"command": "ls"}
+        start.raw_output = None
+
+        await client.session_update("sess-1", start)
+
+        # Progress
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-2"
+        progress.title = None  # not updated
+        progress.kind = None  # not updated
+        progress.status = "completed"
+        progress.raw_input = None  # not updated
+        progress.raw_output = "file1.py\nfile2.py"
+
+        await client.session_update("sess-1", progress)
+
+        assert len(client.accumulated_tool_calls) == 1
+        tc = client.accumulated_tool_calls[0]
+        assert tc["title"] == "Execute command"  # unchanged
+        assert tc["tool_kind"] == "execute"  # unchanged
+        assert tc["status"] == "completed"  # updated
+        assert tc["raw_output"] == "file1.py\nfile2.py"  # updated
+
+    @pytest.mark.asyncio
+    async def test_multiple_tool_calls_accumulated(self):
+        """Multiple ToolCallStart events create separate entries."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+
+        for i in range(3):
+            start = MagicMock(spec=ToolCallStart)
+            start.tool_call_id = f"tc-{i}"
+            start.title = f"Tool {i}"
+            start.kind = "read"
+            start.status = "completed"
+            start.raw_input = None
+            start.raw_output = None
+            await client.session_update("sess-1", start)
+
+        assert len(client.accumulated_tool_calls) == 3
+        assert [tc["tool_call_id"] for tc in client.accumulated_tool_calls] == [
+            "tc-0",
+            "tc-1",
+            "tc-2",
+        ]
+
+    def test_reset_clears_accumulated_tool_calls(self):
+        """reset() clears accumulated_tool_calls."""
+        client = _OpenHandsACPBridge()
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "tc-1",
+                "title": "Read file",
+                "tool_kind": "read",
+                "status": "completed",
+                "raw_input": None,
+                "raw_output": None,
+            }
+        )
+
+        client.reset()
+
+        assert client.accumulated_tool_calls == []
+
+
+class TestACPToolCallEmission:
+    """Tests for ACPToolCallEvent emission in step()."""
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        """Create a mock conversation with a user message."""
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_step_emits_tool_call_events_before_message(self, tmp_path):
+        """step() emits ACPToolCallEvent for each tool call before the MessageEvent."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro):
+            mock_client.accumulated_text.append("done")
+            mock_client.accumulated_tool_calls.extend(
+                [
+                    {
+                        "tool_call_id": "tc-1",
+                        "title": "Read file",
+                        "tool_kind": "read",
+                        "status": "completed",
+                        "raw_input": {"path": "/tmp/f.py"},
+                        "raw_output": "content",
+                    },
+                    {
+                        "tool_call_id": "tc-2",
+                        "title": "Execute bash",
+                        "tool_kind": "execute",
+                        "status": "failed",
+                        "raw_input": {"command": "ls"},
+                        "raw_output": None,
+                    },
+                ]
+            )
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append)
+
+        # Should be: 2 tool call events + 1 message event
+        assert len(events) == 3
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert isinstance(events[1], ACPToolCallEvent)
+        assert isinstance(events[2], MessageEvent)
+
+        # Verify first tool call event
+        assert events[0].tool_call_id == "tc-1"
+        assert events[0].title == "Read file"
+        assert events[0].tool_kind == "read"
+        assert events[0].status == "completed"
+        assert events[0].raw_input == {"path": "/tmp/f.py"}
+        assert events[0].raw_output == "content"
+        assert events[0].is_error is False
+
+        # Verify second tool call event (failed)
+        assert events[1].tool_call_id == "tc-2"
+        assert events[1].is_error is True
+
+    def test_step_emits_no_tool_call_events_when_none(self, tmp_path):
+        """step() emits only MessageEvent when no tool calls accumulated."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro):
+            mock_client.accumulated_text.append("no tools used")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append)
+
+        assert len(events) == 1
+        assert isinstance(events[0], MessageEvent)
+
+    def test_tool_call_events_cleared_between_turns(self, tmp_path):
+        """accumulated_tool_calls are cleared on reset() between turns."""
+        agent = _make_agent()
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        # Simulate first turn with tool calls
+        mock_client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "tc-old",
+                "title": "Old tool",
+                "tool_kind": "read",
+                "status": "completed",
+                "raw_input": None,
+                "raw_output": None,
+            }
+        )
+
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        def _fake_run_async(_coro):
+            # After reset, accumulated_tool_calls should be empty
+            # Only add text so step() succeeds
+            mock_client.accumulated_text.append("response")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        # step() calls reset() which should clear old tool calls
+        agent.step(conversation, on_event=events.append)
+
+        # Only the MessageEvent should appear — the old tool call was cleared
+        assert len(events) == 1
+        assert isinstance(events[0], MessageEvent)
 
 
 # ---------------------------------------------------------------------------
