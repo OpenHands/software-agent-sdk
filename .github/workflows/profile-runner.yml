@@ -199,10 +199,13 @@ jobs:
 
                   echo "Setting up benchmarks environment..."
 
-                  # The benchmarks repo expects SDK at vendor/software-agent-sdk/
-                  mkdir -p vendor
+                  # Clone the SDK into vendor as a proper git repo (not just symlink)
+                  # This is needed because the benchmarks version.py checks git submodule status
                   rm -rf vendor/software-agent-sdk
-                  ln -sf "$SDK_PATH" vendor/software-agent-sdk
+                  mkdir -p vendor
+                  cd vendor
+                  git clone --depth 1 "$SDK_PATH" software-agent-sdk
+                  cd ..
 
                   # Install benchmarks dependencies
                   uv sync
@@ -224,10 +227,6 @@ jobs:
                   echo "$INSTANCE_IDS" | tr ',' '\n' > /tmp/instance_ids.txt
                   echo "Instance IDs file:"
                   cat /tmp/instance_ids.txt
-
-                  # First, test that the command runs correctly without profiling
-                  echo "Testing swebench-infer command (dry run)..."
-                  "$PYTHON_PATH" -m benchmarks.swebench.run_infer --help || echo "Help check completed"
 
                   # Run with Austin using the direct Python interpreter
                   # swebench-infer requires: llm_config_path as first positional arg
