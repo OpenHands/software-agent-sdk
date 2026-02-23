@@ -233,13 +233,18 @@ jobs:
                   # Austin 4.0+ uses MOJO binary format by default
                   echo "Running profile script with Austin..."
                   echo "  Working directory: $(pwd)"
-                  echo "  Python: $PYTHON_PATH"
+                  echo "  Venv Python: $PYTHON_PATH"
 
                   # Get venv directory info
                   VENV_DIR="$(dirname "$(dirname "$PYTHON_PATH")")"
                   SITE_PACKAGES="$VENV_DIR/lib/python3.13/site-packages"
                   echo "  VENV_DIR: $VENV_DIR"
                   echo "  SITE_PACKAGES: $SITE_PACKAGES"
+
+                  # Resolve the ACTUAL Python binary path (not the symlink)
+                  # The venv python is a symlink, but sudo+austin may not follow it correctly
+                  REAL_PYTHON_PATH=$("$PYTHON_PATH" -c "import sys; print(sys.executable)")
+                  echo "  Real Python: $REAL_PYTHON_PATH"
 
                   # First, test running the script directly
                   echo "Testing script import..."
@@ -311,6 +316,7 @@ jobs:
 
                   # Run Austin to profile the Python wrapper directly
                   # Pass env vars as arguments to the wrapper script
+                  # Use REAL_PYTHON_PATH (actual binary) not the venv symlink
                   echo "Running Austin profiler..."
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
@@ -318,7 +324,7 @@ jobs:
                       --full \
                       --children \
                       -- \
-                      "$PYTHON_PATH" /tmp/profile_wrapper.py \
+                      "$REAL_PYTHON_PATH" /tmp/profile_wrapper.py \
                       "LLM_API_KEY=$LLM_API_KEY" \
                       "LLM_BASE_URL=$LLM_BASE_URL" \
                       "LLM_CONFIG=$LLM_CONFIG" \
