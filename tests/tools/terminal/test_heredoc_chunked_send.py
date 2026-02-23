@@ -135,7 +135,14 @@ def test_special_keys_not_affected_by_chunking():
             term.send_keys("C-c")
             time.sleep(0.5)
 
-            # The command should be interrupted
-            assert not term.is_running() or True  # May or may not be running
+            # Verify the terminal is still responsive by checking we can read output
+            screen = term.read_screen()
+            assert len(screen) > 0  # Terminal should still be functional
+
+            # Verify that a simple command works after Ctrl-C
+            term.send_keys("echo 'test_complete'")
+            time.sleep(0.5)
+            screen = term.read_screen()
+            assert "test_complete" in screen
         finally:
             term.close()

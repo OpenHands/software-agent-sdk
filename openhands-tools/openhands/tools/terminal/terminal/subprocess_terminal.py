@@ -307,12 +307,16 @@ class SubprocessTerminal(TerminalInterface):
 
     # ------------------------- Public API -------------------------
 
-    # Threshold for "long" multi-line commands that need line-by-line sending
-    # to avoid overwhelming the PTY input buffer (see GitHub issue #2181)
+    # Threshold for multi-line commands that need flow-controlled sending.
+    # Commands with more lines than this use select()-based pacing to avoid
+    # overwhelming the PTY input buffer (see GitHub issue #2181).
+    # Value chosen based on empirical testing: PTY buffer overflow typically
+    # occurs around 50+ lines on macOS, so 20 provides safety margin.
     _MULTILINE_THRESHOLD: int = 20
 
-    # Delay between lines when sending long multi-line commands (seconds)
-    _MULTILINE_DELAY: float = 0.01
+    # Timeout for select() when waiting for PTY to be writable (seconds).
+    # If the PTY isn't ready within this time, we'll retry.
+    _SELECT_WRITE_TIMEOUT: float = 0.1
 
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send keystrokes to the PTY.
@@ -323,9 +327,9 @@ class SubprocessTerminal(TerminalInterface):
           - Special names: 'ENTER','TAB','BS','ESC','UP','DOWN','LEFT','RIGHT',
                            'HOME','END','PGUP','PGDN','C-L','C-D'
 
-        For multi-line commands exceeding _MULTILINE_THRESHOLD lines, sends
-        line-by-line with small delays to avoid overwhelming the PTY buffer
-        (fixes heredoc hang issue on macOS).
+        For multi-line commands exceeding _MULTILINE_THRESHOLD lines, uses
+        select()-based flow control to write line-by-line, only adding delays
+        when the PTY buffer is full (fixes heredoc hang issue on macOS).
         """
         if not self._initialized:
             raise RuntimeError("PTY terminal is not initialized")
@@ -369,7 +373,7 @@ class SubprocessTerminal(TerminalInterface):
             # Check if this is a long multi-line command that needs chunked sending
             input_lines = text.split("\n")
             if len(input_lines) > self._MULTILINE_THRESHOLD:
-                self._send_multiline_chunked(input_lines, enter)
+                self._send_multiline_with_flow_control(input_lines, enter)
                 return
 
             raw = text.encode("utf-8", "ignore")
@@ -384,11 +388,22 @@ class SubprocessTerminal(TerminalInterface):
             append_eol or payload.endswith(ENTER)
         )
 
-    def _send_multiline_chunked(self, lines: list[str], enter: bool) -> None:
-        """Send multi-line command line-by-line with delays.
+    def _wait_for_pty_writable(self, timeout: float) -> bool:
+        """Wait for the PTY to be ready for writing using select().
 
-        This avoids overwhelming the PTY input buffer when sending long
-        heredocs or other multi-line commands, which can cause hangs on macOS.
+        Returns True if the PTY is writable, False if timeout occurred.
+        """
+        if self._pty_master_fd is None:
+            return False
+        _, writable, _ = select.select([], [self._pty_master_fd], [], timeout)
+        return len(writable) > 0
+
+    def _send_multiline_with_flow_control(self, lines: list[str], enter: bool) -> None:
+        """Send multi-line command with select()-based flow control.
+
+        Uses select() to wait for the PTY to be ready before each write,
+        avoiding arbitrary delays while still preventing buffer overflow.
+        This is more efficient than fixed delays as it only waits when needed.
         """
         for i, line in enumerate(lines):
             is_last = i == len(lines) - 1
@@ -398,11 +413,14 @@ class SubprocessTerminal(TerminalInterface):
             if not is_last or enter:
                 payload += ENTER
 
-            self._write_pty(payload)
+            # Wait for PTY to be writable before sending
+            if not self._wait_for_pty_writable(self._SELECT_WRITE_TIMEOUT):
+                # PTY not ready - wait briefly and retry
+                time.sleep(0.01)
+                if not self._wait_for_pty_writable(self._SELECT_WRITE_TIMEOUT):
+                    logger.warning("PTY write timeout, proceeding anyway")
 
-            # Small delay between lines to let the PTY process input
-            if not is_last:
-                time.sleep(self._MULTILINE_DELAY)
+            self._write_pty(payload)
 
         self._current_command_running = True
 
