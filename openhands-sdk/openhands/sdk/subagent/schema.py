@@ -58,9 +58,9 @@ class AgentDefinition(BaseModel):
         Agent Markdown files have YAML frontmatter with:
         - name: Agent name
         - description: Description with optional <example> tags for triggering
-        - model: Model to use (default: 'inherit')
-        - color: Display color
-        - tools: List of allowed tools
+        - tools (optional): List of allowed tools
+        - model (optional: Model to use (default: 'inherit')
+        - color (optional): Display color
 
         The body of the Markdown is the system prompt.
 

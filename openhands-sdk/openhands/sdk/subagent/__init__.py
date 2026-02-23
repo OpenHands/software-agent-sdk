@@ -1,8 +1,9 @@
+from openhands.sdk.subagent.builtins import get_default_agent
 from openhands.sdk.subagent.load import (
     load_project_agents,
     load_user_agents,
 )
-from openhands.sdk.subagent.registration import (
+from openhands.sdk.subagent.registry import (
     get_agent_factory,
     get_factory_info,
     register_agent,
@@ -24,4 +25,6 @@ __all__ = [
     "get_agent_factory",
     # Agent classes
     "AgentDefinition",
+    # builtin agents
+    "get_default_agent",
 ]

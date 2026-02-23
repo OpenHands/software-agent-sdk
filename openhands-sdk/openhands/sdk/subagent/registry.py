@@ -236,18 +236,13 @@ def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
     return registered
 
 
-def get_agent_factory(
-    name: str | None,
-    default_factory: AgentFactory | None = None,
-) -> AgentFactory:
+def get_agent_factory(name: str | None) -> AgentFactory:
     """
     Get a registered agent factory by name.
 
     Args:
         name: Name of the agent factory to retrieve. If None, empty, or "default",
             the default agent factory is returned.
-        default_factory: Default agent factory to be used if no factory with
-            the given name is registered.
 
     Returns:
         AgentFactory: The factory function and description
@@ -255,23 +250,23 @@ def get_agent_factory(
     Raises:
         ValueError: If no agent factory with the given name is found
     """
-    if default_factory is not None:
-        if name is None or name == "" or name == "default":
-            return default_factory
+    if name is None or name == "" or name == "default":
+        from openhands.sdk.subagent.builtins.default import get_default_agent
 
-    if name is not None:
-        with _registry_lock:
-            factory = _agent_factories.get(name)
+        return get_default_agent()
 
-        if factory is not None:
-            return factory
+    with _registry_lock:
+        factory = _agent_factories.get(name)
+        available = sorted(_agent_factories.keys())
 
-    available = sorted(_agent_factories.keys())
-    available_list = ", ".join(available) if available else "none registered"
-    raise ValueError(
-        f"Unknown agent '{name}'. Available types: {available_list}. "
-        "Use register_agent() to add custom agent types."
-    )
+    if factory is None:
+        available_list = ", ".join(available) if available else "none registered"
+        raise ValueError(
+            f"Unknown agent '{name}'. Available types: {available_list}. "
+            "Use register_agent() to add custom agent types."
+        )
+
+    return factory
 
 
 def get_factory_info() -> str:

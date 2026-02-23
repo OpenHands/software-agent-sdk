@@ -25,7 +25,6 @@ from openhands.sdk.plugin.types import (
     PluginSource,
     ResolvedPluginSource,
 )
-from openhands.sdk.subagent import AgentDefinition
 
 
 __all__ = [
@@ -36,7 +35,6 @@ __all__ = [
     "PluginAuthor",
     "PluginSource",
     "ResolvedPluginSource",
-    "AgentDefinition",
     "CommandDefinition",
     # Plugin loading
     "load_plugins",

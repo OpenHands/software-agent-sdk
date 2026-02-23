@@ -368,7 +368,7 @@ class LocalConversation(BaseConversation):
 
         # Register plugin and file-based agent definitions into delegate registry
         # Import deferred to avoid circular import
-        from openhands.sdk.subagent.registration import (
+        from openhands.sdk.subagent.registry import (
             register_file_agents,
             register_plugin_agents,
         )
