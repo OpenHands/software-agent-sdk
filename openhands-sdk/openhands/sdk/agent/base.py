@@ -578,5 +578,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return None
 
     def close(self) -> None:
-        """Clean up agent resources. No-op by default; ACPAgent overrides to terminate subprocess."""
+        """Clean up agent resources.
+
+        No-op by default; ACPAgent overrides to terminate subprocess.
+        """
         pass
