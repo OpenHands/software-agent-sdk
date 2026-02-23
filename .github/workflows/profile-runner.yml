@@ -4,6 +4,10 @@ run-name: >-
     Profile Run ${{ inputs.reason || github.event.label.name || 'manual' }}
 
 on:
+    # For testing: trigger on push to the feature branch
+    push:
+        branches:
+            - feature/austin-profiling-workflow
     pull_request_target:
         types: [labeled]
     workflow_dispatch:
@@ -56,8 +60,9 @@ env:
 
 jobs:
     profile-run:
-        # Only run when 'profile-test' label is added or manual dispatch
+        # Run on: push to feature branch (testing), workflow_dispatch, or profile-test label
         if: >
+            github.event_name == 'push' ||
             github.event_name == 'workflow_dispatch' ||
             (github.event_name == 'pull_request_target' && github.event.label.name == 'profile-test')
         runs-on: ubuntu-24.04
