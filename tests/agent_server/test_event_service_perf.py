@@ -222,3 +222,44 @@ class TestEventServiceSearchPerformance:
             f"Pagination with cursor took {elapsed_ms:.1f}ms, expected <500ms. "
             "Cursor lookup should be O(1), not O(n) linear scan."
         )
+
+    @pytest.mark.asyncio
+    async def test_subscribe_does_not_block_when_lock_held(self, event_service):
+        """Test that subscribe_to_events doesn't block when agent is running.
+
+        When the agent is actively running, it holds the state lock. New
+        WebSocket subscriptions should not block waiting for the lock.
+        """
+        from openhands.agent_server.pub_sub import Subscriber
+
+        event_log = create_event_log_with_events(100)
+        mock_conv = create_mock_conversation_with_event_log(event_log)
+        event_service._conversation = mock_conv
+
+        # Simulate agent holding the lock
+        state = mock_conv._state
+        state._lock.acquire()
+
+        try:
+            received_events = []
+
+            class TestSubscriber(Subscriber):
+                async def __call__(self, event):
+                    received_events.append(event)
+
+            # Subscription should complete quickly even though lock is held
+            start_time = time.perf_counter()
+            subscriber_id = await event_service.subscribe_to_events(TestSubscriber())
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            # Should complete in under 100ms (non-blocking)
+            assert elapsed_ms < 100, (
+                f"subscribe_to_events took {elapsed_ms:.1f}ms while lock held. "
+                "Should use non-blocking lock acquisition."
+            )
+            assert subscriber_id is not None
+
+            # Should have received a minimal state update
+            assert len(received_events) == 1
+        finally:
+            state._lock.release()

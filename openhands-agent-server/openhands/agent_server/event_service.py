@@ -76,13 +76,19 @@ class EventService:
         return self._conversation
 
     def _get_event_sync(self, event_id: str) -> Event | None:
-        """Private sync function to get event with state lock."""
+        """Get a single event by ID without holding locks.
+
+        Event reading is safe without lock since events are immutable once
+        appended and the event log index is only modified by append operations.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
-        with self._conversation._state as state:
-            index = state.events.get_index(event_id)
-            event = state.events[index]
-            return event
+        event_log = self._conversation._state.events
+        try:
+            index = event_log.get_index(event_id)
+            return event_log[index]
+        except (KeyError, IndexError, FileNotFoundError):
+            return None
 
     async def get_event(self, event_id: str) -> Event | None:
         if not self._conversation:
@@ -362,20 +368,33 @@ class EventService:
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
 
-        # Send current state to the new subscriber immediately
+        # Send current state to the new subscriber immediately.
+        # We use non-blocking lock acquisition to avoid blocking if the agent
+        # is actively running (which can hold the lock for seconds or longer).
         if self._conversation:
             state = self._conversation._state
-            # Create state snapshot while holding the lock to ensure consistency.
-            # ConversationStateUpdateEvent inherits from Event which has frozen=True
-            # in its model_config, making the snapshot immutable after creation.
-            with state:
-                state_update_event = (
-                    ConversationStateUpdateEvent.from_conversation_state(state)
+            state_update_event = None
+
+            # Try non-blocking lock acquisition first
+            if state.acquire(blocking=False):
+                try:
+                    state_update_event = (
+                        ConversationStateUpdateEvent.from_conversation_state(state)
+                    )
+                finally:
+                    state.release()
+            else:
+                # Lock is held (agent running) - create a minimal state update
+                # without full serialization to avoid blocking
+                logger.debug(
+                    "Lock held during subscribe, sending minimal state update"
+                )
+                state_update_event = ConversationStateUpdateEvent(
+                    key="execution_status",
+                    value=state.execution_status.value,
                 )
 
-            # Send state update outside the lock - the event is frozen (immutable),
-            # so we don't need to hold the lock during the async send operation.
-            # This prevents potential deadlocks between the sync FIFOLock and async I/O.
+            # Send state update outside any lock context
             try:
                 await subscriber(state_update_event)
             except Exception as e:
