@@ -198,13 +198,21 @@ jobs:
                   echo "Starting Austin profiled SWE-bench style run..."
                   echo "Max iterations: $MAX_ITERATIONS"
 
+                  # First test that the script can run without Austin
+                  echo "Testing script can import and run..."
+                  "$PYTHON_PATH" -c "import scripts.profile_conversation; print('Import OK')" || {
+                      echo "Import failed, trying direct path..."
+                      "$PYTHON_PATH" scripts/profile_conversation.py --help 2>&1 || true
+                  }
+
                   # Run the profiling script with Austin
-                  # working-directory is sdk/ which is the repo checkout
+                  # Use the -p flag to spawn a new process
+                  echo "Running with Austin..."
                   sudo austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.austin \
                       --full \
-                      --children \
+                      --pipe \
                       -- \
                       "$PYTHON_PATH" scripts/profile_conversation.py \
                       2>&1 || echo "Profiling completed (may have partial results)"
