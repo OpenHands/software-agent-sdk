@@ -386,9 +386,7 @@ class EventService:
             else:
                 # Lock is held (agent running) - create a minimal state update
                 # without full serialization to avoid blocking
-                logger.debug(
-                    "Lock held during subscribe, sending minimal state update"
-                )
+                logger.debug("Lock held during subscribe, sending minimal state update")
                 state_update_event = ConversationStateUpdateEvent(
                     key="execution_status",
                     value=state.execution_status.value,
