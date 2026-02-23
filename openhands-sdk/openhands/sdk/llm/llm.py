@@ -822,6 +822,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self, kwargs, include=include, store=store
         )
 
+        # When store=False (stateless), strip reasoning items from the input.
+        # The SDK serializes reasoning item IDs from previous turns, but with
+        # store=False OpenAI doesn't persist these items, causing:
+        #   "Item with id 'rs_...' not found. Items are not persisted when
+        #    `store` is set to false."
+        # The model reasons fresh each turn from the full conversation context,
+        # so omitting prior reasoning items doesn't affect output quality.
+        if not call_kwargs.get("store", False):
+            input_items = [
+                item
+                for item in input_items
+                if not (isinstance(item, dict) and item.get("type") == "reasoning")
+            ]
+
         # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
