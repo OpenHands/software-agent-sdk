@@ -3,6 +3,8 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from propcache import cached_property
+
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -292,6 +294,11 @@ class LocalConversation(BaseConversation):
         """
         return self._resolved_plugins
 
+    @cached_property
+    def profile_store(self) -> LLMProfileStore:
+        """Get the profile store associated with this conversation."""
+        return LLMProfileStore()
+
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
 
@@ -463,13 +470,11 @@ class LocalConversation(BaseConversation):
             FileNotFoundError: If the profile does not exist.
             ValueError: If the profile is corrupted or invalid.
         """
-        store = LLMProfileStore()
-        new_llm = store.load(profile_name)
-
         usage_id = f"model-profile-{profile_name}"
         try:
             new_llm = self.llm_registry.get(usage_id)
         except KeyError:
+            new_llm = self.profile_store.load(profile_name)
             new_llm = new_llm.model_copy(update={"usage_id": usage_id})
             self.llm_registry.add(new_llm)
 
@@ -481,12 +486,14 @@ class LocalConversation(BaseConversation):
         """Emit an environment message with current model and available profiles."""
         current_model = self.agent.llm.model
         try:
-            store = LLMProfileStore()
-            profiles = store.list()
+            profiles = self.profile_store.list()
         except Exception:
+            logger.warning("Failed to load profile store", exc_info=True)
             profiles = []
 
-        profile_list = ", ".join(profiles) if profiles else "none"
+        profile_list = (
+            ", ".join([Path(p).name for p in profiles]) if profiles else "none"
+        )
         info_text = (
             f"Current model: {current_model}\nAvailable profiles: {profile_list}"
         )
