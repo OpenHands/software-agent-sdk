@@ -231,8 +231,11 @@ jobs:
 
                   # Run the profiling script with Austin
                   # Austin 4.0+ uses MOJO binary format by default
+                  # Use sudo -E to preserve environment variables for LLM credentials
                   echo "Running profile script with Austin..."
-                  sudo austin \
+                  echo "  Working directory: $(pwd)"
+                  echo "  Python: $PYTHON_PATH"
+                  sudo -E austin \
                       --interval "$SAMPLING_INTERVAL" \
                       --output ../profile_outputs/swebench.mojo \
                       --full \
