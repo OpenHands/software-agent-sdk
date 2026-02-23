@@ -97,21 +97,21 @@ jobs:
 
             - name: Install Austin profiler
               run: |
-                  # Install Austin from PyPI (austin-dist package) for latest version
-                  # This provides Austin v4.0+ with MOJO format support
-                  pip install austin-dist austin-python
+                  # Install Austin from PyPI to a system-wide location
+                  # This ensures `sudo` can find the austin binary
+                  sudo pip install --break-system-packages austin-dist austin-python
 
                   # Verify installation
                   echo "Austin version:"
-                  austin --version || which austin
+                  austin --version
+                  AUSTIN_PATH=$(which austin)
+                  echo "Austin path: $AUSTIN_PATH"
 
                   # Enable ptrace for Austin (required for profiling)
                   echo "Enabling ptrace..."
                   echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
 
                   # Set capabilities if needed
-                  AUSTIN_PATH=$(which austin)
-                  echo "Austin path: $AUSTIN_PATH"
                   sudo setcap cap_sys_ptrace+ep "$AUSTIN_PATH" || echo "setcap not available"
 
             - name: Install Perl and flamegraph.pl
@@ -227,9 +227,7 @@ jobs:
                   wc -c /tmp/austin_test.mojo || true
                   hexdump -C /tmp/austin_test.mojo | head -20 || true
 
-                  # Install austin-python for MOJO -> collapsed conversion
-                  echo "Installing austin-python for format conversion..."
-                  uv pip install austin-python || pip install austin-python
+                  # Note: austin-python already installed system-wide for mojo2austin
 
                   # Run the profiling script with Austin
                   # Austin 4.0+ uses MOJO binary format by default
@@ -252,7 +250,7 @@ jobs:
                   # Convert MOJO to collapsed format using austin-python
                   echo "Converting MOJO to collapsed format..."
                   if [ -s ../profile_outputs/swebench.mojo ]; then
-                      uv run mojo2austin ../profile_outputs/swebench.mojo > ../profile_outputs/swebench.austin || {
+                      mojo2austin ../profile_outputs/swebench.mojo > ../profile_outputs/swebench.austin || {
                           echo "mojo2austin conversion failed, trying alternative..."
                           # Fallback: try using it as collapsed format directly
                           cp ../profile_outputs/swebench.mojo ../profile_outputs/swebench.austin
