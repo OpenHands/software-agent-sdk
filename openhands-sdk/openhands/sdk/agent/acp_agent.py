@@ -107,7 +107,7 @@ def _make_dummy_llm() -> LLM:
 
 # Known ACP server name → bypass-permissions mode ID mappings.
 _BYPASS_MODE_MAP: dict[str, str] = {
-    "claude-code": "bypassPermissions",
+    "claude-agent": "bypassPermissions",
     "codex-acp": "full-access",
 }
 _DEFAULT_BYPASS_MODE = "full-access"
@@ -141,8 +141,8 @@ def _resolve_bypass_mode(agent_name: str) -> str:
     """Return the session mode ID that bypasses all permission prompts.
 
     Different ACP servers use different mode IDs for the same concept:
-    - claude-code-acp → ``bypassPermissions``
-    - codex-acp       → ``full-access``
+    - claude-code-acp / claude-agent-acp → ``bypassPermissions``
+    - codex-acp                          → ``full-access``
 
     Falls back to ``full-access`` for unknown servers.
     """
