@@ -48,7 +48,7 @@ with APIRemoteWorkspace(
     forward_env=["ANTHROPIC_API_KEY"],
 ) as workspace:
     agent = ACPAgent(
-        acp_command=["claude-code-acp"],  # Pre-installed in Docker image
+        acp_command=["claude-agent-acp"],  # Pre-installed in Docker image
     )
 
     received_events: list = []

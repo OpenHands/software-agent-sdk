@@ -86,7 +86,7 @@ RUN set -eux; \
         apt-get install -y --no-install-recommends nodejs && \
         rm -rf /var/lib/apt/lists/*; \
     fi; \
-    npm install -g @zed-industries/claude-code-acp @zed-industries/codex-acp
+    npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp
 
 # Configure Claude Code managed settings for headless operation:
 # Allow all tool permissions (no human in the loop to approve).

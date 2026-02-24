@@ -141,8 +141,8 @@ def _resolve_bypass_mode(agent_name: str) -> str:
     """Return the session mode ID that bypasses all permission prompts.
 
     Different ACP servers use different mode IDs for the same concept:
-    - claude-code-acp / claude-agent-acp → ``bypassPermissions``
-    - codex-acp                          → ``full-access``
+    - claude-agent-acp → ``bypassPermissions``
+    - codex-acp        → ``full-access``
 
     Falls back to ``full-access`` for unknown servers.
     """
@@ -381,7 +381,7 @@ class ACPAgent(AgentBase):
     acp_command: list[str] = Field(
         ...,
         description=(
-            "Command to start the ACP server, e.g. ['npx', '-y', 'claude-code-acp']"
+            "Command to start the ACP server, e.g. ['npx', '-y', '@zed-industries/claude-agent-acp']"
         ),
     )
     acp_args: list[str] = Field(
@@ -397,7 +397,7 @@ class ACPAgent(AgentBase):
         description=(
             "Session mode ID to set after creating a session. "
             "If None (default), auto-detected from the ACP server type: "
-            "'bypassPermissions' for claude-code-acp, 'full-access' for codex-acp."
+            "'bypassPermissions' for claude-agent-acp, 'full-access' for codex-acp."
         ),
     )
     acp_prompt_timeout: float = Field(
@@ -620,7 +620,7 @@ class ACPAgent(AgentBase):
 
             # Resolve the permission mode to use.  Different ACP servers
             # use different mode IDs for the same concept (no-prompts):
-            #   - claude-code-acp  → "bypassPermissions"
+            #   - claude-agent-acp → "bypassPermissions"
             #   - codex-acp        → "full-access"
             mode_id = self.acp_session_mode
             if mode_id is None:

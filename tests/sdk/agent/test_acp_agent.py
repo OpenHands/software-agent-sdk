@@ -67,8 +67,8 @@ class TestACPAgentInstantiation:
             ACPAgent()  # type: ignore[call-arg]
 
     def test_acp_command_stored(self):
-        agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
-        assert agent.acp_command == ["npx", "-y", "claude-code-acp"]
+        agent = ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"])
+        assert agent.acp_command == ["npx", "-y", "claude-agent-acp"]
 
     def test_acp_args_default_empty(self):
         agent = _make_agent()
@@ -107,7 +107,7 @@ class TestACPAgentSerialization:
 
     def test_roundtrip_serialization(self):
         agent = ACPAgent(
-            acp_command=["npx", "-y", "claude-code-acp"],
+            acp_command=["npx", "-y", "claude-agent-acp"],
             acp_args=["--verbose"],
             acp_env={"FOO": "bar"},
         )
@@ -1278,11 +1278,11 @@ class TestClientForkTextRouting:
 
 
 class TestResolveBypassMode:
-    def test_claude_code(self):
-        assert _resolve_bypass_mode("claude-code") == "bypassPermissions"
+    def test_claude_agent(self):
+        assert _resolve_bypass_mode("claude-agent-acp") == "bypassPermissions"
 
-    def test_claude_code_with_version(self):
-        assert _resolve_bypass_mode("Claude-Code v1.2.3") == "bypassPermissions"
+    def test_claude_agent_with_scope(self):
+        assert _resolve_bypass_mode("@zed-industries/claude-agent-acp") == "bypassPermissions"
 
     def test_codex_acp(self):
         assert _resolve_bypass_mode("codex-acp") == "full-access"
