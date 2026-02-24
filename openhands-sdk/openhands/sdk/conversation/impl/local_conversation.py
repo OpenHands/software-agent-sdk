@@ -3,8 +3,6 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-from propcache import cached_property
-
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -15,6 +13,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
+from openhands.sdk.conversation.switch_model_handler import SwitchModelHandler
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
@@ -97,6 +96,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        allow_model_switching: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -136,6 +136,8 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            allow_model_switching: Whether to allow switching between persisted
+                models using the `/model <MODEL_NAME> [prompt]` command.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -248,6 +250,13 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
+        self._model_handler = (
+            SwitchModelHandler(
+                llm_registry=self.llm_registry, profile_store=LLMProfileStore()
+            )
+            if allow_model_switching
+            else None
+        )
 
         # Initialize secrets if provided
         if secrets:
@@ -293,11 +302,6 @@ class LocalConversation(BaseConversation):
         resume uses the exact same plugin versions.
         """
         return self._resolved_plugins
-
-    @cached_property
-    def profile_store(self) -> LLMProfileStore:
-        """Get the profile store associated with this conversation."""
-        return LLMProfileStore()
 
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
@@ -437,75 +441,6 @@ class LocalConversation(BaseConversation):
 
             self._agent_ready = True
 
-    @staticmethod
-    def _parse_model_command(text: str) -> tuple[str, str | None] | None:
-        """Parse a /model command from user text.
-
-        Returns:
-            None if the text is not a /model command.
-            ("", None) for bare "/model" (info request).
-            ("profile_name", remaining_text_or_None) otherwise.
-        """
-        stripped = text.strip()
-        if stripped == "/model":
-            return "", None
-        if not stripped.startswith("/model "):
-            return None
-        rest = stripped[len("/model ") :].strip()
-        if not rest:
-            return "", None
-        # Split into profile name and optional remaining message
-        parts = rest.split(None, 1)
-        profile_name = parts[0]
-        remaining = parts[1] if len(parts) > 1 else None
-        return profile_name, remaining
-
-    def _switch_model_profile(self, profile_name: str) -> None:
-        """Load a model profile and swap the agent's LLM.
-
-        Args:
-            profile_name: Name of the profile to load from LLMProfileStore.
-
-        Raises:
-            FileNotFoundError: If the profile does not exist.
-            ValueError: If the profile is corrupted or invalid.
-        """
-        usage_id = f"model-profile-{profile_name}"
-        try:
-            new_llm = self.llm_registry.get(usage_id)
-        except KeyError:
-            new_llm = self.profile_store.load(profile_name)
-            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
-            self.llm_registry.add(new_llm)
-
-        self.agent = self.agent.model_copy(update={"llm": new_llm})
-        with self._state:
-            self._state.agent = self.agent
-
-    def _emit_model_info(self) -> None:
-        """Emit an environment message with current model and available profiles."""
-        current_model = self.agent.llm.model
-        try:
-            profiles = self.profile_store.list()
-        except Exception:
-            logger.warning("Failed to load profile store", exc_info=True)
-            profiles = []
-
-        profile_list = (
-            ", ".join([Path(p).name for p in profiles]) if profiles else "none"
-        )
-        info_text = (
-            f"Current model: {current_model}\nAvailable profiles: {profile_list}"
-        )
-        info_event = MessageEvent(
-            source="environment",
-            llm_message=Message(
-                role="user",
-                content=[TextContent(text=info_text)],
-            ),
-        )
-        self._on_event(info_event)
-
     def _handle_model_command(
         self,
         profile_name: str,
@@ -519,37 +454,25 @@ class LocalConversation(BaseConversation):
             remaining_text: Optional message to send after switching.
             sender: Optional sender identifier.
         """
+        assert self._model_handler is not None
+
         if not profile_name:
-            self._emit_model_info()
+            logger.info(self._model_handler.profiles_info(self.agent.llm))
             return
 
         try:
-            self._switch_model_profile(profile_name)
+            self.agent = self._model_handler.switch(self.agent, profile_name)
         except (FileNotFoundError, ValueError) as e:
-            error_event = MessageEvent(
-                source="environment",
-                llm_message=Message(
-                    role="user",
-                    content=[TextContent(text=str(e))],
-                ),
-            )
-            self._on_event(error_event)
+            logger.warning(f"Failed to switch {profile_name}: {e}")
             return
 
-        # Emit confirmation
-        confirm_event = MessageEvent(
-            source="environment",
-            llm_message=Message(
-                role="user",
-                content=[
-                    TextContent(
-                        text=f"Switched to model profile `{profile_name}` "
-                        f"(model: {self.agent.llm.model})"
-                    )
-                ],
-            ),
+        with self._state:
+            self._state.agent = self.agent
+
+        logger.info(
+            f"Switched to model profile `{profile_name}` "
+            f"(model: {self.agent.llm.model})"
         )
-        self._on_event(confirm_event)
 
         if remaining_text:
             self.send_message(remaining_text, sender=sender)
@@ -569,13 +492,15 @@ class LocalConversation(BaseConversation):
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
 
-        # Intercept /model commands before converting to Message
         if isinstance(message, str):
-            parsed = self._parse_model_command(message)
-            if parsed is not None:
-                profile_name, remaining_text = parsed
-                self._handle_model_command(profile_name, remaining_text, sender)
-                return
+            # Intercept /model command before converting to Message
+            if self._model_handler is not None:
+                parsed = self._model_handler.parse(message)
+                if parsed is not None:
+                    profile_name, remaining_text = parsed
+                    self._handle_model_command(profile_name, remaining_text, sender)
+                    return
+
             message = Message(role="user", content=[TextContent(text=message)])
 
         assert message.role == "user", (
