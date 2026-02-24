@@ -294,7 +294,7 @@ const BUILTIN_TOOLS: Tool[] = [
  * const llm = new OpenRouterLLM({ apiKey: 'your-key', defaultModel: 'anthropic/claude-3.5-sonnet' });
  * const conversation = new LocalConversation(agent, workspace, {
  *   llm,
- *   maxIterations: 50,
+ *   maxIterations: 500,
  *   systemPrompt: 'You are a helpful assistant...'
  * });
  * await conversation.start({ initialMessage: 'Hello!' });
@@ -314,7 +314,7 @@ export class LocalConversation implements IConversation {
   private tokenCallback?: ConversationTokenCallback;
   private persistenceDir?: string;
   private systemPrompt: string;
-  private maxIterations: number = 50;
+  private maxIterations: number = 500;
   private messages: ChatMessage[] = [];
   private _isPaused: boolean = false;
   private _isFinished: boolean = false;

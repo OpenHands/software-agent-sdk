@@ -129,7 +129,7 @@ export class RemoteConversation implements IConversation {
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
-      max_iterations: options.maxIterations || 50,
+      max_iterations: options.maxIterations || 500,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
     };
