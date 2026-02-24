@@ -1,0 +1,129 @@
+# SDK stateless reasoning replay test (Responses API)
+
+Run at (UTC): 2026-02-24T10:21:50.628272+00:00
+Model: openai/gpt-5.2
+
+## Config: enable_encrypted_reasoning=True, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': False}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': False}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=True, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': False}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': False}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=False
+turn1: ok
+  assistant_text: '2 + 2 = 4.'
+  reasoning: {'present': False}
+turn2: OK :: ok
+
+---
+Raw JSON:
+[
+  {
+    "timestamp_utc": "2026-02-24T10:21:42.108145+00:00",
+    "model": "openai/gpt-5.2",
+    "enable_encrypted_reasoning": true,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": false
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:43.798796+00:00",
+    "model": "openai/gpt-5.2",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": false
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:45.398442+00:00",
+    "model": "openai/gpt-5.2",
+    "enable_encrypted_reasoning": true,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": false
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:46.975687+00:00",
+    "model": "openai/gpt-5.2",
+    "enable_encrypted_reasoning": false,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": false
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:48.953061+00:00",
+    "model": "openai/gpt-5.2",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": false,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "2 + 2 = 4.",
+      "reasoning": {
+        "present": false
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  }
+]
