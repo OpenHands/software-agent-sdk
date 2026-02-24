@@ -294,7 +294,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("The answer is 4")
 
         mock_executor = MagicMock()
@@ -303,7 +303,8 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        assert len(events) == 1
+        # step() emits MessageEvent + ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
+        assert len(events) == 3
         assert isinstance(events[0], MessageEvent)
         assert events[0].source == "agent"
         content_block = events[0].llm_message.content[0]
@@ -320,7 +321,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("4")
             mock_client.accumulated_thoughts.append("I need to add 2+2")
 
@@ -342,7 +343,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("done")
 
         mock_executor = MagicMock()
@@ -403,7 +404,7 @@ class TestACPAgentStep:
         agent._session_id = "test-session"
 
         mock_executor = MagicMock()
-        mock_executor.run_async = lambda _coro: None
+        mock_executor.run_async = lambda _coro, **_kwargs: None
         agent._executor = mock_executor
 
         agent.step(conversation, on_event=events.append)
@@ -421,7 +422,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("ok")
 
         mock_executor = MagicMock()
@@ -611,7 +612,7 @@ class TestACPAgentTelemetry:
         mock_response = MagicMock()
         mock_response.usage = mock_usage
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
             return mock_response
 
@@ -645,7 +646,7 @@ class TestACPAgentTelemetry:
         mock_response = MagicMock()
         mock_response.usage = None
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response")
             return mock_response
 
@@ -739,7 +740,7 @@ class TestACPAgentTelemetry:
         mock_response = MagicMock()
         mock_response.usage = None
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("ok")
             return mock_response
 
@@ -940,7 +941,7 @@ class TestACPToolCallEmission:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("done")
             mock_client.accumulated_tool_calls.extend(
                 [
@@ -969,8 +970,8 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        # Should be: 2 tool call events + 1 message event
-        assert len(events) == 3
+        # Should be: 2 tool call events + 1 message event + finish action + finish observation
+        assert len(events) == 5
         assert isinstance(events[0], ACPToolCallEvent)
         assert isinstance(events[1], ACPToolCallEvent)
         assert isinstance(events[2], MessageEvent)
@@ -999,7 +1000,7 @@ class TestACPToolCallEmission:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("no tools used")
 
         mock_executor = MagicMock()
@@ -1008,7 +1009,8 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        assert len(events) == 1
+        # MessageEvent + ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
+        assert len(events) == 3
         assert isinstance(events[0], MessageEvent)
 
     def test_tool_call_events_cleared_between_turns(self, tmp_path):
@@ -1034,7 +1036,7 @@ class TestACPToolCallEmission:
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             # After reset, accumulated_tool_calls should be empty
             # Only add text so step() succeeds
             mock_client.accumulated_text.append("response")
@@ -1046,8 +1048,9 @@ class TestACPToolCallEmission:
         # step() calls reset() which should clear old tool calls
         agent.step(conversation, on_event=events.append)
 
-        # Only the MessageEvent should appear — the old tool call was cleared
-        assert len(events) == 1
+        # Only the MessageEvent + FinishAction + FinishObservation should appear —
+        # the old tool call was cleared by reset()
+        assert len(events) == 3
         assert isinstance(events[0], MessageEvent)
 
 
@@ -1094,7 +1097,7 @@ class TestACPAgentAskAgent:
             mock_client._fork_accumulated_text.extend(["Hello", " world"])
             return mock_prompt_response
 
-        def _fake_run_async(coro_fn):
+        def _fake_run_async(coro_fn, **_kwargs):
             """Simulate the async execution synchronously."""
             loop = asyncio.new_event_loop()
             try:
@@ -1139,7 +1142,7 @@ class TestACPAgentAskAgent:
             mock_client._fork_accumulated_text.append("response")
             return mock_prompt_response
 
-        def _fake_run_async(coro_fn):
+        def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
                 agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
@@ -1183,7 +1186,7 @@ class TestACPAgentAskAgent:
             mock_client._fork_accumulated_text.append("ok")
             return mock_prompt_response
 
-        def _fake_run_async(coro_fn):
+        def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
                 agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)

@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import uuid
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
@@ -335,6 +336,13 @@ class ACPAgent(AgentBase):
         default_factory=dict,
         description="Additional environment variables for the ACP server process",
     )
+    acp_prompt_timeout: float = Field(
+        default=1800.0,
+        description=(
+            "Timeout in seconds for a single ACP prompt() call. "
+            "Prevents indefinite hangs when the ACP server fails to respond."
+        ),
+    )
 
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
@@ -532,6 +540,7 @@ class ACPAgent(AgentBase):
         self._client.reset()
         self._client.on_token = on_token
 
+        t0 = time.monotonic()
         try:
 
             async def _prompt() -> PromptResponse:
@@ -542,8 +551,17 @@ class ACPAgent(AgentBase):
                 await _drain_notifications()
                 return response
 
-            # Send prompt to ACP server
-            response = self._executor.run_async(_prompt)
+            # Send prompt to ACP server (with timeout to prevent indefinite hangs)
+            logger.info(
+                "Sending ACP prompt (timeout=%.0fs, msg=%d chars)",
+                self.acp_prompt_timeout,
+                len(user_message),
+            )
+            response = self._executor.run_async(
+                _prompt, timeout=self.acp_prompt_timeout
+            )
+            elapsed = time.monotonic() - t0
+            logger.info("ACP prompt returned in %.1fs", elapsed)
 
             self._record_usage(response, self._session_id or "")
 
@@ -611,6 +629,32 @@ class ACPAgent(AgentBase):
 
             state.execution_status = ConversationExecutionStatus.FINISHED
 
+        except TimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.error(
+                "ACP prompt timed out after %.1fs (limit=%.0fs). "
+                "The ACP server may have completed its work but failed to "
+                "send the JSON-RPC response. Accumulated %d text chunks, "
+                "%d tool calls.",
+                elapsed,
+                self.acp_prompt_timeout,
+                len(self._client.accumulated_text),
+                len(self._client.accumulated_tool_calls),
+            )
+            error_message = Message(
+                role="assistant",
+                content=[
+                    TextContent(
+                        text=(
+                            f"ACP prompt timed out after {elapsed:.0f}s. "
+                            "The agent may have completed its work but "
+                            "the response was not received."
+                        )
+                    )
+                ],
+            )
+            on_event(MessageEvent(source="agent", llm_message=error_message))
+            state.execution_status = ConversationExecutionStatus.ERROR
         except Exception as e:
             logger.error("ACP prompt failed: %s", e, exc_info=True)
             # Emit error as an agent message since AgentErrorEvent requires
