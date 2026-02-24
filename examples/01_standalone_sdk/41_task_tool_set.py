@@ -23,17 +23,11 @@ from openhands.tools.delegate import DelegationVisualizer, register_agent
 from openhands.tools.task import TaskToolSet
 
 
-# ── LLM setup ────────────────────────────────────────────────────────
-
-api_key = os.getenv("LLM_API_KEY")
-assert api_key is not None, "LLM_API_KEY environment variable is not set."
-
 llm = LLM(
     model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
-    api_key=SecretStr(api_key),
+    api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_BASE_URL", None),
 )
-
 # ── Register the animal expert sub-agent ─────────────────────────────
 
 
