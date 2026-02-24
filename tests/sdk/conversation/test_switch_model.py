@@ -163,5 +163,5 @@ class TestModelCommandHandlerUnit:
         handler = SwitchModelHandler(profile_store, registry)
         agent = Agent(llm=_make_llm("my-model", "test-llm"), tools=[])
 
-        info = handler.profiles_info(agent.llm)
+        info = handler.get_profiles_info_message(agent.llm)
         assert "Current model: my-model\nAvailable profiles: fast, slow" == info

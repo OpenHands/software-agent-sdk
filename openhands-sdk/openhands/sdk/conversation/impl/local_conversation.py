@@ -457,7 +457,7 @@ class LocalConversation(BaseConversation):
         assert self._model_handler is not None
 
         if not profile_name:
-            logger.info(self._model_handler.profiles_info(self.agent.llm))
+            logger.info(self._model_handler.get_profiles_info_message(self.agent.llm))
             return
 
         try:

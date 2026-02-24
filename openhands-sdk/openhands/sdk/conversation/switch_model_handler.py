@@ -69,7 +69,7 @@ class SwitchModelHandler:
 
         return agent.model_copy(update={"llm": new_llm})
 
-    def profiles_info(self, llm: "LLM") -> str:
+    def get_profiles_info_message(self, llm: "LLM") -> str:
         """Return a string with current model and available profiles.
 
         The caller is responsible for emitting the string as an event.
