@@ -132,7 +132,7 @@ judgement.
 
 
 class TaskTool(ToolDefinition[TaskAction, TaskObservation]):
-    """Tool for launching sub-agent tasks (blocking)."""
+    """Tool for launching (blocking) sub-agent tasks."""
 
     @classmethod
     def create(
