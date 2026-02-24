@@ -1,4 +1,14 @@
-from __future__ import annotations
+"""Task lifecycle manager.
+
+This module implements the core task orchestration layer.
+The TaskManager class is responsible for creating, resuming,
+and running sub-agent tasks. In other words, it handles
+everything related to task management.
+
+The conversation linked to a completed task is persisted in
+a temporary directory, ensuring the state can be restored
+if the task is resumed for further work later.
+"""
 
 import shutil
 import tempfile

@@ -1,4 +1,11 @@
-from __future__ import annotations
+"""Task tool executor.
+
+This module contains the TaskExecutor class,
+which serves as a bridge between the tool interface
+and the TaskManager. It translates a TaskAction into
+a blocking sub-agent execution and returns a
+TaskObservation containing either the task result or an error.
+"""
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.logger import get_logger

@@ -1,9 +1,12 @@
-"""Task tool kit definitions.
+"""Task tool definitions and registration.
 
-This module defines the Task tool for sub-agent task delegation.
+This module defines the schema and tool classes for sub-agent task
+delegation. It contains:
+- the action/observation models (TaskAction, TaskObservation) for the TaskTool
+- the tool description for the TaskTool
 
-The TaskToolSet is registered as a single tool spec that creates
-the Task tool backed by a TaskManager.
+Moreover, it registers the two tool classes TaskTool (the individual tool)
+and TaskToolSet (the entry-point that wires up a TaskManager-backed executor).
 """
 
 from collections.abc import Sequence

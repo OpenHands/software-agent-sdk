@@ -15,8 +15,6 @@ animal-expert sub-agent. The flow is:
 
 import os
 
-from pydantic import SecretStr
-
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool
 from openhands.sdk.context import Skill
 from openhands.tools.delegate import DelegationVisualizer, register_agent

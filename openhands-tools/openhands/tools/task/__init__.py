@@ -1,10 +1,9 @@
-"""TaskToolSet.
+"""Task tool package for sub-agent delegation.
 
-This module provides a Task Tool Set as an alternative to
-the default DelegateTool.
+This package provides a TaskToolSet tool to delegate tasks to subagent.
 
 Tools:
-    - task: Launch and run a sub-agent task (sync)
+    - task: Launch and run a (blocking) sub-agent task.
 
 Usage:
     from openhands.tools.task import TaskToolSet
