@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,7 @@ from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    PromptResponse,
     RequestPermissionResponse,
     TextContentBlock,
     ToolCallProgress,
@@ -32,7 +34,7 @@ from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent, SystemPromptEvent
+from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool  # noqa: TC002
@@ -61,6 +63,17 @@ logger = get_logger(__name__)
 _NOTIFICATION_DRAIN_DELAY: float = float(
     os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
 )
+
+
+async def _drain_notifications() -> None:
+    """Best-effort drain of pending ``session_update`` notifications.
+
+    ACP does not yet signal when all notifications for a turn have been
+    delivered (see TODO above).  We yield to the event loop so already-queued
+    handlers run, then sleep briefly to allow in-flight IO handlers to finish.
+    """
+    await asyncio.sleep(0)
+    await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
 
 
 def _make_dummy_llm() -> LLM:
@@ -111,15 +124,22 @@ class _OpenHandsACPBridge:
     def __init__(self) -> None:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
+        self.accumulated_tool_calls: list[dict[str, Any]] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._context_window: int = 0  # context window size from ACP
         self._llm_ref: Any = None  # reference to the sentinel LLM
+        # Fork session state for ask_agent() — guarded by _fork_lock to
+        # prevent concurrent ask_agent() calls from colliding.
+        self._fork_lock = threading.Lock()
+        self._fork_session_id: str | None = None
+        self._fork_accumulated_text: list[str] = []
 
     def reset(self) -> None:
         self.accumulated_text.clear()
         self.accumulated_thoughts.clear()
+        self.accumulated_tool_calls.clear()
         self.on_token = None
         # Note: telemetry state (_last_cost, _context_window, etc.)
         # is intentionally NOT cleared — it accumulates across turns.
@@ -128,10 +148,19 @@ class _OpenHandsACPBridge:
 
     async def session_update(
         self,
-        session_id: str,  # noqa: ARG002
+        session_id: str,
         update: Any,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
+        logger.debug("ACP session_update: type=%s", type(update).__name__)
+
+        # Route fork session updates to the fork accumulator
+        if self._fork_session_id is not None and session_id == self._fork_session_id:
+            if isinstance(update, AgentMessageChunk):
+                if isinstance(update.content, TextContentBlock):
+                    self._fork_accumulated_text.append(update.content.text)
+            return
+
         if isinstance(update, AgentMessageChunk):
             if isinstance(update.content, TextContentBlock):
                 text = update.content.text
@@ -153,8 +182,34 @@ class _OpenHandsACPBridge:
                 if delta > 0:
                     self._llm_ref.metrics.add_cost(delta)
                 self._last_cost = update.cost.amount
-        elif isinstance(update, (ToolCallStart, ToolCallProgress)):
-            logger.debug("ACP tool call event: %s", type(update).__name__)
+        elif isinstance(update, ToolCallStart):
+            self.accumulated_tool_calls.append(
+                {
+                    "tool_call_id": update.tool_call_id,
+                    "title": update.title,
+                    "tool_kind": update.kind,
+                    "status": update.status,
+                    "raw_input": update.raw_input,
+                    "raw_output": update.raw_output,
+                }
+            )
+            logger.debug("ACP tool call start: %s", update.tool_call_id)
+        elif isinstance(update, ToolCallProgress):
+            # Find the existing tool call entry and merge updates
+            for tc in self.accumulated_tool_calls:
+                if tc["tool_call_id"] == update.tool_call_id:
+                    if update.title is not None:
+                        tc["title"] = update.title
+                    if update.kind is not None:
+                        tc["tool_kind"] = update.kind
+                    if update.status is not None:
+                        tc["status"] = update.status
+                    if update.raw_input is not None:
+                        tc["raw_input"] = update.raw_input
+                    if update.raw_output is not None:
+                        tc["raw_output"] = update.raw_output
+                    break
+            logger.debug("ACP tool call progress: %s", update.tool_call_id)
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
 
@@ -249,13 +304,7 @@ class _OpenHandsACPBridge:
 
 
 class ACPAgent(AgentBase):
-    """Agent that delegates to an ACP (Agent Client Protocol) server.
-
-    Instead of calling an LLM directly, this agent spawns an ACP-compatible
-    server (e.g. ``claude-code-acp``) as a subprocess and communicates with
-    it via the ACP protocol.  The server manages its own LLM, tools, and
-    execution lifecycle.
-    """
+    """Agent that delegates to an ACP-compatible subprocess server."""
 
     # Override required fields with ACP-appropriate defaults
     llm: LLM = Field(default_factory=_make_dummy_llm)
@@ -286,6 +335,29 @@ class ACPAgent(AgentBase):
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _closed: bool = PrivateAttr(default=False)
+    _working_dir: str = PrivateAttr(default="")
+
+    # -- Helpers -----------------------------------------------------------
+
+    def _record_usage(self, response: PromptResponse | None, session_id: str) -> None:
+        """Record token usage and notify stats callback from a PromptResponse."""
+        if response is not None and response.usage is not None:
+            usage = response.usage
+            self.llm.metrics.add_token_usage(
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cached_read_tokens or 0,
+                cache_write_tokens=usage.cached_write_tokens or 0,
+                reasoning_tokens=usage.thought_tokens or 0,
+                context_window=self._client._context_window,
+                response_id=session_id,
+            )
+
+        if self.llm.telemetry._stats_update_callback is not None:
+            try:
+                self.llm.telemetry._stats_update_callback()
+            except Exception:
+                logger.debug("Stats update callback failed", exc_info=True)
 
     # -- Override base properties to be no-ops for ACP ---------------------
 
@@ -304,6 +376,22 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Spawn the ACP server and initialize a session."""
+        # Emit a placeholder system prompt so the visualizer shows a section
+        # even though the real system prompt is managed by the ACP server.
+        on_event(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(
+                    text=(
+                        "This conversation is powered by an ACP server. "
+                        "The system prompt and tools are managed by the "
+                        "ACP server and are not available for display."
+                    )
+                ),
+                tools=[],
+            )
+        )
+
         # Validate no unsupported features
         if self.tools:
             raise NotImplementedError(
@@ -337,13 +425,6 @@ class ACPAgent(AgentBase):
             self._cleanup()
             raise
 
-        # Emit a minimal SystemPromptEvent
-        event = SystemPromptEvent(
-            source="agent",
-            system_prompt=TextContent(text="ACP-managed agent"),
-            tools=[],
-        )
-        on_event(event)
         self._initialized = True
 
     def _start_acp_server(self, state: ConversationState) -> None:
@@ -356,6 +437,8 @@ class ACPAgent(AgentBase):
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
+        # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
+        env.pop("CLAUDECODE", None)
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
@@ -402,6 +485,7 @@ class ACPAgent(AgentBase):
 
         result = self._executor.run_async(_init)
         self._conn, self._process, self._filtered_reader, self._session_id = result
+        self._working_dir = working_dir
 
     def step(
         self,
@@ -435,44 +519,31 @@ class ACPAgent(AgentBase):
 
         try:
 
-            async def _prompt() -> Any:
+            async def _prompt() -> PromptResponse:
                 response = await self._conn.prompt(
                     [text_block(user_message)],
                     self._session_id,
                 )
-                # Drain pending session_update notification handlers.
-                # First yield lets already-queued handlers run, then a
-                # short sleep covers handlers still arriving over IO.
-                await asyncio.sleep(0)
-                await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
+                await _drain_notifications()
                 return response
 
             # Send prompt to ACP server
             response = self._executor.run_async(_prompt)
 
-            # Record per-turn token usage from PromptResponse
-            if (
-                response is not None
-                and hasattr(response, "usage")
-                and response.usage is not None
-            ):
-                usage = response.usage
-                self.llm.metrics.add_token_usage(
-                    prompt_tokens=usage.input_tokens,
-                    completion_tokens=usage.output_tokens,
-                    cache_read_tokens=usage.cached_read_tokens or 0,
-                    cache_write_tokens=usage.cached_write_tokens or 0,
-                    reasoning_tokens=usage.thought_tokens or 0,
-                    context_window=self._client._context_window,
-                    response_id=self._session_id or "",
-                )
+            self._record_usage(response, self._session_id or "")
 
-            # Notify stats callback
-            if self.llm.telemetry._stats_update_callback is not None:
-                try:
-                    self.llm.telemetry._stats_update_callback()
-                except Exception:
-                    logger.debug("Stats update callback failed", exc_info=True)
+            # Emit ACPToolCallEvents for each accumulated tool call
+            for tc in self._client.accumulated_tool_calls:
+                tc_event = ACPToolCallEvent(
+                    tool_call_id=tc["tool_call_id"],
+                    title=tc["title"],
+                    status=tc.get("status"),
+                    tool_kind=tc.get("tool_kind"),
+                    raw_input=tc.get("raw_input"),
+                    raw_output=tc.get("raw_output"),
+                    is_error=tc.get("status") == "failed",
+                )
+                on_event(tc_event)
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
@@ -508,6 +579,43 @@ class ACPAgent(AgentBase):
             )
             on_event(error_event)
             state.execution_status = ConversationExecutionStatus.ERROR
+
+    def ask_agent(self, question: str) -> str | None:
+        """Fork the ACP session, prompt the fork, and return the response."""
+        if self._conn is None:
+            msg = "ACPAgent has no ACP connection; call init_state() first"
+            raise RuntimeError(msg)
+        if self._session_id is None:
+            msg = "ACPAgent has no session ID; call init_state() first"
+            raise RuntimeError(msg)
+
+        client = self._client
+
+        async def _fork_and_prompt() -> str:
+            fork_response = await self._conn.fork_session(
+                cwd=self._working_dir,
+                session_id=self._session_id,
+            )
+            fork_session_id = fork_response.session_id
+
+            client._fork_session_id = fork_session_id
+            client._fork_accumulated_text.clear()
+            try:
+                response = await self._conn.prompt(
+                    [text_block(question)],
+                    fork_session_id,
+                )
+                await _drain_notifications()
+
+                result = "".join(client._fork_accumulated_text)
+                self._record_usage(response, fork_session_id)
+                return result
+            finally:
+                client._fork_session_id = None
+                client._fork_accumulated_text.clear()
+
+        with client._fork_lock:
+            return self._executor.run_async(_fork_and_prompt)
 
     def close(self) -> None:
         """Terminate the ACP subprocess and clean up resources."""
