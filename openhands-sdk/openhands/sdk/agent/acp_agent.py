@@ -74,6 +74,15 @@ _NOTIFICATION_DRAIN_DELAY: float = float(
     os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
 )
 
+# Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
+# The default (64 KiB) is too small for session_update notifications that
+# carry large tool-call outputs (e.g. file contents, test results).  When
+# a single JSON-RPC line exceeds the limit, readline() raises
+# LimitOverrunError, silently killing the filter/receive pipeline and
+# leaving the prompt() future unresolved forever.  100 MiB is generous
+# enough for any realistic message while still bounding memory.
+_STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
+
 
 async def _drain_notifications() -> None:
     """Best-effort drain of pending ``session_update`` notifications.
@@ -474,13 +483,14 @@ class ACPAgent(AgentBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                limit=_STREAM_READER_LIMIT,
             )
             assert process.stdin is not None
             assert process.stdout is not None
 
             # Wrap the subprocess stdout in a filtering reader that
             # only passes lines starting with '{' (JSON-RPC messages).
-            filtered_reader = asyncio.StreamReader()
+            filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
             asyncio.get_event_loop().create_task(
                 _filter_jsonrpc_lines(process.stdout, filtered_reader)
             )
