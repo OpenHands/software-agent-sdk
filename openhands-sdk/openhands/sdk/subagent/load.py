@@ -72,7 +72,7 @@ def load_project_agents(project_dir: str | Path) -> list[AgentDefinition]:
         project_dir: project directory
 
     Returns:
-        an empy list if no directories exist.
+        an empty list if no directories exist.
     """
     project_dir = Path(project_dir)
     return _load_agents_from_dirs([project_dir / d for d in _FILE_BASED_AGENTS_DIR])
