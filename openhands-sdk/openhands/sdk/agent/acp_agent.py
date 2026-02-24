@@ -418,11 +418,23 @@ class ACPAgent(AgentBase):
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
     _agent_name: str = PrivateAttr(default="")  # ACP server name from InitializeResponse
+    _agent_version: str = PrivateAttr(default="")  # ACP server version from InitializeResponse
 
     # -- Helpers -----------------------------------------------------------
 
-    def _record_usage(self, response: PromptResponse | None, session_id: str) -> None:
-        """Record token usage and notify stats callback from a PromptResponse."""
+    def _record_usage(
+        self,
+        response: PromptResponse | None,
+        session_id: str,
+        elapsed: float | None = None,
+    ) -> None:
+        """Record token usage, latency, and notify stats callback from a PromptResponse.
+
+        Args:
+            response: The ACP PromptResponse (may carry a ``usage`` field).
+            session_id: Session identifier used as the response_id for metrics.
+            elapsed: Wall-clock seconds for this prompt round-trip (optional).
+        """
         if response is not None and response.usage is not None:
             usage = response.usage
             self.llm.metrics.add_token_usage(
@@ -435,6 +447,9 @@ class ACPAgent(AgentBase):
                 response_id=session_id,
             )
 
+        if elapsed is not None:
+            self.llm.metrics.add_response_latency(elapsed, session_id)
+
         if self.llm.telemetry._stats_update_callback is not None:
             try:
                 self.llm.telemetry._stats_update_callback()
@@ -446,6 +461,16 @@ class ACPAgent(AgentBase):
     @property
     def system_message(self) -> str:
         return "ACP-managed agent"
+
+    @property
+    def agent_name(self) -> str:
+        """Name of the ACP server (from InitializeResponse.agent_info)."""
+        return self._agent_name
+
+    @property
+    def agent_version(self) -> str:
+        """Version of the ACP server (from InitializeResponse.agent_info)."""
+        return self._agent_version
 
     def get_all_llms(self) -> Generator[LLM, None, None]:
         yield self.llm
@@ -527,7 +552,7 @@ class ACPAgent(AgentBase):
 
         working_dir = str(state.workspace.working_dir)
 
-        async def _init() -> tuple[Any, Any, Any, str, str]:
+        async def _init() -> tuple[Any, Any, Any, str, str, str]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -560,9 +585,15 @@ class ACPAgent(AgentBase):
             # Initialize the protocol and discover server identity
             init_response = await conn.initialize(protocol_version=1)
             agent_name = ""
+            agent_version = ""
             if init_response.agent_info is not None:
                 agent_name = init_response.agent_info.name or ""
-            logger.info("ACP server initialized: agent_name=%r", agent_name)
+                agent_version = init_response.agent_info.version or ""
+            logger.info(
+                "ACP server initialized: agent_name=%r, agent_version=%r",
+                agent_name,
+                agent_version,
+            )
 
             # Authenticate if the server requires it.  Some ACP servers
             # (e.g. codex-acp) require an explicit authenticate call
@@ -599,10 +630,10 @@ class ACPAgent(AgentBase):
                 mode_id=mode_id, session_id=session_id
             )
 
-            return conn, process, filtered_reader, session_id, agent_name
+            return conn, process, filtered_reader, session_id, agent_name, agent_version
 
         result = self._executor.run_async(_init)
-        self._conn, self._process, self._filtered_reader, self._session_id, self._agent_name = result
+        self._conn, self._process, self._filtered_reader, self._session_id, self._agent_name, self._agent_version = result
         self._working_dir = working_dir
 
     def step(
@@ -658,7 +689,7 @@ class ACPAgent(AgentBase):
             elapsed = time.monotonic() - t0
             logger.info("ACP prompt returned in %.1fs", elapsed)
 
-            self._record_usage(response, self._session_id or "")
+            self._record_usage(response, self._session_id or "", elapsed=elapsed)
 
             # Emit ACPToolCallEvents for each accumulated tool call
             for tc in self._client.accumulated_tool_calls:
@@ -786,14 +817,16 @@ class ACPAgent(AgentBase):
             client._fork_session_id = fork_session_id
             client._fork_accumulated_text.clear()
             try:
+                fork_t0 = time.monotonic()
                 response = await self._conn.prompt(
                     [text_block(question)],
                     fork_session_id,
                 )
                 await _drain_notifications()
+                fork_elapsed = time.monotonic() - fork_t0
 
                 result = "".join(client._fork_accumulated_text)
-                self._record_usage(response, fork_session_id)
+                self._record_usage(response, fork_session_id, elapsed=fork_elapsed)
                 return result
             finally:
                 client._fork_session_id = None
