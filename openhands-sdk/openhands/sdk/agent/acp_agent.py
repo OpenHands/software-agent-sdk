@@ -105,6 +105,29 @@ def _make_dummy_llm() -> LLM:
 # ---------------------------------------------------------------------------
 
 
+# Known ACP server name → bypass-permissions mode ID mappings.
+_BYPASS_MODE_MAP: dict[str, str] = {
+    "claude-code": "bypassPermissions",
+    "codex-acp": "full-access",
+}
+_DEFAULT_BYPASS_MODE = "full-access"
+
+
+def _resolve_bypass_mode(agent_name: str) -> str:
+    """Return the session mode ID that bypasses all permission prompts.
+
+    Different ACP servers use different mode IDs for the same concept:
+    - claude-code-acp → ``bypassPermissions``
+    - codex-acp       → ``full-access``
+
+    Falls back to ``full-access`` for unknown servers.
+    """
+    for key, mode in _BYPASS_MODE_MAP.items():
+        if key in agent_name.lower():
+            return mode
+    return _DEFAULT_BYPASS_MODE
+
+
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     """Read lines from *source* and forward only JSON-RPC lines to *dest*.
 
@@ -345,6 +368,14 @@ class ACPAgent(AgentBase):
         default_factory=dict,
         description="Additional environment variables for the ACP server process",
     )
+    acp_session_mode: str | None = Field(
+        default=None,
+        description=(
+            "Session mode ID to set after creating a session. "
+            "If None (default), auto-detected from the ACP server type: "
+            "'bypassPermissions' for claude-code-acp, 'full-access' for codex-acp."
+        ),
+    )
     acp_prompt_timeout: float = Field(
         default=1800.0,
         description=(
@@ -362,6 +393,7 @@ class ACPAgent(AgentBase):
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
+    _agent_name: str = PrivateAttr(default="")  # ACP server name from InitializeResponse
 
     # -- Helpers -----------------------------------------------------------
 
@@ -471,7 +503,7 @@ class ACPAgent(AgentBase):
 
         working_dir = str(state.workspace.working_dir)
 
-        async def _init() -> tuple[Any, Any, Any, str]:
+        async def _init() -> tuple[Any, Any, Any, str, str]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -501,23 +533,33 @@ class ACPAgent(AgentBase):
                 filtered_reader,  # read filtered output
             )
 
-            # Initialize the protocol
-            await conn.initialize(protocol_version=1)
+            # Initialize the protocol and discover server identity
+            init_response = await conn.initialize(protocol_version=1)
+            agent_name = ""
+            if init_response.agent_info is not None:
+                agent_name = init_response.agent_info.name or ""
+            logger.info("ACP server initialized: agent_name=%r", agent_name)
 
             # Create a new session
             response = await conn.new_session(cwd=working_dir)
             session_id = response.session_id
 
-            # Bypass all permission checks so the agent can operate
-            # without human approval (headless / evaluation mode).
+            # Resolve the permission mode to use.  Different ACP servers
+            # use different mode IDs for the same concept (no-prompts):
+            #   - claude-code-acp  → "bypassPermissions"
+            #   - codex-acp        → "full-access"
+            mode_id = self.acp_session_mode
+            if mode_id is None:
+                mode_id = _resolve_bypass_mode(agent_name)
+            logger.info("Setting ACP session mode: %s", mode_id)
             await conn.set_session_mode(
-                mode_id="bypassPermissions", session_id=session_id
+                mode_id=mode_id, session_id=session_id
             )
 
-            return conn, process, filtered_reader, session_id
+            return conn, process, filtered_reader, session_id, agent_name
 
         result = self._executor.run_async(_init)
-        self._conn, self._process, self._filtered_reader, self._session_id = result
+        self._conn, self._process, self._filtered_reader, self._session_id, self._agent_name = result
         self._working_dir = working_dir
 
     def step(

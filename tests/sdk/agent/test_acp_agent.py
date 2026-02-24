@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from openhands.sdk.agent.acp_agent import ACPAgent, _OpenHandsACPBridge
+from openhands.sdk.agent.acp_agent import (
+    ACPAgent,
+    _OpenHandsACPBridge,
+    _resolve_bypass_mode,
+)
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -1265,3 +1269,53 @@ class TestClientForkTextRouting:
 
         assert client.accumulated_text == ["normal text"]
         assert client._fork_accumulated_text == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_bypass_mode
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBypassMode:
+    def test_claude_code(self):
+        assert _resolve_bypass_mode("claude-code") == "bypassPermissions"
+
+    def test_claude_code_with_version(self):
+        assert _resolve_bypass_mode("Claude-Code v1.2.3") == "bypassPermissions"
+
+    def test_codex_acp(self):
+        assert _resolve_bypass_mode("codex-acp") == "full-access"
+
+    def test_codex_acp_with_version(self):
+        assert _resolve_bypass_mode("Codex-ACP v0.9.2") == "full-access"
+
+    def test_unknown_server_defaults_to_full_access(self):
+        assert _resolve_bypass_mode("some-other-agent") == "full-access"
+
+    def test_empty_name_defaults_to_full_access(self):
+        assert _resolve_bypass_mode("") == "full-access"
+
+
+# ---------------------------------------------------------------------------
+# acp_session_mode field
+# ---------------------------------------------------------------------------
+
+
+class TestACPSessionMode:
+    def test_default_is_none(self):
+        agent = _make_agent()
+        assert agent.acp_session_mode is None
+
+    def test_can_set_explicit_mode(self):
+        agent = ACPAgent(acp_command=["echo"], acp_session_mode="custom-mode")
+        assert agent.acp_session_mode == "custom-mode"
+
+    def test_serialization_roundtrip(self):
+        agent = ACPAgent(
+            acp_command=["codex-acp"],
+            acp_session_mode="full-access",
+        )
+        dumped = agent.model_dump_json()
+        restored = AgentBase.model_validate_json(dumped)
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_session_mode == "full-access"

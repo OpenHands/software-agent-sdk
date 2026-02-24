@@ -78,7 +78,7 @@ RUN set -eux; \
     chown -R ${USERNAME}:${USERNAME} /workspace; \
     rm -rf /var/lib/apt/lists/*
 
-# Pre-install claude-code-acp for ACPAgent support
+# Pre-install ACP servers for ACPAgent support (Claude Code + Codex)
 # Install Node.js/npm if not present (SWE-bench base images may lack them)
 RUN set -eux; \
     if ! command -v npm >/dev/null 2>&1; then \
@@ -86,7 +86,7 @@ RUN set -eux; \
         apt-get install -y --no-install-recommends nodejs && \
         rm -rf /var/lib/apt/lists/*; \
     fi; \
-    npm install -g @zed-industries/claude-code-acp
+    npm install -g @zed-industries/claude-code-acp @zed-industries/codex-acp
 
 # Configure Claude Code managed settings for headless operation:
 # Allow all tool permissions (no human in the loop to approve).

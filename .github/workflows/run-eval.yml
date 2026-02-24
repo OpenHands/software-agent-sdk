@@ -102,13 +102,15 @@ on:
             agent_type:
                 description: >-
                     Agent type: 'default' for standard Agent,
-                    'acp' for ACPAgent (Claude Code via ACP protocol).
+                    'acp' for ACPAgent with Claude Code,
+                    'acp-codex' for ACPAgent with Codex.
                 required: false
                 default: default
                 type: choice
                 options:
                     - default
                     - acp
+                    - acp-codex
 
 
 env:
