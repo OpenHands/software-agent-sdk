@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 import frontmatter
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from openhands.sdk.git.utils import redact_url_credentials
+
 
 # Directories to check for marketplace manifest
 MARKETPLACE_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
@@ -105,9 +107,14 @@ class ResolvedPluginSource(BaseModel):
     def from_plugin_source(
         cls, plugin_source: PluginSource, resolved_ref: str | None
     ) -> ResolvedPluginSource:
-        """Create a ResolvedPluginSource from a PluginSource and resolved ref."""
+        """Create a ResolvedPluginSource from a PluginSource and resolved ref.
+
+        The source URL is redacted to remove any embedded credentials before
+        persistence. Credentials are only needed at fetch time and should not
+        be stored in conversation state.
+        """
         return cls(
-            source=plugin_source.source,
+            source=redact_url_credentials(plugin_source.source),
             resolved_ref=resolved_ref,
             repo_path=plugin_source.repo_path,
             original_ref=plugin_source.ref,
