@@ -104,7 +104,7 @@ def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:
     seen_names: set[str] = set()
     result: list[AgentDefinition] = []
     for agents_dir in dirs:
-        for agent_def in _load_agents_from_dir(agents_dir):
+        for agent_def in load_agents_from_dir(agents_dir):
             if agent_def.name not in seen_names:
                 seen_names.add(agent_def.name)
                 result.append(agent_def)
@@ -115,8 +115,24 @@ def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:
     return result
 
 
-def _load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
-    """Shared helper: scan *agents_dir* for top-level `.md` agent files."""
+def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
+    """Scans a directory for Markdown-based agent definitions.
+
+    Iterates through the top-level of the provided directory, attempting to load
+    any `.md` files as AgentDefinitions. Note that read-me files are skipped by default.
+
+    Args:
+        agents_dir: The filesystem path to the directory containing agent files.
+
+    Returns:
+        A list of successfully instantiated AgentDefinition objects.
+        Returns an empty list if the directory does not exist or contains
+        no valid agents.
+
+    Note:
+        Failures to load individual files are logged as warnings with stack traces
+        but do not halt the overall loading process.
+    """
     if not agents_dir.is_dir():
         return []
 

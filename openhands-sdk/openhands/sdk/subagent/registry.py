@@ -110,7 +110,7 @@ def register_agent_if_absent(
         return True
 
 
-def _agent_definition_to_factory(
+def agent_definition_to_factory(
     agent_def: AgentDefinition,
 ) -> Callable[["LLM"], "Agent"]:
     """Create an agent factory closure from an ``AgentDefinition``.
@@ -191,7 +191,7 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
 
     registered: list[str] = []
     for agent_def in deduplicated:
-        factory = _agent_definition_to_factory(agent_def)
+        factory = agent_definition_to_factory(agent_def)
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,
@@ -223,7 +223,7 @@ def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
     """
     registered: list[str] = []
     for agent_def in agents:
-        factory = _agent_definition_to_factory(agent_def)
+        factory = agent_definition_to_factory(agent_def)
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,

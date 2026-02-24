@@ -1,6 +1,6 @@
 from functools import cache
 
-from openhands.sdk.subagent.registry import AgentFactory, _agent_definition_to_factory
+from openhands.sdk.subagent.registry import AgentFactory, agent_definition_to_factory
 from openhands.sdk.subagent.schema import AgentDefinition
 
 
@@ -28,7 +28,7 @@ def _build_default_agent_factory(
         tools=tool_names,
     )
     return AgentFactory(
-        factory_func=_agent_definition_to_factory(agent_def),
+        factory_func=agent_definition_to_factory(agent_def),
         description=agent_def.description or "Default general-purpose agent",
     )
 

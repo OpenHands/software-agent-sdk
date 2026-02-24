@@ -7,8 +7,8 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.subagent.registry import (
-    _agent_definition_to_factory,
     _reset_registry_for_tests,
+    agent_definition_to_factory,
     get_agent_factory,
     get_factory_info,
     register_agent,
@@ -172,7 +172,7 @@ def test_agent_definition_to_factory_basic() -> None:
         system_prompt="You are a test agent.",
     )
 
-    factory = _agent_definition_to_factory(agent_def)
+    factory = agent_definition_to_factory(agent_def)
     llm = _make_test_llm()
     agent = factory(llm)
 
@@ -199,7 +199,7 @@ def test_agent_definition_to_factory_model_inherit() -> None:
         system_prompt="Test prompt.",
     )
 
-    factory = _agent_definition_to_factory(agent_def)
+    factory = agent_definition_to_factory(agent_def)
     llm = _make_test_llm()
     agent = factory(llm)
 
@@ -218,7 +218,7 @@ def test_agent_definition_to_factory_model_override() -> None:
         system_prompt="Test prompt.",
     )
 
-    factory = _agent_definition_to_factory(agent_def)
+    factory = agent_definition_to_factory(agent_def)
     llm = _make_test_llm()
     agent = factory(llm)
 
@@ -237,7 +237,7 @@ def test_agent_definition_to_factory_no_system_prompt() -> None:
         system_prompt="",
     )
 
-    factory = _agent_definition_to_factory(agent_def)
+    factory = agent_definition_to_factory(agent_def)
     llm = _make_test_llm()
     agent = factory(llm)
 
@@ -344,7 +344,7 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     assert agent_def.tools == ["ReadTool", "GrepTool"]
 
     # Convert to factory
-    factory = _agent_definition_to_factory(agent_def)
+    factory = agent_definition_to_factory(agent_def)
 
     # Register
     result = register_agent_if_absent(
