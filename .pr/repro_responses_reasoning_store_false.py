@@ -19,6 +19,7 @@ Notes:
 
 from __future__ import annotations
 
+import argparse
 import datetime as _dt
 import json
 from typing import Any
@@ -57,6 +58,18 @@ def _reasoning_item_ids(items: list[Any]) -> list[str]:
         if isinstance(it, dict) and it.get("type") == "reasoning" and it.get("id"):
             ids.append(str(it["id"]))
     return ids
+
+
+def _reasoning_item_encrypted_lengths(items: list[Any]) -> list[int]:
+    lens: list[int] = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("type") != "reasoning":
+            continue
+        encrypted = it.get("encrypted_content")
+        if isinstance(encrypted, str):
+            lens.append(len(encrypted))
+    return lens
+
 
 
 def _strip_reasoning_items(items: list[Any]) -> list[Any]:
@@ -98,14 +111,19 @@ def _attempt_turn_2(
     model: str,
     prior_items: list[Any],
     label: str,
+    include: list[str] | None,
 ) -> tuple[bool, str]:
     try:
-        resp2 = client.responses.create(
-            model=model,
-            input=prior_items
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "input": prior_items
             + [{"role": "user", "content": "Now what is 3+3? Be brief."}],
-            store=False,
-        )
+            "store": False,
+        }
+        if include is not None:
+            kwargs["include"] = include
+
+        resp2 = client.responses.create(**kwargs)
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"
 
@@ -117,22 +135,27 @@ def _attempt_turn_2(
     return True, f"ok: output_items=[{_summarize_output_items(out_items)}]"
 
 
-def run_for_model(model: str) -> dict[str, Any]:
+def run_for_model(model: str, *, include: list[str] | None) -> dict[str, Any]:
     client = OpenAI()
 
     result: dict[str, Any] = {
         "model": model,
+        "include": include,
         "timestamp_utc": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
         "turn_1": {},
         "turn_2": {},
     }
 
     try:
-        resp1 = client.responses.create(
-            model=model,
-            input="What is 2+2? Be brief.",
-            store=False,
-        )
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "input": "What is 2+2? Be brief.",
+            "store": False,
+        }
+        if include is not None:
+            kwargs["include"] = include
+
+        resp1 = client.responses.create(**kwargs)
     except Exception as exc:  # noqa: BLE001
         result["turn_1"] = {
             "ok": False,
@@ -146,6 +169,7 @@ def run_for_model(model: str) -> dict[str, Any]:
         "output_text": getattr(resp1, "output_text", None),
         "output_items_summary": _summarize_output_items(items1),
         "reasoning_item_ids": _reasoning_item_ids(items1),
+        "reasoning_item_encrypted_lengths": _reasoning_item_encrypted_lengths(items1),
     }
 
     attempts: list[dict[str, Any]] = []
@@ -155,7 +179,9 @@ def run_for_model(model: str) -> dict[str, Any]:
         ("drop_ids", _drop_ids(items1)),
         ("messages_only", _messages_only(items1)),
     ]:
-        ok, detail = _attempt_turn_2(client, model=model, prior_items=prior, label=label)
+        ok, detail = _attempt_turn_2(
+            client, model=model, prior_items=prior, label=label, include=include
+        )
         attempts.append({"label": label, "ok": ok, "detail": detail})
 
     result["turn_2"]["attempts"] = attempts
@@ -163,6 +189,19 @@ def run_for_model(model: str) -> dict[str, Any]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--include-encrypted",
+        action="store_true",
+        help=(
+            "Set include=[\"reasoning.encrypted_content\"] on requests to get "
+            "reasoning item encrypted_content for stateless multi-turn."
+        ),
+    )
+    args = parser.parse_args()
+
+    include = ["reasoning.encrypted_content"] if args.include_encrypted else None
+
     models = [
         "o4-mini",
         "gpt-5-nano",
@@ -170,10 +209,11 @@ def main() -> None:
         "gpt-5.2-codex",
     ]
 
-    results = [run_for_model(m) for m in models]
+    results = [run_for_model(m, include=include) for m in models]
 
     print("# Responses API store=False reasoning-item behavior\n")
     print(f"Run at (UTC): {_dt.datetime.now(tz=_dt.timezone.utc).isoformat()}")
+    print(f"include: {include}")
     print("Models:")
     for m in models:
         print(f"- {m}")
@@ -192,6 +232,10 @@ def main() -> None:
             print(f"  output_text: {t1['output_text']!r}")
         print(f"  output_items: {t1['output_items_summary']}")
         print(f"  reasoning_item_ids: {t1['reasoning_item_ids']}")
+        print(
+            "  reasoning_item_encrypted_lengths: "
+            f"{t1['reasoning_item_encrypted_lengths']}"
+        )
 
         print("turn2:")
         for a in r["turn_2"]["attempts"]:

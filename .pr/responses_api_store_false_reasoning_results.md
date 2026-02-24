@@ -16,11 +16,16 @@ This directory contains **ad-hoc validation artifacts** requested in review for 
    - `.pr/repro_responses_reasoning_store_false.py`
 4. Ran it with `store=False` across multiple models using `OPENAI_API_KEY`.
 
-Command used:
+Commands used:
 
 ```bash
+# Baseline: no include
 OPENAI_API_KEY=$OPENAI_API_KEY uv run python .pr/repro_responses_reasoning_store_false.py \
   | tee .pr/repro_responses_reasoning_store_false.output.txt
+
+# Request encrypted reasoning (per docs)
+OPENAI_API_KEY=$OPENAI_API_KEY uv run python .pr/repro_responses_reasoning_store_false.py --include-encrypted \
+  | tee .pr/repro_responses_reasoning_store_false.include_encrypted.output.txt
 ```
 
 Environment notes:
@@ -32,12 +37,20 @@ Environment notes:
 For example (turn 1 output items summary):
 - `reasoning:rs_...` and `message:msg_...`
 
-### 2) With `store=False`, echoing prior `response.output` items verbatim into the next request fails
+### 2) With `store=False`, echoing prior `response.output` items verbatim into the next request can fail *unless encrypted reasoning is included*
+
+**Baseline (no `include=["reasoning.encrypted_content"]`)**:
+
 For reasoning models that emit a reasoning item with an `rs_...` id, **turn 2 fails** with:
 
 > `Item with id 'rs_...' not found. Items are not persisted when store is set to false.`
 
 This reproduces the exact class of error described in the PR.
+
+**With `include=["reasoning.encrypted_content"]`** (per the Responses `create` docs):
+
+- Turn 1 reasoning items include a non-empty `encrypted_content` field.
+- Turn 2 **succeeds even with naive echoed `response.output`** for the reasoning models tested (no 404).
 
 ### 3) Multiple workarounds succeed with `store=False`
 In the script I tested these (for turn 2 input construction):
@@ -53,9 +66,12 @@ For `gpt-5.2`, turn 1 did **not** include a `type: "reasoning"` output item, and
 
 ## Model-by-model results
 
-Full stdout is in: `.pr/repro_responses_reasoning_store_false.output.txt`.
+Full stdout is in:
 
-Summary:
+- Baseline: `.pr/repro_responses_reasoning_store_false.output.txt`
+- With encrypted reasoning: `.pr/repro_responses_reasoning_store_false.include_encrypted.output.txt`
+
+### Baseline (no `include=["reasoning.encrypted_content"]`)
 
 | Model | Responses API call works? | Turn 2 with naive echoed `response.output` | Workaround success (strip reasoning / drop ids / messages only) |
 |---|---:|---:|---:|
@@ -63,6 +79,15 @@ Summary:
 | `gpt-5-nano` | yes | FAIL (404 `rs_...` not found) | all OK |
 | `gpt-5.2` | yes | OK | all OK |
 | `gpt-5.2-codex` | yes | FAIL (404 `rs_...` not found) | all OK |
+
+### With `include=["reasoning.encrypted_content"]`
+
+| Model | Turn 1 returned `reasoning.encrypted_content`? | Turn 2 naive echoed `response.output` |
+|---|---:|---:|
+| `o4-mini` | yes (len 1124) | OK |
+| `gpt-5-nano` | yes (len 1144) | OK |
+| `gpt-5.2` | no reasoning item | OK |
+| `gpt-5.2-codex` | yes (len 868) | OK |
 
 ## Notes from OpenAI docs (relevant to `store=False`)
 
@@ -72,8 +97,21 @@ From the Conversation state guide:
 - The guide also shows a Python example using `store=False` where history is built using `role` + `content` from the output items.
 
 This aligns with what we saw in practice:
-- With `store=False`, re-sending server-assigned item IDs (notably `rs_...` reasoning ids) causes resolution failures.
-- Omitting IDs (or omitting reasoning items) avoids the error.
+- With `store=False` **and no** `include=["reasoning.encrypted_content"]`, re-sending server-assigned item IDs (notably `rs_...` reasoning ids) causes resolution failures.
+- With `store=False` **and** `include=["reasoning.encrypted_content"]`, reasoning items include `encrypted_content` and naive echoing of `response.output` succeeded in my tests.
+- Independently of `include`, omitting IDs (or omitting reasoning items) avoids the error.
+
+
+## SDK check: do we request `reasoning.encrypted_content`?
+
+Yes (in this repo state).
+
+- `LLM.enable_encrypted_reasoning` defaults to `True`:
+  - `openhands-sdk/openhands/sdk/llm/llm.py` (field definition around line ~291)
+- The Responses options selector appends `"reasoning.encrypted_content"` to `include` when `store=False` and `enable_encrypted_reasoning=True`:
+  - `openhands-sdk/openhands/sdk/llm/options/responses_options.py`
+
+Based on the follow-up repro run, including `reasoning.encrypted_content` is sufficient for naive replay of reasoning items to work statelessly (no 404), because the reasoning output item carries a non-empty `encrypted_content` payload.
 
 ## How this informed the script “fix” (requested)
 

@@ -1,6 +1,7 @@
 # Responses API store=False reasoning-item behavior
 
-Run at (UTC): 2026-02-24T09:19:11.811043+00:00
+Run at (UTC): 2026-02-24T10:03:51.936863+00:00
+include: None
 Models:
 - o4-mini
 - gpt-5-nano
@@ -10,10 +11,11 @@ Models:
 ## Model: o4-mini
 turn1: ok
   output_text: '4'
-  output_items: reasoning:rs_010e38ccd5db23b301699d6cf68bd481959515a130be22ff4c, message:msg_010e38ccd5db23b301699d6cf6f81c81958e9b7451f5902257
-  reasoning_item_ids: ['rs_010e38ccd5db23b301699d6cf68bd481959515a130be22ff4c']
+  output_items: reasoning:rs_02096c568e60ea3901699d776daa308197a88216248f662432, message:msg_02096c568e60ea3901699d776e21e08197a9531bf8d2ca5403
+  reasoning_item_ids: ['rs_02096c568e60ea3901699d776daa308197a88216248f662432']
+  reasoning_item_encrypted_lengths: []
 turn2:
-  - naive_output_items: FAIL :: NotFoundError: Error code: 404 - {'error': {'message': "Item with id 'rs_010e38ccd5db23b301699d6cf68bd481959515a130be22ff4c' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}
+  - naive_output_items: FAIL :: NotFoundError: Error code: 404 - {'error': {'message': "Item with id 'rs_02096c568e60ea3901699d776daa308197a88216248f662432' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}
   - strip_reasoning_items: OK :: ok: output_text='6'
   - drop_ids: OK :: ok: output_text='6'
   - messages_only: OK :: ok: output_text='6'
@@ -21,32 +23,35 @@ turn2:
 ## Model: gpt-5-nano
 turn1: ok
   output_text: '4'
-  output_items: reasoning:rs_00d58c8668f4386b01699d6cfe7ae48190871fba1f1ae7e23c, message:msg_00d58c8668f4386b01699d6cff2dfc81909b1ead55ae5e34a7
-  reasoning_item_ids: ['rs_00d58c8668f4386b01699d6cfe7ae48190871fba1f1ae7e23c']
+  output_items: reasoning:rs_0951d81678f9bd8501699d7773e4748197862587b1b966fe00, message:msg_0951d81678f9bd8501699d777483788197a9a6763413989b80
+  reasoning_item_ids: ['rs_0951d81678f9bd8501699d7773e4748197862587b1b966fe00']
+  reasoning_item_encrypted_lengths: []
 turn2:
-  - naive_output_items: FAIL :: NotFoundError: Error code: 404 - {'error': {'message': "Item with id 'rs_00d58c8668f4386b01699d6cfe7ae48190871fba1f1ae7e23c' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}
+  - naive_output_items: FAIL :: NotFoundError: Error code: 404 - {'error': {'message': "Item with id 'rs_0951d81678f9bd8501699d7773e4748197862587b1b966fe00' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}
   - strip_reasoning_items: OK :: ok: output_text='6'
   - drop_ids: OK :: ok: output_text='6'
   - messages_only: OK :: ok: output_text='6'
 
 ## Model: gpt-5.2
 turn1: ok
-  output_text: '2+2 = 4.'
-  output_items: message:msg_0f5589974b7d5f8601699d6d06d44c8194a98aafd82eef2900
+  output_text: '4'
+  output_items: message:msg_0de46997256b7ee601699d777b74a8819097abdb90afb37f45
   reasoning_item_ids: []
+  reasoning_item_encrypted_lengths: []
 turn2:
-  - naive_output_items: OK :: ok: output_text='3+3 = 6.'
-  - strip_reasoning_items: OK :: ok: output_text='3+3 = 6.'
-  - drop_ids: OK :: ok: output_text='3+3 = 6.'
+  - naive_output_items: OK :: ok: output_text='6'
+  - strip_reasoning_items: OK :: ok: output_text='6'
+  - drop_ids: OK :: ok: output_text='6'
   - messages_only: OK :: ok: output_text='6'
 
 ## Model: gpt-5.2-codex
 turn1: ok
   output_text: '4'
-  output_items: reasoning:rs_0a1fec5757af889901699d6d0acd748190aa7b82e3c08969de, message:msg_0a1fec5757af889901699d6d0ae8a48190895a80f970e52414
-  reasoning_item_ids: ['rs_0a1fec5757af889901699d6d0acd748190aa7b82e3c08969de']
+  output_items: reasoning:rs_0b4bd2197898f94201699d778075e8819787dd6861615452c0, message:msg_0b4bd2197898f94201699d7780a7f48197b26f2a3a9997e2a4
+  reasoning_item_ids: ['rs_0b4bd2197898f94201699d778075e8819787dd6861615452c0']
+  reasoning_item_encrypted_lengths: []
 turn2:
-  - naive_output_items: FAIL :: NotFoundError: Error code: 404 - {'error': {'message': "Item with id 'rs_0a1fec5757af889901699d6d0acd748190aa7b82e3c08969de' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}
+  - naive_output_items: FAIL :: NotFoundError: Error code: 404 - {'error': {'message': "Item with id 'rs_0b4bd2197898f94201699d778075e8819787dd6861615452c0' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}
   - strip_reasoning_items: OK :: ok: output_text='6'
   - drop_ids: OK :: ok: output_text='6'
   - messages_only: OK :: ok: output_text='6'
@@ -57,21 +62,23 @@ Raw JSON:
 [
   {
     "model": "o4-mini",
-    "timestamp_utc": "2026-02-24T09:18:43.747102+00:00",
+    "include": null,
+    "timestamp_utc": "2026-02-24T10:03:25.099849+00:00",
     "turn_1": {
       "ok": true,
       "output_text": "4",
-      "output_items_summary": "reasoning:rs_010e38ccd5db23b301699d6cf68bd481959515a130be22ff4c, message:msg_010e38ccd5db23b301699d6cf6f81c81958e9b7451f5902257",
+      "output_items_summary": "reasoning:rs_02096c568e60ea3901699d776daa308197a88216248f662432, message:msg_02096c568e60ea3901699d776e21e08197a9531bf8d2ca5403",
       "reasoning_item_ids": [
-        "rs_010e38ccd5db23b301699d6cf68bd481959515a130be22ff4c"
-      ]
+        "rs_02096c568e60ea3901699d776daa308197a88216248f662432"
+      ],
+      "reasoning_item_encrypted_lengths": []
     },
     "turn_2": {
       "attempts": [
         {
           "label": "naive_output_items",
           "ok": false,
-          "detail": "NotFoundError: Error code: 404 - {'error': {'message': \"Item with id 'rs_010e38ccd5db23b301699d6cf68bd481959515a130be22ff4c' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}"
+          "detail": "NotFoundError: Error code: 404 - {'error': {'message': \"Item with id 'rs_02096c568e60ea3901699d776daa308197a88216248f662432' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}"
         },
         {
           "label": "strip_reasoning_items",
@@ -93,21 +100,23 @@ Raw JSON:
   },
   {
     "model": "gpt-5-nano",
-    "timestamp_utc": "2026-02-24T09:18:54.120692+00:00",
+    "include": null,
+    "timestamp_utc": "2026-02-24T10:03:31.543150+00:00",
     "turn_1": {
       "ok": true,
       "output_text": "4",
-      "output_items_summary": "reasoning:rs_00d58c8668f4386b01699d6cfe7ae48190871fba1f1ae7e23c, message:msg_00d58c8668f4386b01699d6cff2dfc81909b1ead55ae5e34a7",
+      "output_items_summary": "reasoning:rs_0951d81678f9bd8501699d7773e4748197862587b1b966fe00, message:msg_0951d81678f9bd8501699d777483788197a9a6763413989b80",
       "reasoning_item_ids": [
-        "rs_00d58c8668f4386b01699d6cfe7ae48190871fba1f1ae7e23c"
-      ]
+        "rs_0951d81678f9bd8501699d7773e4748197862587b1b966fe00"
+      ],
+      "reasoning_item_encrypted_lengths": []
     },
     "turn_2": {
       "attempts": [
         {
           "label": "naive_output_items",
           "ok": false,
-          "detail": "NotFoundError: Error code: 404 - {'error': {'message': \"Item with id 'rs_00d58c8668f4386b01699d6cfe7ae48190871fba1f1ae7e23c' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}"
+          "detail": "NotFoundError: Error code: 404 - {'error': {'message': \"Item with id 'rs_0951d81678f9bd8501699d7773e4748197862587b1b966fe00' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}"
         },
         {
           "label": "strip_reasoning_items",
@@ -129,29 +138,31 @@ Raw JSON:
   },
   {
     "model": "gpt-5.2",
-    "timestamp_utc": "2026-02-24T09:19:02.275066+00:00",
+    "include": null,
+    "timestamp_utc": "2026-02-24T10:03:38.597638+00:00",
     "turn_1": {
       "ok": true,
-      "output_text": "2+2 = 4.",
-      "output_items_summary": "message:msg_0f5589974b7d5f8601699d6d06d44c8194a98aafd82eef2900",
-      "reasoning_item_ids": []
+      "output_text": "4",
+      "output_items_summary": "message:msg_0de46997256b7ee601699d777b74a8819097abdb90afb37f45",
+      "reasoning_item_ids": [],
+      "reasoning_item_encrypted_lengths": []
     },
     "turn_2": {
       "attempts": [
         {
           "label": "naive_output_items",
           "ok": true,
-          "detail": "ok: output_text='3+3 = 6.'"
+          "detail": "ok: output_text='6'"
         },
         {
           "label": "strip_reasoning_items",
           "ok": true,
-          "detail": "ok: output_text='3+3 = 6.'"
+          "detail": "ok: output_text='6'"
         },
         {
           "label": "drop_ids",
           "ok": true,
-          "detail": "ok: output_text='3+3 = 6.'"
+          "detail": "ok: output_text='6'"
         },
         {
           "label": "messages_only",
@@ -163,21 +174,23 @@ Raw JSON:
   },
   {
     "model": "gpt-5.2-codex",
-    "timestamp_utc": "2026-02-24T09:19:06.247596+00:00",
+    "include": null,
+    "timestamp_utc": "2026-02-24T10:03:43.680048+00:00",
     "turn_1": {
       "ok": true,
       "output_text": "4",
-      "output_items_summary": "reasoning:rs_0a1fec5757af889901699d6d0acd748190aa7b82e3c08969de, message:msg_0a1fec5757af889901699d6d0ae8a48190895a80f970e52414",
+      "output_items_summary": "reasoning:rs_0b4bd2197898f94201699d778075e8819787dd6861615452c0, message:msg_0b4bd2197898f94201699d7780a7f48197b26f2a3a9997e2a4",
       "reasoning_item_ids": [
-        "rs_0a1fec5757af889901699d6d0acd748190aa7b82e3c08969de"
-      ]
+        "rs_0b4bd2197898f94201699d778075e8819787dd6861615452c0"
+      ],
+      "reasoning_item_encrypted_lengths": []
     },
     "turn_2": {
       "attempts": [
         {
           "label": "naive_output_items",
           "ok": false,
-          "detail": "NotFoundError: Error code: 404 - {'error': {'message': \"Item with id 'rs_0a1fec5757af889901699d6d0acd748190aa7b82e3c08969de' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}"
+          "detail": "NotFoundError: Error code: 404 - {'error': {'message': \"Item with id 'rs_0b4bd2197898f94201699d778075e8819787dd6861615452c0' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\", 'type': 'invalid_request_error', 'param': 'input', 'code': None}}"
         },
         {
           "label": "strip_reasoning_items",
