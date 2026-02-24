@@ -112,6 +112,30 @@ _BYPASS_MODE_MAP: dict[str, str] = {
 }
 _DEFAULT_BYPASS_MODE = "full-access"
 
+# ACP auth method ID → environment variable that supplies the credential.
+# When the server reports auth_methods, we pick the first method whose
+# required env var is set.
+_AUTH_METHOD_ENV_MAP: dict[str, str] = {
+    "codex-api-key": "CODEX_API_KEY",
+    "openai-api-key": "OPENAI_API_KEY",
+}
+
+
+def _select_auth_method(
+    auth_methods: list[Any],
+    env: dict[str, str],
+) -> str | None:
+    """Pick an auth method whose required env var is present.
+
+    Returns the ``id`` of the first matching method, or ``None`` if no
+    env-var-based method is available (the server may not require auth).
+    """
+    method_ids = {m.id for m in auth_methods}
+    for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
+        if method_id in method_ids and env_var in env:
+            return method_id
+    return None
+
 
 def _resolve_bypass_mode(agent_name: str) -> str:
     """Return the session mode ID that bypasses all permission prompts.
@@ -539,6 +563,25 @@ class ACPAgent(AgentBase):
             if init_response.agent_info is not None:
                 agent_name = init_response.agent_info.name or ""
             logger.info("ACP server initialized: agent_name=%r", agent_name)
+
+            # Authenticate if the server requires it.  Some ACP servers
+            # (e.g. codex-acp) require an explicit authenticate call
+            # before session creation.  We auto-detect the method from
+            # the env vars that are available to the process.
+            auth_methods = init_response.auth_methods or []
+            if auth_methods:
+                method_id = _select_auth_method(auth_methods, env)
+                if method_id is not None:
+                    logger.info(
+                        "Authenticating with ACP method: %s", method_id
+                    )
+                    await conn.authenticate(method_id=method_id)
+                else:
+                    logger.warning(
+                        "ACP server offers auth methods %s but no matching "
+                        "env var is set — session creation may fail",
+                        [m.id for m in auth_methods],
+                    )
 
             # Create a new session
             response = await conn.new_session(cwd=working_dir)

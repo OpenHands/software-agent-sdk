@@ -13,6 +13,7 @@ from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _OpenHandsACPBridge,
     _resolve_bypass_mode,
+    _select_auth_method,
 )
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
@@ -1294,6 +1295,61 @@ class TestResolveBypassMode:
 
     def test_empty_name_defaults_to_full_access(self):
         assert _resolve_bypass_mode("") == "full-access"
+
+
+# ---------------------------------------------------------------------------
+# acp_session_mode field
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _select_auth_method
+# ---------------------------------------------------------------------------
+
+
+class TestSelectAuthMethod:
+    """Test auto-detection of ACP auth method from env vars."""
+
+    @staticmethod
+    def _make_auth_method(method_id: str) -> MagicMock:
+        m = MagicMock()
+        m.id = method_id
+        return m
+
+    def test_openai_api_key(self):
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("codex-api-key"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"OPENAI_API_KEY": "sk-test"}
+        assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_codex_api_key_preferred(self):
+        """CODEX_API_KEY is checked first (appears first in the map)."""
+        methods = [
+            self._make_auth_method("codex-api-key"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_API_KEY": "key1", "OPENAI_API_KEY": "key2"}
+        assert _select_auth_method(methods, env) == "codex-api-key"
+
+    def test_no_matching_env_var(self):
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"UNRELATED": "value"}
+        assert _select_auth_method(methods, env) is None
+
+    def test_empty_auth_methods(self):
+        assert _select_auth_method([], {}) is None
+
+    def test_method_not_in_server_list(self):
+        """Even if env var is set, method must be offered by server."""
+        methods = [self._make_auth_method("chatgpt")]
+        env = {"OPENAI_API_KEY": "sk-test"}
+        assert _select_auth_method(methods, env) is None
 
 
 # ---------------------------------------------------------------------------
