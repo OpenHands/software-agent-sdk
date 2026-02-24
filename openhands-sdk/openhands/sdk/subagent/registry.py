@@ -115,7 +115,7 @@ def _agent_definition_to_factory(
 ) -> Callable[["LLM"], "Agent"]:
     """Create an agent factory closure from an ``AgentDefinition``.
 
-    The returned callable accepts an :class:`LLM` (the parent agent's LLM) and
+    The returned callable accepts a `LLM` class (the parent agent's LLM) and
     builds a fully-configured `Agent` class.
 
     - Tool names from `agent_def.tools` are mapped to `Tool` objects.
