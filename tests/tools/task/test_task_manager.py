@@ -7,7 +7,11 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    register_agent,
+    register_builtins_agents,
+)
 from openhands.tools.task.manager import (
     Task,
     TaskManager,
@@ -157,6 +161,8 @@ class TestTaskManager:
 
     def test_returns_running_task_state(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
         task = manager._create_task(
             subagent_type="default",
             description="test task",
@@ -171,6 +177,8 @@ class TestTaskManager:
 
     def test_registers_uuid(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
         task = manager._create_task(
             subagent_type="default", description=None, max_turns=None
         )
@@ -185,6 +193,7 @@ class TestTaskManager:
     def test_resume_after_evict(self, tmp_path):
         """A task that was created, evicted, and then resumed should work."""
         manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
 
         # Create and evict a task (simulating a completed first run)
         task = manager._create_task(
@@ -206,6 +215,7 @@ class TestTaskManager:
     def test_default_agent_type(self, tmp_path):
         """'default' should return an agent without raising."""
         manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
         agent = manager._get_sub_agent("default")
         assert isinstance(agent, Agent)
         assert agent.llm.stream is False
@@ -252,6 +262,7 @@ class TestTaskManager:
 
     def test_returns_local_conversation(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
         agent = manager._get_sub_agent("default")
 
@@ -267,6 +278,7 @@ class TestTaskManager:
 
     def test_persistence_dir_is_tmp_dir(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
         agent = manager._get_sub_agent("default")
 
@@ -285,6 +297,7 @@ class TestTaskManager:
 
     def test_no_visualizer_when_parent_has_none(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
         agent = manager._get_sub_agent("default")
 
@@ -451,6 +464,7 @@ class TestStartTask:
     def test_start_new_task_creates_and_runs(self, tmp_path):
         """start_task without resume should create a new task and run it."""
         manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
 
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             result = manager.start_task(
@@ -468,6 +482,7 @@ class TestStartTask:
         """start_task should set the parent conversation on first call."""
         manager = TaskManager()
         parent = _make_parent_conversation(tmp_path)
+        register_builtins_agents()
 
         assert manager._parent_conversation is None
 
@@ -483,6 +498,7 @@ class TestStartTask:
     def test_start_task_with_resume(self, tmp_path):
         """start_task with resume should resume an existing task."""
         manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
 
         # Create and evict a task to simulate a prior completed run
         first = manager._create_task(
@@ -506,6 +522,7 @@ class TestStartTask:
     def test_start_task_resume_unknown_raises(self, tmp_path):
         """start_task with an unknown resume ID should raise ValueError."""
         manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
 
         with pytest.raises(ValueError, match="not found"):
             manager.start_task(
