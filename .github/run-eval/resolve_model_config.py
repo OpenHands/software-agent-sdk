@@ -18,6 +18,12 @@ import sys
 from typing import Any
 
 
+# SDK-specific parameters that should not be passed to litellm.
+# These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
+# Keep this list in sync with SDK LLM config parameters that are SDK-internal.
+SDK_ONLY_PARAMS = {"disable_vision"}
+
+
 # Model configurations dictionary
 MODELS = {
     "claude-sonnet-4-5-20250929": {
@@ -252,9 +258,6 @@ def check_model(
     model_name = llm_config.get("model", "unknown")
     display_name = model_config.get("display_name", model_name)
 
-    # SDK-specific parameters that should not be passed to litellm
-    SDK_ONLY_PARAMS = {"disable_vision"}
-
     try:
         # Build kwargs from llm_config, excluding 'model' and SDK-specific params
         kwargs = {
@@ -263,6 +266,9 @@ def check_model(
             if k != "model" and k not in SDK_ONLY_PARAMS
         }
 
+        # Use simple arithmetic prompt that works reliably across all models
+        # max_tokens=100 provides enough room for models to respond
+        # (some need >10 tokens)
         response = litellm.completion(
             model=model_name,
             messages=[{"role": "user", "content": "1+1="}],
