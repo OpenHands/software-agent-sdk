@@ -52,8 +52,8 @@ MODELS = {
             "litellm_extra_body": {"enable_thinking": True},
         },
     },
-    "dashscope/qwen3.5-flash-2026-02-23": {
-        "id": "dashscope/qwen3.5-flash-2026-02-23",
+    "qwen3.5-flash": {
+        "id": "qwen3.5-flash",
         "display_name": "Qwen3.5 Flash",
         "llm_config": {
             "model": "litellm_proxy/dashscope/qwen3.5-flash-2026-02-23",
