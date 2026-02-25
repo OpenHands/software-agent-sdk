@@ -1,5 +1,6 @@
 ---
 name: bash
+model: inherit
 description: >-
   Command execution specialist (terminal only).
   <example>Run a shell command</example>
