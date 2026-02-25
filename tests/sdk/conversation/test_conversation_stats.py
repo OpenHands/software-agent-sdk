@@ -109,7 +109,7 @@ def test_get_metrics_for_usage(conversation_stats):
 def test_register_llm_with_new_usage(conversation_stats):
     """Test registering a new LLM usage."""
     # Patch the LLM class to avoid actual API calls
-    with patch("openhands.sdk.llm.llm.litellm_completion"):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion"):
         llm = LLM(
             usage_id="new-service",
             model="gpt-4o",
@@ -140,7 +140,7 @@ def test_register_llm_with_restored_metrics(conversation_stats):
     conversation_stats.usage_to_metrics = {usage_id: restored_metrics}
 
     # Patch the LLM class to avoid actual API calls
-    with patch("openhands.sdk.llm.llm.litellm_completion"):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion"):
         llm = LLM(
             usage_id=usage_id,
             model="gpt-4o",
@@ -319,7 +319,7 @@ def test_register_llm_with_multiple_restored_usage_ids(conversation_stats):
     }
 
     # Patch the LLM class to avoid actual API calls
-    with patch("openhands.sdk.llm.llm.litellm_completion"):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion"):
         # Register first LLM
         llm_1 = LLM(
             usage_id=usage_id_1,

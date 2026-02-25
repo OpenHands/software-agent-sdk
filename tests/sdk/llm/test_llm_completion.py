@@ -74,7 +74,7 @@ def default_config():
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_completion_basic(mock_completion):
     """Test basic LLM completion functionality."""
     mock_response = create_mock_response("Test response")
@@ -119,7 +119,7 @@ def test_llm_streaming_not_supported(default_config):
         llm.completion(messages=messages, stream=True)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 @patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
 def test_llm_completion_streaming_with_callback(mock_stream_builder, mock_completion):
     """Test that streaming with on_token callback works correctly."""
@@ -167,9 +167,14 @@ def test_llm_completion_streaming_with_callback(mock_stream_builder, mock_comple
         object="chat.completion.chunk",
     )
 
-    # Create a mock stream wrapper
+    # Create an async iterator for streaming (acompletion returns async iterator)
+    async def async_stream():
+        for chunk in [chunk1, chunk2, chunk3]:
+            yield chunk
+
+    # Create a mock stream wrapper that supports async iteration
     mock_stream = MagicMock(spec=CustomStreamWrapper)
-    mock_stream.__iter__.return_value = iter([chunk1, chunk2, chunk3])
+    mock_stream.__aiter__ = lambda self: async_stream().__aiter__()
     mock_completion.return_value = mock_stream
 
     # Mock the stream builder to return a complete response
@@ -210,7 +215,7 @@ def test_llm_completion_streaming_with_callback(mock_stream_builder, mock_comple
     assert response.message.content[0].text == "Hello world!"
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 @patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
 def test_llm_completion_streaming_with_tools(mock_stream_builder, mock_completion):
     """Test streaming completion with tool calls."""
@@ -277,9 +282,14 @@ def test_llm_completion_streaming_with_tools(mock_stream_builder, mock_completio
         object="chat.completion.chunk",
     )
 
-    # Create mock stream
+    # Create an async iterator for streaming (acompletion returns async iterator)
+    async def async_stream():
+        for chunk in [chunk1, chunk2, chunk3]:
+            yield chunk
+
+    # Create mock stream that supports async iteration
     mock_stream = MagicMock(spec=CustomStreamWrapper)
-    mock_stream.__iter__.return_value = iter([chunk1, chunk2, chunk3])
+    mock_stream.__aiter__ = lambda self: async_stream().__aiter__()
     mock_completion.return_value = mock_stream
 
     # Mock final response with tool call
@@ -323,7 +333,7 @@ def test_llm_completion_streaming_with_tools(mock_stream_builder, mock_completio
     assert response.message.tool_calls[0].name == "test_tool"
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_completion_with_tools(mock_completion):
     """Test LLM completion with tools."""
     mock_response = create_mock_response("I'll use the tool")
@@ -368,7 +378,7 @@ def test_llm_completion_with_tools(mock_completion):
     mock_completion.assert_called_once()
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_completion_error_handling(mock_completion):
     """Test LLM completion error handling."""
     # Mock an exception
@@ -478,7 +488,7 @@ def test_llm_token_usage_tracking(default_config):
     assert accumulated.completion_tokens >= 5
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_completion_with_custom_params(mock_completion, default_config):
     """Test LLM completion with custom parameters."""
     mock_response = create_mock_response("Custom response")
@@ -515,7 +525,7 @@ def test_llm_completion_with_custom_params(mock_completion, default_config):
     assert call_kwargs.get("top_p") == 0.9
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_completion_non_function_call_mode(mock_completion):
     """Test LLM completion with non-function call mode (prompt-based tool calling)."""
     # Create a mock response that looks like a non-function call response
@@ -594,7 +604,7 @@ def test_llm_completion_non_function_call_mode(mock_completion):
     assert len(call_messages) >= len(messages)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_completion_function_call_vs_non_function_call_mode(mock_completion):
     """Test the difference between function call mode and non-function call mode."""
     mock_response = create_mock_response("Test response")

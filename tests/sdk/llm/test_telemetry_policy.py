@@ -14,7 +14,7 @@ def test_chat_forwards_extra_body_for_all_models():
         model="cerebras/llama-3.3-70b", usage_id="u1", litellm_extra_body={"k": "v"}
     )
     messages = [Message(role="user", content=[TextContent(text="Hi")])]
-    with patch("openhands.sdk.llm.llm.litellm_completion") as mock_call:
+    with patch("openhands.sdk.llm.llm.litellm_acompletion") as mock_call:
         mock_call.return_value = ModelResponse(
             id="x",
             choices=[
@@ -39,7 +39,7 @@ def test_chat_proxy_forwards_extra_body():
     eb = {"cluster": "c1", "route": "r1"}
     llm = LLM(model="litellm_proxy/gpt-4o", usage_id="u1", litellm_extra_body=eb)
     messages = [Message(role="user", content=[TextContent(text="Hi")])]
-    with patch("openhands.sdk.llm.llm.litellm_completion") as mock_call:
+    with patch("openhands.sdk.llm.llm.litellm_acompletion") as mock_call:
         mock_call.return_value = ModelResponse(
             id="x",
             choices=[
@@ -61,7 +61,7 @@ def test_chat_proxy_forwards_extra_body():
 # Responses path: same policy
 
 
-@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses")
 def test_responses_forwards_extra_body_for_all_models(mock_responses):
     llm = LLM(
         model="cerebras/llama-3.3-70b", usage_id="u1", litellm_extra_body={"k": "v"}
@@ -90,7 +90,7 @@ def test_responses_forwards_extra_body_for_all_models(mock_responses):
     assert kwargs.get("extra_body") == {"k": "v"}
 
 
-@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses")
 def test_responses_proxy_forwards_extra_body(mock_responses):
     eb = {"cluster": "c1", "route": "r1"}
     llm = LLM(model="litellm_proxy/gpt-4o", usage_id="u1", litellm_extra_body=eb)

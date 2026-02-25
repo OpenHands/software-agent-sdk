@@ -52,7 +52,7 @@ def base_llm() -> LLM:
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_no_response_retries_then_succeeds(mock_completion, base_llm: LLM) -> None:
     mock_completion.side_effect = [
         create_empty_choices_response("empty-1"),
@@ -68,7 +68,7 @@ def test_no_response_retries_then_succeeds(mock_completion, base_llm: LLM) -> No
     assert mock_completion.call_count == 2  # initial + 1 retry
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_no_response_exhausts_retries_bubbles_llm_no_response(
     mock_completion, base_llm: LLM
 ) -> None:
@@ -87,7 +87,7 @@ def test_no_response_exhausts_retries_bubbles_llm_no_response(
     assert mock_completion.call_count == base_llm.num_retries
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_no_response_retry_bumps_temperature(mock_completion, base_llm: LLM) -> None:
     # Ensure we start at 0.0 to trigger bump to 1.0 on retry
     assert base_llm.temperature == 0.0

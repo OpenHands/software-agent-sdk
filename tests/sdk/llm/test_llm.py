@@ -204,7 +204,7 @@ def test_metrics_diff():
     assert accumulated_diff["cache_write_tokens"] == 2
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_completion_with_mock(mock_completion):
     """Test LLM completion with mocked litellm."""
     mock_response = create_mock_litellm_response("Test response")
@@ -229,7 +229,7 @@ def test_llm_completion_with_mock(mock_completion):
     mock_completion.assert_called_once()
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_retry_on_rate_limit(mock_completion):
     """Test that LLM retries on rate limit errors."""
     mock_response = create_mock_litellm_response("Success after retry")
@@ -292,7 +292,7 @@ def test_llm_token_counting(default_llm):
     assert token_count >= 0
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_forwards_extra_headers_to_litellm(mock_completion):
     mock_response = create_mock_litellm_response("ok")
     mock_completion.return_value = mock_response
@@ -315,7 +315,7 @@ def test_llm_forwards_extra_headers_to_litellm(mock_completion):
     assert kwargs.get("extra_headers") == headers
 
 
-@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses")
 def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
     # Build a minimal, but valid, ResponsesAPIResponse instance per litellm types
     # Build typed message output using OpenAI types to satisfy litellm schema
@@ -362,7 +362,7 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
     assert kwargs.get("extra_headers") == headers
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_completion_merges_llm_extra_headers_with_extended_thinking_default(
     mock_completion,
 ):
@@ -393,7 +393,7 @@ def test_completion_merges_llm_extra_headers_with_extended_thinking_default(
     assert headers.get("X-Trace") == "1"
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_completion_call_time_extra_headers_override_config_and_defaults(
     mock_completion,
 ):
@@ -428,7 +428,7 @@ def test_completion_call_time_extra_headers_override_config_and_defaults(
     assert "X-Trace" not in headers
 
 
-@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses")
 def test_responses_call_time_extra_headers_override_config(mock_responses):
     # Build a minimal valid Responses response
     msg = ResponseOutputMessage.model_construct(
@@ -751,7 +751,7 @@ def test_llm_config_validation():
     assert full_llm.max_output_tokens == 1000
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_no_response_error(mock_completion):
     """Test handling of LLMNoResponseError."""
     from litellm.types.utils import ModelResponse, Usage

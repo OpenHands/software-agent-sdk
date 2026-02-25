@@ -589,6 +589,42 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._metrics = None
         self._telemetry = None
 
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> LLM:
+        """Custom deepcopy that handles unpicklable thread-local state.
+
+        The async loop, thread, task, and lock are not deepcopyable.
+        Instead, we create a new copy without these attributes, which will
+        be lazily recreated when needed.
+        """
+        # Create a shallow copy using pydantic's model_copy
+        new_llm = self.model_copy(deep=False)
+
+        # Deep copy the copyable private attributes
+        if self._metrics is not None:
+            new_llm._metrics = copy.deepcopy(self._metrics, memo)
+        else:
+            new_llm._metrics = None
+
+        if self._tokenizer is not None:
+            # Tokenizers may not be deepcopyable, create fresh
+            new_llm._tokenizer = None
+
+        if self._telemetry is not None:
+            new_llm._telemetry = copy.deepcopy(self._telemetry, memo)
+        else:
+            new_llm._telemetry = None
+
+        new_llm._is_subscription = self._is_subscription
+        new_llm._litellm_provider = self._litellm_provider
+
+        # Reset async state - will be lazily recreated
+        new_llm._async_loop = None
+        new_llm._async_loop_thread = None
+        new_llm._current_task = None
+        new_llm._task_lock = threading.Lock()
+
+        return new_llm
+
     # =========================================================================
     # Cancellation support
     # =========================================================================

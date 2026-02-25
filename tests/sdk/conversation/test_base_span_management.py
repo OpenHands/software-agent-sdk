@@ -35,6 +35,9 @@ class MockConversation(BaseConversation):
     def pause(self) -> None:
         pass
 
+    def interrupt(self) -> None:
+        pass
+
     def reject_pending_actions(self, reason: str = "User rejected the action") -> None:
         pass
 

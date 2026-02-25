@@ -44,8 +44,8 @@ def create_mock_response(
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_telemetry_records_only_successful_attempt_latency(mock_litellm_completion):
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_telemetry_records_only_successful_attempt_latency(mock_litellm_acompletion):
     """
     Test that when LLM calls are retried, telemetry only records the latency
     of the successful attempt, not the cumulative time of all attempts.
@@ -59,7 +59,7 @@ def test_telemetry_records_only_successful_attempt_latency(mock_litellm_completi
     mock_response = create_mock_response("Success after retry")
 
     # Simulate 2 failures followed by success
-    mock_litellm_completion.side_effect = [
+    mock_litellm_acompletion.side_effect = [
         APIConnectionError(
             message="Connection failed 1",
             llm_provider="test_provider",
@@ -96,7 +96,7 @@ def test_telemetry_records_only_successful_attempt_latency(mock_litellm_completi
 
     # Verify the call succeeded
     assert response.raw_response == mock_response
-    assert mock_litellm_completion.call_count == 3
+    assert mock_litellm_acompletion.call_count == 3
 
     # Get the metrics to check recorded latency
     metrics = llm.metrics
@@ -129,8 +129,8 @@ def test_telemetry_records_only_successful_attempt_latency(mock_litellm_completi
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_telemetry_on_request_called_per_retry(mock_litellm_completion):
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_telemetry_on_request_called_per_retry(mock_litellm_acompletion):
     """
     Test that telemetry.on_request() is called for each retry attempt.
 
@@ -161,7 +161,7 @@ def test_telemetry_on_request_called_per_retry(mock_litellm_completion):
             )
         return mock_response
 
-    mock_litellm_completion.side_effect = mock_transport_call_side_effect
+    mock_litellm_acompletion.side_effect = mock_transport_call_side_effect
 
     # Create LLM instance
     llm = LLM(
@@ -195,8 +195,8 @@ def test_telemetry_on_request_called_per_retry(mock_litellm_completion):
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_telemetry_metrics_accurate_with_retries(mock_litellm_completion):
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_telemetry_metrics_accurate_with_retries(mock_litellm_acompletion):
     """
     Test that all telemetry metrics (tokens, cost, latency) are accurate
     when retries occur.
@@ -207,7 +207,7 @@ def test_telemetry_metrics_accurate_with_retries(mock_litellm_completion):
     )
 
     # Simulate one failure then success
-    mock_litellm_completion.side_effect = [
+    mock_litellm_acompletion.side_effect = [
         APIConnectionError(
             message="Connection failed",
             llm_provider="test_provider",
@@ -254,8 +254,8 @@ def test_telemetry_metrics_accurate_with_retries(mock_litellm_completion):
     assert metrics.response_latencies[0].latency < 0.5
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_telemetry_no_multiple_records_on_retry(mock_litellm_completion):
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_telemetry_no_multiple_records_on_retry(mock_litellm_acompletion):
     """
     Test that telemetry doesn't create multiple records for failed attempts.
 
@@ -264,7 +264,7 @@ def test_telemetry_no_multiple_records_on_retry(mock_litellm_completion):
     mock_response = create_mock_response("Success")
 
     # Simulate multiple failures then success
-    mock_litellm_completion.side_effect = [
+    mock_litellm_acompletion.side_effect = [
         APIConnectionError(
             message="Fail 1", llm_provider="test_provider", model="test_model"
         ),
