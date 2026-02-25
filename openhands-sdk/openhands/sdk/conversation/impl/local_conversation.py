@@ -372,7 +372,7 @@ class LocalConversation(BaseConversation):
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
-        # Register plugin and file-based agent definitions into delegate registry
+        # Register file-based agents defined in plugins
         if all_plugin_agents:
             register_plugin_agents(all_plugin_agents)
 
