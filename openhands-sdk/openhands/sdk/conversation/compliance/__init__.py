@@ -12,6 +12,7 @@ from openhands.sdk.conversation.compliance.base import (
 )
 from openhands.sdk.conversation.compliance.monitor import APIComplianceMonitor
 from openhands.sdk.conversation.compliance.properties import (
+    ALL_COMPLIANCE_PROPERTIES,
     DuplicateToolResultProperty,
     InterleavedMessageProperty,
     ToolResultOrderProperty,
@@ -20,6 +21,7 @@ from openhands.sdk.conversation.compliance.properties import (
 
 
 __all__ = [
+    "ALL_COMPLIANCE_PROPERTIES",
     "APICompliancePropertyBase",
     "APIComplianceMonitor",
     "ComplianceState",

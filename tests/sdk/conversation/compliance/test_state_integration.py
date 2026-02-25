@@ -64,24 +64,29 @@ def test_add_event_lazy_creates_monitor(conversation_state):
     assert conversation_state._compliance_monitor is monitor
 
 
-def test_add_event_checks_compliance(conversation_state):
-    """add_event() should check compliance and detect violations."""
+def test_add_event_checks_compliance(conversation_state, caplog):
+    """add_event() should check compliance and log violations."""
+    import logging
+
     # Add an action
     action = make_action_event(tool_call_id="call_1")
     conversation_state.add_event(action)
 
     # User message while action pending should create violation
     user_msg = make_user_message_event()
-    conversation_state.add_event(user_msg)
 
-    # Should have recorded violation
-    assert conversation_state.compliance_monitor.violation_count > 0
-    violations = conversation_state.compliance_monitor.violations
-    assert any(v.property_name == "interleaved_message" for v in violations)
+    with caplog.at_level(logging.WARNING):
+        conversation_state.add_event(user_msg)
+
+    # Should have logged violation
+    assert "interleaved_message" in caplog.text
+    assert "API compliance violation detected" in caplog.text
 
 
-def test_add_event_normal_flow_no_violations(conversation_state):
+def test_add_event_normal_flow_no_violations(conversation_state, caplog):
     """Normal conversation flow should have no violations."""
+    import logging
+
     # Normal flow: action -> observation -> user message
     action = make_action_event(tool_call_id="call_1")
     conversation_state.add_event(action)
@@ -90,26 +95,32 @@ def test_add_event_normal_flow_no_violations(conversation_state):
     conversation_state.add_event(obs)
 
     user_msg = make_user_message_event()
-    conversation_state.add_event(user_msg)
 
-    # No violations
-    assert conversation_state.compliance_monitor.violation_count == 0
+    with caplog.at_level(logging.WARNING):
+        conversation_state.add_event(user_msg)
+
+    # No violations logged
+    assert "API compliance violation detected" not in caplog.text
 
 
-def test_add_event_still_adds_on_violation(conversation_state):
+def test_add_event_still_adds_on_violation(conversation_state, caplog):
     """Events should still be added even when violations occur (observation mode)."""
+    import logging
+
     action = make_action_event(tool_call_id="call_1")
     conversation_state.add_event(action)
 
     # User message while action pending - violation
     user_msg = make_user_message_event()
-    conversation_state.add_event(user_msg)
+
+    with caplog.at_level(logging.WARNING):
+        conversation_state.add_event(user_msg)
 
     # Event should still be in the log
     assert conversation_state.events[-1].id == user_msg.id
 
-    # Violation should be recorded
-    assert conversation_state.compliance_monitor.violation_count > 0
+    # Violation should be logged
+    assert "API compliance violation detected" in caplog.text
 
 
 def test_add_event_tracks_state_correctly(conversation_state):

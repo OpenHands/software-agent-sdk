@@ -6,7 +6,7 @@ from openhands.sdk.conversation.compliance.base import (
     ComplianceViolation,
 )
 from openhands.sdk.conversation.compliance.properties import ALL_COMPLIANCE_PROPERTIES
-from openhands.sdk.event import Event
+from openhands.sdk.event import LLMConvertibleEvent
 from openhands.sdk.logger import get_logger
 
 
@@ -40,9 +40,8 @@ class APIComplianceMonitor:
         self.properties = (
             properties if properties is not None else list(ALL_COMPLIANCE_PROPERTIES)
         )
-        self._violations: list[ComplianceViolation] = []
 
-    def check_event(self, event: Event) -> list[ComplianceViolation]:
+    def check_event(self, event: LLMConvertibleEvent) -> list[ComplianceViolation]:
         """Check an event for compliance violations.
 
         This method checks the event against all properties and returns any
@@ -70,7 +69,7 @@ class APIComplianceMonitor:
 
         return violations
 
-    def update_state(self, event: Event) -> None:
+    def update_state(self, event: LLMConvertibleEvent) -> None:
         """Update compliance state after an event is processed.
 
         Call this after the event has been added to the event log.
@@ -81,7 +80,7 @@ class APIComplianceMonitor:
         for prop in self.properties:
             prop.update_state(event, self.state)
 
-    def process_event(self, event: Event) -> list[ComplianceViolation]:
+    def process_event(self, event: LLMConvertibleEvent) -> list[ComplianceViolation]:
         """Check an event and update state.
 
         This is a convenience method that combines check_event() and
@@ -95,20 +94,5 @@ class APIComplianceMonitor:
             List of violations detected (empty if compliant).
         """
         violations = self.check_event(event)
-        self._violations.extend(violations)
         self.update_state(event)
         return violations
-
-    @property
-    def violations(self) -> list[ComplianceViolation]:
-        """Get all violations detected so far."""
-        return list(self._violations)
-
-    @property
-    def violation_count(self) -> int:
-        """Get the total number of violations detected."""
-        return len(self._violations)
-
-    def clear_violations(self) -> None:
-        """Clear the violations history."""
-        self._violations.clear()

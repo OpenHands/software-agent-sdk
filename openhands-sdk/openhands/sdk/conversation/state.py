@@ -5,18 +5,24 @@ import json
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self
 
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.compliance import APIComplianceMonitor
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
-from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
+from openhands.sdk.event import (
+    ActionEvent,
+    LLMConvertibleEvent,
+    ObservationEvent,
+    UserRejectObservation,
+)
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
@@ -30,10 +36,6 @@ from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.conversation.compliance import APIComplianceMonitor
 
 
 logger = get_logger(__name__)
@@ -525,8 +527,6 @@ class ConversationState(OpenHandsModel):
         The monitor is lazily initialized on first access.
         """
         if self._compliance_monitor is None:
-            from openhands.sdk.conversation.compliance import APIComplianceMonitor
-
             self._compliance_monitor = APIComplianceMonitor()
         return self._compliance_monitor
 
@@ -537,8 +537,9 @@ class ConversationState(OpenHandsModel):
         Do not mutate the events list directly (e.g., via ``state.events.append()``),
         as this bypasses compliance monitoring and may cause silent failures.
 
-        It checks the event against API compliance properties and logs any
-        violations before adding the event to the event log.
+        For LLMConvertibleEvent instances, the event is checked against API
+        compliance properties and any violations are logged before adding to
+        the event log.
 
         Currently operates in observation mode: violations are logged but
         events are still processed. Future versions may support per-property
@@ -547,8 +548,9 @@ class ConversationState(OpenHandsModel):
         Args:
             event: The event to add to the conversation.
         """
-        # Check for compliance violations (logs warnings if any)
-        self.compliance_monitor.process_event(event)
+        # Check for compliance violations only for LLM-convertible events
+        if isinstance(event, LLMConvertibleEvent):
+            self.compliance_monitor.process_event(event)
 
         # Add to event log regardless of violations (observation mode)
         self._events.append(event)

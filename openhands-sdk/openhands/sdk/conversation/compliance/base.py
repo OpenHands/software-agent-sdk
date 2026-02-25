@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
-from openhands.sdk.event import Event
+from openhands.sdk.event import LLMConvertibleEvent
 from openhands.sdk.event.types import EventID, ToolCallID
 
 
@@ -72,7 +72,7 @@ class APICompliancePropertyBase(ABC):
     @abstractmethod
     def check(
         self,
-        event: Event,
+        event: LLMConvertibleEvent,
         state: ComplianceState,
     ) -> ComplianceViolation | None:
         """Check if an event violates this property.
@@ -86,7 +86,7 @@ class APICompliancePropertyBase(ABC):
             None otherwise.
         """
 
-    def update_state(self, event: Event, state: ComplianceState) -> None:
+    def update_state(self, event: LLMConvertibleEvent, state: ComplianceState) -> None:
         """Update compliance state after an event is processed.
 
         Override this method if the property needs to track state.

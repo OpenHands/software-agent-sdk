@@ -15,21 +15,25 @@ from tests.sdk.conversation.compliance.conftest import (
 def test_monitor_no_violations_normal_flow():
     """Normal conversation flow should have no violations."""
     monitor = APIComplianceMonitor()
+    all_violations: list = []
 
     # Normal flow: action -> observation -> message
     action = make_action_event(tool_call_id="call_1")
     violations = monitor.process_event(action)
+    all_violations.extend(violations)
     assert len(violations) == 0
 
     obs = make_observation_event(action)
     violations = monitor.process_event(obs)
+    all_violations.extend(violations)
     assert len(violations) == 0
 
     user_msg = make_user_message_event()
     violations = monitor.process_event(user_msg)
+    all_violations.extend(violations)
     assert len(violations) == 0
 
-    assert monitor.violation_count == 0
+    assert len(all_violations) == 0
 
 
 def test_monitor_detects_interleaved_message():
@@ -45,7 +49,6 @@ def test_monitor_detects_interleaved_message():
 
     assert len(violations) == 1
     assert violations[0].property_name == "interleaved_message"
-    assert monitor.violation_count == 1
 
 
 def test_monitor_detects_multiple_violations():
@@ -63,38 +66,27 @@ def test_monitor_detects_multiple_violations():
     assert "unmatched_tool_result" in property_names
 
 
-def test_monitor_tracks_violations_history():
-    """Monitor should accumulate violations over time."""
+def test_monitor_returns_violations_per_call():
+    """Monitor returns violations for each call, caller can accumulate."""
     monitor = APIComplianceMonitor()
+    all_violations: list = []
 
     # First violation
     action = make_action_event(tool_call_id="call_1")
-    monitor.process_event(action)
-    monitor.process_event(make_user_message_event())  # interleaved
+    all_violations.extend(monitor.process_event(action))
+    violations = monitor.process_event(make_user_message_event())  # interleaved
+    all_violations.extend(violations)
 
-    initial_count = monitor.violation_count
+    initial_count = len(all_violations)
     assert initial_count > 0
 
     # Second violation
-    monitor.process_event(make_orphan_observation_event(tool_call_id="unknown"))
+    violations = monitor.process_event(
+        make_orphan_observation_event(tool_call_id="unknown")
+    )
+    all_violations.extend(violations)
 
-    assert monitor.violation_count > initial_count
-    assert len(monitor.violations) == monitor.violation_count
-
-
-def test_monitor_clear_violations():
-    """Monitor should allow clearing violation history."""
-    monitor = APIComplianceMonitor()
-
-    action = make_action_event(tool_call_id="call_1")
-    monitor.process_event(action)
-    monitor.process_event(make_user_message_event())
-
-    assert monitor.violation_count > 0
-
-    monitor.clear_violations()
-    assert monitor.violation_count == 0
-    assert len(monitor.violations) == 0
+    assert len(all_violations) > initial_count
 
 
 def test_monitor_custom_properties():
