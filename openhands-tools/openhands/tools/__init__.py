@@ -18,8 +18,7 @@ from ``openhands.tools.browser_use``.
 
 from importlib.metadata import PackageNotFoundError, version
 
-from openhands.tools.delegate import DelegationVisualizer, register_agent
-from openhands.tools.delegate.registration import get_agent_factory
+from openhands.tools.delegate import DelegationVisualizer
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import (
     get_default_agent,
