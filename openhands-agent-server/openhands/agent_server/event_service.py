@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,41 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
+
+
+def _make_timestamp_filter(
+    timestamp__gte: datetime | None,
+    timestamp__lt: datetime | None,
+) -> Callable[[str], bool] | None:
+    """Create a filter function for timestamp comparisons.
+
+    Converts datetime filters to ISO strings once, then returns a function
+    that performs string comparisons. This avoids parsing event.timestamp
+    on every iteration.
+
+    Args:
+        timestamp__gte: Filter for events with timestamp >= this value
+        timestamp__lt: Filter for events with timestamp < this value
+
+    Returns:
+        A function that takes an event timestamp (ISO string) and returns
+        True if it passes the filter, or None if no filtering is needed.
+    """
+    if timestamp__gte is None and timestamp__lt is None:
+        return None
+
+    # Convert datetime filters to ISO strings once (outside the loop)
+    gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+    lt_str = timestamp__lt.isoformat() if timestamp__lt else None
+
+    def passes_filter(event_timestamp: str) -> bool:
+        if gte_str is not None and event_timestamp < gte_str:
+            return False
+        if lt_str is not None and event_timestamp >= lt_str:
+            return False
+        return True
+
+    return passes_filter
 
 
 @dataclass
@@ -105,9 +141,8 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        # Convert datetime to ISO string for comparison (ISO strings are comparable)
-        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
-        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
+        # Create timestamp filter once (converts datetimes to ISO strings)
+        timestamp_filter = _make_timestamp_filter(timestamp__gte, timestamp__lt)
 
         # Collect all events
         all_events = []
@@ -130,13 +165,10 @@ class EventService:
                     if not self._event_matches_body(event, body):
                         continue
 
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
+                # Apply timestamp filter (uses string comparison for efficiency)
+                if timestamp_filter is not None and not timestamp_filter(
+                    event.timestamp
                 ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
                     continue
 
                 all_events.append(event)
@@ -209,9 +241,8 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        # Convert datetime to ISO string for comparison (ISO strings are comparable)
-        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
-        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
+        # Create timestamp filter once (converts datetimes to ISO strings)
+        timestamp_filter = _make_timestamp_filter(timestamp__gte, timestamp__lt)
 
         count = 0
         with self._conversation._state as state:
@@ -233,13 +264,10 @@ class EventService:
                     if not self._event_matches_body(event, body):
                         continue
 
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
+                # Apply timestamp filter (uses string comparison for efficiency)
+                if timestamp_filter is not None and not timestamp_filter(
+                    event.timestamp
                 ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
                     continue
 
                 count += 1

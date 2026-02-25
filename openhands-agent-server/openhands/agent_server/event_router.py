@@ -38,20 +38,25 @@ logger = logging.getLogger(__name__)
 
 def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
     """
-    Normalize datetime to server timezone for consistent comparison.
+    Normalize datetime to server timezone for consistent comparison with events.
 
-    If the datetime has timezone info, convert to server native timezone.
+    Event timestamps are stored as naive datetimes in server local time.
+    This function ensures filter datetimes are also naive in server local time
+    so they can be compared correctly.
+
+    If the datetime has timezone info, convert to server native timezone and
+    strip the tzinfo to make it naive.
     If it's naive (no timezone), assume it's already in server timezone.
 
     Args:
         dt: Input datetime (may be timezone-aware or naive)
 
     Returns:
-        Datetime in server native timezone (timezone-aware)
+        Naive datetime in server local time
     """
     if dt.tzinfo is not None:
-        # Timezone-aware: convert to server native timezone
-        return dt.astimezone(None)
+        # Timezone-aware: convert to server native timezone, then make naive
+        return dt.astimezone(None).replace(tzinfo=None)
     else:
         # Naive datetime: assume it's already in server timezone
         return dt
