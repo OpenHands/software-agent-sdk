@@ -381,7 +381,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )  # Current OpenAI client for interrupt
     _current_response_id: str | None = PrivateAttr(default=None)  # For cancel_responses
     _interrupted: bool = PrivateAttr(default=False)  # Interrupt flag
-    _calling_thread_id: int | None = PrivateAttr(default=None)  # Thread making LLM call
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -593,11 +592,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def interrupt(self) -> None:
         """Interrupt any in-progress LLM completion.
 
-        This method cancels in-progress LLM requests using multiple strategies:
-        1. Sets interrupt flag checked during streaming iteration
-        2. Raises CancellationError in the thread making the LLM call (immediate)
-        3. Calls litellm.cancel_responses() if a response ID is available
-        4. Closes HTTP clients to terminate connections as a fallback
+        This method cancels in-progress LLM requests by:
+        1. Setting interrupt flag - checked by the polling loop in _transport_call
+        2. Calling litellm.cancel_responses() if a response ID is available
+        3. Closing HTTP clients to help terminate connections faster
+
+        The LLM call runs in a daemon thread, and the main thread polls the
+        interrupt flag every 100ms. When interrupt() sets the flag, the polling
+        loop raises CancellationError immediately.
 
         Thread-safe: Can be safely called from any thread.
 
@@ -611,40 +613,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> signal.signal(signal.SIGINT, on_interrupt)
             >>> response = llm.completion(messages)  # Will be interrupted on Ctrl+C
         """
-        import ctypes
-
-        from openhands.sdk.conversation.cancellation import CancellationError
-
         logger.info(f"LLM.interrupt() called for model={self.model}")
 
-        # Set the interrupt flag first - this is checked during streaming
+        # Set the interrupt flag - checked by the polling loop in _transport_call
         self._interrupted = True
         logger.info("LLM interrupt flag set to True")
-
-        # Forcibly interrupt the thread making the LLM call
-        # This raises CancellationError in that thread immediately
-        calling_thread_id = self._calling_thread_id
-        if calling_thread_id is not None:
-            try:
-                logger.info(f"Raising CancellationError in thread {calling_thread_id}")
-                ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                    ctypes.c_ulong(calling_thread_id),
-                    ctypes.py_object(CancellationError),
-                )
-                if ret == 0:
-                    logger.warning("Thread ID not found for async exception")
-                elif ret == 1:
-                    logger.info("CancellationError raised in LLM thread")
-                else:
-                    # If more than 1, we need to reset it (should never happen)
-                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                        ctypes.c_ulong(calling_thread_id), None
-                    )
-                    logger.warning("Multiple threads affected, reset async exception")
-            except Exception as e:
-                logger.warning(f"Failed to raise async exception: {e}")
-        else:
-            logger.info("No calling thread ID available for async exception")
 
         # Try to cancel via litellm's cancel_responses API if we have a response ID
         response_id = self._current_response_id
@@ -1252,28 +1225,59 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 with self._http_client_lock:
                     self._openai_client = openai_client
-                    # Store thread ID for interrupt() to raise async exception
-                    self._calling_thread_id = threading.get_ident()
 
+                # Run LLM call in a daemon thread so we can check interrupt flag
+                # while waiting. If interrupted, we abandon the thread.
+                import queue
+
+                result_queue: queue.Queue[ModelResponse | CustomStreamWrapper] = (
+                    queue.Queue()
+                )
+                exception_queue: queue.Queue[BaseException] = queue.Queue()
+
+                def llm_worker():
+                    try:
+                        worker_ret = litellm_completion(
+                            model=self.model,
+                            api_key=api_key_value,
+                            api_base=self.base_url,
+                            api_version=self.api_version,
+                            timeout=self.timeout,
+                            drop_params=self.drop_params,
+                            seed=self.seed,
+                            messages=messages,
+                            client=openai_client,
+                            **kwargs,
+                        )
+                        result_queue.put(worker_ret)
+                    except BaseException as e:
+                        exception_queue.put(e)
+
+                worker_thread = threading.Thread(target=llm_worker, daemon=True)
+                worker_thread.start()
+
+                # Poll for result while checking interrupt flag
                 try:
-                    # Some providers need renames handled in _normalize_call_kwargs.
-                    ret = litellm_completion(
-                        model=self.model,
-                        api_key=api_key_value,
-                        api_base=self.base_url,
-                        api_version=self.api_version,
-                        timeout=self.timeout,
-                        drop_params=self.drop_params,
-                        seed=self.seed,
-                        messages=messages,
-                        client=openai_client,
-                        **kwargs,
-                    )
+                    while worker_thread.is_alive():
+                        if self._interrupted:
+                            logger.info(
+                                "LLM call interrupted - abandoning worker thread"
+                            )
+                            raise CancellationError("LLM completion interrupted")
+                        # Check every 100ms
+                        worker_thread.join(timeout=0.1)
+
+                    # Thread finished - check for exception first
+                    if not exception_queue.empty():
+                        raise exception_queue.get()
+
+                    # Get result
+                    ret = result_queue.get_nowait()
                 finally:
                     # Clear the client reference after the call completes
                     with self._http_client_lock:
                         self._openai_client = None
-                        self._calling_thread_id = None
+
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)
                     chunks = []
