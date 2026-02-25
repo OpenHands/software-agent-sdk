@@ -83,8 +83,6 @@ class TaskManager:
         # tmp directory to save task to eventually resume it later
         self._tmp_dir = Path(tempfile.mkdtemp(prefix="openhands_tasks_"))
 
-        self._task_counter = 0
-
     def _ensure_parent(self, conversation: LocalConversation) -> None:
         if self._parent_conversation is None:
             self._parent_conversation = conversation
@@ -100,8 +98,8 @@ class TaskManager:
 
     def _generate_ids(self) -> tuple[str, uuid.UUID]:
         """Generate a unique task ID, and a conversation ID."""
-        self._task_counter += 1
-        task_id = f"task_{self._task_counter:08x}"
+        task_number = len(self._tasks) + 1
+        task_id = f"task_{task_number:08x}"
         uuid_ = uuid.uuid4()
         return task_id, uuid_
 

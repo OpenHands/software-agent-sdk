@@ -76,7 +76,6 @@ class TaskObservation(Observation):
         if self.is_error:
             text.append("❌ ", style="red bold")
             text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
-            return super().visualize
 
         text.append(self.text)
         return text
