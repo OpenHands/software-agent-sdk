@@ -381,6 +381,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )  # Current OpenAI client for interrupt
     _current_response_id: str | None = PrivateAttr(default=None)  # For cancel_responses
     _interrupted: bool = PrivateAttr(default=False)  # Interrupt flag
+    _calling_thread_id: int | None = PrivateAttr(default=None)  # Thread making LLM call
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -594,8 +595,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         This method cancels in-progress LLM requests using multiple strategies:
         1. Sets interrupt flag checked during streaming iteration
-        2. Calls litellm.cancel_responses() if a response ID is available
-        3. Closes HTTP clients to terminate connections as a fallback
+        2. Raises CancellationError in the thread making the LLM call (immediate)
+        3. Calls litellm.cancel_responses() if a response ID is available
+        4. Closes HTTP clients to terminate connections as a fallback
 
         Thread-safe: Can be safely called from any thread.
 
@@ -609,11 +611,40 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> signal.signal(signal.SIGINT, on_interrupt)
             >>> response = llm.completion(messages)  # Will be interrupted on Ctrl+C
         """
+        import ctypes
+
+        from openhands.sdk.conversation.cancellation import CancellationError
+
         logger.info(f"LLM.interrupt() called for model={self.model}")
 
         # Set the interrupt flag first - this is checked during streaming
         self._interrupted = True
         logger.info("LLM interrupt flag set to True")
+
+        # Forcibly interrupt the thread making the LLM call
+        # This raises CancellationError in that thread immediately
+        calling_thread_id = self._calling_thread_id
+        if calling_thread_id is not None:
+            try:
+                logger.info(f"Raising CancellationError in thread {calling_thread_id}")
+                ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_ulong(calling_thread_id),
+                    ctypes.py_object(CancellationError),
+                )
+                if ret == 0:
+                    logger.warning("Thread ID not found for async exception")
+                elif ret == 1:
+                    logger.info("CancellationError raised in LLM thread")
+                else:
+                    # If more than 1, we need to reset it (should never happen)
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                        ctypes.c_ulong(calling_thread_id), None
+                    )
+                    logger.warning("Multiple threads affected, reset async exception")
+            except Exception as e:
+                logger.warning(f"Failed to raise async exception: {e}")
+        else:
+            logger.info("No calling thread ID available for async exception")
 
         # Try to cancel via litellm's cancel_responses API if we have a response ID
         response_id = self._current_response_id
@@ -1167,6 +1198,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             CancellationError: If cancellation_token is cancelled during streaming
             httpx.CloseError: If interrupt() is called during a non-streaming call
         """
+        import threading
+
         from openhands.sdk.conversation.cancellation import CancellationError
 
         # litellm.modify_params is GLOBAL; guard it for thread-safety
@@ -1219,6 +1252,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 with self._http_client_lock:
                     self._openai_client = openai_client
+                    # Store thread ID for interrupt() to raise async exception
+                    self._calling_thread_id = threading.get_ident()
 
                 try:
                     # Some providers need renames handled in _normalize_call_kwargs.
@@ -1238,6 +1273,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     # Clear the client reference after the call completes
                     with self._http_client_lock:
                         self._openai_client = None
+                        self._calling_thread_id = None
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)
                     chunks = []
