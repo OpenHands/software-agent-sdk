@@ -1,17 +1,17 @@
 """
-Interrupt Example - Demonstrating immediate termination of agent operations.
+Interrupt Example - Demonstrating termination of agent operations.
 
-This example shows how to use the interrupt() method to immediately terminate
-an in-progress LLM completion or tool execution, similar to Ctrl+C behavior.
+This example shows how to use the interrupt() method to terminate an
+in-progress agent execution, similar to Ctrl+C behavior.
 
 Key differences from pause():
 - pause(): Waits for the current operation to complete, then stops
-- interrupt(): Immediately terminates in-progress LLM calls
+- interrupt(): Signals immediate termination, closes HTTP clients
 
-IMPORTANT: For immediate interrupt of LLM calls, streaming must be enabled.
-With streaming, the SDK checks the interrupt flag between chunks and can stop
-immediately. Without streaming, the SDK can only attempt to close HTTP
-connections which may not always work depending on the provider.
+Note: For non-streaming LLM calls, interrupt will stop after the current
+LLM call completes. The closed HTTP client may cause the call to fail early
+depending on the provider. For streaming calls with on_token callback,
+interrupt is checked between chunks for more responsive cancellation.
 
 Press Ctrl+C during execution to interrupt the agent.
 """
@@ -45,7 +45,6 @@ def main():
         model="openai/gpt-4o",  # Using gpt-4o for complex reasoning
         base_url=base_url,
         api_key=SecretStr(api_key),
-        stream=True,  # Enable streaming for immediate interrupt support
     )
 
     # Tools
