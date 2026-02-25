@@ -533,7 +533,10 @@ class ConversationState(OpenHandsModel):
     def add_event(self, event: Event) -> None:
         """Add an event to the conversation, checking for API compliance.
 
-        This method should be used instead of directly appending to events.
+        This is the only supported way to add events to the conversation.
+        Do not mutate the events list directly (e.g., via ``state.events.append()``),
+        as this bypasses compliance monitoring and may cause silent failures.
+
         It checks the event against API compliance properties and logs any
         violations before adding the event to the event log.
 

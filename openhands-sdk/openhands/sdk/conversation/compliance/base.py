@@ -36,13 +36,19 @@ class ComplianceState:
             received results. Maps tool_call_id to the ActionEvent id.
         completed_tool_call_ids: Tool calls that have received results.
             Used to detect duplicate results.
-        all_tool_call_ids: All tool_call_ids seen so far (for detecting
-            results referencing unknown calls).
     """
 
     pending_tool_call_ids: dict[ToolCallID, EventID] = field(default_factory=dict)
     completed_tool_call_ids: set[ToolCallID] = field(default_factory=set)
-    all_tool_call_ids: set[ToolCallID] = field(default_factory=set)
+
+    @property
+    def all_tool_call_ids(self) -> set[ToolCallID]:
+        """All tool_call_ids seen so far (pending or completed).
+
+        This is derived from pending_tool_call_ids (dict keys) and
+        completed_tool_call_ids to avoid maintaining redundant state.
+        """
+        return set(self.pending_tool_call_ids) | self.completed_tool_call_ids
 
 
 class APICompliancePropertyBase(ABC):

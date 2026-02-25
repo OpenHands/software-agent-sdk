@@ -57,7 +57,6 @@ class InterleavedMessageProperty(APICompliancePropertyBase):
         """Track pending and completed tool calls."""
         if isinstance(event, ActionEvent):
             state.pending_tool_call_ids[event.tool_call_id] = event.id
-            state.all_tool_call_ids.add(event.tool_call_id)
         elif isinstance(event, ObservationBaseEvent):
             # Move from pending to completed
             state.pending_tool_call_ids.pop(event.tool_call_id, None)
@@ -159,13 +158,9 @@ class ToolResultOrderProperty(APICompliancePropertyBase):
         if not isinstance(event, ObservationBaseEvent):
             return None
 
-        # Check if we've seen an action with this tool_call_id
-        # (pending or completed - either means we saw it)
-        seen_in_pending = event.tool_call_id in state.pending_tool_call_ids
-        seen_in_completed = event.tool_call_id in state.completed_tool_call_ids
-        seen_in_all = event.tool_call_id in state.all_tool_call_ids
-
-        if not (seen_in_pending or seen_in_completed or seen_in_all):
+        # Check if we've seen an action with this tool_call_id.
+        # all_tool_call_ids combines pending and completed, so a single check suffices.
+        if event.tool_call_id not in state.all_tool_call_ids:
             return ComplianceViolation(
                 property_name=self.name,
                 event_id=event.id,
