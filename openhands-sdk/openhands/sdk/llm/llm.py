@@ -647,18 +647,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return self._async_loop
 
     def cancel(self) -> None:
-        """Cancel any in-flight LLM call immediately.
+        """Cancel any in-flight LLM call (best effort).
 
-        This method can be called from any thread. For streaming calls,
-        cancellation happens immediately. For non-streaming calls, the
-        async task is cancelled, which closes the HTTP connection.
+        This method schedules cancellation on the background event loop
+        but does not block waiting for confirmation. The cancellation will
+        take effect at the next await point in the LLM call.
 
-        After cancellation, the LLM can be used for new calls - the
-        cancellation only affects the currently running call.
+        Can be called from any thread. After cancellation, the LLM can be
+        used for new calls - the cancellation only affects the currently
+        running call.
 
         Example:
             >>> # In another thread:
-            >>> llm.cancel()  # Immediately cancels the current LLM call
+            >>> llm.cancel()  # Schedules cancellation of current LLM call
         """
         with self._task_lock:
             if self._current_task is not None and self._async_loop is not None:
