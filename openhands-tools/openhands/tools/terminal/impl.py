@@ -141,59 +141,78 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
 
-        if action.reset or self.session._closed:
-            reset_result = self.reset()
+        # Register interrupt callback if conversation is available
+        # This allows conversation.interrupt() to terminate the terminal command
+        interrupt_callback = None
+        if conversation is not None:
 
-            # Handle command execution after reset
-            if action.command.strip():
-                command_action = TerminalAction(
-                    command=action.command,
-                    timeout=action.timeout,
-                    is_input=False,  # is_input validated to be False when reset=True
-                )
-                self._export_envs(command_action, conversation)
-                command_result = self.session.execute(command_action)
+            def _on_interrupt() -> None:
+                self.session.request_interrupt()
 
-                # Extract text from content
-                reset_text = reset_result.text
-                command_text = command_result.text
+            conversation.register_interrupt_callback(_on_interrupt)
+            interrupt_callback = _on_interrupt
 
-                observation = command_result.model_copy(
-                    update={
-                        "content": [
-                            TextContent(text=f"{reset_text}\n\n{command_text}")
-                        ],
-                        "command": f"[RESET] {action.command}",
-                    }
-                )
+        try:
+            if action.reset or self.session._closed:
+                reset_result = self.reset()
+
+                # Handle command execution after reset
+                if action.command.strip():
+                    # is_input validated to be False when reset=True
+                    command_action = TerminalAction(
+                        command=action.command,
+                        timeout=action.timeout,
+                        is_input=False,
+                    )
+                    self._export_envs(command_action, conversation)
+                    command_result = self.session.execute(command_action)
+
+                    # Extract text from content
+                    reset_text = reset_result.text
+                    command_text = command_result.text
+
+                    observation = command_result.model_copy(
+                        update={
+                            "content": [
+                                TextContent(text=f"{reset_text}\n\n{command_text}")
+                            ],
+                            "command": f"[RESET] {action.command}",
+                        }
+                    )
+                else:
+                    # Reset only, no command to execute
+                    observation = reset_result
             else:
-                # Reset only, no command to execute
-                observation = reset_result
-        else:
-            # If env keys detected, export env values to bash as a separate action first
-            self._export_envs(action, conversation)
-            observation = self.session.execute(action)
+                # If env keys detected, export env values to bash as a separate action
+                self._export_envs(action, conversation)
+                observation = self.session.execute(action)
 
-        # Apply automatic secrets masking
-        content_text = observation.text
+            # Apply automatic secrets masking
+            content_text = observation.text
 
-        if content_text and conversation is not None:
-            try:
-                secret_registry = conversation.state.secret_registry
-                masked_content = secret_registry.mask_secrets_in_output(content_text)
-                if masked_content:
-                    data = observation.model_dump(
-                        exclude={"content", "full_output_save_dir"}
+            if content_text and conversation is not None:
+                try:
+                    secret_registry = conversation.state.secret_registry
+                    masked_content = secret_registry.mask_secrets_in_output(
+                        content_text
                     )
-                    return TerminalObservation.from_text(
-                        text=masked_content,
-                        full_output_save_dir=self.full_output_save_dir,
-                        **data,
-                    )
-            except Exception:
-                pass
+                    if masked_content:
+                        data = observation.model_dump(
+                            exclude={"content", "full_output_save_dir"}
+                        )
+                        return TerminalObservation.from_text(
+                            text=masked_content,
+                            full_output_save_dir=self.full_output_save_dir,
+                            **data,
+                        )
+                except Exception:
+                    pass
 
-        return observation
+            return observation
+        finally:
+            # Always unregister the interrupt callback
+            if interrupt_callback is not None and conversation is not None:
+                conversation.unregister_interrupt_callback(interrupt_callback)
 
     def close(self) -> None:
         """Close the terminal session and clean up resources."""

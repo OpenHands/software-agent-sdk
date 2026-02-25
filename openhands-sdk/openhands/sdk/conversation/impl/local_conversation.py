@@ -79,6 +79,8 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    # Interrupt callbacks - invoked when interrupt() is called
+    _interrupt_callbacks: list
 
     def __init__(
         self,
@@ -145,6 +147,9 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+
+        # Initialize interrupt callbacks list (thread-safe via list operations)
+        self._interrupt_callbacks = []
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -745,6 +750,9 @@ class LocalConversation(BaseConversation):
 
         This method is thread-safe and can be called from any thread.
         After interruption, the conversation status is set to PAUSED.
+
+        Additionally, all registered interrupt callbacks are invoked to allow
+        other components (like terminal sessions) to terminate their operations.
         """
         from openhands.sdk.event.user_action import InterruptEvent
 
@@ -752,6 +760,14 @@ class LocalConversation(BaseConversation):
         self.agent.llm.cancel()
         for llm in self.llm_registry.usage_to_llm.values():
             llm.cancel()
+
+        # Invoke all registered interrupt callbacks
+        # Copy the list to avoid issues if callbacks modify it during iteration
+        for callback in list(self._interrupt_callbacks):
+            try:
+                callback()
+            except Exception as e:
+                logger.warning(f"Error in interrupt callback: {e}")
 
         # Set paused status
         with self._state:
@@ -763,6 +779,29 @@ class LocalConversation(BaseConversation):
                 interrupt_event = InterruptEvent()
                 self._on_event(interrupt_event)
                 logger.info("Agent execution interrupted")
+
+    def register_interrupt_callback(self, callback) -> None:
+        """Register a callback to be invoked when interrupt() is called.
+
+        Callbacks are invoked synchronously during interrupt() and should be
+        fast, non-blocking operations (e.g., setting a flag). They are called
+        before the conversation status is changed.
+
+        Args:
+            callback: A no-argument callable to invoke on interrupt.
+        """
+        self._interrupt_callbacks.append(callback)
+
+    def unregister_interrupt_callback(self, callback) -> None:
+        """Remove a previously registered interrupt callback.
+
+        Args:
+            callback: The callback to remove. If not found, this is a no-op.
+        """
+        try:
+            self._interrupt_callbacks.remove(callback)
+        except ValueError:
+            pass  # Callback not in list, ignore
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation.
