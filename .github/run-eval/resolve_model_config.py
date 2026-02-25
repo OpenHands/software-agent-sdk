@@ -52,6 +52,14 @@ MODELS = {
             "litellm_extra_body": {"enable_thinking": True},
         },
     },
+    "qwen3.5-flash": {
+        "id": "qwen3.5-flash",
+        "display_name": "Qwen3.5 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/dashscope/qwen3.5-flash-2026-02-23",
+            "temperature": 0.0,
+        },
+    },
     "claude-4.5-opus": {
         "id": "claude-4.5-opus",
         "display_name": "Claude 4.5 Opus",
