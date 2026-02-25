@@ -373,14 +373,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
-    # HTTP client for interruptible requests
-    _http_client: httpx.Client | None = PrivateAttr(default=None)
-    _http_client_lock: Any = PrivateAttr(default=None)  # threading.Lock
-    _openai_client: Any = PrivateAttr(
-        default=None
-    )  # Current OpenAI client for interrupt
-    _current_response_id: str | None = PrivateAttr(default=None)  # For cancel_responses
-    _interrupted: bool = PrivateAttr(default=False)  # Interrupt flag
+    _interrupted: bool = PrivateAttr(default=False)  # Interrupt flag for daemon thread
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -446,8 +439,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @model_validator(mode="after")
     def _set_env_side_effects(self):
-        import threading
-
         if self.openrouter_site_url:
             os.environ["OR_SITE_URL"] = self.openrouter_site_url
         if self.openrouter_app_name:
@@ -462,10 +453,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
-
-        # Initialize HTTP client lock for interrupt support
-        if self._http_client_lock is None:
-            self._http_client_lock = threading.Lock()
 
         # Metrics + Telemetry wiring
         if self._metrics is None:
@@ -592,19 +579,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def interrupt(self) -> None:
         """Interrupt any in-progress LLM completion.
 
-        This method cancels in-progress LLM requests by:
-        1. Setting interrupt flag - checked by the polling loop in _transport_call
-        2. Calling litellm.cancel_responses() if a response ID is available
-        3. Closing HTTP clients to help terminate connections faster
-
         The LLM call runs in a daemon thread, and the main thread polls the
-        interrupt flag every 100ms. When interrupt() sets the flag, the polling
-        loop raises CancellationError immediately.
+        interrupt flag every 100ms. When this method sets the flag, the polling
+        loop raises CancellationError immediately, abandoning the daemon thread.
 
         Thread-safe: Can be safely called from any thread.
 
         Example:
-            >>> import threading
             >>> import signal
             >>>
             >>> def on_interrupt(signum, frame):
@@ -614,87 +595,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> response = llm.completion(messages)  # Will be interrupted on Ctrl+C
         """
         logger.info(f"LLM.interrupt() called for model={self.model}")
-
-        # Set the interrupt flag - checked by the polling loop in _transport_call
         self._interrupted = True
-        logger.info("LLM interrupt flag set to True")
-
-        # Try to cancel via litellm's cancel_responses API if we have a response ID
-        response_id = self._current_response_id
-        if response_id is not None:
-            try:
-                import litellm
-
-                logger.info(
-                    f"Calling litellm.cancel_responses(response_id={response_id})"
-                )
-                litellm.cancel_responses(response_id=response_id)
-                logger.info("litellm.cancel_responses() completed")
-            except Exception as e:
-                logger.info(f"cancel_responses failed (may not be supported): {e}")
-        else:
-            logger.info("No response_id available for cancel_responses")
-
-        # Close litellm's module-level client as fallback
-        try:
-            import litellm
-
-            if hasattr(litellm, "module_level_client"):
-                handler = litellm.module_level_client
-                if handler is not None and hasattr(handler, "client"):
-                    client = handler.client
-                    if client is not None and hasattr(client, "close"):
-                        logger.info("Closing litellm.module_level_client.client")
-                        client.close()
-                        logger.info("litellm module client closed")
-        except Exception as e:
-            logger.warning(f"Error closing litellm module client: {e}")
-
-        if self._http_client_lock is None:
-            logger.info("LLM.interrupt() complete (no HTTP client lock)")
-            return
-
-        with self._http_client_lock:
-            # Close the OpenAI client (this closes its internal httpx client)
-            if self._openai_client is not None:
-                try:
-                    logger.info("Closing OpenAI client")
-                    self._openai_client.close()
-                    logger.info("OpenAI client closed")
-                except Exception as e:
-                    logger.warning(f"Error closing OpenAI client during interrupt: {e}")
-                finally:
-                    self._openai_client = None
-
-            # Also close our managed HTTP client
-            if self._http_client is not None:
-                try:
-                    logger.info("Closing managed HTTP client")
-                    self._http_client.close()
-                    logger.info("Managed HTTP client closed")
-                except Exception as e:
-                    logger.warning(f"Error closing HTTP client during interrupt: {e}")
-                finally:
-                    self._http_client = None
-
-        logger.info("LLM.interrupt() complete")
-
-    def _get_or_create_http_client(self) -> httpx.Client:
-        """Get or create the HTTP client for LLM requests.
-
-        Thread-safe: Uses a lock to prevent race conditions.
-
-        Returns:
-            An httpx.Client instance that can be used for LLM requests.
-        """
-        if self._http_client_lock is None:
-            # Fallback: create ephemeral client if lock not initialized
-            return httpx.Client(timeout=self.timeout or 300.0)
-
-        with self._http_client_lock:
-            if self._http_client is None or self._http_client.is_closed:
-                self._http_client = httpx.Client(timeout=self.timeout or 300.0)
-            return self._http_client
 
     def _handle_error(
         self,
@@ -762,7 +663,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         # Reset interrupt state at start of call
         self._interrupted = False
-        self._current_response_id = None
 
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
@@ -923,7 +823,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         # Reset interrupt state at start of call
         self._interrupted = False
-        self._current_response_id = None
 
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
@@ -1031,17 +930,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 )
 
                                 raise CancellationError("LLM completion interrupted")
-
-                            # Capture response ID for cancellation support
-                            resp_id = getattr(event, "response_id", None)
-                            if resp_id:
-                                self._current_response_id = resp_id
-                            else:
-                                resp = getattr(event, "response", None)
-                                if resp is not None:
-                                    resp_id = getattr(resp, "id", None)
-                                    if resp_id:
-                                        self._current_response_id = resp_id
 
                             if stream_callback is None:
                                 continue
@@ -1168,8 +1056,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             ModelResponse from the LLM
 
         Raises:
-            CancellationError: If cancellation_token is cancelled during streaming
-            httpx.CloseError: If interrupt() is called during a non-streaming call
+            CancellationError: If interrupted or cancellation_token is cancelled
         """
         import threading
 
@@ -1202,30 +1089,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 api_key_value = self._get_litellm_api_key_value()
 
-                # Get the managed HTTP client for interrupt support.
-                # The client is passed to OpenAI SDK, which litellm uses internally.
-                # If interrupt() is called, it closes this client, causing the
-                # in-flight request to fail immediately.
-                http_client = self._get_or_create_http_client()
-
-                # Create OpenAI client with our managed http_client
-                import openai
-
-                openai_client = openai.OpenAI(
-                    api_key=api_key_value or "dummy-key",
-                    base_url=self.base_url,
-                    http_client=http_client,
-                    timeout=self.timeout or 300.0,
-                )
-
-                # Store reference to the OpenAI client for interrupt support
-                # This allows interrupt() to close it from another thread
-                assert self._http_client_lock is not None, (
-                    "HTTP client lock not initialized"
-                )
-                with self._http_client_lock:
-                    self._openai_client = openai_client
-
                 # Run LLM call in a daemon thread so we can check interrupt flag
                 # while waiting. If interrupted, we abandon the thread.
                 import queue
@@ -1246,7 +1109,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             drop_params=self.drop_params,
                             seed=self.seed,
                             messages=messages,
-                            client=openai_client,
                             **kwargs,
                         )
                         result_queue.put(worker_ret)
@@ -1257,26 +1119,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 worker_thread.start()
 
                 # Poll for result while checking interrupt flag
-                try:
-                    while worker_thread.is_alive():
-                        if self._interrupted:
-                            logger.info(
-                                "LLM call interrupted - abandoning worker thread"
-                            )
-                            raise CancellationError("LLM completion interrupted")
-                        # Check every 100ms
-                        worker_thread.join(timeout=0.1)
+                while worker_thread.is_alive():
+                    if self._interrupted:
+                        logger.info("LLM call interrupted - abandoning worker thread")
+                        raise CancellationError("LLM completion interrupted")
+                    # Check every 100ms
+                    worker_thread.join(timeout=0.1)
 
-                    # Thread finished - check for exception first
-                    if not exception_queue.empty():
-                        raise exception_queue.get()
+                # Thread finished - check for exception first
+                if not exception_queue.empty():
+                    raise exception_queue.get()
 
-                    # Get result
-                    ret = result_queue.get_nowait()
-                finally:
-                    # Clear the client reference after the call completes
-                    with self._http_client_lock:
-                        self._openai_client = None
+                # Get result
+                ret = result_queue.get_nowait()
 
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)

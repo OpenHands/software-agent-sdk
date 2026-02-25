@@ -262,23 +262,21 @@ class TestInterruptFunctionality:
 class TestLLMInterrupt:
     """Test LLM interrupt functionality."""
 
-    def test_llm_interrupt_closes_http_client(self):
-        """Test that LLM.interrupt() closes the HTTP client."""
+    def test_llm_interrupt_sets_flag(self):
+        """Test that LLM.interrupt() sets the interrupted flag."""
         llm = LLM(
             model="gpt-4o-mini",
             api_key=SecretStr("test-key"),
             usage_id="test-interrupt-llm",
         )
 
-        # Create HTTP client by accessing it
-        client = llm._get_or_create_http_client()
-        assert not client.is_closed
+        # Initially not interrupted
+        assert llm._interrupted is False
 
-        # Interrupt should close it
+        # Interrupt should set the flag
         llm.interrupt()
 
-        # Client should now be closed or None
-        assert llm._http_client is None
+        assert llm._interrupted is True
 
     def test_llm_interrupt_is_idempotent(self):
         """Test that multiple LLM.interrupt() calls are safe."""
@@ -288,15 +286,13 @@ class TestLLMInterrupt:
             usage_id="test-interrupt-llm-2",
         )
 
-        # Create HTTP client
-        llm._get_or_create_http_client()
-
         # Multiple interrupts should be safe
         llm.interrupt()
         llm.interrupt()
         llm.interrupt()
 
-        assert llm._http_client is None
+        # Flag should still be set
+        assert llm._interrupted is True
 
 
 class TestLLMRegistryAllLLMs:
