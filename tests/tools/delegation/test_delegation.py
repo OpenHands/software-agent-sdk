@@ -7,6 +7,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.subagent.registry import register_builtins_agents
 from openhands.tools.delegate import (
     DelegateAction,
     DelegateExecutor,
@@ -100,7 +101,7 @@ def test_delegate_observation_creation():
 def test_delegate_executor_delegate():
     """Test DelegateExecutor delegate operation."""
     executor, parent_conversation = create_test_executor_and_parent()
-
+    register_builtins_agents()
     # First spawn some agents
     spawn_action = DelegateAction(command="spawn", ids=["agent1", "agent2"])
     spawn_observation = executor(spawn_action, parent_conversation)
@@ -182,6 +183,7 @@ def test_spawn_disables_streaming_for_sub_agents():
         base_url="https://api.openai.com/v1",
         stream=True,  # Parent has streaming enabled
     )
+    register_builtins_agents()
 
     parent_conversation = MagicMock()
     parent_conversation.id = uuid.uuid4()
