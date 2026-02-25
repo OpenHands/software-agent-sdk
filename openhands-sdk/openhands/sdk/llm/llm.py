@@ -376,6 +376,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # HTTP client for interruptible requests
     _http_client: httpx.Client | None = PrivateAttr(default=None)
     _http_client_lock: Any = PrivateAttr(default=None)  # threading.Lock
+    _openai_client: Any = PrivateAttr(
+        default=None
+    )  # Current OpenAI client for interrupt
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -607,6 +610,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return
 
         with self._http_client_lock:
+            # Close the OpenAI client first (this closes its internal httpx client)
+            if self._openai_client is not None:
+                try:
+                    logger.debug("Interrupting LLM: closing OpenAI client")
+                    self._openai_client.close()
+                except Exception as e:
+                    logger.warning(f"Error closing OpenAI client during interrupt: {e}")
+                finally:
+                    self._openai_client = None
+
+            # Also close our managed HTTP client
             if self._http_client is not None:
                 try:
                     logger.debug("Interrupting LLM: closing HTTP client")
@@ -1125,19 +1139,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     timeout=self.timeout or 300.0,
                 )
 
-                # Some providers need renames handled in _normalize_call_kwargs.
-                ret = litellm_completion(
-                    model=self.model,
-                    api_key=api_key_value,
-                    api_base=self.base_url,
-                    api_version=self.api_version,
-                    timeout=self.timeout,
-                    drop_params=self.drop_params,
-                    seed=self.seed,
-                    messages=messages,
-                    client=openai_client,
-                    **kwargs,
+                # Store reference to the OpenAI client for interrupt support
+                # This allows interrupt() to close it from another thread
+                assert self._http_client_lock is not None, (
+                    "HTTP client lock not initialized"
                 )
+                with self._http_client_lock:
+                    self._openai_client = openai_client
+
+                try:
+                    # Some providers need renames handled in _normalize_call_kwargs.
+                    ret = litellm_completion(
+                        model=self.model,
+                        api_key=api_key_value,
+                        api_base=self.base_url,
+                        api_version=self.api_version,
+                        timeout=self.timeout,
+                        drop_params=self.drop_params,
+                        seed=self.seed,
+                        messages=messages,
+                        client=openai_client,
+                        **kwargs,
+                    )
+                finally:
+                    # Clear the client reference after the call completes
+                    with self._http_client_lock:
+                        self._openai_client = None
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)
                     chunks = []
