@@ -329,3 +329,137 @@ class TestLLMRegistryAllLLMs:
         assert len(all_llms) == 2
         assert llm1 in all_llms
         assert llm2 in all_llms
+
+
+class TestInterruptDuringAgentStep:
+    """Test that interrupt during agent.step() discards response and skips execution."""
+
+    def test_interrupt_after_llm_completion_discards_response(self):
+        """Verify that agent.step() checks interrupt status after LLM returns.
+
+        Uses mock patching to set PAUSED status right after LLM completion,
+        verifying the check in agent.step() prevents finish tool execution.
+        """
+        from unittest.mock import patch
+
+        from openhands.sdk.llm import Message, MessageToolCall, TextContent
+        from openhands.sdk.testing import TestLLM
+
+        llm = TestLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="")],
+                    tool_calls=[
+                        MessageToolCall(
+                            id="call_1",
+                            name="finish",
+                            arguments='{"message": "Should not be executed"}',
+                            origin="completion",
+                        )
+                    ],
+                ),
+            ]
+        )
+
+        agent = Agent(llm=llm, tools=[])
+        conversation = Conversation(agent=agent, stuck_detection=False)
+
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="Run")])
+        )
+
+        from openhands.sdk.agent.utils import make_llm_completion
+
+        original_make_completion = make_llm_completion
+
+        def make_completion_then_pause(*args, **kwargs):
+            result = original_make_completion(*args, **kwargs)
+            conversation._state.execution_status = ConversationExecutionStatus.PAUSED
+            return result
+
+        with patch(
+            "openhands.sdk.agent.agent.make_llm_completion",
+            side_effect=make_completion_then_pause,
+        ):
+            conversation.run()
+
+        # Status should be PAUSED (we set it in our patch)
+        # If the finish tool had executed, status would be FINISHED
+        assert conversation.state.execution_status == ConversationExecutionStatus.PAUSED
+
+    def test_run_loop_breaks_when_paused_between_iterations(self):
+        """Verify run loop exits when status is set to PAUSED between iterations."""
+        from unittest.mock import patch
+
+        from openhands.sdk.llm import Message, MessageToolCall, TextContent
+        from openhands.sdk.testing import TestLLM
+
+        llm = TestLLM.from_messages(
+            [
+                # First response: think tool (doesn't change status)
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="")],
+                    tool_calls=[
+                        MessageToolCall(
+                            id="call_1",
+                            name="think",
+                            arguments='{"thought": "thinking..."}',
+                            origin="completion",
+                        )
+                    ],
+                ),
+                # Second response: should NOT be called because we set PAUSED
+                Message(
+                    role="assistant",
+                    content=[TextContent(text="")],
+                    tool_calls=[
+                        MessageToolCall(
+                            id="call_2",
+                            name="finish",
+                            arguments='{"message": "done"}',
+                            origin="completion",
+                        )
+                    ],
+                ),
+            ]
+        )
+
+        agent = Agent(llm=llm, tools=[])
+        conversation = Conversation(agent=agent, stuck_detection=False)
+
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="Run")])
+        )
+
+        # Patch make_llm_completion to set PAUSED after first call
+        from openhands.sdk.agent.utils import make_llm_completion
+
+        original_make_completion = make_llm_completion
+        call_count = [0]
+
+        def make_completion_pause_after_first(*args, **kwargs):
+            result = original_make_completion(*args, **kwargs)
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # After first LLM call, set PAUSED
+                conversation._state.execution_status = (
+                    ConversationExecutionStatus.PAUSED
+                )
+            return result
+
+        with patch(
+            "openhands.sdk.agent.agent.make_llm_completion",
+            side_effect=make_completion_pause_after_first,
+        ):
+            conversation.run()
+
+        # First LLM call made
+        assert call_count[0] == 1
+
+        # Run loop should have exited due to PAUSED status
+        assert conversation.state.execution_status == ConversationExecutionStatus.PAUSED
+
+        # Second LLM response should NOT have been consumed
+        assert llm.remaining_responses == 1

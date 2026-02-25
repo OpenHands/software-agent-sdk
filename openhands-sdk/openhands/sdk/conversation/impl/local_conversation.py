@@ -558,18 +558,20 @@ class LocalConversation(BaseConversation):
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
+
+                # Check status and prepare for step (with lock)
+                should_break = False
+                should_continue = False
                 with self._state:
-                    # Pause attempts to acquire the state lock
-                    # Before value can be modified step can be taken
-                    # Ensure step conditions are checked when lock is already acquired
+                    # Check for terminal conditions
                     if self._state.execution_status in [
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
                     ]:
-                        break
+                        should_break = True
 
                     # Handle stop hooks on FINISHED
-                    if (
+                    elif (
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
@@ -592,64 +594,73 @@ class LocalConversation(BaseConversation):
                                 self._state.execution_status = (
                                     ConversationExecutionStatus.RUNNING
                                 )
-                                continue
-                        # No hooks or hooks allowed stopping
-                        break
+                                should_continue = True
+                            else:
+                                should_break = True
+                        else:
+                            # No hooks - stop
+                            should_break = True
 
-                    # Check for stuck patterns if enabled
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
+                    else:
+                        # Check for stuck patterns if enabled (only when RUNNING)
+                        if self._stuck_detector:
+                            is_stuck = self._stuck_detector.is_stuck()
+                            if is_stuck:
+                                logger.warning("Stuck pattern detected.")
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.STUCK
+                                )
+                                should_continue = True
 
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
+                        # Clear confirmation flag before calling agent.step()
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        ):
                             self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
+                                ConversationExecutionStatus.RUNNING
                             )
-                            continue
 
-                    # clear the flag before calling agent.step() (user approved)
-                    if (
-                        self._state.execution_status
-                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                    ):
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
-                        )
+                if should_break:
+                    break
+                if should_continue:
+                    continue
 
-                    self.agent.step(
-                        self, on_event=self._on_event, on_token=self._on_token
+                # Run agent step WITHOUT holding the state lock
+                # This allows interrupt() to modify the state concurrently
+                self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
+                iteration += 1
+
+                # Check for non-finished terminal conditions
+                # Note: We intentionally do NOT check for FINISHED status here.
+                # This allows concurrent user messages to be processed:
+                # 1. Agent finishes and sets status to FINISHED
+                # 2. User sends message concurrently via send_message()
+                # 3. send_message() waits for FIFO lock, then sets status to IDLE
+                # 4. Run loop continues to next iteration and processes the message
+                # 5. Without this design, concurrent messages would be lost
+                if (
+                    self.state.execution_status
+                    == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                ):
+                    break
+
+                if iteration >= self.max_iteration_per_run:
+                    error_msg = (
+                        f"Agent reached maximum iterations limit "
+                        f"({self.max_iteration_per_run})."
                     )
-                    iteration += 1
-
-                    # Check for non-finished terminal conditions
-                    # Note: We intentionally do NOT check for FINISHED status here.
-                    # This allows concurrent user messages to be processed:
-                    # 1. Agent finishes and sets status to FINISHED
-                    # 2. User sends message concurrently via send_message()
-                    # 3. send_message() waits for FIFO lock, then sets status to IDLE
-                    # 4. Run loop continues to next iteration and processes the message
-                    # 5. Without this design, concurrent messages would be lost
-                    if (
-                        self.state.execution_status
-                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                    ):
-                        break
-
-                    if iteration >= self.max_iteration_per_run:
-                        error_msg = (
-                            f"Agent reached maximum iterations limit "
-                            f"({self.max_iteration_per_run})."
-                        )
-                        logger.error(error_msg)
+                    logger.error(error_msg)
+                    with self._state:
                         self._state.execution_status = ConversationExecutionStatus.ERROR
-                        self._on_event(
-                            ConversationErrorEvent(
-                                source="environment",
-                                code="MaxIterationsReached",
-                                detail=error_msg,
-                            )
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code="MaxIterationsReached",
+                            detail=error_msg,
                         )
-                        break
+                    )
+                    break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
 
