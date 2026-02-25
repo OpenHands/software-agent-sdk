@@ -590,9 +590,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def interrupt(self) -> None:
         """Interrupt any in-progress LLM completion.
 
-        This method closes the HTTP client used for LLM requests, which causes
+        This method closes HTTP clients used for LLM requests, which causes
         any in-progress HTTP request to fail immediately. This enables immediate
         cancellation of non-streaming LLM calls from another thread.
+
+        The method closes:
+        1. LiteLLM's module-level HTTP client (used for most providers)
+        2. Any OpenAI client we created for this LLM instance
+        3. Our managed httpx.Client (fallback)
 
         Thread-safe: Can be safely called from any thread.
 
@@ -606,11 +611,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> signal.signal(signal.SIGINT, on_interrupt)
             >>> response = llm.completion(messages)  # Will be interrupted on Ctrl+C
         """
+        # Close litellm's module-level client first - this is most likely
+        # to be the one handling the actual HTTP request
+        try:
+            import litellm
+
+            if hasattr(litellm, "module_level_client"):
+                handler = litellm.module_level_client
+                if handler is not None and hasattr(handler, "client"):
+                    client = handler.client
+                    if client is not None and hasattr(client, "close"):
+                        logger.debug("Interrupting LLM: closing litellm module client")
+                        client.close()
+        except Exception as e:
+            logger.warning(f"Error closing litellm module client: {e}")
+
         if self._http_client_lock is None:
             return
 
         with self._http_client_lock:
-            # Close the OpenAI client first (this closes its internal httpx client)
+            # Close the OpenAI client (this closes its internal httpx client)
             if self._openai_client is not None:
                 try:
                     logger.debug("Interrupting LLM: closing OpenAI client")
