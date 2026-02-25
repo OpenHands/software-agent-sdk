@@ -379,6 +379,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _openai_client: Any = PrivateAttr(
         default=None
     )  # Current OpenAI client for interrupt
+    _current_response_id: str | None = PrivateAttr(default=None)  # For cancel_responses
+    _interrupted: bool = PrivateAttr(default=False)  # Interrupt flag
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -590,14 +592,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def interrupt(self) -> None:
         """Interrupt any in-progress LLM completion.
 
-        This method closes HTTP clients used for LLM requests, which causes
-        any in-progress HTTP request to fail immediately. This enables immediate
-        cancellation of non-streaming LLM calls from another thread.
-
-        The method closes:
-        1. LiteLLM's module-level HTTP client (used for most providers)
-        2. Any OpenAI client we created for this LLM instance
-        3. Our managed httpx.Client (fallback)
+        This method cancels in-progress LLM requests using multiple strategies:
+        1. Sets interrupt flag checked during streaming iteration
+        2. Calls litellm.cancel_responses() if a response ID is available
+        3. Closes HTTP clients to terminate connections as a fallback
 
         Thread-safe: Can be safely called from any thread.
 
@@ -611,8 +609,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> signal.signal(signal.SIGINT, on_interrupt)
             >>> response = llm.completion(messages)  # Will be interrupted on Ctrl+C
         """
-        # Close litellm's module-level client first - this is most likely
-        # to be the one handling the actual HTTP request
+        # Set the interrupt flag first - this is checked during streaming
+        self._interrupted = True
+
+        # Try to cancel via litellm's cancel_responses API if we have a response ID
+        response_id = self._current_response_id
+        if response_id is not None:
+            try:
+                import litellm
+
+                logger.debug(f"Interrupting LLM: cancelling response {response_id}")
+                litellm.cancel_responses(response_id=response_id)
+            except Exception as e:
+                logger.debug(f"cancel_responses failed (may not be supported): {e}")
+
+        # Close litellm's module-level client as fallback
         try:
             import litellm
 
@@ -731,6 +742,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> response = llm.completion(messages)
             >>> print(response.content)
         """
+        # Reset interrupt state at start of call
+        self._interrupted = False
+        self._current_response_id = None
+
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
             if on_token is None:
@@ -888,6 +903,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
+        # Reset interrupt state at start of call
+        self._interrupted = False
+        self._current_response_id = None
+
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
             if on_token is None and not self.is_subscription:
@@ -986,6 +1005,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                         stream_callback = on_token if user_enable_streaming else None
                         for event in ret:
+                            # Check interrupt flag between chunks
+                            if self._interrupted:
+                                logger.info("LLM interrupted during streaming")
+                                from openhands.sdk.conversation.cancellation import (
+                                    CancellationError,
+                                )
+
+                                raise CancellationError("LLM completion interrupted")
+
+                            # Capture response ID for cancellation support
+                            resp_id = getattr(event, "response_id", None)
+                            if resp_id:
+                                self._current_response_id = resp_id
+                            else:
+                                resp = getattr(event, "response", None)
+                                if resp is not None:
+                                    resp_id = getattr(resp, "id", None)
+                                    if resp_id:
+                                        self._current_response_id = resp_id
+
                             if stream_callback is None:
                                 continue
                             if isinstance(
@@ -1189,7 +1228,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     assert isinstance(ret, CustomStreamWrapper)
                     chunks = []
                     for chunk in ret:
-                        # Check cancellation between chunks for responsive interrupt
+                        # Check interrupt flag between chunks
+                        if self._interrupted:
+                            logger.info("LLM interrupted during streaming")
+                            raise CancellationError("LLM completion interrupted")
+
+                        # Check cancellation token between chunks
                         if cancellation_token is not None:
                             if hasattr(cancellation_token, "is_cancelled"):
                                 if cancellation_token.is_cancelled():
