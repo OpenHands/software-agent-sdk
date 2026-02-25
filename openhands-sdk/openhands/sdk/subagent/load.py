@@ -1,11 +1,11 @@
 """Load agent definitions from Markdown files and register them as delegate agents.
 
 Agent definitions are Markdown files with YAML frontmatter that live in
-``.agents/agents`` or ``.openhands/agents`` directories at the project or user level.
+`.agents/agents` or `.openhands/agents` directories at the project or user level.
 They are auto-registered into the delegate agent registry so they can be
 invoked by name during delegation.
 
-Directory convention (in priority order)::
+Directory convention (in priority order):
 
     {project}/                      # Project-level, primary (highest file priority)
         .agents/
@@ -27,15 +27,13 @@ Directory convention (in priority order)::
             my-global-agent.md
 
 Priority (highest to lowest):
-  1. Programmatic ``register_agent()`` calls (never overwritten)
-  2. Plugin agents (``Plugin.agents``)
-  3. Project-level ``.agents/agents/*.md``
-  4. Project-level ``.openhands/agents/*.md``
-  5. User-level ``~/.agents/agents/*.md``
-  6. User-level ``~/.openhands/agents/*.md``
+  1. Programmatic `register_agent()` calls (never overwritten)
+  2. Plugin agents (`Plugin.agents`)
+  3. Project-level `.agents/agents/*.md`
+  4. Project-level `.openhands/agents/*.md`
+  5. User-level `~/.agents/agents/*.md`
+  6. User-level `~/.openhands/agents/*.md`
 """
-
-from __future__ import annotations
 
 from pathlib import Path
 from typing import Final
@@ -53,7 +51,7 @@ _FILE_BASED_AGENTS_DIR: Final[list[str]] = [
     ".agents/agents",
     ".openhands/agents",
 ]
-# file to skip analyzing when searching for agents
+# File to skip analyzing when searching for agents
 _SKIP_FILES: Final[set[str]] = {"README.md", "readme.md"}
 
 
@@ -66,13 +64,14 @@ def load_project_agents(project_dir: str | Path) -> list[AgentDefinition]:
     Note that `.agents/agents` definitions take precedence for duplicate names.
 
     Only reads top-level `.md` files; subdirectories (like `skills/`) are
-    skipped.  `README.md` files are also skipped.
+    skipped. `README.md` files are also skipped.
 
     Args:
         project_dir: project directory
 
     Returns:
-        an empty list if no directories exist.
+        A list of ``AgentDefinition`` objects, or an empty list if no
+        directories exist.
     """
     project_dir = Path(project_dir)
     return _load_agents_from_dirs([project_dir / d for d in _FILE_BASED_AGENTS_DIR])
@@ -84,12 +83,13 @@ def load_user_agents() -> list[AgentDefinition]:
     Searches for
         - ~/.agents/agents and
         - ~/.openhands/agents (in that order).
-    note that `.agents/agents` definitions take precedence for duplicate names.
+    Note that `.agents/agents` definitions take precedence for duplicate names.
 
     Same file-level rules as `load_project_agents`.
 
     Returns:
-        an empy list if no directories exist.
+        A list of ``AgentDefinition`` objects, or an empty list if no
+        directories exist.
     """
     home = Path.home()
     return _load_agents_from_dirs([home / d for d in _FILE_BASED_AGENTS_DIR])
@@ -119,7 +119,8 @@ def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
     """Scans a directory for Markdown-based agent definitions.
 
     Iterates through the top-level of the provided directory, attempting to load
-    any `.md` files as AgentDefinitions. Note that read-me files are skipped by default.
+    any `.md` files as AgentDefinitions. Note that README.md files are skipped
+    by default.
 
     Args:
         agents_dir: The filesystem path to the directory containing agent files.

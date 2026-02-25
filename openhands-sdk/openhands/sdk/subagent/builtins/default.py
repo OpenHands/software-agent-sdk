@@ -5,20 +5,21 @@ from openhands.sdk.subagent.schema import AgentDefinition
 
 
 @cache
-def _build_default_agent_factory(
-    enable_browser: bool = True,
+def _build_default_subagent_factory(
+    cli_mode: bool = False,
 ) -> AgentFactory:
-    """Return an AgentFactory class describing for the default agent.
+    """Return an `AgentFactory` instance for the default agent.
 
     Args:
-        enable_browser: Whether to include browser tools.
+        cli_mode: Whether we are in CLI mode.
 
     Returns:
-        An AgentFactory class describing the default agent.
+        An `AgentFactory` instance for the default agent.
     """
 
     tool_names = ["terminal", "file_editor", "task_tracker"]
-    if enable_browser:
+    # Add browser tools if not CLI mode
+    if not cli_mode:
         tool_names.append("browser_tool_set")
 
     agent_def = AgentDefinition(
@@ -29,9 +30,19 @@ def _build_default_agent_factory(
     )
     return AgentFactory(
         factory_func=agent_definition_to_factory(agent_def),
-        description=agent_def.description or "Default general-purpose agent",
+        description=agent_def.description,
     )
 
 
-def get_default_agent(enable_browser: bool = False) -> AgentFactory:
-    return _build_default_agent_factory(enable_browser=enable_browser)
+def get_default_subagent(cli_mode: bool = False) -> AgentFactory:
+    """Return the default agent factory.
+
+    In CLI mode browser tools are excluded from the default tool set.
+
+    Args:
+        cli_mode: Whether we are in CLI mode.
+
+    Returns:
+        An `AgentFactory` instance for the default agent.
+    """
+    return _build_default_subagent_factory(cli_mode=cli_mode)

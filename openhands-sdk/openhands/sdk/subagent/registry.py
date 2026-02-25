@@ -2,19 +2,17 @@
 Simple API for users to register custom agents.
 
 Example usage:
-    from openhands.sdk import register_agent, Skill
+    from openhands.sdk import register_agent, Agent, AgentContext
+    from openhands.sdk.tool.spec import Tool
 
     # Define a custom security expert factory
     def create_security_expert(llm):
         tools = [Tool(name="TerminalTool")]
-        skills = [Skill(
-            name="security_expertise",
-            content=(
+        agent_context = AgentContext(
+            system_message_suffix=(
                 "You are a cybersecurity expert. Always consider security implications."
             ),
-            trigger=None
-        )]
-        agent_context = AgentContext(skills=skills)
+        )
         return Agent(llm=llm, tools=tools, agent_context=agent_context)
 
     # Register the agent with a description
@@ -113,42 +111,37 @@ def register_agent_if_absent(
 def agent_definition_to_factory(
     agent_def: AgentDefinition,
 ) -> Callable[["LLM"], "Agent"]:
-    """Create an agent factory closure from an ``AgentDefinition``.
+    """Create an agent factory closure from an `AgentDefinition`.
 
-    The returned callable accepts a `LLM` class (the parent agent's LLM) and
-    builds a fully-configured `Agent` class.
+    The returned callable accepts an `LLM` instance (the parent agent's LLM)
+    and builds a fully-configured `Agent` instance.
 
     - Tool names from `agent_def.tools` are mapped to `Tool` objects.
-    - The system prompt becomes an always-active `Skill` (`trigger=None`).
-    - `model: inherit` preserves the parent LLM; an explicit model name creates
-        a copy with `model_copy()`.
+    - The system prompt is set as the `system_message_suffix` on the
+      `AgentContext`.
+    - `model: inherit` preserves the parent LLM; an explicit model name
+      creates a copy via `model_copy(update=...)`.
     """
 
     def _factory(llm: "LLM") -> "Agent":
         from openhands.sdk.agent.agent import Agent
         from openhands.sdk.context.agent_context import AgentContext
-        from openhands.sdk.context.skills import Skill
         from openhands.sdk.tool.spec import Tool
-
-        # Resolve tools
-        tools = [Tool(name=name) for name in agent_def.tools]
-
-        # Build always-active skill from system prompt
-        skills: list[Skill] = []
-        if agent_def.system_prompt:
-            skills.append(
-                Skill(
-                    name=f"{agent_def.name}_prompt",
-                    content=agent_def.system_prompt,
-                    trigger=None,
-                )
-            )
-
-        agent_context = AgentContext(skills=skills) if skills else None
 
         # Handle model override
         if agent_def.model and agent_def.model != "inherit":
             llm = llm.model_copy(update={"model": agent_def.model})
+
+        # the system prompt of the subagent is added as a suffix of the
+        # main system prompt
+        agent_context = (
+            AgentContext(system_message_suffix=agent_def.system_prompt)
+            if agent_def.system_prompt
+            else None
+        )
+
+        # Resolve tools
+        tools = [Tool(name=tool_name) for tool_name in agent_def.tools]
 
         return Agent(
             llm=llm,
@@ -161,13 +154,13 @@ def agent_definition_to_factory(
 
 def register_file_agents(work_dir: str | Path) -> list[str]:
     """Load and register file-based agents from project-level `.agents/agents` and
-    `.openhands/agents`, and user-level .agents/agents` and `.openhands/agents`
+    `.openhands/agents`, and user-level `~/.agents/agents` and `~/.openhands/agents`
     directories.
 
     Project-level definitions take priority over user-level ones, and within
     each level `.agents/` takes priority over `.openhands/`.
 
-    Neither overwrites agents already registered programmatically, or by plugins.
+    Does not overwrite agents already registered programmatically or by plugins.
 
     Returns:
         List of agent names that were actually registered.
@@ -251,9 +244,9 @@ def get_agent_factory(name: str | None) -> AgentFactory:
         ValueError: If no agent factory with the given name is found
     """
     if name is None or name == "" or name == "default":
-        from openhands.sdk.subagent.builtins.default import get_default_agent
+        from openhands.sdk.subagent.builtins.default import get_default_subagent
 
-        return get_default_agent()
+        return get_default_subagent()
 
     with _registry_lock:
         factory = _agent_factories.get(name)

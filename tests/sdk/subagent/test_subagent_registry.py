@@ -163,7 +163,7 @@ def test_register_agent_if_absent_existing() -> None:
 
 
 def test_agent_definition_to_factory_basic() -> None:
-    """Factory creates Agent with correct tools, skills, and LLM."""
+    """Factory creates Agent with correct tools, system prompt, and LLM."""
     agent_def = AgentDefinition(
         name="test-agent",
         description="A test agent",
@@ -183,10 +183,7 @@ def test_agent_definition_to_factory_basic() -> None:
     assert "GlobTool" in tool_names
     # Check skill (system prompt as always-active skill)
     assert agent.agent_context is not None
-    assert len(agent.agent_context.skills) == 1
-    assert agent.agent_context.skills[0].name == "test-agent_prompt"
-    assert agent.agent_context.skills[0].content == "You are a test agent."
-    assert agent.agent_context.skills[0].trigger is None
+    assert agent.agent_context.system_message_suffix == "You are a test agent."
 
 
 def test_agent_definition_to_factory_model_inherit() -> None:

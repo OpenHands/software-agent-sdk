@@ -7,7 +7,7 @@ class TestAgentDefinition:
     """Tests for AgentDefinition loading."""
 
     def test_load_agent_basic(self, tmp_path: Path):
-        """Test loading a basic agent definition (lines 99-126)."""
+        """Test loading a basic agent definition."""
         agent_md = tmp_path / "test-agent.md"
         agent_md.write_text(
             """---
@@ -117,7 +117,7 @@ class TestExtractExamples:
     """Tests for _extract_examples function."""
 
     def test_extract_single_example(self):
-        """Test extracting single example (lines 42-44)."""
+        """Test extracting single example."""
         description = "A tool. <example>Use when X</example>"
         examples = _extract_examples(description)
         assert examples == ["Use when X"]

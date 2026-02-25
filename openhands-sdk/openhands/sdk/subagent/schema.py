@@ -1,4 +1,4 @@
-"""Schema to load md-based agents definition files."""
+"""Schema for Markdown-based agent definition files."""
 
 from __future__ import annotations
 
@@ -37,12 +37,10 @@ class AgentDefinition(BaseModel):
     source: str | None = Field(
         default=None, description="Source file path for this agent"
     )
-    # whenToUse examples extracted from description
     when_to_use_examples: list[str] = Field(
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
     )
-    # Raw frontmatter for any additional fields
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
