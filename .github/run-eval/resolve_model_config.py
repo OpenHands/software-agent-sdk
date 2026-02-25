@@ -244,14 +244,21 @@ def test_model(
     model_name = llm_config.get("model", "unknown")
     display_name = model_config.get("display_name", model_name)
 
+    # SDK-specific parameters that should not be passed to litellm
+    SDK_ONLY_PARAMS = {"disable_vision"}
+
     try:
-        # Build kwargs from llm_config, excluding 'model' which is passed separately
-        kwargs = {k: v for k, v in llm_config.items() if k != "model"}
+        # Build kwargs from llm_config, excluding 'model' and SDK-specific params
+        kwargs = {
+            k: v
+            for k, v in llm_config.items()
+            if k != "model" and k not in SDK_ONLY_PARAMS
+        }
 
         response = litellm.completion(
             model=model_name,
-            messages=[{"role": "user", "content": "Say 'OK' if you can read this."}],
-            max_tokens=10,
+            messages=[{"role": "user", "content": "1+1="}],
+            max_tokens=100,
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
