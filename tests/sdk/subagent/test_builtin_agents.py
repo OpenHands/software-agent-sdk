@@ -38,25 +38,20 @@ def _load_builtin(name: str) -> AgentDefinition:
     return AgentDefinition.load(md_path)
 
 
-class TestBuiltinsDirectory:
-    """Ensure the builtins directory exists and contains expected files."""
+def test_builtins_contains_expected_agents() -> None:
+    md_files = {f.stem for f in BUILTINS_DIR.glob("*.md")}
+    assert "default" in md_files
+    assert "explore" in md_files
+    assert "bash" in md_files
 
-    def test_builtins_dir_exists(self) -> None:
-        assert BUILTINS_DIR.is_dir()
 
-    def test_builtins_contains_expected_agents(self) -> None:
-        md_files = {f.stem for f in BUILTINS_DIR.glob("*.md")}
-        assert "default" in md_files
-        assert "explore" in md_files
-        assert "bash" in md_files
-
-    def test_load_all_builtins(self) -> None:
-        """Every .md file in builtins/ should parse without errors."""
-        agents = load_agents_from_dir(BUILTINS_DIR)
-        names = {a.name for a in agents}
-        assert "default" in names
-        assert "explore" in names
-        assert "bash" in names
+def test_load_all_builtins() -> None:
+    """Every .md file in builtins/ should parse without errors."""
+    agents = load_agents_from_dir(BUILTINS_DIR)
+    names = {a.name for a in agents}
+    assert "default" in names
+    assert "explore" in names
+    assert "bash" in names
 
 
 class TestExploreAgent:
@@ -180,45 +175,45 @@ class TestDefaultAgent:
         assert agent_def.model == "inherit"
 
 
-class TestBuiltinRegistration:
-    """Test that builtin agents register correctly via register_builtins_agents."""
+def test_register_builtins_agents_returns_all() -> None:
+    registered = register_builtins_agents()
+    assert "default" in registered
+    assert "explore" in registered
+    assert "bash" in registered
 
-    def test_register_builtins_agents_returns_all(self) -> None:
-        registered = register_builtins_agents()
-        assert "default" in registered
-        assert "explore" in registered
-        assert "bash" in registered
 
-    def test_registered_agents_are_retrievable(self) -> None:
-        register_builtins_agents()
-        for name in ("default", "explore", "bash"):
-            factory = get_agent_factory(name)
-            assert factory is not None
-            assert factory.description
+def test_registered_agents_are_retrievable() -> None:
+    register_builtins_agents()
+    for name in ("default", "explore", "bash"):
+        factory = get_agent_factory(name)
+        assert factory is not None
+        assert factory.description
 
-    def test_builtins_do_not_overwrite_programmatic(self) -> None:
-        """Programmatic registrations take priority over builtins."""
 
-        def custom_factory(llm: LLM) -> Agent:
-            return cast(Agent, MagicMock())
+def test_builtins_do_not_overwrite_programmatic() -> None:
+    """Programmatic registrations take priority over builtins."""
 
-        register_agent(
-            name="explore",
-            factory_func=custom_factory,
-            description="Custom explore",
-        )
+    def custom_factory(llm: LLM) -> Agent:
+        return cast(Agent, MagicMock())
 
-        registered = register_builtins_agents()
-        assert "explore" not in registered
+    register_agent(
+        name="explore",
+        factory_func=custom_factory,
+        description="Custom explore",
+    )
 
-        factory = get_agent_factory("explore")
-        assert factory.description == "Custom explore"
+    registered = register_builtins_agents()
+    assert "explore" not in registered
 
-    def test_builtin_agents_produce_valid_agents(self) -> None:
-        """Each registered builtin should produce a valid Agent instance."""
-        register_builtins_agents()
-        llm = _make_test_llm()
-        for name in ("default", "explore", "bash"):
-            factory = get_agent_factory(name)
-            agent = factory.factory_func(llm)
-            assert isinstance(agent, Agent)
+    factory = get_agent_factory("explore")
+    assert factory.description == "Custom explore"
+
+
+def test_builtin_agents_produce_valid_agents() -> None:
+    """Each registered builtin should produce a valid Agent instance."""
+    register_builtins_agents()
+    llm = _make_test_llm()
+    for name in ("default", "explore", "bash"):
+        factory = get_agent_factory(name)
+        agent = factory.factory_func(llm)
+        assert isinstance(agent, Agent)
