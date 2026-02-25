@@ -265,11 +265,20 @@ def test_model(
             **kwargs,
         )
 
+        # Debug: Print response structure for troubleshooting
+        print(f"  DEBUG {display_name}: response={response}")
+        print(f"  DEBUG {display_name}: choices={response.choices if response.choices else 'None'}")
+        
         content = response.choices[0].message.content if response.choices else None
+        print(f"  DEBUG {display_name}: content=[{content}] type={type(content)}")
+        
         if content:
             return True, f"✓ {display_name}: OK"
         else:
-            return False, f"✗ {display_name}: Empty response"
+            # Check if there's any other data in the response
+            finish_reason = response.choices[0].finish_reason if response.choices else None
+            usage = getattr(response, 'usage', None)
+            return False, f"✗ {display_name}: Empty response (finish_reason={finish_reason}, usage={usage})"
 
     except litellm.exceptions.Timeout:
         return False, f"✗ {display_name}: Request timed out after {timeout}s"
