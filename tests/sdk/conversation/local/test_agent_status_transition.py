@@ -18,22 +18,13 @@ State transition matrix tested:
 import threading
 from collections.abc import Sequence
 from typing import ClassVar
-from unittest.mock import patch
-
-from litellm import ChatCompletionMessageToolCall
-from litellm.types.utils import (
-    Choices,
-    Function,
-    Message as LiteLLMMessage,
-    ModelResponse,
-)
-from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
-from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
+from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
+from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -100,8 +91,7 @@ class StatusTransitionTestTool(
         ]
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_execution_status_transitions_to_running_from_idle(mock_completion):
+def test_execution_status_transitions_to_running_from_idle():
     """Test that agent status transitions to RUNNING when run() is called from IDLE."""
     status_during_execution: list[ConversationExecutionStatus] = []
 
@@ -112,23 +102,17 @@ def test_execution_status_transitions_to_running_from_idle(mock_completion):
 
     register_tool("test_tool", _make_tool)
 
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    # Use TestLLM with a scripted response
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
 
     # Verify initial state is IDLE
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
-
-    # Mock LLM to return a message that finishes execution
-    mock_completion.return_value = ModelResponse(
-        id="response_msg",
-        choices=[
-            Choices(message=LiteLLMMessage(role="assistant", content="Task completed"))
-        ],
-        created=0,
-        model="test-model",
-        object="chat.completion",
-    )
 
     # Send message and run
     conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
@@ -146,20 +130,49 @@ def test_execution_status_transitions_to_running_from_idle(mock_completion):
     assert len(agent_messages) == 1
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_execution_status_is_running_during_execution_from_idle(mock_completion):
+def test_execution_status_is_running_during_execution_from_idle():
     """Test that agent status is RUNNING during execution when started from IDLE."""
     status_during_execution: list[ConversationExecutionStatus] = []
     execution_started = threading.Event()
 
+    class SignalingExecutor(
+        ToolExecutor[StatusTransitionMockAction, StatusTransitionMockObservation]
+    ):
+        """Executor that signals when execution starts and captures status."""
+
+        def __call__(
+            self, action: StatusTransitionMockAction, conversation=None
+        ) -> StatusTransitionMockObservation:
+            # Signal that execution has started
+            execution_started.set()
+            # Capture the agent status during execution
+            if conversation:
+                status_during_execution.append(conversation.state.execution_status)
+            return StatusTransitionMockObservation(result=f"Executed: {action.command}")
+
     def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return StatusTransitionTestTool.create(
-            executor=StatusCheckingExecutor(status_during_execution)
-        )
+        return StatusTransitionTestTool.create(executor=SignalingExecutor())
 
     register_tool("test_tool", _make_tool)
 
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    # Use TestLLM with scripted responses: first a tool call, then completion
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_1",
+                        name="test_tool",
+                        arguments='{"command": "test_command"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
     agent = Agent(
         llm=llm,
         tools=[Tool(name="test_tool")],
@@ -169,63 +182,12 @@ def test_execution_status_is_running_during_execution_from_idle(mock_completion)
     # Verify initial state is IDLE
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
-    # Mock LLM to return an action first, then finish
-    tool_call = ChatCompletionMessageToolCall(
-        id="call_1",
-        type="function",
-        function=Function(
-            name="test_tool",
-            arguments='{"command": "test_command"}',
-        ),
-    )
-
-    call_count = [0]
-
-    def side_effect(*args, **kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            # First call: return tool call
-            execution_started.set()
-            return ModelResponse(
-                id="response_action",
-                choices=[
-                    Choices(
-                        message=LiteLLMMessage(
-                            role="assistant",
-                            content="",
-                            tool_calls=[tool_call],
-                        )
-                    )
-                ],
-                created=0,
-                model="test-model",
-                object="chat.completion",
-            )
-        else:
-            # Second call: finish
-            return ModelResponse(
-                id="response_msg",
-                choices=[
-                    Choices(
-                        message=LiteLLMMessage(
-                            role="assistant", content="Task completed"
-                        )
-                    )
-                ],
-                created=0,
-                model="test-model",
-                object="chat.completion",
-            )
-
-    mock_completion.side_effect = side_effect
-
     # Send message
     conversation.send_message(
         Message(role="user", content=[TextContent(text="Execute command")])
     )
 
     # Run in a separate thread so we can check status during execution
-    status_checked = threading.Event()
     run_complete = threading.Event()
     status_during_run: list[ConversationExecutionStatus | None] = [None]
 
@@ -241,7 +203,6 @@ def test_execution_status_is_running_during_execution_from_idle(mock_completion)
 
     # Check status while running
     status_during_run[0] = conversation.state.execution_status
-    status_checked.set()
 
     # Wait for run to complete
     assert run_complete.wait(timeout=2.0), "Run did not complete"
@@ -256,28 +217,21 @@ def test_execution_status_is_running_during_execution_from_idle(mock_completion)
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_execution_status_transitions_to_running_from_paused(mock_completion):
+def test_execution_status_transitions_to_running_from_paused():
     """Test that agent status transitions to RUNNING when run() is called from
     PAUSED."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    # Use TestLLM with a scripted response
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
 
     # Pause the conversation
     conversation.pause()
     assert conversation.state.execution_status == ConversationExecutionStatus.PAUSED
-
-    # Mock LLM to return a message that finishes execution
-    mock_completion.return_value = ModelResponse(
-        id="response_msg",
-        choices=[
-            Choices(message=LiteLLMMessage(role="assistant", content="Task completed"))
-        ],
-        created=0,
-        model="test-model",
-        object="chat.completion",
-    )
 
     # Send message and run
     conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
@@ -295,70 +249,37 @@ def test_execution_status_transitions_to_running_from_paused(mock_completion):
     assert len(agent_messages) == 1
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_execution_status_transitions_from_waiting_for_confirmation(mock_completion):
+def test_execution_status_transitions_from_waiting_for_confirmation():
     """Test WAITING_FOR_CONFIRMATION -> RUNNING transition when run() is called."""
     from openhands.sdk.security.confirmation_policy import AlwaysConfirm
-
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
 
     def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
         return StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))
 
     register_tool("test_tool", _make_tool)
 
+    # Use TestLLM with scripted responses: first a tool call, then completion
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_1",
+                        name="test_tool",
+                        arguments='{"command": "test_command"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
+
     agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
     conversation = Conversation(agent=agent)
     conversation.set_confirmation_policy(AlwaysConfirm())
-
-    # Mock LLM to return an action first, then finish
-    tool_call = ChatCompletionMessageToolCall(
-        id="call_1",
-        type="function",
-        function=Function(
-            name="test_tool",
-            arguments='{"command": "test_command"}',
-        ),
-    )
-
-    call_count = [0]
-
-    def side_effect(*args, **kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            # First call: return tool call
-            return ModelResponse(
-                id="response_action",
-                choices=[
-                    Choices(
-                        message=LiteLLMMessage(
-                            role="assistant",
-                            content="",
-                            tool_calls=[tool_call],
-                        )
-                    )
-                ],
-                created=0,
-                model="test-model",
-                object="chat.completion",
-            )
-        else:
-            # Second call: finish
-            return ModelResponse(
-                id="response_msg",
-                choices=[
-                    Choices(
-                        message=LiteLLMMessage(
-                            role="assistant", content="Task completed"
-                        )
-                    )
-                ],
-                created=0,
-                model="test-model",
-                object="chat.completion",
-            )
-
-    mock_completion.side_effect = side_effect
 
     # Send message and run - should stop at WAITING_FOR_CONFIRMATION
     conversation.send_message(
@@ -379,23 +300,17 @@ def test_execution_status_transitions_from_waiting_for_confirmation(mock_complet
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_execution_status_finished_to_idle_to_running(mock_completion):
+def test_execution_status_finished_to_idle_to_running():
     """Test FINISHED -> IDLE -> RUNNING transition when new message is sent."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    # Use TestLLM with two scripted responses (one for each run)
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
-
-    # Mock LLM to return completion messages
-    mock_completion.return_value = ModelResponse(
-        id="response_msg",
-        choices=[
-            Choices(message=LiteLLMMessage(role="assistant", content="Task completed"))
-        ],
-        created=0,
-        model="test-model",
-        object="chat.completion",
-    )
 
     # First conversation - should end in FINISHED
     conversation.send_message(
@@ -415,23 +330,16 @@ def test_execution_status_finished_to_idle_to_running(mock_completion):
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_run_exits_immediately_when_already_finished(mock_completion):
+def test_run_exits_immediately_when_already_finished():
     """Test that run() exits immediately when status is already FINISHED."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    # Use TestLLM with a single scripted response
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Task completed")]),
+        ]
+    )
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
-
-    # Mock LLM
-    mock_completion.return_value = ModelResponse(
-        id="response_msg",
-        choices=[
-            Choices(message=LiteLLMMessage(role="assistant", content="Task completed"))
-        ],
-        created=0,
-        model="test-model",
-        object="chat.completion",
-    )
 
     # Complete a task
     conversation.send_message(Message(role="user", content=[TextContent(text="Task")]))
@@ -440,19 +348,19 @@ def test_run_exits_immediately_when_already_finished(mock_completion):
 
     # Call run again without sending a new message
     # Should exit immediately without calling LLM again
-    initial_call_count = mock_completion.call_count
+    initial_call_count = llm.call_count
     conversation.run()
 
     # Status should still be FINISHED
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
     # LLM should not be called again
-    assert mock_completion.call_count == initial_call_count
+    assert llm.call_count == initial_call_count
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_run_exits_immediately_when_stuck(mock_completion):
+def test_run_exits_immediately_when_stuck():
     """Test that run() exits immediately when status is STUCK."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    # Use TestLLM with no scripted responses (should not be called)
+    llm = TestLLM.from_messages([])
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
 
@@ -465,11 +373,10 @@ def test_run_exits_immediately_when_stuck(mock_completion):
     # Status should still be STUCK
     assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
     # LLM should not be called
-    assert mock_completion.call_count == 0
+    assert llm.call_count == 0
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_execution_status_error_on_max_iterations(mock_completion):
+def test_execution_status_error_on_max_iterations():
     """Test that status is set to ERROR with clear message when max iterations hit."""
     from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
@@ -483,39 +390,35 @@ def test_execution_status_error_on_max_iterations(mock_completion):
 
     register_tool("test_tool", _make_tool)
 
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    # Create a tool call message that will be returned repeatedly
+    tool_call_message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id="call_1",
+                name="test_tool",
+                arguments='{"command": "test_command"}',
+                origin="completion",
+            )
+        ],
+    )
+
+    # Use TestLLM with enough responses to hit max iterations
+    # max_iteration_per_run=2 means we need at least 2 tool call responses
+    llm = TestLLM.from_messages(
+        [
+            tool_call_message,
+            tool_call_message,
+            tool_call_message,  # Extra in case needed
+        ]
+    )
     agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
     # Set max_iteration_per_run to 2 to quickly hit the limit
     conversation = Conversation(
         agent=agent,
         max_iteration_per_run=2,
         callbacks=[lambda e: events_received.append(e)],
-    )
-
-    # Mock LLM to always return tool calls (never finish)
-    tool_call = ChatCompletionMessageToolCall(
-        id="call_1",
-        type="function",
-        function=Function(
-            name="test_tool",
-            arguments='{"command": "test_command"}',
-        ),
-    )
-
-    mock_completion.return_value = ModelResponse(
-        id="response_action",
-        choices=[
-            Choices(
-                message=LiteLLMMessage(
-                    role="assistant",
-                    content="",
-                    tool_calls=[tool_call],
-                )
-            )
-        ],
-        created=0,
-        model="test-model",
-        object="chat.completion",
     )
 
     # Send message and run

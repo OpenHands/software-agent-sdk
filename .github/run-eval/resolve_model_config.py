@@ -17,8 +17,6 @@ import os
 import sys
 from typing import Any
 
-import litellm
-
 
 # Model configurations dictionary
 MODELS = {
@@ -87,6 +85,11 @@ MODELS = {
         "id": "gemini-3-flash",
         "display_name": "Gemini 3 Flash",
         "llm_config": {"model": "litellm_proxy/gemini-3-flash-preview"},
+    },
+    "gemini-3.1-pro": {
+        "id": "gemini-3.1-pro",
+        "display_name": "Gemini 3.1 Pro",
+        "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview"},
     },
     "gpt-5.2": {
         "id": "gpt-5.2",
@@ -235,6 +238,8 @@ def test_model(
     Returns:
         Tuple of (success: bool, message: str)
     """
+    import litellm
+
     llm_config = model_config.get("llm_config", {})
     model_name = llm_config.get("model", "unknown")
     display_name = model_config.get("display_name", model_name)

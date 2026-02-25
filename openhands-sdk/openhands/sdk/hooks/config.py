@@ -49,6 +49,11 @@ class HookDefinition(BaseModel):
     type: HookType = HookType.COMMAND
     command: str
     timeout: int = 60
+    async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
+
+    model_config = {
+        "populate_by_name": True,  # Allow both 'async' and 'async_' in input
+    }
 
 
 class HookMatcher(BaseModel):
