@@ -264,3 +264,151 @@ def test_llm_cancelled_error_can_be_caught():
         raise LLMCancelledError("test")
     except Exception as e:
         assert isinstance(e, LLMCancelledError)
+
+
+# =========================================================================
+# Tests for close() method - Resource Cleanup
+# =========================================================================
+
+
+def test_llm_has_close_method(llm: LLM):
+    """Test that LLM has close method."""
+    assert hasattr(llm, "close")
+    assert callable(llm.close)
+
+
+def test_llm_close_does_not_raise_when_no_loop(llm: LLM):
+    """Test that close doesn't raise when there's no background loop."""
+    # Should not raise - calling close when nothing is started is OK
+    llm.close()
+    assert llm._async_loop is None
+    assert llm._async_loop_thread is None
+
+
+def test_llm_close_stops_event_loop_thread(llm: LLM):
+    """Test that close() stops the background event loop thread."""
+    # First, start the event loop
+    loop = llm._ensure_async_loop()
+    thread = llm._async_loop_thread
+
+    assert loop is not None
+    assert thread is not None
+    assert thread.is_alive()
+
+    # Now close it
+    llm.close()
+
+    # Thread should be stopped
+    assert llm._async_loop is None
+    assert llm._async_loop_thread is None
+    # Give thread a moment to finish
+    time.sleep(0.1)
+    assert not thread.is_alive()
+
+
+def test_llm_close_can_be_called_multiple_times(llm: LLM):
+    """Test that close() can be called multiple times safely."""
+    # Start the event loop
+    llm._ensure_async_loop()
+
+    # Close multiple times - should not raise
+    llm.close()
+    llm.close()
+    llm.close()
+
+    assert llm._async_loop is None
+    assert llm._async_loop_thread is None
+
+
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_llm_can_be_reused_after_close(mock_acompletion, llm: LLM, messages):
+    """Test that LLM can be used for new calls after close()."""
+    mock_acompletion.return_value = create_mock_response()
+
+    # Make a call to start the event loop
+    result1 = llm.completion(messages)
+    assert result1 is not None
+
+    # Close the LLM
+    llm.close()
+    assert llm._async_loop is None
+    assert llm._async_loop_thread is None
+
+    # Make another call - should work (loop recreated lazily)
+    result2 = llm.completion(messages)
+    assert result2 is not None
+    assert llm._async_loop is not None  # Loop was recreated
+
+    # Clean up
+    llm.close()
+
+
+def test_llm_close_is_thread_safe(messages):
+    """Test that close() can be called from multiple threads safely."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-close-thread-safe",
+        num_retries=0,
+    )
+
+    # Start the event loop
+    llm._ensure_async_loop()
+
+    # Call close from multiple threads concurrently
+    threads = []
+    for _ in range(10):
+        t = threading.Thread(target=llm.close)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join(timeout=2)
+
+    # Should not raise any errors and should be cleaned up
+    assert llm._async_loop is None
+    assert llm._async_loop_thread is None
+
+
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_llm_close_cancels_in_flight_task(mock_acompletion, llm: LLM, messages):
+    """Test that close() cancels any in-flight task before stopping the loop."""
+    call_started = threading.Event()
+    call_finished = threading.Event()
+
+    async def slow_completion(*args, **kwargs):
+        call_started.set()
+        # Wait up to 10 seconds
+        for _ in range(100):
+            await asyncio.sleep(0.1)
+        call_finished.set()
+        return create_mock_response()
+
+    mock_acompletion.side_effect = slow_completion
+
+    result_container: dict[str, Any] = {"result": None, "error": None}
+
+    def run_completion():
+        try:
+            result_container["result"] = llm.completion(messages)
+        except Exception as e:
+            result_container["error"] = e
+
+    # Start completion in background thread
+    thread = threading.Thread(target=run_completion)
+    thread.start()
+
+    # Wait for the call to start
+    call_started.wait(timeout=2)
+    time.sleep(0.1)  # Small delay to ensure task is tracked
+
+    # Close the LLM (should cancel the task)
+    llm.close()
+
+    # Wait for thread to finish
+    thread.join(timeout=3)
+
+    # Should have raised LLMCancelledError
+    assert result_container["error"] is not None
+    assert isinstance(result_container["error"], LLMCancelledError)
+    assert not call_finished.is_set()  # Call should not have completed normally

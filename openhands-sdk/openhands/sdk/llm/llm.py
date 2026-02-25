@@ -677,6 +677,41 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 return self._current_task.cancelled()
         return False
 
+    def close(self) -> None:
+        """Stop the background event loop and cleanup resources.
+
+        This method should be called when the LLM instance is no longer needed,
+        especially in long-running applications that create/destroy many LLM
+        instances to prevent thread leaks.
+
+        After calling close(), the LLM can still be used - the event loop
+        will be lazily recreated on the next LLM call.
+
+        Example:
+            >>> llm = LLM(model="gpt-4o")
+            >>> try:
+            ...     response = llm.completion(messages=[...])
+            ... finally:
+            ...     llm.close()  # Clean up background thread
+        """
+        with self._task_lock:
+            # Cancel any in-flight task first
+            if self._current_task is not None and self._async_loop is not None:
+                self._async_loop.call_soon_threadsafe(self._current_task.cancel)
+                self._current_task = None
+
+            if self._async_loop is not None:
+                # Stop the event loop
+                self._async_loop.call_soon_threadsafe(self._async_loop.stop)
+                self._async_loop = None
+
+            if self._async_loop_thread is not None:
+                # Wait for thread to finish (with timeout to avoid deadlock)
+                self._async_loop_thread.join(timeout=1.0)
+                self._async_loop_thread = None
+
+                logger.debug(f"Stopped async event loop thread for LLM {self.usage_id}")
+
     def _handle_error(
         self,
         error: Exception,
