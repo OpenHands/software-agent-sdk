@@ -17,6 +17,7 @@ from openhands.sdk.conversation import (
     ConversationTokenCallbackType,
     LocalConversation,
 )
+from openhands.sdk.conversation.cancellation import CancellationError
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
@@ -268,6 +269,9 @@ class Agent(CriticMixin, AgentBase):
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
             )
+        except CancellationError:
+            logger.info("LLM completion was cancelled/interrupted")
+            return
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
             error_message = MessageEvent(
@@ -293,6 +297,13 @@ class Agent(CriticMixin, AgentBase):
             # No condenser available or doesn't handle requests; log helpful warning
             self._log_context_window_exceeded_warning()
             raise e
+
+        # Check if we've been interrupted after LLM call completed
+        if state.execution_status == ConversationExecutionStatus.PAUSED:
+            logger.info(
+                "Agent step interrupted after LLM completion - discarding response"
+            )
+            return
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
@@ -343,6 +354,14 @@ class Agent(CriticMixin, AgentBase):
 
             # Handle confirmation mode - exit early if actions need confirmation
             if self._requires_user_confirmation(state, action_events):
+                return
+
+            # Check if we've been interrupted before executing actions
+            if state.execution_status == ConversationExecutionStatus.PAUSED:
+                logger.info(
+                    "Agent step interrupted before action execution - "
+                    "discarding actions"
+                )
                 return
 
             if action_events:
