@@ -221,13 +221,13 @@ def find_models_by_id(model_ids: list[str]) -> list[dict]:
     return resolved
 
 
-def test_model(
+def check_model(
     model_config: dict[str, Any],
     api_key: str,
     base_url: str,
     timeout: int = 60,
 ) -> tuple[bool, str]:
-    """Test a single model with a simple completion request using litellm.
+    """Check a single model with a simple completion request using litellm.
 
     Args:
         model_config: Model configuration dict with 'llm_config' key
@@ -265,17 +265,12 @@ def test_model(
             **kwargs,
         )
 
-        # Debug: Print response structure for troubleshooting
-        print(f"  DEBUG {display_name}: response={response}")
-        print(f"  DEBUG {display_name}: choices={response.choices if response.choices else 'None'}")
-        
         content = response.choices[0].message.content if response.choices else None
-        print(f"  DEBUG {display_name}: content=[{content}] type={type(content)}")
         
         if content:
             return True, f"✓ {display_name}: OK"
         else:
-            # Check if there's any other data in the response
+            # Check if there's any other data in the response for diagnostics
             finish_reason = response.choices[0].finish_reason if response.choices else None
             usage = getattr(response, 'usage', None)
             return False, f"✗ {display_name}: Empty response (finish_reason={finish_reason}, usage={usage})"
@@ -318,7 +313,7 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
 
     all_passed = True
     for model_config in models:
-        success, message = test_model(model_config, api_key, base_url)
+        success, message = check_model(model_config, api_key, base_url)
         print(message)
         if not success:
             all_passed = False
