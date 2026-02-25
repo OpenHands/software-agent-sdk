@@ -15,6 +15,8 @@ from openhands.sdk.context.condenser import (
 )
 from openhands.sdk.conversation import (
     BaseConversation,
+    CancellationError,
+    CancellationToken,
     Conversation,
     ConversationCallbackType,
     ConversationExecutionStatus,
@@ -22,7 +24,7 @@ from openhands.sdk.conversation import (
     RemoteConversation,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.event import Event, LLMConvertibleEvent
+from openhands.sdk.event import Event, InterruptEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
@@ -107,8 +109,11 @@ __all__ = [
     "RemoteConversation",
     "ConversationExecutionStatus",
     "ConversationCallbackType",
+    "CancellationToken",
+    "CancellationError",
     "Event",
     "LLMConvertibleEvent",
+    "InterruptEvent",
     "AgentContext",
     "LLMSummarizingCondenser",
     "FileStore",

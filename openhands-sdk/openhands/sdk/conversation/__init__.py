@@ -1,4 +1,5 @@
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.cancellation import CancellationError, CancellationToken
 from openhands.sdk.conversation.conversation import Conversation
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -39,4 +40,6 @@ __all__ = [
     "EventsListBase",
     "get_agent_final_response",
     "WebSocketConnectionError",
+    "CancellationToken",
+    "CancellationError",
 ]

@@ -164,3 +164,11 @@ class LLMRegistry:
         """List all registered usage IDs."""
 
         return list(self._usage_to_llm.keys())
+
+    def all_llms(self) -> list[LLM]:
+        """Get all registered LLM instances.
+
+        Returns:
+            List of all LLM instances in the registry.
+        """
+        return list(self._usage_to_llm.values())

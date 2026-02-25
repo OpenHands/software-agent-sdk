@@ -729,6 +729,75 @@ class LocalConversation(BaseConversation):
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
 
+    def interrupt(self, reason: str | None = None) -> None:
+        """Immediately interrupt agent execution.
+
+        Unlike pause(), this method attempts to immediately terminate any
+        in-progress operation, including:
+        - LLM completion calls (closes HTTP connection)
+        - Terminal command execution (sends interrupt signal)
+
+        This is useful for implementing Ctrl+C handling or emergency stops.
+
+        Thread-safe: Can be safely called from any thread, including signal handlers.
+
+        Args:
+            reason: Optional reason for the interruption (logged and included in event)
+
+        Example:
+            >>> import signal
+            >>>
+            >>> def on_interrupt(signum, frame):
+            ...     conversation.interrupt("User pressed Ctrl+C")
+            ...
+            >>> signal.signal(signal.SIGINT, on_interrupt)
+            >>> conversation.run()
+        """
+        from openhands.sdk.event import InterruptEvent
+
+        detail = reason or "User requested interrupt"
+        logger.info(f"Interrupt requested: {detail}")
+
+        # 1. Interrupt all LLMs in the registry (closes HTTP clients)
+        for llm in self.llm_registry.all_llms():
+            try:
+                llm.interrupt()
+            except Exception as e:
+                logger.warning(f"Error interrupting LLM: {e}")
+
+        # 2. Interrupt terminal sessions if any tools have them
+        try:
+            if self._agent_ready and hasattr(self.agent, "tools_map"):
+                for tool in self.agent.tools_map.values():
+                    try:
+                        executable_tool = tool.as_executable()
+                        executor = executable_tool.executor
+                        # Check if executor has interrupt (e.g., TerminalExecutor)
+                        session = getattr(executor, "session", None)
+                        if session is not None and hasattr(session, "interrupt"):
+                            session.interrupt()
+                            logger.debug(
+                                f"Interrupted terminal session for {tool.name}"
+                            )
+                    except NotImplementedError:
+                        # Tool has no executor
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Error interrupting tool {tool.name}: {e}")
+        except Exception as e:
+            logger.warning(f"Error accessing tools for interrupt: {e}")
+
+        # 3. Update state and emit event
+        with self._state:
+            if self._state.execution_status in [
+                ConversationExecutionStatus.RUNNING,
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+            ]:
+                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                interrupt_event = InterruptEvent(detail=detail)
+                self._on_event(interrupt_event)
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation.
 

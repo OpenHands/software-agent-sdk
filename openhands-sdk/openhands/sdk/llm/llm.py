@@ -373,6 +373,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
+    # HTTP client for interruptible requests
+    _http_client: httpx.Client | None = PrivateAttr(default=None)
+    _http_client_lock: Any = PrivateAttr(default=None)  # threading.Lock
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -438,6 +441,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @model_validator(mode="after")
     def _set_env_side_effects(self):
+        import threading
+
         if self.openrouter_site_url:
             os.environ["OR_SITE_URL"] = self.openrouter_site_url
         if self.openrouter_app_name:
@@ -452,6 +457,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
+
+        # Initialize HTTP client lock for interrupt support
+        if self._http_client_lock is None:
+            self._http_client_lock = threading.Lock()
 
         # Metrics + Telemetry wiring
         if self._metrics is None:
@@ -574,6 +583,55 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         self._metrics = None
         self._telemetry = None
+
+    def interrupt(self) -> None:
+        """Interrupt any in-progress LLM completion.
+
+        This method closes the HTTP client used for LLM requests, which causes
+        any in-progress HTTP request to fail immediately. This enables immediate
+        cancellation of non-streaming LLM calls from another thread.
+
+        Thread-safe: Can be safely called from any thread.
+
+        Example:
+            >>> import threading
+            >>> import signal
+            >>>
+            >>> def on_interrupt(signum, frame):
+            ...     llm.interrupt()
+            ...
+            >>> signal.signal(signal.SIGINT, on_interrupt)
+            >>> response = llm.completion(messages)  # Will be interrupted on Ctrl+C
+        """
+        if self._http_client_lock is None:
+            return
+
+        with self._http_client_lock:
+            if self._http_client is not None:
+                try:
+                    logger.debug("Interrupting LLM: closing HTTP client")
+                    self._http_client.close()
+                except Exception as e:
+                    logger.warning(f"Error closing HTTP client during interrupt: {e}")
+                finally:
+                    self._http_client = None
+
+    def _get_or_create_http_client(self) -> httpx.Client:
+        """Get or create the HTTP client for LLM requests.
+
+        Thread-safe: Uses a lock to prevent race conditions.
+
+        Returns:
+            An httpx.Client instance that can be used for LLM requests.
+        """
+        if self._http_client_lock is None:
+            # Fallback: create ephemeral client if lock not initialized
+            return httpx.Client(timeout=self.timeout or 300.0)
+
+        with self._http_client_lock:
+            if self._http_client is None or self._http_client.is_closed:
+                self._http_client = httpx.Client(timeout=self.timeout or 300.0)
+            return self._http_client
 
     def _handle_error(
         self,
@@ -1001,8 +1059,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         messages: list[dict[str, Any]],
         enable_streaming: bool = False,
         on_token: TokenCallbackType | None = None,
+        cancellation_token: Any | None = None,
         **kwargs,
     ) -> ModelResponse:
+        """Make the actual HTTP call to the LLM provider.
+
+        Args:
+            messages: Formatted messages to send
+            enable_streaming: Whether to enable streaming
+            on_token: Callback for streaming tokens
+            cancellation_token: Optional CancellationToken for interrupt support.
+                               If provided and cancelled during streaming, raises
+                               CancellationError.
+            **kwargs: Additional arguments for litellm
+
+        Returns:
+            ModelResponse from the LLM
+
+        Raises:
+            CancellationError: If cancellation_token is cancelled during streaming
+            httpx.CloseError: If interrupt() is called during a non-streaming call
+        """
+        from openhands.sdk.conversation.cancellation import CancellationError
+
         # litellm.modify_params is GLOBAL; guard it for thread-safety
         with self._litellm_modify_params_ctx(self.modify_params):
             with warnings.catch_warnings():
@@ -1030,6 +1109,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 api_key_value = self._get_litellm_api_key_value()
 
+                # Get the managed HTTP client for interrupt support.
+                # The client is passed to OpenAI SDK, which litellm uses internally.
+                # If interrupt() is called, it closes this client, causing the
+                # in-flight request to fail immediately.
+                http_client = self._get_or_create_http_client()
+
+                # Create OpenAI client with our managed http_client
+                import openai
+
+                openai_client = openai.OpenAI(
+                    api_key=api_key_value or "dummy-key",
+                    base_url=self.base_url,
+                    http_client=http_client,
+                    timeout=self.timeout or 300.0,
+                )
+
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
                     model=self.model,
@@ -1040,12 +1135,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     drop_params=self.drop_params,
                     seed=self.seed,
                     messages=messages,
+                    client=openai_client,
                     **kwargs,
                 )
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)
                     chunks = []
                     for chunk in ret:
+                        # Check cancellation between chunks for responsive interrupt
+                        if cancellation_token is not None:
+                            if hasattr(cancellation_token, "is_cancelled"):
+                                if cancellation_token.is_cancelled():
+                                    logger.debug(
+                                        "Cancellation detected during streaming"
+                                    )
+                                    raise CancellationError(
+                                        "LLM completion cancelled during streaming"
+                                    )
                         on_token(chunk)
                         chunks.append(chunk)
                     ret = litellm.stream_chunk_builder(chunks, messages=messages)
