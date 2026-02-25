@@ -194,6 +194,21 @@ class BaseConversation(ABC):
     def pause(self) -> None: ...
 
     @abstractmethod
+    def interrupt(self) -> None:
+        """Interrupt the agent immediately, cancelling any in-flight LLM calls.
+
+        Unlike pause(), which waits for the current step to complete,
+        interrupt() attempts to cancel ongoing LLM calls immediately:
+
+        - Streaming calls: Cancelled at the next chunk boundary (immediate)
+        - Non-streaming calls: The async task is cancelled, closing the HTTP connection
+
+        This method is thread-safe and can be called from any thread.
+        After interruption, the conversation status is set to PAUSED.
+        """
+        ...
+
+    @abstractmethod
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None: ...
 
     @abstractmethod

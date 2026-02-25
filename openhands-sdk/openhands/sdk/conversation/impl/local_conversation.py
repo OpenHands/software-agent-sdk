@@ -33,6 +33,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.exceptions import LLMCancelledError
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -650,6 +651,10 @@ class LocalConversation(BaseConversation):
                             )
                         )
                         break
+        except LLMCancelledError:
+            # LLM call was cancelled via interrupt() - this is not an error
+            # Status is already set to PAUSED by interrupt()
+            logger.info("Agent step cancelled by interrupt")
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
 
@@ -728,6 +733,36 @@ class LocalConversation(BaseConversation):
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
+
+    def interrupt(self) -> None:
+        """Interrupt the agent immediately, cancelling any in-flight LLM calls.
+
+        Unlike pause(), which waits for the current step to complete,
+        interrupt() cancels ongoing LLM calls immediately:
+
+        - Streaming calls: Cancelled at the next chunk boundary (immediate)
+        - Non-streaming calls: The async task is cancelled, closing the HTTP connection
+
+        This method is thread-safe and can be called from any thread.
+        After interruption, the conversation status is set to PAUSED.
+        """
+        from openhands.sdk.event.user_action import InterruptEvent
+
+        # Cancel all LLMs first (main agent LLM + any in registry)
+        self.agent.llm.cancel()
+        for llm in self.llm_registry.usage_to_llm.values():
+            llm.cancel()
+
+        # Set paused status
+        with self._state:
+            if self._state.execution_status in [
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.RUNNING,
+            ]:
+                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                interrupt_event = InterruptEvent()
+                self._on_event(interrupt_event)
+                logger.info("Agent execution interrupted")
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation.
