@@ -756,11 +756,14 @@ class LocalConversation(BaseConversation):
         from openhands.sdk.event import InterruptEvent
 
         detail = reason or "User requested interrupt"
-        logger.info(f"Interrupt requested: {detail}")
+        logger.info(f"Conversation.interrupt() called: {detail}")
 
         # 1. Interrupt all LLMs in the registry (closes HTTP clients)
-        for llm in self.llm_registry.all_llms():
+        all_llms = list(self.llm_registry.all_llms())
+        logger.info(f"Interrupting {len(all_llms)} registered LLM(s)")
+        for llm in all_llms:
             try:
+                logger.info(f"Calling LLM.interrupt() for {llm.model}")
                 llm.interrupt()
             except Exception as e:
                 logger.warning(f"Error interrupting LLM: {e}")
@@ -768,6 +771,8 @@ class LocalConversation(BaseConversation):
         # 2. Interrupt terminal sessions if any tools have them
         try:
             if self._agent_ready and hasattr(self.agent, "tools_map"):
+                tool_count = len(self.agent.tools_map)
+                logger.info(f"Checking {tool_count} tool(s) for terminal sessions")
                 for tool in self.agent.tools_map.values():
                     try:
                         executable_tool = tool.as_executable()
@@ -775,10 +780,11 @@ class LocalConversation(BaseConversation):
                         # Check if executor has interrupt (e.g., TerminalExecutor)
                         session = getattr(executor, "session", None)
                         if session is not None and hasattr(session, "interrupt"):
-                            session.interrupt()
-                            logger.debug(
-                                f"Interrupted terminal session for {tool.name}"
+                            logger.info(
+                                f"Interrupting terminal session for tool: {tool.name}"
                             )
+                            session.interrupt()
+                            logger.info(f"Terminal session interrupted for {tool.name}")
                     except NotImplementedError:
                         # Tool has no executor
                         continue
@@ -789,7 +795,9 @@ class LocalConversation(BaseConversation):
 
         # 3. Update state and emit event
         with self._state:
-            if self._state.execution_status in [
+            current_status = self._state.execution_status
+            logger.info(f"Current execution status: {current_status}")
+            if current_status in [
                 ConversationExecutionStatus.RUNNING,
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
@@ -797,6 +805,13 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.PAUSED
                 interrupt_event = InterruptEvent(detail=detail)
                 self._on_event(interrupt_event)
+                logger.info(
+                    "Execution status changed to PAUSED, InterruptEvent emitted"
+                )
+            else:
+                logger.info(f"Status not changed (was {current_status})")
+
+        logger.info("Conversation.interrupt() complete")
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation.

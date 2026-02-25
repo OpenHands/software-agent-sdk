@@ -609,8 +609,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> signal.signal(signal.SIGINT, on_interrupt)
             >>> response = llm.completion(messages)  # Will be interrupted on Ctrl+C
         """
+        logger.info(f"LLM.interrupt() called for model={self.model}")
+
         # Set the interrupt flag first - this is checked during streaming
         self._interrupted = True
+        logger.info("LLM interrupt flag set to True")
 
         # Try to cancel via litellm's cancel_responses API if we have a response ID
         response_id = self._current_response_id
@@ -618,10 +621,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             try:
                 import litellm
 
-                logger.debug(f"Interrupting LLM: cancelling response {response_id}")
+                logger.info(
+                    f"Calling litellm.cancel_responses(response_id={response_id})"
+                )
                 litellm.cancel_responses(response_id=response_id)
+                logger.info("litellm.cancel_responses() completed")
             except Exception as e:
-                logger.debug(f"cancel_responses failed (may not be supported): {e}")
+                logger.info(f"cancel_responses failed (may not be supported): {e}")
+        else:
+            logger.info("No response_id available for cancel_responses")
 
         # Close litellm's module-level client as fallback
         try:
@@ -632,20 +640,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if handler is not None and hasattr(handler, "client"):
                     client = handler.client
                     if client is not None and hasattr(client, "close"):
-                        logger.debug("Interrupting LLM: closing litellm module client")
+                        logger.info("Closing litellm.module_level_client.client")
                         client.close()
+                        logger.info("litellm module client closed")
         except Exception as e:
             logger.warning(f"Error closing litellm module client: {e}")
 
         if self._http_client_lock is None:
+            logger.info("LLM.interrupt() complete (no HTTP client lock)")
             return
 
         with self._http_client_lock:
             # Close the OpenAI client (this closes its internal httpx client)
             if self._openai_client is not None:
                 try:
-                    logger.debug("Interrupting LLM: closing OpenAI client")
+                    logger.info("Closing OpenAI client")
                     self._openai_client.close()
+                    logger.info("OpenAI client closed")
                 except Exception as e:
                     logger.warning(f"Error closing OpenAI client during interrupt: {e}")
                 finally:
@@ -654,12 +665,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Also close our managed HTTP client
             if self._http_client is not None:
                 try:
-                    logger.debug("Interrupting LLM: closing HTTP client")
+                    logger.info("Closing managed HTTP client")
                     self._http_client.close()
+                    logger.info("Managed HTTP client closed")
                 except Exception as e:
                     logger.warning(f"Error closing HTTP client during interrupt: {e}")
                 finally:
                     self._http_client = None
+
+        logger.info("LLM.interrupt() complete")
 
     def _get_or_create_http_client(self) -> httpx.Client:
         """Get or create the HTTP client for LLM requests.
