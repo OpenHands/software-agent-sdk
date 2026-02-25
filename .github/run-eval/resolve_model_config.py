@@ -274,14 +274,22 @@ def check_model(
         )
 
         content = response.choices[0].message.content if response.choices else None
-        
+
         if content:
             return True, f"✓ {display_name}: OK"
         else:
             # Check if there's any other data in the response for diagnostics
-            finish_reason = response.choices[0].finish_reason if response.choices else None
-            usage = getattr(response, 'usage', None)
-            return False, f"✗ {display_name}: Empty response (finish_reason={finish_reason}, usage={usage})"
+            finish_reason = (
+                response.choices[0].finish_reason if response.choices else None
+            )
+            usage = getattr(response, "usage", None)
+            return (
+                False,
+                (
+                    f"✗ {display_name}: Empty response "
+                    f"(finish_reason={finish_reason}, usage={usage})"
+                ),
+            )
 
     except litellm.exceptions.Timeout:
         return False, f"✗ {display_name}: Request timed out after {timeout}s"
