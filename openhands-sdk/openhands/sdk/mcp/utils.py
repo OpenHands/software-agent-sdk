@@ -42,9 +42,15 @@ async def _connect_and_list_tools(client: MCPClient) -> None:
 
 def create_mcp_tools(
     config: dict | MCPConfig,
-    timeout: float = 30.0,
+    timeout: float = 60.0,
 ) -> MCPClient:
     """Create MCP tools from MCP configuration.
+
+    Args:
+        config: MCP configuration dictionary or MCPConfig object.
+        timeout: Timeout in seconds for MCP initialization and connection.
+            OAuth-based MCP servers may require longer timeouts for
+            browser-based authentication flows. Default is 60 seconds.
 
     Returns an MCPClient with tools populated. Use as a context manager:
 
@@ -55,7 +61,9 @@ def create_mcp_tools(
     """
     if isinstance(config, dict):
         config = MCPConfig.model_validate(config)
-    client = MCPClient(config, log_handler=log_handler)
+    # Pass init_timeout to fastmcp Client for OAuth servers that need extra
+    # time for browser-based authentication flows
+    client = MCPClient(config, log_handler=log_handler, init_timeout=timeout)
 
     try:
         client.call_async_from_sync(
