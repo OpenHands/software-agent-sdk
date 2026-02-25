@@ -559,19 +559,19 @@ class LocalConversation(BaseConversation):
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
 
-                # Check status and prepare for step (with lock)
-                should_break = False
-                should_continue = False
+                # Check status and prepare for step (with lock held briefly)
+                # Lock is released before agent.step() to allow interrupt() to work
+                should_run_step = True
                 with self._state:
                     # Check for terminal conditions
                     if self._state.execution_status in [
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
                     ]:
-                        should_break = True
+                        break
 
                     # Handle stop hooks on FINISHED
-                    elif (
+                    if (
                         self._state.execution_status
                         == ConversationExecutionStatus.FINISHED
                     ):
@@ -594,36 +594,34 @@ class LocalConversation(BaseConversation):
                                 self._state.execution_status = (
                                     ConversationExecutionStatus.RUNNING
                                 )
-                                should_continue = True
+                                # Continue to next iteration (don't run step yet)
+                                should_run_step = False
                             else:
-                                should_break = True
+                                break
                         else:
                             # No hooks - stop
-                            should_break = True
+                            break
 
-                    else:
-                        # Check for stuck patterns if enabled (only when RUNNING)
-                        if self._stuck_detector:
-                            is_stuck = self._stuck_detector.is_stuck()
-                            if is_stuck:
-                                logger.warning("Stuck pattern detected.")
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.STUCK
-                                )
-                                should_continue = True
-
-                        # Clear confirmation flag before calling agent.step()
-                        if (
-                            self._state.execution_status
-                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                        ):
+                    # Check for stuck patterns if enabled
+                    if self._stuck_detector and should_run_step:
+                        is_stuck = self._stuck_detector.is_stuck()
+                        if is_stuck:
+                            logger.warning("Stuck pattern detected.")
                             self._state.execution_status = (
-                                ConversationExecutionStatus.RUNNING
+                                ConversationExecutionStatus.STUCK
                             )
+                            break
 
-                if should_break:
-                    break
-                if should_continue:
+                    # Clear confirmation flag before calling agent.step()
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                    ):
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
+
+                if not should_run_step:
                     continue
 
                 # Run agent step WITHOUT holding the state lock
@@ -769,42 +767,15 @@ class LocalConversation(BaseConversation):
         detail = reason or "User requested interrupt"
         logger.info(f"Conversation.interrupt() called: {detail}")
 
-        # 1. Interrupt all LLMs in the registry (closes HTTP clients)
-        all_llms = list(self.llm_registry.all_llms())
-        logger.info(f"Interrupting {len(all_llms)} registered LLM(s)")
-        for llm in all_llms:
+        # 1. Interrupt the agent's LLM
+        if self._agent_ready:
             try:
-                logger.info(f"Calling LLM.interrupt() for {llm.model}")
-                llm.interrupt()
+                logger.info(f"Calling LLM.interrupt() for {self.agent.llm.model}")
+                self.agent.llm.interrupt()
             except Exception as e:
-                logger.warning(f"Error interrupting LLM: {e}")
+                logger.warning(f"Error interrupting agent LLM: {e}")
 
-        # 2. Interrupt terminal sessions if any tools have them
-        try:
-            if self._agent_ready and hasattr(self.agent, "tools_map"):
-                tool_count = len(self.agent.tools_map)
-                logger.info(f"Checking {tool_count} tool(s) for terminal sessions")
-                for tool in self.agent.tools_map.values():
-                    try:
-                        executable_tool = tool.as_executable()
-                        executor = executable_tool.executor
-                        # Check if executor has interrupt (e.g., TerminalExecutor)
-                        session = getattr(executor, "session", None)
-                        if session is not None and hasattr(session, "interrupt"):
-                            logger.info(
-                                f"Interrupting terminal session for tool: {tool.name}"
-                            )
-                            session.interrupt()
-                            logger.info(f"Terminal session interrupted for {tool.name}")
-                    except NotImplementedError:
-                        # Tool has no executor
-                        continue
-                    except Exception as e:
-                        logger.warning(f"Error interrupting tool {tool.name}: {e}")
-        except Exception as e:
-            logger.warning(f"Error accessing tools for interrupt: {e}")
-
-        # 3. Update state and emit event
+        # 2. Update state and emit event
         with self._state:
             current_status = self._state.execution_status
             logger.info(f"Current execution status: {current_status}")
