@@ -268,12 +268,11 @@ def test_factory_info() -> None:
     assert info.index("alpha-agent") < info.index("beta-agent")
 
 
-def test_default_factory_is_returned_for_empty_type() -> None:
+@pytest.mark.parametrize("name", [None, "", "default", "alpha"])
+def test_error_default_factory_empty(name: str | None) -> None:
     """Ensure default agent factory is used when no type is provided."""
-    default_factory = get_agent_factory(None)
-    assert "Default general-purpose agent" in default_factory.description
-    assert default_factory == get_agent_factory("default")
-    assert default_factory == get_agent_factory("")
+    with pytest.raises(ValueError, match=f"Unknown agent '{name}'"):
+        _ = get_agent_factory(name)
 
 
 def test_register_and_retrieve_custom_agent_factory() -> None:

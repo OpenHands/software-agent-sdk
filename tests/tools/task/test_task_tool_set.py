@@ -4,11 +4,8 @@ from openhands.sdk import Agent, Conversation, LocalConversation, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible.observation import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
-from openhands.tools.delegate.registration import (
-    _reset_registry_for_tests,
-    register_agent,
-)
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TaskObservation
 from openhands.tools.task.manager import TaskStatus

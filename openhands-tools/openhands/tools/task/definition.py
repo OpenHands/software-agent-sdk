@@ -16,6 +16,7 @@ from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
+from openhands.sdk.subagent import get_factory_info
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -190,7 +191,6 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         Returns:
             List containing a single TaskTool.
         """
-        from openhands.tools.delegate.registration import get_factory_info
         from openhands.tools.task.impl import TaskExecutor, TaskManager
 
         full_agent_types_info = get_factory_info()

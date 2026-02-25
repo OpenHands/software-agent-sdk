@@ -29,7 +29,11 @@ from threading import RLock
 from typing import TYPE_CHECKING, NamedTuple
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent.load import load_project_agents, load_user_agents
+from openhands.sdk.subagent.load import (
+    load_agents_from_dir,
+    load_project_agents,
+    load_user_agents,
+)
 from openhands.sdk.subagent.schema import AgentDefinition
 
 
@@ -38,6 +42,8 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
 
 logger = get_logger(__name__)
+
+BUILTINS_DIR = Path(__file__).parent / "builtins"
 
 
 class AgentFactory(NamedTuple):
@@ -229,6 +235,35 @@ def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
     return registered
 
 
+def register_builtins_agents() -> list[str]:
+    """Load and register SDK builtin agents from ``subagent/builtins/*.md``.
+
+    They are registered via ``register_agent_if_absent`` and will not
+    overwrite agents already registered by programmatic calls, plugins,
+    or project/user-level file-based definitions.
+
+    Returns:
+        List of agent names that were actually registered.
+    """
+    builtins_agents_def = load_agents_from_dir(BUILTINS_DIR)
+
+    registered: list[str] = []
+    for agent_def in builtins_agents_def:
+        factory = agent_definition_to_factory(agent_def)
+        was_registered = register_agent_if_absent(
+            name=agent_def.name,
+            factory_func=factory,
+            description=agent_def.description or f"Agent: {agent_def.name}",
+        )
+        if was_registered:
+            registered.append(agent_def.name)
+            logger.info(
+                f"Registered file-based agent '{agent_def.name}'"
+                + (f" from {agent_def.source}" if agent_def.source else "")
+            )
+    return registered
+
+
 def get_agent_factory(name: str | None) -> AgentFactory:
     """
     Get a registered agent factory by name.
@@ -243,13 +278,13 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     Raises:
         ValueError: If no agent factory with the given name is found
     """
-    if name is None or name == "" or name == "default":
-        from openhands.sdk.subagent.builtins.default import get_default_subagent
-
-        return get_default_subagent()
+    if name is None or name == "":
+        factory_name = "default"
+    else:
+        factory_name = name
 
     with _registry_lock:
-        factory = _agent_factories.get(name)
+        factory = _agent_factories.get(factory_name)
         available = sorted(_agent_factories.keys())
 
     if factory is None:

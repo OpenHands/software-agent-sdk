@@ -22,7 +22,7 @@ from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
-from openhands.tools.delegate.registration import get_agent_factory
+from openhands.sdk.subagent.registry import get_agent_factory
 
 
 logger = get_logger(__name__)

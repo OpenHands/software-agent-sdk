@@ -17,7 +17,8 @@ import os
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool
 from openhands.sdk.context import Skill
-from openhands.tools.delegate import DelegationVisualizer, register_agent
+from openhands.sdk.subagent import register_agent
+from openhands.tools.delegate import DelegationVisualizer
 from openhands.tools.task import TaskToolSet
 
 

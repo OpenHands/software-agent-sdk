@@ -7,10 +7,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.tools.delegate.registration import (
-    _reset_registry_for_tests,
-    register_agent,
-)
+from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.tools.task.manager import (
     Task,
     TaskManager,
