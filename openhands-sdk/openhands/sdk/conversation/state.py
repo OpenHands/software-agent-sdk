@@ -1,9 +1,11 @@
 # state.py
+from __future__ import annotations
+
 import json
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import Field, PrivateAttr, model_validator
 
@@ -28,6 +30,10 @@ from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.compliance import APIComplianceMonitor
 
 
 logger = get_logger(__name__)
@@ -177,6 +183,9 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+    _compliance_monitor: APIComplianceMonitor | None = PrivateAttr(
+        default=None
+    )  # API compliance monitor (lazy-initialized)
 
     @model_validator(mode="before")
     @classmethod
@@ -244,7 +253,7 @@ class ConversationState(OpenHandsModel):
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
     def create(
-        cls: type["ConversationState"],
+        cls: type[ConversationState],
         id: ConversationID,
         agent: AgentBase,
         workspace: BaseWorkspace,
@@ -252,7 +261,7 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
-    ) -> "ConversationState":
+    ) -> ConversationState:
         """Create a new conversation state or resume from persistence.
 
         This factory method handles both new conversation creation and resumption
@@ -506,3 +515,37 @@ class ConversationState(OpenHandsModel):
         Return True if the lock is currently held by the calling thread.
         """
         return self._lock.owned()
+
+    # ===== API Compliance Monitoring =====
+
+    @property
+    def compliance_monitor(self) -> APIComplianceMonitor:
+        """Get or create the API compliance monitor.
+
+        The monitor is lazily initialized on first access.
+        """
+        if self._compliance_monitor is None:
+            from openhands.sdk.conversation.compliance import APIComplianceMonitor
+
+            self._compliance_monitor = APIComplianceMonitor()
+        return self._compliance_monitor
+
+    def add_event(self, event: Event) -> None:
+        """Add an event to the conversation, checking for API compliance.
+
+        This method should be used instead of directly appending to events.
+        It checks the event against API compliance properties and logs any
+        violations before adding the event to the event log.
+
+        Currently operates in observation mode: violations are logged but
+        events are still processed. Future versions may support per-property
+        reconciliation strategies.
+
+        Args:
+            event: The event to add to the conversation.
+        """
+        # Check for compliance violations (logs warnings if any)
+        self.compliance_monitor.process_event(event)
+
+        # Add to event log regardless of violations (observation mode)
+        self._events.append(event)
