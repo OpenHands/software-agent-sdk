@@ -14,8 +14,6 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
-    GenerateTitleRequest,
-    GenerateTitleResponse,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
@@ -270,24 +268,6 @@ async def update_conversation(
     if not updated:
         return Success(success=False)
     return Success()
-
-
-@conversation_router.post(
-    "/{conversation_id}/generate_title",
-    responses={404: {"description": "Item not found"}},
-)
-async def generate_conversation_title(
-    conversation_id: UUID,
-    request: GenerateTitleRequest,
-    conversation_service: ConversationService = Depends(get_conversation_service),
-) -> GenerateTitleResponse:
-    """Generate a title for the conversation using LLM."""
-    title = await conversation_service.generate_conversation_title(
-        conversation_id, request.max_length, request.llm
-    )
-    if title is None:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
-    return GenerateTitleResponse(title=title)
 
 
 @conversation_router.post(

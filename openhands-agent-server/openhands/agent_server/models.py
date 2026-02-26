@@ -7,7 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
-from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
+from openhands.sdk import AgentBase, Event, ImageContent, Message, TextContent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -255,23 +255,6 @@ class UpdateConversationRequest(BaseModel):
     title: str = Field(
         ..., min_length=1, max_length=200, description="New conversation title"
     )
-
-
-class GenerateTitleRequest(BaseModel):
-    """Payload to generate a title for a conversation."""
-
-    max_length: int = Field(
-        default=50, ge=1, le=200, description="Maximum length of the generated title"
-    )
-    llm: LLM | None = Field(
-        default=None, description="Optional LLM to use for title generation"
-    )
-
-
-class GenerateTitleResponse(BaseModel):
-    """Response containing the generated conversation title."""
-
-    title: str = Field(description="The generated title for the conversation")
 
 
 class AskAgentRequest(BaseModel):
