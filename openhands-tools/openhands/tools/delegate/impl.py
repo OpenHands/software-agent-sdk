@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.tool.tool import ToolExecutor
@@ -120,6 +121,7 @@ class DelegateExecutor(ToolExecutor):
             # Disable streaming for sub-agents since they run in
             # separate threads without token callbacks
             sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+            sub_agent_llm.reset_metrics()
 
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
@@ -259,6 +261,16 @@ class DelegateExecutor(ToolExecutor):
             # Wait for all threads to complete
             for thread in threads:
                 thread.join()
+
+            # Merge sub-agent metrics back into parent conversation
+            parent_stats = parent_conversation.conversation_stats
+            for agent_id, sub_conv in self._sub_agents.items():
+                if agent_id in action.tasks:
+                    sub_metrics = sub_conv.conversation_stats.get_combined_metrics()
+                    parent_stats.get_combined_metrics  # ensure initialized
+                    parent_stats.usage_to_metrics.setdefault(
+                        f"delegate:{agent_id}", Metrics()
+                    ).merge(sub_metrics)
 
             # Collect results in the same order as the input tasks
             all_results = []
