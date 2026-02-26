@@ -52,6 +52,14 @@ MODELS = {
             "litellm_extra_body": {"enable_thinking": True},
         },
     },
+    "qwen3.5-flash": {
+        "id": "qwen3.5-flash",
+        "display_name": "Qwen3.5 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/dashscope/qwen3.5-flash-2026-02-23",
+            "temperature": 0.0,
+        },
+    },
     "claude-4.5-opus": {
         "id": "claude-4.5-opus",
         "display_name": "Claude 4.5 Opus",
@@ -85,6 +93,11 @@ MODELS = {
         "id": "gemini-3-flash",
         "display_name": "Gemini 3 Flash",
         "llm_config": {"model": "litellm_proxy/gemini-3-flash-preview"},
+    },
+    "gemini-3.1-pro": {
+        "id": "gemini-3.1-pro",
+        "display_name": "Gemini 3.1 Pro",
+        "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview"},
     },
     "gpt-5.2": {
         "id": "gpt-5.2",

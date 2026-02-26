@@ -46,6 +46,12 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.subagent import (
+    AgentDefinition,
+    register_file_agents,
+    register_plugin_agents,
+)
+from openhands.sdk.subagent.registry import register_builtins_agents
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -310,6 +316,7 @@ class LocalConversation(BaseConversation):
             return
 
         all_plugin_hooks: list[HookConfig] = []
+        all_plugin_agents: list[AgentDefinition] = []
 
         # Load plugins if specified
         if self._plugin_specs:
@@ -347,6 +354,10 @@ class LocalConversation(BaseConversation):
                 if plugin.hooks and not plugin.hooks.is_empty():
                     all_plugin_hooks.append(plugin.hooks)
 
+                # Collect agent definitions
+                if plugin.agents:
+                    all_plugin_agents.extend(plugin.agents)
+
             # Update agent with merged content
             self.agent = self.agent.model_copy(
                 update={
@@ -360,6 +371,10 @@ class LocalConversation(BaseConversation):
                 self._state.agent = self.agent
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Register file-based agents defined in plugins
+        if all_plugin_agents:
+            register_plugin_agents(all_plugin_agents)
 
         # Combine explicit hook_config with plugin hooks
         # Explicit hooks run first (before plugin hooks)
@@ -387,21 +402,44 @@ class LocalConversation(BaseConversation):
 
         self._plugins_loaded = True
 
+    def _register_file_based_agents(self) -> None:
+        """Discover and register file-based agents into the agent registry.
+
+        Agents are loaded from Markdown definition files and registered via
+        `register_agent_if_absent`, so they never overwrite agents that were
+        already registered programmatically or by plugins.
+
+        Registration order (highest to lowest priority):
+          1. Programmatic `register_agent()` calls (already in the registry)
+          2. Plugin agents (registered during plugin loading, i.e.,
+                in _ensure_plugins_loaded())
+          3. Project-level file agents (`{project}/.agents/agents/*.md`,
+                then `{project}/.openhands/agents/*.md`)
+          4. User-level file agents (`~/.agents/agents/*.md`,
+                then `~/.openhands/agents/*.md`)
+          5. SDK builtin agents (`subagent/builtins/*.md`)
+        """
+        # register project-level and then user-level file-based agents
+        register_file_agents(self.workspace.working_dir)
+        # register builtins agents
+        register_builtins_agents()
+
     def _ensure_agent_ready(self) -> None:
-        """Ensure agent is fully initialized with plugins loaded.
+        """Ensure the agent is fully initialized with plugins and agents loaded.
 
-        This method combines plugin loading and agent initialization to ensure
-        the agent is initialized exactly once with complete configuration.
+        Performs one-time lazy initialization on the first `send_message()`
+        or `run()` call.  The steps executed (in order) are:
 
-        Called lazily on first send_message() or run() to:
-        1. Load plugins (if specified)
-        2. Initialize agent with complete plugin config and hooks
-        3. Register LLMs in the registry
+        1. Load plugins (merges skills, MCP config, and hooks).
+        2. Register file-based agents into the agent registry.
+        3. Initialize the agent with complete plugin config and hooks.
+        4. Register LLMs in the LLM registry.
 
         This preserves the design principle that constructors should not perform
         I/O or error-prone operations, while eliminating double initialization.
 
-        Thread-safe: Uses state lock to prevent concurrent initialization.
+        Thread-safe: uses a double-checked lock on the conversation state to
+        prevent concurrent initialization.
         """
         # Fast path: if already initialized, skip lock acquisition entirely.
         # This is crucial for concurrent send_message() calls during run(),
@@ -418,6 +456,9 @@ class LocalConversation(BaseConversation):
 
             # Load plugins first (merges skills, MCP config, hooks)
             self._ensure_plugins_loaded()
+
+            # register file-based agents
+            self._register_file_based_agents()
 
             # Initialize agent with complete configuration
             self.agent.init_state(self._state, on_event=self._on_event)
@@ -756,6 +797,11 @@ class LocalConversation(BaseConversation):
         """
         # Ensure agent is initialized (needs tools_map)
         self._ensure_agent_ready()
+
+        # Try agent-specific override first (e.g. ACPAgent uses fork_session)
+        agent_response = self.agent.ask_agent(question)
+        if agent_response is not None:
+            return agent_response
 
         # Import here to avoid circular imports
         from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages

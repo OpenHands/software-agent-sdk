@@ -1,6 +1,7 @@
 """Core high-level tests for Conversation class focusing on essential
 functionality."""
 
+import os
 import tempfile
 import uuid
 
@@ -149,11 +150,18 @@ def test_conversation_event_id_validation():
         assert len(our_events) == 1
 
 
-@pytest.mark.forked  # Use pytest-forked to isolate memory-intensive test
+def _maybe_forked(test_func):
+    # pytest-forked doesn't reliably compose with xdist; under xdist we already
+    # have process isolation per worker, so avoid forking again.
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return test_func
+    return pytest.mark.forked(test_func)
+
+
+@_maybe_forked
 def test_conversation_large_event_handling():
     """Test conversation handling of many events with memory usage monitoring."""
     import gc
-    import os
 
     import psutil
 
