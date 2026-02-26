@@ -212,3 +212,98 @@ def test_conversation_interrupt_is_thread_safe(agent: Agent, tmp_path):
 
     # Should not raise any errors and status should be PAUSED
     assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
+
+
+def test_conversation_register_interrupt_callback(agent: Agent, tmp_path):
+    """Test that interrupt callbacks can be registered."""
+    conv = LocalConversation(agent=agent, workspace=str(tmp_path))
+
+    called = []
+
+    def callback():
+        called.append(True)
+
+    conv.register_interrupt_callback(callback)
+
+    # Callback should not be called yet
+    assert len(called) == 0
+
+    # Call interrupt
+    conv.interrupt()
+
+    # Callback should have been called
+    assert len(called) == 1
+
+
+def test_conversation_unregister_interrupt_callback(agent: Agent, tmp_path):
+    """Test that interrupt callbacks can be unregistered."""
+    conv = LocalConversation(agent=agent, workspace=str(tmp_path))
+
+    called = []
+
+    def callback():
+        called.append(True)
+
+    conv.register_interrupt_callback(callback)
+    conv.unregister_interrupt_callback(callback)
+
+    # Call interrupt
+    conv.interrupt()
+
+    # Callback should not have been called since it was unregistered
+    assert len(called) == 0
+
+
+def test_conversation_multiple_interrupt_callbacks(agent: Agent, tmp_path):
+    """Test that multiple interrupt callbacks are all invoked."""
+    conv = LocalConversation(agent=agent, workspace=str(tmp_path))
+
+    results = []
+
+    def callback1():
+        results.append("callback1")
+
+    def callback2():
+        results.append("callback2")
+
+    conv.register_interrupt_callback(callback1)
+    conv.register_interrupt_callback(callback2)
+
+    conv.interrupt()
+
+    # Both callbacks should have been called
+    assert "callback1" in results
+    assert "callback2" in results
+
+
+def test_conversation_interrupt_callback_exception_handling(agent: Agent, tmp_path):
+    """Test that exceptions in callbacks don't prevent other callbacks."""
+    conv = LocalConversation(agent=agent, workspace=str(tmp_path))
+
+    results = []
+
+    def bad_callback():
+        raise RuntimeError("Intentional error")
+
+    def good_callback():
+        results.append("good")
+
+    conv.register_interrupt_callback(bad_callback)
+    conv.register_interrupt_callback(good_callback)
+
+    # Should not raise despite bad_callback raising
+    conv.interrupt()
+
+    # good_callback should still have been called
+    assert "good" in results
+
+
+def test_conversation_unregister_nonexistent_callback(agent: Agent, tmp_path):
+    """Test that unregistering a non-existent callback is a no-op."""
+    conv = LocalConversation(agent=agent, workspace=str(tmp_path))
+
+    def callback():
+        pass
+
+    # Should not raise
+    conv.unregister_interrupt_callback(callback)
