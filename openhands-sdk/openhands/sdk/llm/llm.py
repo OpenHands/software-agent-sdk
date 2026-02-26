@@ -385,7 +385,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Async cancellation support - background event loop for interruptible calls
     _async_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
     _async_loop_thread: threading.Thread | None = PrivateAttr(default=None)
-    _current_task: asyncio.Task[Any] | None = PrivateAttr(default=None)
+    _current_future: Future[Any] | None = PrivateAttr(default=None)
     _task_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -633,7 +633,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Reset async state - will be lazily recreated
         new_llm._async_loop = None
         new_llm._async_loop_thread = None
-        new_llm._current_task = None
+        new_llm._current_future = None
         new_llm._task_lock = threading.Lock()
 
         return new_llm
@@ -662,9 +662,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def cancel(self) -> None:
         """Cancel any in-flight LLM call (best effort).
 
-        This method schedules cancellation on the background event loop
-        but does not block waiting for confirmation. The cancellation will
-        take effect at the next await point in the LLM call.
+        This method cancels the current LLM call immediately. The cancellation
+        will take effect at the next await point in the LLM call.
 
         Can be called from any thread. After cancellation, the LLM can be
         used for new calls - the cancellation only affects the currently
@@ -672,23 +671,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         Example:
             >>> # In another thread:
-            >>> llm.cancel()  # Schedules cancellation of current LLM call
+            >>> llm.cancel()  # Cancels the current LLM call
         """
         with self._task_lock:
-            if self._current_task is not None and self._async_loop is not None:
+            if self._current_future is not None:
                 logger.info(f"Cancelling LLM call for {self.usage_id}")
-                # Schedule cancellation on the event loop thread
-                self._async_loop.call_soon_threadsafe(self._current_task.cancel)
+                # Cancel the Future directly - thread-safe and immediate
+                self._current_future.cancel()
 
     def is_cancelled(self) -> bool:
-        """Check if the current task has been cancelled.
+        """Check if the current call has been cancelled.
 
         Returns:
-            True if there's a current task and it has been cancelled.
+            True if there's a current call and it has been cancelled.
         """
         with self._task_lock:
-            if self._current_task is not None:
-                return self._current_task.cancelled()
+            if self._current_future is not None:
+                return self._current_future.cancelled()
         return False
 
     def close(self) -> None:
@@ -709,10 +708,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             ...     llm.close()  # Clean up background thread
         """
         with self._task_lock:
-            # Cancel any in-flight task first
-            if self._current_task is not None and self._async_loop is not None:
-                self._async_loop.call_soon_threadsafe(self._current_task.cancel)
-                self._current_task = None
+            # Cancel any in-flight call first by cancelling the Future
+            if self._current_future is not None:
+                self._current_future.cancel()
+                self._current_future = None
 
             if self._async_loop is not None:
                 # Stop the event loop
@@ -1021,10 +1020,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 coro, loop
             )
 
+            with self._task_lock:
+                self._current_future = future
+
             try:
                 return future.result()
             except (asyncio.CancelledError, FutureCancelledError):
                 raise LLMCancelledError("LLM responses call was cancelled")
+            finally:
+                with self._task_lock:
+                    self._current_future = None
 
         try:
             resp: ResponsesAPIResponse = _one_attempt()
@@ -1110,14 +1115,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             **kwargs,
         )
 
-        # Submit to background event loop and track the task
+        # Submit to background event loop and track the Future for cancellation
         future: Future[ModelResponse] = asyncio.run_coroutine_threadsafe(coro, loop)
+
+        with self._task_lock:
+            self._current_future = future
 
         try:
             # Block until complete or cancelled
             return future.result()
         except (asyncio.CancelledError, FutureCancelledError):
             raise LLMCancelledError("LLM completion call was cancelled")
+        finally:
+            with self._task_lock:
+                self._current_future = None
 
     async def _async_transport_call(
         self,
@@ -1127,72 +1138,64 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
-        """Async implementation of transport call with task tracking."""
-        # Track current task for cancellation
-        with self._task_lock:
-            self._current_task = asyncio.current_task()
+        """Async implementation of transport call."""
+        # litellm.modify_params is GLOBAL; guard it for thread-safety
+        with self._litellm_modify_params_ctx(self.modify_params):
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=DeprecationWarning, module="httpx.*"
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r".*content=.*upload.*",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"There is no current event loop",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=UserWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=DeprecationWarning,
+                    message="Accessing the 'model_fields' attribute.*",
+                )
+                api_key_value = self._get_litellm_api_key_value()
 
-        try:
-            # litellm.modify_params is GLOBAL; guard it for thread-safety
-            with self._litellm_modify_params_ctx(self.modify_params):
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore", category=DeprecationWarning, module="httpx.*"
-                    )
-                    warnings.filterwarnings(
-                        "ignore",
-                        message=r".*content=.*upload.*",
-                        category=DeprecationWarning,
-                    )
-                    warnings.filterwarnings(
-                        "ignore",
-                        message=r"There is no current event loop",
-                        category=DeprecationWarning,
-                    )
-                    warnings.filterwarnings(
-                        "ignore",
-                        category=UserWarning,
-                    )
-                    warnings.filterwarnings(
-                        "ignore",
-                        category=DeprecationWarning,
-                        message="Accessing the 'model_fields' attribute.*",
-                    )
-                    api_key_value = self._get_litellm_api_key_value()
+                # Use async completion for cancellation support
+                ret = await litellm_acompletion(
+                    model=self.model,
+                    api_key=api_key_value,
+                    api_base=self.base_url,
+                    api_version=self.api_version,
+                    timeout=self.timeout,
+                    drop_params=self.drop_params,
+                    seed=self.seed,
+                    messages=messages,
+                    **kwargs,
+                )
 
-                    # Use async completion for cancellation support
-                    ret = await litellm_acompletion(
-                        model=self.model,
-                        api_key=api_key_value,
-                        api_base=self.base_url,
-                        api_version=self.api_version,
-                        timeout=self.timeout,
-                        drop_params=self.drop_params,
-                        seed=self.seed,
-                        messages=messages,
-                        **kwargs,
-                    )
+                if enable_streaming and on_token is not None:
+                    # For streaming, iterate async and check for cancellation
+                    # ret is CustomStreamWrapper when streaming
+                    assert isinstance(ret, CustomStreamWrapper)
+                    chunks: list[ModelResponseStream] = []
+                    async for chunk in ret:
+                        # on_token callback is sync, call it directly
+                        # CustomStreamWrapper yields ModelResponseStream chunks
+                        stream_chunk = cast(ModelResponseStream, chunk)
+                        on_token(stream_chunk)
+                        chunks.append(stream_chunk)
+                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-                    if enable_streaming and on_token is not None:
-                        # For streaming, iterate async and check for cancellation
-                        # ret is CustomStreamWrapper when streaming
-                        assert isinstance(ret, CustomStreamWrapper)
-                        chunks: list[ModelResponseStream] = []
-                        async for chunk in ret:
-                            # on_token callback is sync, call it directly
-                            # CustomStreamWrapper yields ModelResponseStream chunks
-                            stream_chunk = cast(ModelResponseStream, chunk)
-                            on_token(stream_chunk)
-                            chunks.append(stream_chunk)
-                        ret = litellm.stream_chunk_builder(chunks, messages=messages)
-
-                    assert isinstance(ret, ModelResponse), (
-                        f"Expected ModelResponse, got {type(ret)}"
-                    )
-                    return ret
-        finally:
-            with self._task_lock:
-                self._current_task = None
+                assert isinstance(ret, ModelResponse), (
+                    f"Expected ModelResponse, got {type(ret)}"
+                )
+                return ret
 
     async def _async_responses_call(
         self,
@@ -1204,96 +1207,83 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None,
         final_kwargs: dict[str, Any],
     ) -> ResponsesAPIResponse:
-        """Async implementation of responses call with task tracking."""
-        # Track current task for cancellation
-        with self._task_lock:
-            self._current_task = asyncio.current_task()
+        """Async implementation of responses call."""
+        with self._litellm_modify_params_ctx(self.modify_params):
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                api_key_value = self._get_litellm_api_key_value()
 
-        try:
-            with self._litellm_modify_params_ctx(self.modify_params):
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning)
-                    api_key_value = self._get_litellm_api_key_value()
+                ret = await litellm_aresponses(
+                    model=self.model,
+                    input=typed_input,
+                    instructions=instructions,
+                    tools=resp_tools,
+                    api_key=api_key_value,
+                    api_base=self.base_url,
+                    api_version=self.api_version,
+                    timeout=self.timeout,
+                    drop_params=self.drop_params,
+                    seed=self.seed,
+                    **final_kwargs,
+                )
 
-                    ret = await litellm_aresponses(
-                        model=self.model,
-                        input=typed_input,
-                        instructions=instructions,
-                        tools=resp_tools,
-                        api_key=api_key_value,
-                        api_base=self.base_url,
-                        api_version=self.api_version,
-                        timeout=self.timeout,
-                        drop_params=self.drop_params,
-                        seed=self.seed,
-                        **final_kwargs,
-                    )
+                if isinstance(ret, ResponsesAPIResponse):
+                    if user_enable_streaming:
+                        logger.warning(
+                            "Responses streaming was requested, but the provider "
+                            "returned a non-streaming response; no on_token deltas "
+                            "will be emitted."
+                        )
+                    assert self._telemetry is not None
+                    self._telemetry.on_response(ret)
+                    return ret
 
-                    if isinstance(ret, ResponsesAPIResponse):
-                        if user_enable_streaming:
-                            logger.warning(
-                                "Responses streaming was requested, but the provider "
-                                "returned a non-streaming response; no on_token deltas "
-                                "will be emitted."
-                            )
-                        assert self._telemetry is not None
-                        self._telemetry.on_response(ret)
-                        return ret
+                # When stream=True, LiteLLM returns an async streaming iterator
+                if final_kwargs.get("stream", False):
+                    if not isinstance(ret, ResponsesAPIStreamingIterator):
+                        raise AssertionError(
+                            f"Expected async Responses stream iterator, got {type(ret)}"
+                        )
 
-                    # When stream=True, LiteLLM returns an async streaming iterator
-                    if final_kwargs.get("stream", False):
-                        if not isinstance(ret, ResponsesAPIStreamingIterator):
-                            raise AssertionError(
-                                "Expected async Responses stream iterator, "
-                                f"got {type(ret)}"
-                            )
-
-                        stream_callback = on_token if user_enable_streaming else None
-                        async for event in ret:
-                            if stream_callback is None:
-                                continue
-                            if isinstance(
-                                event,
-                                (
-                                    OutputTextDeltaEvent,
-                                    RefusalDeltaEvent,
-                                    ReasoningSummaryTextDeltaEvent,
-                                ),
-                            ):
-                                delta = event.delta
-                                if delta:
-                                    stream_callback(
-                                        ModelResponseStream(
-                                            choices=[
-                                                StreamingChoices(
-                                                    delta=Delta(content=delta)
-                                                )
-                                            ]
-                                        )
+                    stream_callback = on_token if user_enable_streaming else None
+                    async for event in ret:
+                        if stream_callback is None:
+                            continue
+                        if isinstance(
+                            event,
+                            (
+                                OutputTextDeltaEvent,
+                                RefusalDeltaEvent,
+                                ReasoningSummaryTextDeltaEvent,
+                            ),
+                        ):
+                            delta = event.delta
+                            if delta:
+                                stream_callback(
+                                    ModelResponseStream(
+                                        choices=[
+                                            StreamingChoices(delta=Delta(content=delta))
+                                        ]
                                     )
+                                )
 
-                        completed_event = ret.completed_response
-                        if completed_event is None:
-                            raise LLMNoResponseError(
-                                "Responses stream finished without a completed response"
-                            )
-                        if not isinstance(completed_event, ResponseCompletedEvent):
-                            raise LLMNoResponseError(
-                                f"Unexpected completed event: {type(completed_event)}"
-                            )
+                    completed_event = ret.completed_response
+                    if completed_event is None:
+                        raise LLMNoResponseError(
+                            "Responses stream finished without a completed response"
+                        )
+                    if not isinstance(completed_event, ResponseCompletedEvent):
+                        raise LLMNoResponseError(
+                            f"Unexpected completed event: {type(completed_event)}"
+                        )
 
-                        completed_resp = completed_event.response
+                    completed_resp = completed_event.response
 
-                        assert self._telemetry is not None
-                        self._telemetry.on_response(completed_resp)
-                        return completed_resp
+                    assert self._telemetry is not None
+                    self._telemetry.on_response(completed_resp)
+                    return completed_resp
 
-                    raise AssertionError(
-                        f"Expected ResponsesAPIResponse, got {type(ret)}"
-                    )
-        finally:
-            with self._task_lock:
-                self._current_task = None
+                raise AssertionError(f"Expected ResponsesAPIResponse, got {type(ret)}")
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
