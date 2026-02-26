@@ -121,6 +121,10 @@ class DelegateExecutor(ToolExecutor):
             # Disable streaming for sub-agents since they run in
             # separate threads without token callbacks
             sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+            # Reset metrics because Pydantic's model_copy() does a shallow copy of
+            # private attributes by default, causing the original and copied LLM
+            # to share the same Metrics object.
+            # Has to be done here such that every subagent has its own Metrics obj.
             sub_agent_llm.reset_metrics()
 
             resolved_agent_types = [
