@@ -51,7 +51,7 @@ main_agent = Agent(
 )
 conversation = Conversation(
     agent=main_agent,
-    workspace=Path.cwd(),
+    workspace=cwd,
     visualizer=DelegationVisualizer(name="Delegator"),
 )
 
