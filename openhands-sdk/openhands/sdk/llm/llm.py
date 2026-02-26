@@ -592,6 +592,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def __deepcopy__(self, memo: dict[int, Any] | None = None) -> LLM:
         """Custom deepcopy that handles unpicklable thread-local state.
 
+        This method is required because the LLM class contains threading primitives
+        (asyncio.AbstractEventLoop, threading.Thread, threading.Lock, asyncio.Task)
+        that cannot be pickled or deepcopied by Python's standard mechanisms.
+
+        This method is invoked in two scenarios:
+        1. When `copy.deepcopy(llm)` is called explicitly
+        2. When `llm.model_copy(deep=True)` is called (Pydantic calls __deepcopy__
+           internally for deep copies)
+
+        While the current codebase primarily uses `model_copy(deep=False)` (shallow
+        copy), this implementation ensures the LLM class remains copyable if deep
+        copies are needed in the future or by external users.
+
         The async loop, thread, task, and lock are not deepcopyable.
         Instead, we create a new copy without these attributes, which will
         be lazily recreated when needed.
