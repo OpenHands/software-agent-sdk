@@ -117,15 +117,17 @@ class DelegateExecutor(ToolExecutor):
             parent_visualizer = parent_conversation._visualizer
             workspace_path = parent_conversation.state.workspace.working_dir
 
-            # Disable streaming for sub-agents since they run in
-            # separate threads without token callbacks
-            sub_agent_llm = parent_llm.model_copy(update={"stream": False})
-
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
+                # Each sub-agent gets its own LLM copy with independent metrics.
+                # model_copy() shallow-copies private attrs, so reset_metrics()
+                # is needed to break the shared Metrics reference with the parent.
+                sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+                sub_agent_llm.reset_metrics()
+
                 factory = get_agent_factory(name=agent_type)
                 worker_agent = factory.factory_func(sub_agent_llm)
 
@@ -259,6 +261,17 @@ class DelegateExecutor(ToolExecutor):
             # Wait for all threads to complete
             for thread in threads:
                 thread.join()
+
+            # Sync sub-agent metrics into parent conversation.
+            # Sub-agent metrics are cumulative, so replace (not merge)
+            # to avoid double-counting on repeated delegations.
+            parent_stats = parent_conversation.conversation_stats
+            for agent_id in action.tasks:
+                if agent_id in self._sub_agents:
+                    sub_conv = self._sub_agents[agent_id]
+                    parent_stats.usage_to_metrics[f"delegate:{agent_id}"] = (
+                        sub_conv.conversation_stats.get_combined_metrics()
+                    )
 
             # Collect results in the same order as the input tasks
             all_results = []
