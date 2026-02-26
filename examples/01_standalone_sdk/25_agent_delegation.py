@@ -8,8 +8,7 @@ which then merges both analyses into a single consolidated report.
 """
 
 import os
-
-from pydantic import SecretStr
+from pathlib import Path
 
 from openhands.sdk import (
     LLM,
@@ -34,22 +33,17 @@ ONLY_RUN_SIMPLE_DELEGATION = False
 logger = get_logger(__name__)
 
 # Configure LLM and agent
-# You can get an API key from https://app.all-hands.dev/settings/api-keys
-api_key = os.getenv("LLM_API_KEY")
-assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 llm = LLM(
-    model=model,
-    api_key=SecretStr(api_key),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    api_key=os.getenv("LLM_API_KEY"),
     base_url=os.environ.get("LLM_BASE_URL", None),
     usage_id="agent",
 )
 
 cwd = os.getcwd()
 
-register_tool("DelegateTool", DelegateTool)
-tools = get_default_tools(enable_browser=False)
-tools.append(Tool(name="DelegateTool"))
+tools = get_default_tools(enable_browser=True)
+tools.append(Tool(name=DelegateTool.name))
 
 main_agent = Agent(
     llm=llm,
@@ -57,11 +51,11 @@ main_agent = Agent(
 )
 conversation = Conversation(
     agent=main_agent,
-    workspace=cwd,
+    workspace=Path.cwd(),
     visualizer=DelegationVisualizer(name="Delegator"),
 )
 
-task_message = (
+conversation.send_message(
     "Forget about coding. Let's switch to travel planning. "
     "Let's plan a trip to London. I have two issues I need to solve: "
     "Lodging: what are the best areas to stay at while keeping budget in mind? "
@@ -72,7 +66,6 @@ task_message = (
     "They should keep it short. After getting the results, merge both analyses "
     "into a single consolidated report.\n\n"
 )
-conversation.send_message(task_message)
 conversation.run()
 
 conversation.send_message(
@@ -96,7 +89,7 @@ if ONLY_RUN_SIMPLE_DELEGATION:
 
 main_agent = Agent(
     llm=llm,
-    tools=[Tool(name="DelegateTool")],
+    tools=[Tool(name=DelegateTool.name)],
 )
 conversation = Conversation(
     agent=main_agent,

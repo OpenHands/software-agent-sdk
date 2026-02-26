@@ -132,6 +132,7 @@ def agent_definition_to_factory(
     def _factory(llm: "LLM") -> "Agent":
         from openhands.sdk.agent.agent import Agent
         from openhands.sdk.context.agent_context import AgentContext
+        from openhands.sdk.tool.registry import list_registered_tools
         from openhands.sdk.tool.spec import Tool
 
         # Handle model override
@@ -147,7 +148,12 @@ def agent_definition_to_factory(
         )
 
         # Resolve tools
-        tools = [Tool(name=tool_name) for tool_name in agent_def.tools]
+        tools: list[Tool] = []
+        registered_tools: set[str] = set(list_registered_tools())
+        for tool_name in agent_def.tools:
+            if tool_name not in registered_tools:
+                logger.info(f"Tool '{tool_name}' is not registered (yet).")
+            tools.append(Tool(name=tool_name))
 
         return Agent(
             llm=llm,
