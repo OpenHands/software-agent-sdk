@@ -11,7 +11,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
-from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
+from openhands.sdk import LLM, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -606,7 +606,7 @@ class EventService:
         await self._pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.close)
+            loop.run_in_executor(None, self._conversation.close)
 
     async def generate_title(
         self, llm: "LLM | None" = None, max_length: int = 50
