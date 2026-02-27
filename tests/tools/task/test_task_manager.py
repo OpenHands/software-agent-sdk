@@ -531,3 +531,111 @@ class TestStartTask:
                 resume="task_nonexistent",
                 conversation=parent,
             )
+
+
+class TestTaskMetrics:
+    """Tests for sub-agent metrics isolation and merge-back."""
+
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
+    def test_sub_agent_has_independent_metrics(self, tmp_path):
+        """Sub-agent LLM must not share the parent's Metrics object."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        parent_llm = parent.agent.llm
+        sub_agent = manager._get_sub_agent("default")
+
+        assert sub_agent.llm.metrics is not parent_llm.metrics
+
+        before = parent_llm.metrics.accumulated_cost
+        sub_agent.llm.metrics.add_cost(1.00)
+        assert parent_llm.metrics.accumulated_cost == before
+
+    def test_run_task_merges_metrics_into_parent(self, tmp_path):
+        """After _run_task, sub-agent metrics appear in parent stats."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        task = manager._create_task(
+            subagent_type="default",
+            description="test",
+            max_turns=3,
+        )
+
+        # Wire LLM into sub-conv stats (simulates what _ensure_agent_ready does)
+        sub_conv = task.conversation
+        assert sub_conv is not None
+        sub_llm = sub_conv.agent.llm
+        sub_conv.conversation_stats.usage_to_metrics[sub_llm.usage_id] = sub_llm.metrics
+
+        # Simulate sub-agent LLM usage
+        sub_llm.metrics.add_cost(1.50)
+        sub_llm.metrics.add_token_usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            context_window=128000,
+            response_id="r1",
+        )
+
+        with (
+            patch.object(sub_conv, "send_message"),
+            patch.object(sub_conv, "run"),
+            patch(
+                "openhands.tools.task.manager.get_agent_final_response",
+                return_value="done",
+            ),
+        ):
+            manager._run_task(task=task, prompt="do something")
+
+        # Metrics synced to parent under task:<id> key
+        parent_stats = parent.conversation_stats
+        assert f"task:{task.id}" in parent_stats.usage_to_metrics
+        task_metrics = parent_stats.usage_to_metrics[f"task:{task.id}"]
+        assert task_metrics.accumulated_cost == 1.50
+        accumulated_token_usage = task_metrics.accumulated_token_usage
+        assert accumulated_token_usage is not None
+        assert accumulated_token_usage.prompt_tokens == 100
+
+    def test_multiple_tasks_have_separate_metrics(self, tmp_path):
+        """Each task gets its own metrics entry in parent stats."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        for cost in (1.00, 2.00):
+            task = manager._create_task(
+                subagent_type="default",
+                description="test",
+                max_turns=3,
+            )
+            sub_conv = task.conversation
+            assert sub_conv is not None
+            sub_llm = sub_conv.agent.llm
+            sub_conv.conversation_stats.usage_to_metrics[sub_llm.usage_id] = (
+                sub_llm.metrics
+            )
+            sub_llm.metrics.add_cost(cost)
+
+            with (
+                patch.object(sub_conv, "send_message"),
+                patch.object(sub_conv, "run"),
+                patch(
+                    "openhands.tools.task.manager.get_agent_final_response",
+                    return_value="done",
+                ),
+            ):
+                manager._run_task(task=task, prompt="work")
+
+        parent_stats = parent.conversation_stats
+        assert (
+            parent_stats.usage_to_metrics["task:task_00000001"].accumulated_cost == 1.00
+        )
+        assert (
+            parent_stats.usage_to_metrics["task:task_00000002"].accumulated_cost == 2.00
+        )
