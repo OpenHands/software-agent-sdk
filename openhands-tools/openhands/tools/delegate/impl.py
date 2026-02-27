@@ -270,11 +270,10 @@ class DelegateExecutor(ToolExecutor):
             # to avoid double-counting on repeated delegations.
             parent_stats = parent_conversation.conversation_stats
             for agent_id in action.tasks:
-                if agent_id in self._sub_agents:
-                    sub_conv = self._sub_agents[agent_id]
-                    parent_stats.usage_to_metrics[f"delegate:{agent_id}"] = (
-                        sub_conv.conversation_stats.get_combined_metrics()
-                    )
+                sub_conv = self._sub_agents[agent_id]
+                parent_stats.usage_to_metrics[f"delegate:{agent_id}"] = (
+                    sub_conv.conversation_stats.get_combined_metrics()
+                )
 
             # Collect results in the same order as the input tasks
             all_results = []
