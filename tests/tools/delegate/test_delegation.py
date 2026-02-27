@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
 
-from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
+from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.subagent.registry import register_builtins_agents
@@ -381,6 +381,7 @@ def test_repeated_delegation_does_not_double_count():
 
     # Must be $3.00 (cumulative), not $4.00 (double-counted)
     assert parent_stats.usage_to_metrics["delegate:a1"].accumulated_cost == 3.00
+
 
 def test_issue_2216():
     """Reproduce issue #2216: DelegateAction rejects tasks sent as a JSON string.
