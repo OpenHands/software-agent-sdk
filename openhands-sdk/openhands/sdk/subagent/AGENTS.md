@@ -31,7 +31,7 @@ Relevant implementation files:
 1. `{project}/.agents/agents/*.md`
 2. `{project}/.openhands/agents/*.md`
 
-**User-level (lower priority than project-level):**
+**User-level:**
 
 3. `~/.agents/agents/*.md`
 4. `~/.openhands/agents/*.md`
