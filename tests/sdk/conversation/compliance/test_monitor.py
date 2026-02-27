@@ -1,15 +1,8 @@
 """Tests for the APIComplianceMonitor."""
 
-from openhands.sdk.conversation.compliance import (
-    APIComplianceMonitor,
-    InterleavedMessageProperty,
-)
-from openhands.sdk.conversation.compliance.base import (
-    APICompliancePropertyBase,
-    ComplianceState,
-    ComplianceViolation,
-)
-from openhands.sdk.event import LLMConvertibleEvent
+from unittest.mock import patch
+
+from openhands.sdk.conversation.compliance import APIComplianceMonitor
 from tests.sdk.conversation.compliance.conftest import (
     make_action_event,
     make_observation_event,
@@ -57,19 +50,17 @@ def test_monitor_detects_interleaved_message():
     assert violations[0].property_name == "interleaved_message"
 
 
-def test_monitor_detects_multiple_violations():
-    """Monitor should detect multiple violations."""
+def test_monitor_detects_orphan_observation():
+    """Monitor should detect orphan observation as single violation."""
     monitor = APIComplianceMonitor()
 
-    # Orphan observation (unmatched + order violation)
+    # Orphan observation (unknown tool_call_id)
     orphan = make_orphan_observation_event(tool_call_id="call_unknown")
     violations = monitor.process_event(orphan)
 
-    # Should detect both tool_result_order and unmatched_tool_result
-    assert len(violations) >= 2
-    property_names = {v.property_name for v in violations}
-    assert "tool_result_order" in property_names
-    assert "unmatched_tool_result" in property_names
+    # Should detect exactly one violation (unmatched_tool_result)
+    assert len(violations) == 1
+    assert violations[0].property_name == "unmatched_tool_result"
 
 
 def test_monitor_returns_violations_per_call():
@@ -95,19 +86,6 @@ def test_monitor_returns_violations_per_call():
     assert len(all_violations) > initial_count
 
 
-def test_monitor_custom_properties():
-    """Monitor can be initialized with custom properties."""
-    # Only check interleaved messages
-    monitor = APIComplianceMonitor(properties=[InterleavedMessageProperty()])
-
-    # This would normally trigger tool_result_order violation
-    orphan = make_orphan_observation_event(tool_call_id="call_unknown")
-    violations = monitor.process_event(orphan)
-
-    # But we only have InterleavedMessageProperty, so no violations
-    assert len(violations) == 0
-
-
 def test_monitor_state_persists_across_events():
     """Monitor state should persist correctly across events."""
     monitor = APIComplianceMonitor()
@@ -117,7 +95,6 @@ def test_monitor_state_persists_across_events():
     monitor.process_event(action1)
 
     assert "call_1" in monitor.state.pending_tool_call_ids
-    assert "call_1" in monitor.state.all_tool_call_ids
 
     # Add observation
     obs1 = make_observation_event(action1)
@@ -125,7 +102,6 @@ def test_monitor_state_persists_across_events():
 
     assert "call_1" not in monitor.state.pending_tool_call_ids
     assert "call_1" in monitor.state.completed_tool_call_ids
-    assert "call_1" in monitor.state.all_tool_call_ids
 
 
 def test_monitor_parallel_tool_calls():
@@ -155,32 +131,35 @@ def test_monitor_parallel_tool_calls():
     assert "call_paris" in str(violations[0].context)
 
 
-def test_monitor_handles_buggy_property_gracefully():
-    """Monitor should handle exceptions in property checks gracefully.
+def test_monitor_handles_check_exception_gracefully():
+    """Monitor should handle exceptions in check gracefully.
 
-    A buggy property that raises an exception should not crash the monitor.
-    Instead, the exception is logged and processing continues. This ensures
-    observation mode is robust against buggy properties.
+    If _check_tool_call_sequence raises an exception, it should be caught
+    and logged, not crash the monitor. This ensures observation mode is robust.
     """
+    monitor = APIComplianceMonitor()
 
-    class BuggyProperty(APICompliancePropertyBase):
-        @property
-        def name(self) -> str:
-            return "buggy"
+    with patch.object(
+        monitor, "_check_tool_call_sequence", side_effect=ValueError("Oops!")
+    ):
+        # Should not raise - the exception should be caught and logged
+        violations = monitor.process_event(make_user_message_event())
 
-        def check(
-            self,
-            event: LLMConvertibleEvent,
-            state: ComplianceState,
-        ) -> ComplianceViolation | None:
-            raise ValueError("Oops!")
+        # The monitor should continue working despite the error
+        assert violations == []
 
-    monitor = APIComplianceMonitor(properties=[BuggyProperty()])
 
-    # Should not raise - the exception should be caught and logged
-    # We expect an empty list because the buggy property doesn't return a violation
-    # (it raises instead)
-    violations = monitor.process_event(make_user_message_event())
+def test_monitor_handles_update_exception_gracefully():
+    """Monitor should handle exceptions in state update gracefully.
 
-    # The monitor should continue working despite the error
-    assert violations == []
+    If _update_state raises an exception, it should be caught and logged,
+    not crash the monitor.
+    """
+    monitor = APIComplianceMonitor()
+
+    with patch.object(monitor, "_update_state", side_effect=ValueError("Oops!")):
+        # Should not raise - the exception should be caught and logged
+        violations = monitor.process_event(make_action_event())
+
+        # The monitor should continue working
+        assert violations == []

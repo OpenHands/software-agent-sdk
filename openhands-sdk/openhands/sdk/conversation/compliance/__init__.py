@@ -1,33 +1,24 @@
 """API Compliance monitoring for conversation events.
 
-This module provides monitors that detect violations of LLM API requirements
-in the event stream. Violations are currently logged for data gathering;
-future versions may support per-property reconciliation strategies.
+This module provides an APIComplianceMonitor that detects violations of LLM API
+requirements in the event stream. Violations are currently logged for data
+gathering; future versions may support reconciliation strategies.
+
+The monitor enforces valid tool-call sequences:
+- When tool calls are pending, only matching observations are allowed
+- Messages cannot interleave with pending tool calls
+- Tool results must reference known tool_call_ids
 """
 
 from openhands.sdk.conversation.compliance.base import (
-    APICompliancePropertyBase,
     ComplianceState,
     ComplianceViolation,
 )
 from openhands.sdk.conversation.compliance.monitor import APIComplianceMonitor
-from openhands.sdk.conversation.compliance.properties import (
-    ALL_COMPLIANCE_PROPERTIES,
-    DuplicateToolResultProperty,
-    InterleavedMessageProperty,
-    ToolResultOrderProperty,
-    UnmatchedToolResultProperty,
-)
 
 
 __all__ = [
-    "ALL_COMPLIANCE_PROPERTIES",
-    "APICompliancePropertyBase",
     "APIComplianceMonitor",
     "ComplianceState",
     "ComplianceViolation",
-    "DuplicateToolResultProperty",
-    "InterleavedMessageProperty",
-    "ToolResultOrderProperty",
-    "UnmatchedToolResultProperty",
 ]

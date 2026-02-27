@@ -130,7 +130,6 @@ def test_add_event_tracks_state_correctly(conversation_state):
 
     monitor = conversation_state.compliance_monitor
     assert "call_track" in monitor.state.pending_tool_call_ids
-    assert "call_track" in monitor.state.all_tool_call_ids
 
     obs = make_observation_event(action)
     conversation_state.add_event(obs)
