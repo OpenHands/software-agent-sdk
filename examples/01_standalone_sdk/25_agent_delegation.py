@@ -1,4 +1,4 @@
-""" "
+"""
 Agent Delegation Example
 
 This example demonstrates the agent delegation feature where a main agent
