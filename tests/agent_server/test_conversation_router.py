@@ -1169,6 +1169,19 @@ def test_generate_conversation_title_invalid_params(
         client.app.dependency_overrides.clear()
 
 
+def test_generate_title_endpoint_is_deprecated_in_openapi(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    openapi_schema = response.json()
+    operation = openapi_schema["paths"][
+        "/api/conversations/{conversation_id}/generate_title"
+    ]["post"]
+
+    assert operation.get("deprecated") is True
+    assert "scheduled for removal" in operation["description"]
+
+
 def test_start_conversation_with_tool_module_qualnames(
     client, mock_conversation_service, sample_conversation_info
 ):
