@@ -18,6 +18,12 @@ import sys
 from typing import Any
 
 
+# SDK-specific parameters that should not be passed to litellm.
+# These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
+# Keep this list in sync with SDK LLM config parameters that are SDK-internal.
+SDK_ONLY_PARAMS = {"disable_vision"}
+
+
 # Model configurations dictionary
 MODELS = {
     "claude-sonnet-4-5-20250929": {
@@ -229,13 +235,13 @@ def find_models_by_id(model_ids: list[str]) -> list[dict]:
     return resolved
 
 
-def test_model(
+def check_model(
     model_config: dict[str, Any],
     api_key: str,
     base_url: str,
     timeout: int = 60,
 ) -> tuple[bool, str]:
-    """Test a single model with a simple completion request using litellm.
+    """Check a single model with a simple completion request using litellm.
 
     Args:
         model_config: Model configuration dict with 'llm_config' key
@@ -253,13 +259,20 @@ def test_model(
     display_name = model_config.get("display_name", model_name)
 
     try:
-        # Build kwargs from llm_config, excluding 'model' which is passed separately
-        kwargs = {k: v for k, v in llm_config.items() if k != "model"}
+        # Build kwargs from llm_config, excluding 'model' and SDK-specific params
+        kwargs = {
+            k: v
+            for k, v in llm_config.items()
+            if k != "model" and k not in SDK_ONLY_PARAMS
+        }
 
+        # Use simple arithmetic prompt that works reliably across all models
+        # max_tokens=100 provides enough room for models to respond
+        # (some need >10 tokens)
         response = litellm.completion(
             model=model_name,
-            messages=[{"role": "user", "content": "Say 'OK' if you can read this."}],
-            max_tokens=10,
+            messages=[{"role": "user", "content": "1+1="}],
+            max_tokens=100,
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
@@ -267,10 +280,22 @@ def test_model(
         )
 
         content = response.choices[0].message.content if response.choices else None
+
         if content:
             return True, f"✓ {display_name}: OK"
         else:
-            return False, f"✗ {display_name}: Empty response"
+            # Check if there's any other data in the response for diagnostics
+            finish_reason = (
+                response.choices[0].finish_reason if response.choices else None
+            )
+            usage = getattr(response, "usage", None)
+            return (
+                False,
+                (
+                    f"✗ {display_name}: Empty response "
+                    f"(finish_reason={finish_reason}, usage={usage})"
+                ),
+            )
 
     except litellm.exceptions.Timeout:
         return False, f"✗ {display_name}: Request timed out after {timeout}s"
@@ -310,7 +335,7 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
 
     all_passed = True
     for model_config in models:
-        success, message = test_model(model_config, api_key, base_url)
+        success, message = check_model(model_config, api_key, base_url)
         print(message)
         if not success:
             all_passed = False

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from pydantic import SecretStr
 
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
+from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.subagent.registry import register_builtins_agents
@@ -211,6 +212,175 @@ def test_spawn_disables_streaming_for_sub_agents():
 
     # Verify parent LLM still has streaming enabled (wasn't mutated)
     assert parent_llm.stream is True, "Parent LLM should still have streaming enabled"
+
+
+def test_spawn_gives_sub_agents_independent_metrics():
+    """Sub-agents must not share the parent's Metrics object."""
+    register_builtins_agents()
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+    )
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent.llm = parent_llm
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation._visualizer = None
+
+    executor = DelegateExecutor()
+    spawn_action = DelegateAction(command="spawn", ids=["a1", "a2"])
+    executor(spawn_action, parent_conversation)
+
+    a1_llm = executor._sub_agents["a1"].agent.llm
+    a2_llm = executor._sub_agents["a2"].agent.llm
+
+    # Each sub-agent must have its own Metrics, not the parent's
+    assert a1_llm.metrics is not parent_llm.metrics
+    assert a2_llm.metrics is not parent_llm.metrics
+    assert a1_llm.metrics is not a2_llm.metrics
+
+    # Mutating a sub-agent's metrics must not affect the parent
+    before = parent_llm.metrics.accumulated_cost
+    a1_llm.metrics.add_cost(1.00)
+    assert parent_llm.metrics.accumulated_cost == before
+    a2_llm.metrics.add_cost(1.00)
+    assert parent_llm.metrics.accumulated_cost == before
+
+
+def test_delegate_merges_metrics_into_parent():
+    """After delegation, sub-agent metrics appear in parent stats."""
+    register_builtins_agents()
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+    )
+    parent_stats = ConversationStats()
+    parent_stats.usage_to_metrics["agent"] = parent_llm.metrics
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent.llm = parent_llm
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation._visualizer = None
+    parent_conversation.conversation_stats = parent_stats
+
+    executor = DelegateExecutor()
+    spawn_action = DelegateAction(command="spawn", ids=["a1", "a2"])
+    executor(spawn_action, parent_conversation)
+
+    # Wire LLMs into sub-conv stats (simulates what _ensure_agent_ready does)
+    for agent_id in ("a1", "a2"):
+        sub_conv = executor._sub_agents[agent_id]
+        llm = sub_conv.agent.llm
+        sub_conv.conversation_stats.usage_to_metrics[llm.usage_id] = llm.metrics
+
+    # Simulate sub-agent LLM usage
+    a1_llm = executor._sub_agents["a1"].agent.llm
+    a2_llm = executor._sub_agents["a2"].agent.llm
+    a1_llm.metrics.add_cost(1.00)
+    a1_llm.metrics.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=50,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=128000,
+        response_id="a1_r1",
+    )
+    a2_llm.metrics.add_cost(2.00)
+    a2_llm.metrics.add_token_usage(
+        prompt_tokens=200,
+        completion_tokens=100,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=128000,
+        response_id="a2_r1",
+    )
+
+    # Run delegation (patching send_message/run so no real LLM calls happen)
+    with (
+        patch.object(executor._sub_agents["a1"], "send_message"),
+        patch.object(executor._sub_agents["a1"], "run"),
+        patch.object(executor._sub_agents["a2"], "send_message"),
+        patch.object(executor._sub_agents["a2"], "run"),
+    ):
+        delegate_action = DelegateAction(
+            command="delegate",
+            tasks={"a1": "task 1", "a2": "task 2"},
+        )
+        executor(delegate_action, parent_conversation)
+
+    # Sub-agent metrics are now in parent stats under delegate: keys
+    assert "delegate:a1" in parent_stats.usage_to_metrics
+    assert "delegate:a2" in parent_stats.usage_to_metrics
+    assert parent_stats.usage_to_metrics["delegate:a1"].accumulated_cost == 1.00
+    assert parent_stats.usage_to_metrics["delegate:a2"].accumulated_cost == 2.00
+
+    # Combined total includes parent + both sub-agents
+    combined = parent_stats.get_combined_metrics()
+    assert combined.accumulated_cost == 3.00
+    accumulated_token_usage = combined.accumulated_token_usage
+    assert accumulated_token_usage is not None
+    assert accumulated_token_usage.prompt_tokens == 300
+    assert accumulated_token_usage.completion_tokens == 150
+
+
+def test_repeated_delegation_does_not_double_count():
+    """Delegating to the same agent twice must not duplicate metrics."""
+    register_builtins_agents()
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+    )
+    parent_stats = ConversationStats()
+    parent_stats.usage_to_metrics["agent"] = parent_llm.metrics
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent.llm = parent_llm
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation._visualizer = None
+    parent_conversation.conversation_stats = parent_stats
+
+    executor = DelegateExecutor()
+    spawn_action = DelegateAction(command="spawn", ids=["a1"])
+    executor(spawn_action, parent_conversation)
+
+    sub_conv = executor._sub_agents["a1"]
+    sub_conv.conversation_stats.usage_to_metrics[sub_conv.agent.llm.usage_id] = (
+        sub_conv.agent.llm.metrics
+    )
+
+    a1_llm = executor._sub_agents["a1"].agent.llm
+
+    # First delegation: sub-agent accumulates $1.00
+    a1_llm.metrics.add_cost(1.00)
+    with (
+        patch.object(executor._sub_agents["a1"], "send_message"),
+        patch.object(executor._sub_agents["a1"], "run"),
+    ):
+        executor(
+            DelegateAction(command="delegate", tasks={"a1": "first task"}),
+            parent_conversation,
+        )
+    assert parent_stats.usage_to_metrics["delegate:a1"].accumulated_cost == 1.00
+
+    # Second delegation: sub-agent accumulates another $2.00 (cumulative $3.00)
+    a1_llm.metrics.add_cost(2.00)
+    with (
+        patch.object(executor._sub_agents["a1"], "send_message"),
+        patch.object(executor._sub_agents["a1"], "run"),
+    ):
+        executor(
+            DelegateAction(command="delegate", tasks={"a1": "second task"}),
+            parent_conversation,
+        )
+
+    # Must be $3.00 (cumulative), not $4.00 (double-counted)
+    assert parent_stats.usage_to_metrics["delegate:a1"].accumulated_cost == 3.00
 
 
 def test_issue_2216():
