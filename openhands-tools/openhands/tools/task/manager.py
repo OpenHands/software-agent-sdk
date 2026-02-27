@@ -243,6 +243,9 @@ class TaskManager:
 
         llm_updates: dict = {"stream": False}
         sub_agent_llm = parent_llm.model_copy(update=llm_updates)
+        # Reset metrics such that the sub-agent has its own
+        # Metrics object
+        sub_agent_llm.reset_metrics()
 
         return factory.factory_func(sub_agent_llm)
 
@@ -266,9 +269,20 @@ class TaskManager:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
+            self._update_parent_metrics(parent, task)
             self._evict_task(task)
 
         return task
+
+    def _update_parent_metrics(self, parent: LocalConversation, task: Task) -> None:
+        """
+        Sync sub-agent metrics into parent before eviction destroys the conversation.
+        Replace (not merge) because sub-agent metrics are cumulative across resumes.
+        """
+        if task.conversation is not None:
+            parent.conversation_stats.usage_to_metrics[f"task:{task.id}"] = (
+                task.conversation.conversation_stats.get_combined_metrics()
+            )
 
     def close(self) -> None:
         """Clean up tmp directory and remove all created tasks."""
