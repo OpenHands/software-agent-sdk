@@ -158,15 +158,6 @@ You are a meticulous code reviewer.
 Focus on correctness, security, and clear reasoning.
 ```
 
-## Debugging: “why did it win?”
-
-When debugging precedence issues:
-
-1. Check the precedence table above.
-2. Enable SDK logs (INFO/DEBUG): registration logs include the agent name and, for file-based agents,
-   the source path (`agent_def.source`).
-3. Verify the filesystem location: project overrides user; `.agents/` overrides `.openhands/`.
-
 ## User-facing documentation
 
 User docs for Markdown agents live in the docs repo. If you change any of the
