@@ -43,7 +43,7 @@ Removing an endpoint is a breaking change.
 ### CI enforcement
 
 The workflow `Agent server REST API breakage checks` compares the current OpenAPI
-schema against the previous `openhands-agent-server` release on PyPI.
+schema against the previous `openhands-agent-server` release on PyPI using [oasdiff](https://github.com/oasdiff/oasdiff).
 
 It currently enforces:
 - No removal of operations (path + method) unless they were already marked

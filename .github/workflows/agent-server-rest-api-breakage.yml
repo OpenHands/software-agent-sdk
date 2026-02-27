@@ -26,6 +26,11 @@ jobs:
             - name: Install workspace deps (dev)
               run: uv sync --frozen --group dev
 
+            - name: Install oasdiff
+              run: |
+                  curl -L https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh -s -- -b /usr/local/bin
+                  oasdiff --version
+
             - name: Run agent server REST API breakage check
               id: api_breakage
               # Release PRs (rel-*) must block on breakage.
