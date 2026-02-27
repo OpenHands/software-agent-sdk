@@ -211,12 +211,21 @@ def _required_parameters(operation: dict) -> set[tuple[str, str]]:
     return required
 
 
-def _resolve_ref(schema: dict, spec: dict) -> dict:
+def _resolve_ref(schema: dict, spec: dict, *, max_depth: int = 50) -> dict:
     current = schema
+    seen: set[str] = set()
+    depth = 0
+
     while isinstance(current, dict) and "$ref" in current:
         ref = current["$ref"]
         if not isinstance(ref, str) or not ref.startswith("#/"):
             return current
+        if ref in seen or depth >= max_depth:
+            return current
+
+        seen.add(ref)
+        depth += 1
+
         target: object = spec
         for part in ref.removeprefix("#/").split("/"):
             if not isinstance(target, dict) or part not in target:
@@ -225,6 +234,7 @@ def _resolve_ref(schema: dict, spec: dict) -> dict:
         if not isinstance(target, dict):
             return current
         current = target
+
     return current
 
 
@@ -283,23 +293,9 @@ def _is_minor_or_major_bump(current: str, previous: str) -> bool:
     return (cur.major, cur.minor) != (prev.major, prev.minor)
 
 
-def main() -> int:
-    current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
-    prev_version = _get_previous_version(PYPI_DISTRIBUTION, current_version)
-
-    if prev_version is None:
-        print(
-            f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to find previous "
-            f"version for {current_version}; skipping breakage checks."
-        )
-        return 0
-
-    prev_schema = _generate_openapi_for_version(prev_version)
-    if prev_schema is None:
-        return 0
-
-    current_schema = _generate_current_openapi()
-
+def _compute_breakages(
+    prev_schema: dict, current_schema: dict
+) -> tuple[list[str], list[OperationKey]]:
     prev_ops = dict(_iter_operations(prev_schema))
     cur_ops = dict(_iter_operations(current_schema))
 
@@ -345,6 +341,30 @@ def main() -> int:
                 f"{key.method.upper()} {key.path}: "
                 f"new required JSON fields: {formatted}"
             )
+
+    return breaking_reasons, undeprecated_removals
+
+
+def main() -> int:
+    current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
+    prev_version = _get_previous_version(PYPI_DISTRIBUTION, current_version)
+
+    if prev_version is None:
+        print(
+            f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to find previous "
+            f"version for {current_version}; skipping breakage checks."
+        )
+        return 0
+
+    prev_schema = _generate_openapi_for_version(prev_version)
+    if prev_schema is None:
+        return 0
+
+    current_schema = _generate_current_openapi()
+
+    breaking_reasons, undeprecated_removals = _compute_breakages(
+        prev_schema, current_schema
+    )
 
     if undeprecated_removals:
         for key in undeprecated_removals:
