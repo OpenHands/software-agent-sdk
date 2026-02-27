@@ -1,6 +1,5 @@
 ---
 name: explore
-model: inherit
 description: >-
   Fast codebase exploration agent (read-only).
   <example>Find files matching a pattern</example>
