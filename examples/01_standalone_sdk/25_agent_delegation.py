@@ -8,7 +8,8 @@ which then merges both analyses into a single consolidated report.
 """
 
 import os
-from pathlib import Path
+
+from pydantic import SecretStr
 
 from openhands.sdk import (
     LLM,
@@ -33,17 +34,22 @@ ONLY_RUN_SIMPLE_DELEGATION = False
 logger = get_logger(__name__)
 
 # Configure LLM and agent
+# You can get an API key from https://app.all-hands.dev/settings/api-keys
+api_key = os.getenv("LLM_API_KEY")
+assert api_key is not None, "LLM_API_KEY environment variable is not set."
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 llm = LLM(
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
-    api_key=os.getenv("LLM_API_KEY"),
+    model=model,
+    api_key=SecretStr(api_key),
     base_url=os.environ.get("LLM_BASE_URL", None),
     usage_id="agent",
 )
 
 cwd = os.getcwd()
 
-tools = get_default_tools(enable_browser=True)
-tools.append(Tool(name=DelegateTool.name))
+register_tool("DelegateTool", DelegateTool)
+tools = get_default_tools(enable_browser=False)
+tools.append(Tool(name="DelegateTool"))
 
 main_agent = Agent(
     llm=llm,
@@ -51,11 +57,11 @@ main_agent = Agent(
 )
 conversation = Conversation(
     agent=main_agent,
-    workspace=Path.cwd(),
+    workspace=cwd,
     visualizer=DelegationVisualizer(name="Delegator"),
 )
 
-conversation.send_message(
+task_message = (
     "Forget about coding. Let's switch to travel planning. "
     "Let's plan a trip to London. I have two issues I need to solve: "
     "Lodging: what are the best areas to stay at while keeping budget in mind? "
@@ -66,6 +72,7 @@ conversation.send_message(
     "They should keep it short. After getting the results, merge both analyses "
     "into a single consolidated report.\n\n"
 )
+conversation.send_message(task_message)
 conversation.run()
 
 conversation.send_message(
@@ -74,55 +81,16 @@ conversation.send_message(
 conversation.run()
 
 # Report cost for simple delegation example
-cost_simple = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (simple delegation): {cost_simple}")
+cost_1 = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST (simple delegation): {cost_1}")
 
 print("Simple delegation example done!", "\n" * 20)
 
+
+# -------- Agent Delegation Second Part: User-Defined Agent Types --------
+
 if ONLY_RUN_SIMPLE_DELEGATION:
-    # For CI: always emit the EXAMPLE_COST marker before exiting.
-    print(f"EXAMPLE_COST: {cost_simple}")
     exit(0)
-
-
-# -------- Agent Delegation Second Part: Built-in Agent Types (Explore + Bash) --------
-
-main_agent = Agent(
-    llm=llm,
-    tools=[Tool(name=DelegateTool.name)],
-)
-conversation = Conversation(
-    agent=main_agent,
-    workspace=cwd,
-    visualizer=DelegationVisualizer(name="Delegator (builtins)"),
-)
-
-builtin_task_message = (
-    "Demonstrate SDK built-in sub-agent types. "
-    "1) Spawn an 'explore' sub-agent and ask it to list the markdown files in "
-    "openhands-sdk/openhands/sdk/subagent/builtins/ and summarize what each "
-    "built-in agent type is for (based on the file contents). "
-    "2) Spawn a 'bash' sub-agent and ask it to run `python --version` in the "
-    "terminal and return the exact output. "
-    "3) Merge both results into a short report. "
-    "Do not use internet access."
-)
-
-print("=" * 100)
-print("Demonstrating built-in agent delegation (explore + bash)...")
-print("=" * 100)
-
-conversation.send_message(builtin_task_message)
-conversation.run()
-
-# Report cost for builtin agent types example
-cost_builtin = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (builtin agents): {cost_builtin}")
-
-print("Built-in agent delegation example done!", "\n" * 20)
-
-
-# -------- Agent Delegation Third Part: User-Defined Agent Types --------
 
 
 def create_lodging_planner(llm: LLM) -> Agent:
@@ -222,12 +190,10 @@ conversation.send_message(
 conversation.run()
 
 # Report cost for user-defined agent types example
-cost_user_defined = (
-    conversation.conversation_stats.get_combined_metrics().accumulated_cost
-)
-print(f"EXAMPLE_COST (user-defined agents): {cost_user_defined}")
+cost_2 = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST (user-defined agents): {cost_2}")
 
 print("All done!")
 
 # Full example cost report for CI workflow
-print(f"EXAMPLE_COST: {cost_simple + cost_builtin + cost_user_defined}")
+print(f"EXAMPLE_COST: {cost_1 + cost_2}")
