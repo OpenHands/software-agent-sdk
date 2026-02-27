@@ -1042,6 +1042,133 @@ def test_update_conversation_invalid_title(
         client.app.dependency_overrides.clear()
 
 
+def test_generate_conversation_title_success(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test generate_conversation_title endpoint with successful generation."""
+
+    mock_conversation_service.generate_conversation_title.return_value = (
+        "Generated Title"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {"max_length": 30}
+
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/generate_title",
+            json=request_data,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "Generated Title"
+
+        mock_conversation_service.generate_conversation_title.assert_called_once()
+        call_args = mock_conversation_service.generate_conversation_title.call_args
+        assert call_args[0][0] == sample_conversation_id
+        assert call_args[0][1] == 30
+        assert call_args[0][2] is None
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_generate_conversation_title_with_llm(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test generate_conversation_title endpoint with custom LLM."""
+
+    mock_conversation_service.generate_conversation_title.return_value = (
+        "Custom LLM Title"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "max_length": 40,
+            "llm": {
+                "model": "gpt-3.5-turbo",
+                "api_key": "custom-key",
+                "usage_id": "custom-llm",
+            },
+        }
+
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/generate_title",
+            json=request_data,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["title"] == "Custom LLM Title"
+
+        mock_conversation_service.generate_conversation_title.assert_called_once()
+        call_args = mock_conversation_service.generate_conversation_title.call_args
+        assert call_args[0][0] == sample_conversation_id
+        assert call_args[0][1] == 40
+        assert call_args[0][2] is not None
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_generate_conversation_title_failure(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test generate_conversation_title endpoint with generation failure."""
+
+    mock_conversation_service.generate_conversation_title.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {"max_length": 50}
+
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/generate_title",
+            json=request_data,
+        )
+
+        assert response.status_code == 500
+        mock_conversation_service.generate_conversation_title.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_generate_conversation_title_invalid_params(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test generate_conversation_title endpoint with invalid parameters."""
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {"max_length": 0}
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/generate_title",
+            json=request_data,
+        )
+        assert response.status_code == 422
+
+        request_data = {"max_length": 201}
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/generate_title",
+            json=request_data,
+        )
+        assert response.status_code == 422
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_start_conversation_with_tool_module_qualnames(
     client, mock_conversation_service, sample_conversation_info
 ):

@@ -20,7 +20,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import Event, Message
+from openhands.sdk import LLM, Event, Message
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -371,6 +371,20 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         return self._event_services.get(conversation_id)
+
+    async def generate_conversation_title(
+        self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
+    ) -> str | None:
+        """Generate a title for the conversation using LLM."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        title = await event_service.generate_title(llm=llm, max_length=max_length)
+        return title
 
     async def ask_agent(self, conversation_id: UUID, question: str) -> str | None:
         """Ask the agent a simple question without affecting conversation state."""
