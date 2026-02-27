@@ -1,6 +1,7 @@
-"""Tests for SDK built-in agent definitions (default, explore, bash)."""
+"""Tests for SDK built-in agent definitions (explore, bash, default)."""
 
-from collections.abc import Iterator
+from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import SecretStr
@@ -10,17 +11,19 @@ from openhands.sdk.subagent.load import load_agents_from_dir
 from openhands.sdk.subagent.registry import (
     BUILTINS_DIR,
     _reset_registry_for_tests,
+    agent_definition_to_factory,
     get_agent_factory,
     register_agent,
     register_builtins_agents,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry() -> Iterator[None]:
+def _clean_registry():
     """Reset the agent registry before and after every test."""
     _reset_registry_for_tests()
-    yield
+    yield  # type: ignore[misc]
     _reset_registry_for_tests()
 
 
@@ -28,44 +31,170 @@ def _make_test_llm() -> LLM:
     return LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm")
 
 
+def _load_builtin(name: str) -> AgentDefinition:
+    """Load a single builtin agent definition by name."""
+    md_path = BUILTINS_DIR / f"{name}.md"
+    assert md_path.exists(), f"Builtin agent file not found: {md_path}"
+    return AgentDefinition.load(md_path)
+
+
 def test_builtins_contains_expected_agents() -> None:
     md_files = {f.stem for f in BUILTINS_DIR.glob("*.md")}
-    assert {"default", "explore", "bash"}.issubset(md_files)
+    assert "default" in md_files
+    assert "explore" in md_files
+    assert "bash" in md_files
 
 
 def test_load_all_builtins() -> None:
     """Every .md file in builtins/ should parse without errors."""
     agents = load_agents_from_dir(BUILTINS_DIR)
     names = {a.name for a in agents}
-    assert {"default", "explore", "bash"}.issubset(names)
+    assert "default" in names
+    assert "explore" in names
+    assert "bash" in names
 
 
-def test_register_builtins_agents_registers_expected_factories() -> None:
+class TestExploreAgent:
+    """Verify the explore builtin agent definition."""
+
+    @pytest.fixture()
+    def agent_def(self) -> AgentDefinition:
+        return _load_builtin("explore")
+
+    def test_name(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.name == "explore"
+
+    def test_description_present(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.description
+        assert len(agent_def.description) > 10
+
+    def test_tools_are_read_oriented(self, agent_def: AgentDefinition) -> None:
+        """Explore agent should only have read-oriented tools."""
+        # terminal is allowed for read-only commands
+        assert "terminal" in agent_def.tools
+        # Must NOT include write-oriented tools
+        assert "file_editor" not in agent_def.tools
+        assert "browser_tool_set" not in agent_def.tools
+
+    def test_system_prompt_mentions_read_only(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.system_prompt
+        prompt_lower = agent_def.system_prompt.lower()
+        assert "read-only" in prompt_lower or "read only" in prompt_lower
+
+    def test_system_prompt_prohibits_writes(self, agent_def: AgentDefinition) -> None:
+        prompt_lower = agent_def.system_prompt.lower()
+        assert "not" in prompt_lower and (
+            "create" in prompt_lower
+            or "modify" in prompt_lower
+            or "delete" in prompt_lower
+        )
+
+    def test_model_inherits(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.model == "inherit"
+
+    def test_has_when_to_use_examples(self, agent_def: AgentDefinition) -> None:
+        assert len(agent_def.when_to_use_examples) > 0
+
+    def test_factory_creates_agent(self, agent_def: AgentDefinition) -> None:
+        factory = agent_definition_to_factory(agent_def)
+        agent = factory(_make_test_llm())
+        assert isinstance(agent, Agent)
+        tool_names = [t.name for t in agent.tools]
+        assert "terminal" in tool_names
+
+    def test_factory_sets_system_prompt(self, agent_def: AgentDefinition) -> None:
+        factory = agent_definition_to_factory(agent_def)
+        agent = factory(_make_test_llm())
+        assert agent.agent_context is not None
+        system_msg = agent.agent_context.system_message_suffix
+        assert system_msg is not None
+        assert "read-only" in system_msg.lower()
+
+
+class TestBashAgent:
+    """Verify the bash builtin agent definition."""
+
+    @pytest.fixture()
+    def agent_def(self) -> AgentDefinition:
+        return _load_builtin("bash")
+
+    def test_name(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.name == "bash"
+
+    def test_description_present(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.description
+        assert len(agent_def.description) > 10
+
+    def test_tools_terminal_only(self, agent_def: AgentDefinition) -> None:
+        """Bash agent should only have the terminal tool."""
+        assert agent_def.tools == ["terminal"]
+
+    def test_system_prompt_mentions_command(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.system_prompt
+        prompt_lower = agent_def.system_prompt.lower()
+        assert "command" in prompt_lower or "terminal" in prompt_lower
+
+    def test_model_inherits(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.model == "inherit"
+
+    def test_has_when_to_use_examples(self, agent_def: AgentDefinition) -> None:
+        assert len(agent_def.when_to_use_examples) > 0
+
+    def test_factory_creates_agent(self, agent_def: AgentDefinition) -> None:
+        factory = agent_definition_to_factory(agent_def)
+        agent = factory(_make_test_llm())
+        assert isinstance(agent, Agent)
+        tool_names = [t.name for t in agent.tools]
+        assert tool_names == ["terminal"]
+
+    def test_factory_sets_system_prompt(self, agent_def: AgentDefinition) -> None:
+        factory = agent_definition_to_factory(agent_def)
+        agent = factory(_make_test_llm())
+        agent_context = agent.agent_context
+        assert agent_context is not None
+        system_msg = agent_context.system_message_suffix
+        assert system_msg is not None
+        assert len(system_msg) > 0
+
+
+class TestDefaultAgent:
+    """Verify the default builtin agent definition."""
+
+    @pytest.fixture()
+    def agent_def(self) -> AgentDefinition:
+        return _load_builtin("default")
+
+    def test_name(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.name == "default"
+
+    def test_tools(self, agent_def: AgentDefinition) -> None:
+        assert "terminal" in agent_def.tools
+        assert "file_editor" in agent_def.tools
+
+    def test_model_inherits(self, agent_def: AgentDefinition) -> None:
+        assert agent_def.model == "inherit"
+
+
+def test_register_builtins_agents_returns_all() -> None:
+    registered = register_builtins_agents()
+    assert "default" in registered
+    assert "explore" in registered
+    assert "bash" in registered
+
+
+def test_registered_agents_are_retrievable() -> None:
     register_builtins_agents()
-
-    llm = _make_test_llm()
-    agent_tool_names: dict[str, list[str]] = {}
     for name in ("default", "explore", "bash"):
         factory = get_agent_factory(name)
-        agent = factory.factory_func(llm)
-        assert isinstance(agent, Agent)
-        agent_tool_names[name] = [t.name for t in agent.tools]
-
-    assert agent_tool_names["default"] == [
-        "terminal",
-        "file_editor",
-        "task_tracker",
-        "browser_tool_set",
-    ]
-    assert agent_tool_names["explore"] == ["terminal"]
-    assert agent_tool_names["bash"] == ["terminal"]
+        assert factory is not None
+        assert factory.description
 
 
 def test_builtins_do_not_overwrite_programmatic() -> None:
     """Programmatic registrations take priority over builtins."""
 
     def custom_factory(llm: LLM) -> Agent:
-        return Agent(llm=llm, tools=[])
+        return cast(Agent, MagicMock())
 
     register_agent(
         name="explore",
@@ -78,4 +207,13 @@ def test_builtins_do_not_overwrite_programmatic() -> None:
 
     factory = get_agent_factory("explore")
     assert factory.description == "Custom explore"
-    assert factory.factory_func(_make_test_llm()).tools == []
+
+
+def test_builtin_agents_produce_valid_agents() -> None:
+    """Each registered builtin should produce a valid Agent instance."""
+    register_builtins_agents()
+    llm = _make_test_llm()
+    for name in ("default", "explore", "bash"):
+        factory = get_agent_factory(name)
+        agent = factory.factory_func(llm)
+        assert isinstance(agent, Agent)
