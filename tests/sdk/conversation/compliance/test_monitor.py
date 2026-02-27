@@ -4,6 +4,12 @@ from openhands.sdk.conversation.compliance import (
     APIComplianceMonitor,
     InterleavedMessageProperty,
 )
+from openhands.sdk.conversation.compliance.base import (
+    APICompliancePropertyBase,
+    ComplianceState,
+    ComplianceViolation,
+)
+from openhands.sdk.event import LLMConvertibleEvent
 from tests.sdk.conversation.compliance.conftest import (
     make_action_event,
     make_observation_event,
@@ -147,3 +153,34 @@ def test_monitor_parallel_tool_calls():
     violations = monitor.process_event(make_user_message_event())
     assert len(violations) == 1
     assert "call_paris" in str(violations[0].context)
+
+
+def test_monitor_handles_buggy_property_gracefully():
+    """Monitor should handle exceptions in property checks gracefully.
+
+    A buggy property that raises an exception should not crash the monitor.
+    Instead, the exception is logged and processing continues. This ensures
+    observation mode is robust against buggy properties.
+    """
+
+    class BuggyProperty(APICompliancePropertyBase):
+        @property
+        def name(self) -> str:
+            return "buggy"
+
+        def check(
+            self,
+            event: LLMConvertibleEvent,
+            state: ComplianceState,
+        ) -> ComplianceViolation | None:
+            raise ValueError("Oops!")
+
+    monitor = APIComplianceMonitor(properties=[BuggyProperty()])
+
+    # Should not raise - the exception should be caught and logged
+    # We expect an empty list because the buggy property doesn't return a violation
+    # (it raises instead)
+    violations = monitor.process_event(make_user_message_event())
+
+    # The monitor should continue working despite the error
+    assert violations == []

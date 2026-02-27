@@ -57,14 +57,22 @@ class APIComplianceMonitor:
         violations: list[ComplianceViolation] = []
 
         for prop in self.properties:
-            violation = prop.check(event, self.state)
-            if violation is not None:
-                violations.append(violation)
-                logger.warning(
-                    "API compliance violation detected: %s - %s (event_id=%s)",
-                    violation.property_name,
-                    violation.description,
-                    violation.event_id,
+            try:
+                violation = prop.check(event, self.state)
+                if violation is not None:
+                    violations.append(violation)
+                    logger.warning(
+                        "API compliance violation detected: %s - %s (event_id=%s)",
+                        violation.property_name,
+                        violation.description,
+                        violation.event_id,
+                    )
+            except Exception as e:
+                logger.exception(
+                    "Error checking compliance property %s for event %s: %s",
+                    prop.name,
+                    event.id,
+                    e,
                 )
 
         return violations
@@ -78,7 +86,15 @@ class APIComplianceMonitor:
             event: The event that was just processed.
         """
         for prop in self.properties:
-            prop.update_state(event, self.state)
+            try:
+                prop.update_state(event, self.state)
+            except Exception as e:
+                logger.exception(
+                    "Error updating state for property %s on event %s: %s",
+                    prop.name,
+                    event.id,
+                    e,
+                )
 
     def process_event(self, event: LLMConvertibleEvent) -> list[ComplianceViolation]:
         """Check an event and update state.

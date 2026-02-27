@@ -550,7 +550,12 @@ class ConversationState(OpenHandsModel):
         """
         # Check for compliance violations only for LLM-convertible events
         if isinstance(event, LLMConvertibleEvent):
-            self.compliance_monitor.process_event(event)
+            try:
+                self.compliance_monitor.process_event(event)
+            except Exception as e:
+                logger.exception(
+                    "Error checking compliance for event %s: %s", event.id, e
+                )
 
         # Add to event log regardless of violations (observation mode)
         self._events.append(event)
