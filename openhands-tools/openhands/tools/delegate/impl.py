@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.tool.tool import ToolExecutor
@@ -265,15 +266,15 @@ class DelegateExecutor(ToolExecutor):
             for thread in threads:
                 thread.join()
 
-            # Sync sub-agent metrics into parent conversation.
-            # Sub-agent metrics are cumulative, so replace (not merge)
-            # to avoid double-counting on repeated delegations.
+            # Merge sub-agent metrics back into parent conversation
             parent_stats = parent_conversation.conversation_stats
-            for agent_id in action.tasks:
-                sub_conv = self._sub_agents[agent_id]
-                parent_stats.usage_to_metrics[f"delegate:{agent_id}"] = (
-                    sub_conv.conversation_stats.get_combined_metrics()
-                )
+            for agent_id, sub_conv in self._sub_agents.items():
+                if agent_id in action.tasks:
+                    sub_metrics = sub_conv.conversation_stats.get_combined_metrics()
+                    parent_stats.get_combined_metrics  # ensure initialized
+                    parent_stats.usage_to_metrics.setdefault(
+                        f"delegate:{agent_id}", Metrics()
+                    ).merge(sub_metrics)
 
             # Collect results in the same order as the input tasks
             all_results = []
