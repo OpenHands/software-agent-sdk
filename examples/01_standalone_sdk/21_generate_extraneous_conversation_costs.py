@@ -70,7 +70,7 @@ second_llm = LLM(
     api_key=SecretStr(api_key),
 )
 conversation.llm_registry.add(second_llm)
-completion_response = second_llm.completion(
+second_llm.completion(
     messages=[Message(role="user", content=[TextContent(text="echo 'More spend!'")])]
 )
 

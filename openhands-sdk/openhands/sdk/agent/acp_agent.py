@@ -333,7 +333,7 @@ class ACPAgent(AgentBase):
     _session_id: str | None = PrivateAttr(default=None)
     _process: Any = PrivateAttr(default=None)  # asyncio subprocess
     _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
-    _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
+    
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
 
@@ -481,10 +481,10 @@ class ACPAgent(AgentBase):
             response = await conn.new_session(cwd=working_dir)
             session_id = response.session_id
 
-            return conn, process, filtered_reader, session_id
+            return conn, process, session_id
 
         result = self._executor.run_async(_init)
-        self._conn, self._process, self._filtered_reader, self._session_id = result
+        self._conn, self._process, self._session_id = result
         self._working_dir = working_dir
 
     def step(

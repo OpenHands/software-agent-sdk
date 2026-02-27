@@ -117,7 +117,7 @@ print(f"\n[{timestamp()}] Waiting for conversation to complete...")
 thread.join()
 
 # Step 5: Verify conversation state wasn't affected
-final_event_count = len(conversation.state.events)
+len(conversation.state.events)  # Just verify we can access it
 # Step 6: Ask a final question after conversation completion
 print(f"\n[{timestamp()}] Asking final question after completion...")
 final_response = conversation.ask_agent(

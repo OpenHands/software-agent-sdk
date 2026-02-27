@@ -51,7 +51,6 @@ class APIBasedCritic(CriticBase, CriticClient):
                 "APIBasedCritic requires tools to be defined in SystemPromptEvent. "
                 "Ensure your agent configuration includes tool definitions."
             )
-            raise ValueError("Tools are required for APIBasedCritic evaluation")
 
         # This will only retain events that are kept by the condenser
         view = View.from_events(events)
