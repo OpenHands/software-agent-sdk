@@ -342,7 +342,7 @@ class ApptainerWorkspace(RemoteWorkspace):
         """Context manager entry - returns the workspace itself."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+    def __exit__(self, exc_type, _exc_val, _exc_tb) -> None:  # type: ignore[no-untyped-def]
         """Context manager exit - cleans up the Apptainer container."""
         self.cleanup()
 

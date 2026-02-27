@@ -255,7 +255,6 @@ class _OpenHandsACPBridge:
         args: list[str] | None = None,
         cwd: str | None = None,
         env: Any = None,
-        output_byte_limit: int | None = None,
         **kwargs: Any,
     ) -> Any:
         raise NotImplementedError("ACP server handles terminal operations")

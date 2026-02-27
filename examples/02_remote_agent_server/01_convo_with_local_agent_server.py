@@ -103,7 +103,7 @@ class ManagedAPIServer:
 
         raise RuntimeError(f"Server failed to start after {max_retries} seconds")
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, _exc_val, _exc_tb):
         """Stop the API server subprocess."""
         if self.process:
             print("Stopping API server...")
