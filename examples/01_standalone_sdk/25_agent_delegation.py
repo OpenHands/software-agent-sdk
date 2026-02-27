@@ -8,7 +8,6 @@ which then merges both analyses into a single consolidated report.
 """
 
 import os
-from pathlib import Path
 
 from openhands.sdk import (
     LLM,
