@@ -30,7 +30,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.12 && uv venv --python 3.12 .venv && uv sync --frozen --no-editable --managed-python
+    uv python install 3.12 && uv venv --python 3.12 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -41,7 +41,7 @@ ARG USERNAME UID GID
 
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable
+    uv sync --frozen --dev --no-editable --extra boto3
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
