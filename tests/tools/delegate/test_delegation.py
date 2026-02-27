@@ -1,19 +1,21 @@
 """Tests for delegation tools."""
 
+import json
 import uuid
 from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.subagent.registry import register_builtins_agents
 from openhands.tools.delegate import (
-    DelegateAction,
     DelegateExecutor,
     DelegateObservation,
 )
+from openhands.tools.delegate.definition import DelegateAction
 
 
 def create_test_executor_and_parent():
@@ -379,3 +381,35 @@ def test_repeated_delegation_does_not_double_count():
 
     # Must be $3.00 (cumulative), not $4.00 (double-counted)
     assert parent_stats.usage_to_metrics["delegate:a1"].accumulated_cost == 3.00
+
+def test_issue_2216():
+    """Reproduce issue #2216: DelegateAction rejects tasks sent as a JSON string.
+
+    When an LLM serialises the `tasks` dict as a JSON *string* (instead of a
+    JSON object), the values inside that string may contain newlines.  After the
+    outer `json.loads` of the tool-call arguments the `\\n` escapes become
+    real newline characters, which makes the inner string invalid JSON.
+    `fix_malformed_tool_arguments` silently fails to parse it and passes the
+    raw string to `DelegateAction.model_validate`, which then raises a
+    `ValidationError`.
+
+    Ref: https://github.com/OpenHands/software-agent-sdk/issues/2216
+    """
+    # Raw JSON exactly as the LLM emits it — tasks is a *string*, not an object,
+    # and the task description contains a ``\n`` (valid JSON escape for newline).
+    raw_llm_args = (
+        '{"command": "delegate",'
+        ' "tasks": "{\\"batch1\\": \\"Build TWO apps\\nFollow instructions\\"}"}'
+    )
+
+    # Outer parse succeeds — tasks is now a Python str with a real newline.
+    arguments = json.loads(raw_llm_args)
+    assert isinstance(arguments["tasks"], str)
+    assert "\n" in arguments["tasks"]
+
+    # fix_malformed_tool_arguments should convert it to a dict
+    # so that model_validate accepts it.
+    fixed = fix_malformed_tool_arguments(arguments, DelegateAction)
+    action = DelegateAction.model_validate(fixed)
+    assert isinstance(action.tasks, dict)
+    assert action.tasks == {"batch1": "Build TWO apps\nFollow instructions"}
