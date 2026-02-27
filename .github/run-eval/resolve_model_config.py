@@ -97,7 +97,10 @@ MODELS = {
     "gemini-3.1-pro": {
         "id": "gemini-3.1-pro",
         "display_name": "Gemini 3.1 Pro",
-        "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview"},
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3.1-pro-preview",
+            "temperature": 0.0,
+        },
     },
     "gpt-5.2": {
         "id": "gpt-5.2",

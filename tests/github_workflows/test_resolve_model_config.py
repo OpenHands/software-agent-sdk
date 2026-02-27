@@ -230,6 +230,16 @@ def test_find_all_models():
         assert result[i]["id"] == model_id
 
 
+def test_gemini_3_1_pro_config():
+    """Test that gemini-3.1-pro has correct configuration."""
+    model = MODELS["gemini-3.1-pro"]
+
+    assert model["id"] == "gemini-3.1-pro"
+    assert model["display_name"] == "Gemini 3.1 Pro"
+    assert model["llm_config"]["model"] == "litellm_proxy/gemini-3.1-pro-preview"
+    assert model["llm_config"]["temperature"] == 0.0
+
+
 def test_gpt_5_2_high_reasoning_config():
     """Test that gpt-5.2-high-reasoning has correct configuration."""
     model = MODELS["gpt-5.2-high-reasoning"]
