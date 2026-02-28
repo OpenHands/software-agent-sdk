@@ -36,8 +36,23 @@ When reviewing, consider:
 PROMPT = """{skill_trigger}
 /github-pr-review
 
-When posting a review, keep the review body brief unless your active review instructions
-require a longer structured format.
+When posting a review, keep the review body brief unless your active review
+instructions require a longer structured format.
+
+## Review decision policy (eval / benchmark risk)
+
+You MAY approve only clearly low-risk changes (docs, typo fixes, formatting, or
+pure refactors with no behavior changes).
+
+Do NOT submit an APPROVE review when the PR changes agent behavior or anything
+that could plausibly affect benchmark/evaluation performance (even indirectly).
+Examples include: prompt templates, tool calling/execution, planning/loop logic,
+memory/condenser behavior, security/confirmation gates, workspace/sandbox I/O,
+terminal/stdin/stdout handling, or evaluation harness code.
+
+If a PR is in this category (or you are uncertain), leave a COMMENTED review
+(or REQUEST_CHANGES if there is a clear issue) and explicitly flag it for a
+human maintainer to decide after running lightweight evals.
 
 Review the PR changes below and identify issues that need to be addressed.
 
