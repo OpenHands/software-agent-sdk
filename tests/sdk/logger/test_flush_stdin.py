@@ -4,12 +4,17 @@ See: https://github.com/OpenHands/software-agent-sdk/issues/2244
 """
 
 import importlib.util
+import os
 import sys
 from unittest import mock
 
 import pytest
 
 from openhands.sdk.logger import flush_stdin
+
+
+# Check if pty module is available (Unix only)
+PTY_AVAILABLE = importlib.util.find_spec("pty") is not None
 
 
 class TestFlushStdin:
@@ -102,3 +107,98 @@ class TestFlushStdinIntegration:
         from openhands.sdk.logger import logger as logger_module
 
         assert logger_module._cleanup_registered is True
+
+
+@pytest.mark.skipif(not PTY_AVAILABLE, reason="pty module not available (Windows)")
+class TestFlushStdinPTY:
+    """PTY-based tests for flush_stdin to verify real terminal behavior."""
+
+    def test_flush_stdin_restores_termios_settings(self):
+        """Verify termios settings are properly restored after flush_stdin.
+
+        This test uses a PTY to create a real terminal environment and verifies
+        that the termios settings (especially VMIN/VTIME in cc array) are
+        correctly restored after flush_stdin modifies them temporarily.
+
+        This catches the shallow-copy bug where list(old) would cause old[6]
+        and new[6] to share the same reference, corrupting the restore.
+        """
+        import pty
+        import termios
+
+        # Create a pseudo-terminal
+        master_fd, slave_fd = pty.openpty()
+
+        try:
+            # Open the slave as a file object to use as stdin
+            slave_file = os.fdopen(slave_fd, "r")
+
+            # Get original termios settings
+            original_settings = termios.tcgetattr(slave_file)
+            original_vmin = original_settings[6][termios.VMIN]
+            original_vtime = original_settings[6][termios.VTIME]
+
+            # Patch stdin to use our PTY slave
+            with mock.patch.object(sys, "stdin", slave_file):
+                # Call flush_stdin - this modifies VMIN/VTIME temporarily
+                flush_stdin()
+
+                # Get settings after flush_stdin
+                restored_settings = termios.tcgetattr(slave_file)
+                restored_vmin = restored_settings[6][termios.VMIN]
+                restored_vtime = restored_settings[6][termios.VTIME]
+
+            # Verify settings were restored correctly
+            assert restored_vmin == original_vmin, (
+                f"VMIN not restored: expected {original_vmin!r}, got {restored_vmin!r}"
+            )
+            assert restored_vtime == original_vtime, (
+                f"VTIME not restored: expected {original_vtime!r}, got {restored_vtime!r}"
+            )
+
+        finally:
+            os.close(master_fd)
+            # slave_fd is closed when slave_file is closed
+            try:
+                slave_file.close()
+            except OSError:
+                pass  # May already be closed
+
+    def test_flush_stdin_drains_pending_data(self):
+        """Verify flush_stdin actually drains pending data from stdin.
+
+        This test writes data to a PTY and verifies that flush_stdin
+        reads and discards it, returning the correct byte count.
+        """
+        import pty
+        import time
+
+        # Create a pseudo-terminal
+        master_fd, slave_fd = pty.openpty()
+
+        try:
+            slave_file = os.fdopen(slave_fd, "r")
+
+            # Write some test data to the master (simulating terminal input)
+            test_data = b"\x1b[5;10R"  # Simulated DSR response
+            os.write(master_fd, test_data)
+
+            # Give the data time to be available
+            time.sleep(0.05)
+
+            # Patch stdin to use our PTY slave
+            with mock.patch.object(sys, "stdin", slave_file):
+                # flush_stdin should drain the pending data
+                bytes_flushed = flush_stdin()
+
+            # Verify data was flushed
+            assert bytes_flushed == len(test_data), (
+                f"Expected {len(test_data)} bytes flushed, got {bytes_flushed}"
+            )
+
+        finally:
+            os.close(master_fd)
+            try:
+                slave_file.close()
+            except OSError:
+                pass
