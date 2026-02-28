@@ -239,7 +239,10 @@ def flush_stdin() -> int:
     old = None
     try:
         old = termios.tcgetattr(_sys.stdin)
-        new = list(old)
+        # Deep copy required: old[6] is a list (cc), and list(old) only
+        # does a shallow copy. Without deep copy, modifying new[6][VMIN]
+        # would also modify old[6][VMIN], corrupting the restore.
+        new = [item[:] if isinstance(item, list) else item for item in old]
         new[3] &= ~(termios.ICANON | termios.ECHO)
         new[6][termios.VMIN] = 0
         new[6][termios.VTIME] = 0
