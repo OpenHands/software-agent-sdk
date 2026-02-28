@@ -243,7 +243,11 @@ def flush_stdin() -> int:
         # does a shallow copy. Without deep copy, modifying new[6][VMIN]
         # would also modify old[6][VMIN], corrupting the restore.
         new = [item[:] if isinstance(item, list) else item for item in old]
-        new[3] &= ~(termios.ICANON | termios.ECHO)
+        # termios attrs: [iflag, oflag, cflag, lflag, ispeed, ospeed, cc]
+        # Index 3 is lflag (int), index 6 is cc (list)
+        lflag = new[3]
+        assert isinstance(lflag, int)  # Help type checker
+        new[3] = lflag & ~(termios.ICANON | termios.ECHO)
         new[6][termios.VMIN] = 0
         new[6][termios.VTIME] = 0
         termios.tcsetattr(_sys.stdin, termios.TCSANOW, new)

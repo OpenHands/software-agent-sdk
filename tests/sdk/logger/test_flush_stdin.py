@@ -128,6 +128,7 @@ class TestFlushStdinPTY:
 
         # Create a pseudo-terminal
         master_fd, slave_fd = pty.openpty()
+        slave_file = None
 
         try:
             # Open the slave as a file object to use as stdin
@@ -150,19 +151,20 @@ class TestFlushStdinPTY:
 
             # Verify settings were restored correctly
             assert restored_vmin == original_vmin, (
-                f"VMIN not restored: expected {original_vmin!r}, got {restored_vmin!r}"
+                f"VMIN not restored: {original_vmin!r} -> {restored_vmin!r}"
             )
             assert restored_vtime == original_vtime, (
-                f"VTIME not restored: expected {original_vtime!r}, got {restored_vtime!r}"
+                f"VTIME not restored: {original_vtime!r} -> {restored_vtime!r}"
             )
 
         finally:
             os.close(master_fd)
             # slave_fd is closed when slave_file is closed
-            try:
-                slave_file.close()
-            except OSError:
-                pass  # May already be closed
+            if slave_file is not None:
+                try:
+                    slave_file.close()
+                except OSError:
+                    pass  # May already be closed
 
     def test_flush_stdin_drains_pending_data(self):
         """Verify flush_stdin actually drains pending data from stdin.
@@ -175,6 +177,7 @@ class TestFlushStdinPTY:
 
         # Create a pseudo-terminal
         master_fd, slave_fd = pty.openpty()
+        slave_file = None
 
         try:
             slave_file = os.fdopen(slave_fd, "r")
@@ -198,7 +201,8 @@ class TestFlushStdinPTY:
 
         finally:
             os.close(master_fd)
-            try:
-                slave_file.close()
-            except OSError:
-                pass
+            if slave_file is not None:
+                try:
+                    slave_file.close()
+                except OSError:
+                    pass
