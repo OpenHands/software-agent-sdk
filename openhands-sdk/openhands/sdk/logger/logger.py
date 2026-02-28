@@ -9,8 +9,10 @@ Usage:
     logger.info("Hello from this module!")
 """
 
+import atexit
 import logging
 import os
+import select
 from logging.handlers import TimedRotatingFileHandler
 
 import litellm
@@ -193,3 +195,72 @@ def get_logger(name: str) -> logging.Logger:
 # Auto-configure if desired
 if ENV_AUTO_CONFIG:
     setup_logging()
+
+
+# ========= TERMINAL CLEANUP =========
+# Prevents ANSI escape code leaks during operation and at exit.
+# See: https://github.com/OpenHands/software-agent-sdk/issues/2244
+#
+# The issue: Terminal queries (like DSR for cursor position) get responses
+# written to stdin. If not consumed, these leak as garbage to the shell or
+# corrupt the next input() call in CLI applications.
+
+_cleanup_registered = False
+
+
+def flush_stdin() -> int:
+    """Flush any pending terminal query responses from stdin.
+
+    On macOS (and some Linux terminals), terminal query responses can leak
+    to stdin. If not consumed before exit or between conversation turns,
+    they corrupt input or appear as garbage in the shell.
+
+    This function is called automatically:
+    1. At exit (registered via atexit)
+    2. After each agent step in LocalConversation.run()
+    3. Before rendering events in DefaultConversationVisualizer
+
+    It can also be called manually if needed.
+
+    Returns:
+        Number of bytes flushed from stdin.
+    """
+    import sys as _sys  # Import locally to avoid issues at atexit time
+
+    if not _sys.stdin.isatty():
+        return 0
+
+    try:
+        import termios
+    except ImportError:
+        return 0  # Windows
+
+    flushed = 0
+    old = None
+    try:
+        old = termios.tcgetattr(_sys.stdin)
+        new = list(old)
+        new[3] &= ~(termios.ICANON | termios.ECHO)
+        new[6][termios.VMIN] = 0
+        new[6][termios.VTIME] = 0
+        termios.tcsetattr(_sys.stdin, termios.TCSANOW, new)
+        while select.select([_sys.stdin], [], [], 0)[0]:
+            data = os.read(_sys.stdin.fileno(), 4096)
+            if not data:
+                break
+            flushed += len(data)
+    except (OSError, termios.error):
+        pass
+    finally:
+        if old is not None:
+            try:
+                termios.tcsetattr(_sys.stdin, termios.TCSANOW, old)
+            except (OSError, termios.error):
+                pass
+    return flushed
+
+
+# Register cleanup at module load time
+if not _cleanup_registered:
+    atexit.register(flush_stdin)
+    _cleanup_registered = True

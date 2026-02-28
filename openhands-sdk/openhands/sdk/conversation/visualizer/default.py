@@ -23,6 +23,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.logger import flush_stdin
 
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,12 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
+        # Flush any pending terminal query responses before rendering.
+        # This prevents ANSI escape codes from accumulating in stdin
+        # and corrupting subsequent input() calls.
+        # See: https://github.com/OpenHands/software-agent-sdk/issues/2244
+        flush_stdin()
+
         output = self._create_event_block(event)
         if output:
             self._console.print(output)
