@@ -25,6 +25,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -348,8 +349,9 @@ class ConversationService:
         if event_service is None:
             return False
 
-        # Update the title in stored conversation
+        # Update the title and timestamp in stored conversation
         event_service.stored.title = request.title.strip()
+        event_service.stored.updated_at = utc_now()
         # Save the updated metadata to disk
         await event_service.save_meta()
 
@@ -536,6 +538,12 @@ class _EventSubscriber(Subscriber):
     service: EventService
 
     async def __call__(self, _event: Event):
+        # Skip updating timestamp for ConversationStateUpdateEvent, which is
+        # published during startup/state changes and doesn't represent actual
+        # conversation activity. This prevents updated_at from being reset
+        # on every server restart.
+        if isinstance(_event, ConversationStateUpdateEvent):
+            return
         self.service.stored.updated_at = utc_now()
         update_last_execution_time()
 

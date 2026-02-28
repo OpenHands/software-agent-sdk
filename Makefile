@@ -8,6 +8,7 @@ YELLOW := \033[33m
 RED := \033[31m
 CYAN := \033[36m
 RESET := \033[0m
+UNDERLINE := \033[4m
 
 # Required uv version
 REQUIRED_UV_VERSION := 0.8.13
@@ -50,6 +51,11 @@ lint:
 	@uv run ruff check --fix
 	@$(ECHO) "$(GREEN)Linting completed.$(RESET)"
 
+pre-commit:
+	@$(ECHO) "$(YELLOW)Run pre-commit...$(RESET)"
+	uv run pre-commit run --all-files
+	@$(ECHO) "$(GREEN)Pre-commit run successfully.$(RESET)"
+
 clean:
 	@$(ECHO) "$(YELLOW)Cleaning up cache files...$(RESET)"
 	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
@@ -61,12 +67,18 @@ clean:
 # Show help
 help:
 	@$(ECHO) "$(CYAN)OpenHands V1 Makefile$(RESET)"
-	@$(ECHO) "Available targets:"
-	@$(ECHO) "  $(GREEN)build$(RESET)        - Setup development environment (install deps + hooks)"
-	@$(ECHO) "  $(GREEN)format$(RESET)       - Format code with uv format"
-	@$(ECHO) "  $(GREEN)lint$(RESET)         - Lint code with ruff"
-	@$(ECHO) "  $(GREEN)clean$(RESET)        - Clean up cache files"
-	@$(ECHO) "  $(GREEN)help$(RESET)         - Show this help message"
+	@$(ECHO) ""
+	@$(ECHO) "$(UNDERLINE)Usage:$(RESET) make <COMMAND>"
+	@$(ECHO) ""
+	@$(ECHO) "$(UNDERLINE)Commands:$(RESET)"
+	@$(ECHO) "  $(GREEN)build$(RESET)                Setup development environment (install deps + hooks)"
+	@$(ECHO) "  $(GREEN)build-server$(RESET)         Build agent-server executable"
+	@$(ECHO) "  $(GREEN)test-server-schema$(RESET)   Test server schema"
+	@$(ECHO) "  $(GREEN)format$(RESET)               Format code with uv format"
+	@$(ECHO) "  $(GREEN)lint$(RESET)                 Lint code with ruff"
+	@$(ECHO) "  $(GREEN)pre-commit$(RESET)           Run the pre-commit"
+	@$(ECHO) "  $(GREEN)clean$(RESET)                Clean up cache files"
+	@$(ECHO) "  $(GREEN)help$(RESET)                 Show this help message"
 
 build-server: check-uv-version
 	@$(ECHO) "$(CYAN)Building agent-server executable...$(RESET)"
