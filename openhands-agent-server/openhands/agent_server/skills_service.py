@@ -286,6 +286,7 @@ def load_all_skills(
     org_repo_url: str | None = None,
     org_name: str | None = None,
     sandbox_exposed_urls: list[ExposedUrlData] | None = None,
+    marketplace_path: str | None = "marketplaces/default.json",
 ) -> SkillLoadResult:
     """Load and merge skills from all configured sources.
 
@@ -306,6 +307,9 @@ def load_all_skills(
         org_repo_url: Pre-authenticated Git URL for org skills.
         org_name: Organization name for org skills.
         sandbox_exposed_urls: List of exposed URLs from sandbox.
+        marketplace_path: Path to the marketplace JSON file within the public
+            skills repository. Defaults to 'marketplaces/default.json'. Set to
+            None to load all public skills without marketplace filtering.
 
     Returns:
         SkillLoadResult containing merged skills and source counts.
@@ -326,7 +330,7 @@ def load_all_skills(
     public_skills: list[Skill] = []
     if load_public:
         try:
-            public_skills = load_public_skills()
+            public_skills = load_public_skills(marketplace_path=marketplace_path)
             logger.info(f"Loaded {len(public_skills)} public skills")
         except Exception as e:
             logger.warning(f"Failed to load public skills: {e}")

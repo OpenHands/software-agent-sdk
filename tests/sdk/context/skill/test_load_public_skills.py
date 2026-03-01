@@ -792,3 +792,77 @@ def test_load_public_skills_handles_legacy_md_files_with_marketplace(tmp_path):
         skill_names = {s.name for s in skills}
         assert skill_names == {"git", "docker"}
         assert "internal" not in skill_names
+
+
+def test_load_public_skills_with_custom_marketplace_path(tmp_path):
+    """Test that marketplace_path parameter allows using a custom marketplace."""
+    repo_dir = tmp_path / "mock_repo"
+    repo_dir.mkdir()
+    skills_dir = repo_dir / "skills"
+    skills_dir.mkdir()
+
+    # Create skills
+    for name in ["git", "docker", "internal-only", "experimental"]:
+        skill_dir = skills_dir / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name}\n---\n{name} content."
+        )
+
+    # Create marketplaces directory with multiple marketplaces
+    marketplaces_dir = repo_dir / "marketplaces"
+    marketplaces_dir.mkdir()
+
+    # Default marketplace with git and docker
+    default_marketplace = {
+        "name": "default",
+        "owner": {"name": "OpenHands", "email": "test@test.com"},
+        "plugins": [
+            {"name": "git", "source": "./git"},
+            {"name": "docker", "source": "./docker"},
+        ],
+    }
+    (marketplaces_dir / "default.json").write_text(json.dumps(default_marketplace))
+
+    # Custom marketplace with all skills
+    custom_marketplace = {
+        "name": "custom",
+        "owner": {"name": "OpenHands", "email": "test@test.com"},
+        "plugins": [
+            {"name": "git", "source": "./git"},
+            {"name": "docker", "source": "./docker"},
+            {"name": "internal-only", "source": "./internal-only"},
+            {"name": "experimental", "source": "./experimental"},
+        ],
+    }
+    (marketplaces_dir / "custom.json").write_text(json.dumps(custom_marketplace))
+
+    (repo_dir / ".git").mkdir()
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return repo_dir
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        # Default marketplace should only have git and docker
+        skills_default = load_public_skills()
+        skill_names_default = {s.name for s in skills_default}
+        assert skill_names_default == {"git", "docker"}
+
+        # Custom marketplace should have all skills
+        skills_custom = load_public_skills(marketplace_path="marketplaces/custom.json")
+        skill_names_custom = {s.name for s in skills_custom}
+        assert skill_names_custom == {"git", "docker", "internal-only", "experimental"}
+
+        # None marketplace_path should load all skills
+        skills_all = load_public_skills(marketplace_path=None)
+        skill_names_all = {s.name for s in skills_all}
+        assert skill_names_all == {"git", "docker", "internal-only", "experimental"}

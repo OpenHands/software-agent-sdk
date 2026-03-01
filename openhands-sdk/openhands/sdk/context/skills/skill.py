@@ -902,6 +902,7 @@ def load_marketplace_skill_names(
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
     branch: str = PUBLIC_SKILLS_BRANCH,
+    marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
 ) -> list[Skill]:
     """Load skills from the public OpenHands skills repository.
 
@@ -911,9 +912,9 @@ def load_public_skills(
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
 
-    Only skills listed in the default marketplace (marketplaces/default.json) are
-    loaded. This allows the OpenHands extensions repository to contain additional
-    skills that are not included by default.
+    Only skills listed in the specified marketplace are loaded. This allows the
+    OpenHands extensions repository to contain additional skills that are not
+    included by default.
 
     Note: When a skill directory contains a SKILL.md file (AgentSkills format),
     any other markdown files in that directory or its subdirectories are treated
@@ -923,6 +924,9 @@ def load_public_skills(
         repo_url: URL of the skills repository. Defaults to the official
             OpenHands skills repository.
         branch: Branch name to load skills from. Defaults to 'main'.
+        marketplace_path: Relative path to the marketplace JSON file within the
+            repository. Defaults to 'marketplaces/default.json'. Set to None to
+            load all skills without marketplace filtering.
 
     Returns:
         List of Skill objects loaded from the public repository.
@@ -932,8 +936,14 @@ def load_public_skills(
         >>> from openhands.sdk.context import AgentContext
         >>> from openhands.sdk.context.skills import load_public_skills
         >>>
-        >>> # Load public skills
+        >>> # Load public skills from default marketplace
         >>> public_skills = load_public_skills()
+        >>>
+        >>> # Load skills from a custom marketplace
+        >>> custom_skills = load_public_skills(marketplace_path="marketplaces/custom.json")
+        >>>
+        >>> # Load all skills (no marketplace filtering)
+        >>> all_skills = load_public_skills(marketplace_path=None)
         >>>
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
@@ -955,10 +965,12 @@ def load_public_skills(
             logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        # Load the default marketplace to determine which skills to include
-        marketplace_skill_names = load_marketplace_skill_names(
-            repo_path, DEFAULT_MARKETPLACE_PATH
-        )
+        # Load the marketplace to determine which skills to include
+        marketplace_skill_names = None
+        if marketplace_path:
+            marketplace_skill_names = load_marketplace_skill_names(
+                repo_path, marketplace_path
+            )
 
         # Determine which skill files to load
         if marketplace_skill_names is not None:
@@ -979,7 +991,7 @@ def load_public_skills(
                     f"Skill '{skill_name}' from marketplace not found in skills dir"
                 )
         else:
-            # No marketplace: load all skills (backward compatible)
+            # No marketplace or marketplace_path=None: load all skills
             # Find SKILL.md directories (AgentSkills format) and regular .md files
             # This ensures that markdown files in SKILL.md directories are NOT
             # loaded as separate skills - they are reference materials.
