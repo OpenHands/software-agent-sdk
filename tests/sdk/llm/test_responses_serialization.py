@@ -213,3 +213,54 @@ def test_assistant_includes_reasoning_passthrough():
     assert [c["text"] for c in r.get("content", [])] == ["c1"]
     assert r.get("encrypted_content") == "enc"
     assert r.get("status") == "completed"
+
+
+def test_assistant_includes_message_id_and_status_with_reasoning():
+    """Test that message id and status are included when reasoning item is present.
+
+    OpenAI requires the message following a reasoning item to have id and status fields.
+    Without these fields, the API returns:
+    "Item of type 'reasoning' was provided without its required following item."
+    """
+    ri = ReasoningItemModel(
+        id="rs_test123",
+        summary=[],
+        encrypted_content="enc_data",
+        status="completed",
+    )
+    m = Message(
+        role="assistant",
+        content=[TextContent(text="Hello world")],
+        responses_reasoning_item=ri,
+        responses_message_id="msg_test456",
+        responses_message_status="completed",
+    )
+    out = m.to_responses_dict(vision_enabled=False)
+
+    # Should have reasoning item followed by message with id and status
+    assert len(out) == 2
+    assert out[0]["type"] == "reasoning"
+    assert out[0]["id"] == "rs_test123"
+
+    assert out[1]["type"] == "message"
+    assert out[1]["role"] == "assistant"
+    assert out[1]["id"] == "msg_test456"
+    assert out[1]["status"] == "completed"
+    assert out[1]["content"][0]["type"] == "output_text"
+    assert out[1]["content"][0]["text"] == "Hello world"
+
+
+def test_assistant_message_without_id_status_when_no_reasoning():
+    """Test that message id/status are omitted when not set (backward compatibility)."""
+    m = Message(
+        role="assistant",
+        content=[TextContent(text="Hello world")],
+    )
+    out = m.to_responses_dict(vision_enabled=False)
+
+    assert len(out) == 1
+    msg = out[0]
+    assert msg["type"] == "message"
+    assert msg["role"] == "assistant"
+    assert "id" not in msg
+    assert "status" not in msg
