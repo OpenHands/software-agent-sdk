@@ -418,6 +418,59 @@ The `LLM_API_KEY` environment variable may be available in the OpenHands develop
 For examples that use the critic model (e.g., `34_critic_example.py`), the critic is auto-configured when using the All-Hands LLM proxy - no additional setup needed.
 </RUNNING_EXAMPLES>
 
+<PROFILING_WORKFLOW>
+# Performance Profiling with Austin
+
+The `profile-runner.yml` workflow enables profiling OpenHands agent runs using the Austin profiler to identify performance bottlenecks on real workloads.
+
+## Triggering
+
+**Via PR Label:**
+Add the `profile-test` label to a PR to trigger profiling with default SWE-bench instance.
+
+**Via Manual Dispatch:**
+Use the "Run workflow" button on Actions → "Profile OpenHands Run" with options:
+- `profile_target`: `swebench` (default) or `example`
+- `instance_ids`: Comma-separated SWE-bench instance IDs (e.g., `django__django-11039,sympy__sympy-18199`)
+- `model_id`: Model to use (default: `claude-haiku-4-5`)
+- `max_iterations`: Max agent iterations per instance (default: 30)
+- `sampling_interval`: Austin sampling interval in µs (default: 100)
+- `issue_number`: Optional PR/issue number to post results
+
+## Profile Targets
+
+- **swebench**: Runs actual SWE-bench instances via the benchmarks repo - representative of real workloads
+- **example**: Runs the iterative refinement example (COBOL to Java conversion) - lighter weight alternative
+
+## Outputs
+
+The workflow generates:
+1. **Flame graphs (SVG)**: Visual call stack representation, open in browser
+2. **Speedscope JSON**: Interactive profile, upload to https://speedscope.app
+3. **Summary report**: Posted as PR comment with top functions and artifacts link
+
+## Local Usage
+
+To generate flame graphs from Austin output locally:
+```bash
+# Profile a SWE-bench-like workload
+austin --interval 100 --output profile.austin --full --children -- \
+  uv run python -m swebench.run_infer --instance-ids django__django-11039
+
+# Convert to flame graph formats
+uv run python scripts/generate_flamegraph.py --input profile.austin --output-dir ./output
+
+# Generate SVG with flamegraph.pl (requires FlameGraph repo)
+flamegraph.pl output/profile.collapsed > profile.svg
+```
+
+## Notes
+
+- The workflow checks out both the SDK and the benchmarks repo
+- SWE-bench profiling requires the `ALLHANDS_BOT_GITHUB_PAT` secret for benchmarks repo access
+- Profile data includes all child processes (`--children` flag) for complete coverage
+</PROFILING_WORKFLOW>
+
 <REPO_CONFIG_NOTES>
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.

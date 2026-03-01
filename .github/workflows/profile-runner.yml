@@ -1,0 +1,521 @@
+---
+name: Profile OpenHands Run
+run-name: >-
+    Profile Run ${{ inputs.reason || github.event.label.name || 'manual' }}
+
+on:
+    # For testing: trigger on push to the feature branch
+    push:
+        branches:
+            - feature/austin-profiling-workflow
+    pull_request_target:
+        types: [labeled]
+    workflow_dispatch:
+        inputs:
+            reason:
+                description: Reason for manual trigger
+                required: false
+                default: ''
+            profile_target:
+                description: What to profile
+                required: false
+                default: swebench
+                type: choice
+                options:
+                    - swebench     # Run SWE-bench instances with profiling (recommended)
+                    - example      # Run a realistic SDK example with profiling
+            instance_ids:
+                description: >-
+                    Comma-separated SWE-bench instance IDs to profile.
+                    Example: django__django-11039,sympy__sympy-18199
+                required: false
+                default: ''
+                type: string
+            model_id:
+                description: Model ID to use (from resolve_model_config.py)
+                required: false
+                default: claude-sonnet-4-6
+                type: string
+            sampling_interval:
+                description: Austin sampling interval in microseconds (default 100)
+                required: false
+                default: '100'
+                type: string
+            max_iterations:
+                description: Max agent iterations per instance
+                required: false
+                default: '30'
+                type: string
+            issue_number:
+                description: Issue or PR number to post results to (optional)
+                required: false
+                default: ''
+                type: string
+
+env:
+    # Default SWE-bench instances (small, fast instances for profiling)
+    DEFAULT_SWEBENCH_IDS: django__django-11039
+    BENCHMARKS_REPO: OpenHands/benchmarks
+    BENCHMARKS_REF: main
+
+jobs:
+    profile-run:
+        # Run on: push to feature branch (testing), workflow_dispatch, or profile-test label
+        if: >
+            github.event_name == 'push' ||
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'pull_request_target' && github.event.label.name == 'profile-test')
+        runs-on: ubuntu-24.04
+        timeout-minutes: 120
+        permissions:
+            contents: read
+            pull-requests: write
+            issues: write
+        steps:
+            - name: Checkout SDK repository
+              uses: actions/checkout@v5
+              with:
+                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
+                  persist-credentials: false
+                  path: sdk
+
+            # Note: Benchmarks repo checkout removed - we profile SDK directly
+            # The benchmarks repo has complex git submodule requirements that
+            # are difficult to satisfy in a CI workflow
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Install SDK dependencies
+              working-directory: sdk
+              run: |
+                  uv sync --dev
+
+            - name: Install Austin profiler
+              run: |
+                  # Install Austin from PyPI to a system-wide location
+                  # This ensures `sudo` can find the austin binary
+                  sudo pip install --break-system-packages austin-dist austin-python
+
+                  # Verify installation
+                  echo "Austin version:"
+                  austin --version
+                  AUSTIN_PATH=$(which austin)
+                  echo "Austin path: $AUSTIN_PATH"
+
+                  # Enable ptrace for Austin (required for profiling)
+                  echo "Enabling ptrace..."
+                  echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+
+                  # Set capabilities if needed
+                  sudo setcap cap_sys_ptrace+ep "$AUSTIN_PATH" || echo "setcap not available"
+
+            - name: Install Perl and flamegraph.pl
+              run: |
+                  sudo apt-get install -y perl
+                  git clone --depth 1 https://github.com/brendangregg/FlameGraph.git /tmp/FlameGraph
+                  echo "/tmp/FlameGraph" >> $GITHUB_PATH
+
+            - name: Set up Docker
+              uses: docker/setup-buildx-action@v3
+
+            - name: Resolve model configuration
+              id: resolve-model
+              working-directory: sdk
+              env:
+                  MODEL_ID: ${{ github.event.inputs.model_id || 'claude-sonnet-4-6' }}
+              run: |
+                  MODEL_CONFIG=$(python3 << EOF
+                  import json
+                  import sys
+                  sys.path.insert(0, '.github/run-eval')
+                  from resolve_model_config import MODELS
+
+                  model_id = "$MODEL_ID"
+                  if model_id not in MODELS:
+                      available = ", ".join(sorted(MODELS.keys()))
+                      print(f"Error: Model '{model_id}' not found. Available: {available}", file=sys.stderr)
+                      sys.exit(1)
+
+                  model = MODELS[model_id]
+                  print(json.dumps(model["llm_config"]))
+                  EOF
+                  )
+                  echo "llm_config=$MODEL_CONFIG" >> "$GITHUB_OUTPUT"
+                  echo "Using model: $MODEL_ID"
+
+            - name: Determine profile parameters
+              id: params
+              env:
+                  PROFILE_TARGET: ${{ github.event.inputs.profile_target || 'swebench' }}
+                  INSTANCE_IDS_INPUT: ${{ github.event.inputs.instance_ids || '' }}
+              run: |
+                  if [ -n "$INSTANCE_IDS_INPUT" ]; then
+                      INSTANCE_IDS="$INSTANCE_IDS_INPUT"
+                  else
+                      INSTANCE_IDS="${{ env.DEFAULT_SWEBENCH_IDS }}"
+                  fi
+
+                  echo "profile_target=$PROFILE_TARGET" >> "$GITHUB_OUTPUT"
+                  echo "instance_ids=$INSTANCE_IDS" >> "$GITHUB_OUTPUT"
+                  echo "Profile target: $PROFILE_TARGET"
+                  echo "Instance IDs: $INSTANCE_IDS"
+
+            - name: Post initial comment
+              if: github.event_name == 'pull_request_target'
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  unique: false
+                  comment: |
+                      🔬 **Profiling Started**
+
+                      - Target: `${{ steps.params.outputs.profile_target }}`
+                      - Instance IDs: `${{ steps.params.outputs.instance_ids }}`
+                      - Model: `${{ github.event.inputs.model_id || 'claude-sonnet-4-6' }}`
+                      - Max iterations: `${{ github.event.inputs.max_iterations || '30' }}`
+                      - Sampling interval: `${{ github.event.inputs.sampling_interval || '100' }}µs`
+
+                      Results will be posted when complete...
+
+            - name: Create output directories
+              run: |
+                  mkdir -p profile_outputs
+                  mkdir -p flame_graphs
+
+            - name: Run profiled SWE-bench style conversation
+              if: steps.params.outputs.profile_target == 'swebench'
+              working-directory: sdk
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
+                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+                  LLM_CONFIG: ${{ steps.resolve-model.outputs.llm_config }}
+                  SAMPLING_INTERVAL: ${{ github.event.inputs.sampling_interval || '100' }}
+                  MAX_ITERATIONS: ${{ github.event.inputs.max_iterations || '30' }}
+              run: |
+                  set -eo pipefail
+
+                  # Get the Python path from uv
+                  PYTHON_PATH=$(uv run which python)
+                  echo "Python path: $PYTHON_PATH"
+
+                  echo "Starting Austin profiled SWE-bench style run..."
+                  echo "Max iterations: $MAX_ITERATIONS"
+
+                  # First test that the script can import
+                  echo "Testing script import..."
+                  "$PYTHON_PATH" -c "
+                  import sys
+                  sys.path.insert(0, '.')
+                  from scripts.profile_conversation import main
+                  print('Import OK')
+                  " || {
+                      echo "Import failed!"
+                      exit 1
+                  }
+
+                  # Test Austin with a simple Python script first
+                  echo "Testing Austin with simple Python script..."
+                  echo 'import time; print("Start"); time.sleep(2); print("Done")' > /tmp/test_austin.py
+                  sudo austin --version
+                  echo "Running Austin test..."
+                  sudo austin -i 1000 -o /tmp/austin_test.mojo "$PYTHON_PATH" /tmp/test_austin.py || echo "Austin test exited"
+                  echo "Austin test output size:"
+                  wc -c /tmp/austin_test.mojo || true
+                  hexdump -C /tmp/austin_test.mojo | head -20 || true
+
+                  # Note: austin-python already installed system-wide for mojo2austin
+
+                  # Run the profiling script with Austin
+                  # Austin 4.0+ uses MOJO binary format by default
+                  echo "Running profile script with Austin..."
+                  echo "  Working directory: $(pwd)"
+                  echo "  Venv Python: $PYTHON_PATH"
+
+                  # Get venv directory info
+                  VENV_DIR="$(dirname "$(dirname "$PYTHON_PATH")")"
+                  SITE_PACKAGES="$VENV_DIR/lib/python3.13/site-packages"
+                  echo "  VENV_DIR: $VENV_DIR"
+                  echo "  SITE_PACKAGES: $SITE_PACKAGES"
+
+                  # First, test running the script directly
+                  echo "Testing script import..."
+                  "$PYTHON_PATH" -c "
+                  import sys
+                  sys.path.insert(0, '.')
+                  from scripts.profile_conversation import main
+                  print('Import OK')
+                  " || echo "Import test failed with code $?"
+
+                  # Use absolute path to the profile script
+                  PROFILE_SCRIPT="$(pwd)/scripts/profile_conversation.py"
+                  echo "  Profile script: $PROFILE_SCRIPT"
+
+                  # Test the profile script with CLI args (quick validation)
+                  echo "Testing profile script with CLI args..."
+                  timeout 15s "$PYTHON_PATH" "$PROFILE_SCRIPT" \
+                      --site-packages="$SITE_PACKAGES" \
+                      --sdk-dir="$(pwd)" \
+                      --llm-api-key="$LLM_API_KEY" \
+                      --llm-base-url="$LLM_BASE_URL" \
+                      --llm-config="$LLM_CONFIG" \
+                      --max-iterations="$MAX_ITERATIONS" \
+                      2>&1 | head -30 || echo "Test completed (timeout expected)"
+
+                  # Use Austin's ATTACH mode to profile a running Python process
+                  # This avoids the issue of Austin launching the wrong Python version
+                  echo "Starting profile script in background for Austin attach..."
+
+                  # Start the profile script in the background
+                  "$PYTHON_PATH" "$PROFILE_SCRIPT" \
+                      --site-packages="$SITE_PACKAGES" \
+                      --sdk-dir="$(pwd)" \
+                      --llm-api-key="$LLM_API_KEY" \
+                      --llm-base-url="$LLM_BASE_URL" \
+                      --llm-config="$LLM_CONFIG" \
+                      --max-iterations="$MAX_ITERATIONS" \
+                      &
+                  PROFILE_PID=$!
+                  echo "  Started profile script with PID: $PROFILE_PID"
+
+                  # Brief delay to let Python start up
+                  sleep 0.5
+
+                  # Check if process is still running
+                  if ps -p $PROFILE_PID > /dev/null 2>&1; then
+                      echo "  Process $PROFILE_PID is running, attaching Austin..."
+
+                      # Use Austin in attach mode (--pid)
+                      # ptrace_scope should be 0 from earlier setup
+                      sudo austin \
+                          --interval "$SAMPLING_INTERVAL" \
+                          --output ../profile_outputs/swebench.mojo \
+                          --full \
+                          --children \
+                          --pid $PROFILE_PID \
+                          2>&1 || {
+                          echo "Austin attach exited with code $?"
+                      }
+
+                      # Wait for the profile script to complete
+                      wait $PROFILE_PID 2>/dev/null || echo "Profile script completed"
+                  else
+                      echo "  ERROR: Profile script exited before Austin could attach"
+                      wait $PROFILE_PID 2>/dev/null
+                  fi
+
+                  echo "Profiling complete."
+                  ls -la ../profile_outputs/
+
+                  # Convert MOJO to collapsed format using austin-python
+                  # mojo2austin takes input and output file arguments
+                  echo "Converting MOJO to collapsed format..."
+                  if [ -s ../profile_outputs/swebench.mojo ]; then
+                      mojo2austin ../profile_outputs/swebench.mojo ../profile_outputs/swebench.austin || {
+                          echo "mojo2austin conversion failed, trying alternative..."
+                          # Fallback: try using it as collapsed format directly
+                          cp ../profile_outputs/swebench.mojo ../profile_outputs/swebench.austin
+                      }
+                      echo "Converted output size:"
+                      wc -c ../profile_outputs/swebench.austin || true
+                      echo "First 20 lines of collapsed output:"
+                      head -20 ../profile_outputs/swebench.austin || true
+                  else
+                      echo "No MOJO output captured"
+                      touch ../profile_outputs/swebench.austin
+                  fi
+
+            - name: Run profiled SDK example
+              if: steps.params.outputs.profile_target == 'example'
+              working-directory: sdk
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
+                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+                  SAMPLING_INTERVAL: ${{ github.event.inputs.sampling_interval || '100' }}
+              run: |
+                  set -eo pipefail
+
+                  echo "Running profiled iterative refinement example..."
+
+                  # Get the Python path from uv
+                  PYTHON_PATH=$(uv run which python)
+                  echo "Python path: $PYTHON_PATH"
+
+                  # Run realistic example with Austin profiling using direct Python
+                  sudo austin \
+                      --interval "$SAMPLING_INTERVAL" \
+                      --output ../profile_outputs/example.austin \
+                      --full \
+                      -- \
+                      "$PYTHON_PATH" examples/01_standalone_sdk/31_iterative_refinement.py \
+                      || echo "Example completed"
+
+                  echo "Profiling complete."
+                  ls -la ../profile_outputs/
+
+            - name: Generate flame graphs
+              working-directory: sdk
+              run: |
+                  # Process Austin output files using the generate_flamegraph.py script
+                  for austin_file in ../profile_outputs/*.austin; do
+                      if [ -f "$austin_file" ] && [ -s "$austin_file" ]; then
+                          basename=$(basename "$austin_file" .austin)
+                          echo "Processing: $austin_file"
+
+                          # Generate collapsed format and speedscope JSON using our script
+                          uv run python scripts/generate_flamegraph.py \
+                              --input "$austin_file" \
+                              --output-dir ../flame_graphs \
+                              --name "$basename"
+
+                          # Generate SVG flame graph using flamegraph.pl
+                          if [ -s "../flame_graphs/${basename}.collapsed" ]; then
+                              /tmp/FlameGraph/flamegraph.pl \
+                                  --title "OpenHands Profile: ${basename}" \
+                                  --width 1200 \
+                                  "../flame_graphs/${basename}.collapsed" \
+                                  > "../flame_graphs/${basename}.svg" 2>/dev/null || true
+                              echo "Created ../flame_graphs/${basename}.svg"
+                          fi
+                      else
+                          echo "Skipping empty file: $austin_file"
+                      fi
+                  done
+
+                  echo "Flame graphs generated:"
+                  ls -la ../flame_graphs/ || echo "No flame graphs created"
+
+            - name: Generate profiling summary
+              id: summary
+              working-directory: sdk
+              run: |
+                  uv run python << 'EOF'
+                  import json
+                  from pathlib import Path
+
+                  summary = []
+                  summary.append("## 🔬 Profiling Results\n")
+
+                  flame_dir = Path("../flame_graphs")
+                  profile_dir = Path("../profile_outputs")
+
+                  # Include generated summary from our script
+                  summary_files = list(flame_dir.glob("*.summary.md")) if flame_dir.exists() else []
+                  if summary_files:
+                      for sf in summary_files:
+                          content = sf.read_text()
+                          lines = content.split("\n")
+                          if lines and lines[0].startswith("# "):
+                              lines = lines[1:]
+                          summary.append("\n".join(lines))
+                  else:
+                      austin_files = list(profile_dir.glob("*.austin")) if profile_dir.exists() else []
+                      if austin_files:
+                          summary.append("### Profile Data\n")
+                          for af in austin_files:
+                              size = af.stat().st_size
+                              summary.append(f"- `{af.name}`: {size:,} bytes")
+                              try:
+                                  with open(af) as f:
+                                      lines = [l for l in f if l.strip() and not l.startswith("#")]
+                                      summary.append(f"  - Samples: {len(lines):,}")
+                              except Exception:
+                                  pass
+                          summary.append("")
+
+                  svg_files = list(flame_dir.glob("*.svg")) if flame_dir.exists() else []
+                  json_files = list(flame_dir.glob("*.speedscope.json")) if flame_dir.exists() else []
+
+                  if svg_files or json_files:
+                      summary.append("\n### Generated Artifacts\n")
+                      if svg_files:
+                          summary.append("**Flame Graphs (SVG):**")
+                          for sf in svg_files:
+                              summary.append(f"- `{sf.name}`")
+                      if json_files:
+                          summary.append("\n**Speedscope Profiles:**")
+                          for jf in json_files:
+                              summary.append(f"- `{jf.name}` (upload to [speedscope.app](https://speedscope.app))")
+                      summary.append("")
+
+                  summary.append("\n### How to Use\n")
+                  summary.append("1. Download the artifacts from this workflow run")
+                  summary.append("2. For SVG flame graphs: Open directly in a browser")
+                  summary.append("3. For Speedscope JSON: Upload to https://speedscope.app for interactive analysis")
+                  summary.append("")
+
+                  # Check for SWE-bench results
+                  swebench_results = profile_dir / "swebench_results"
+                  if swebench_results.exists():
+                      summary.append("### SWE-bench Results\n")
+                      result_files = list(swebench_results.glob("*.json"))
+                      for rf in result_files[:3]:
+                          summary.append(f"- `{rf.name}`")
+                      summary.append("")
+
+                  summary_text = "\n".join(summary)
+                  with open("../profile_summary.md", "w") as f:
+                      f.write(summary_text)
+
+                  print(summary_text)
+                  EOF
+
+            - name: Upload profile artifacts
+              uses: actions/upload-artifact@v5
+              with:
+                  name: profiling-results-${{ github.run_id }}
+                  path: |
+                      profile_outputs/
+                      flame_graphs/
+                  retention-days: 30
+
+            - name: Upload flame graph SVGs
+              uses: actions/upload-artifact@v5
+              with:
+                  name: flame-graphs-${{ github.run_id }}
+                  path: flame_graphs/*.svg
+                  retention-days: 30
+                  if-no-files-found: ignore
+
+            - name: Post results to PR
+              if: github.event_name == 'pull_request_target'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+              run: |
+                  if [ -f profile_summary.md ]; then
+                      WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+                      COMMENT="$(cat profile_summary.md)"
+                      COMMENT="${COMMENT}
+
+                  ---
+                  📦 **Artifacts:** [Download from workflow run](${WORKFLOW_URL})
+
+                  _Commit: ${{ github.event.pull_request.head.sha }}_"
+
+                      echo "$COMMENT" | gh pr comment "$PR_NUMBER" --body-file -
+                  fi
+
+            - name: Post results to specified issue
+              if: github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number != ''
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
+              run: |
+                  if [ -f profile_summary.md ]; then
+                      WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+                      COMMENT="$(cat profile_summary.md)"
+                      COMMENT="${COMMENT}
+
+                  ---
+                  📦 **Artifacts:** [Download from workflow run](${WORKFLOW_URL})
+
+                  _Commit: ${{ github.sha }}_"
+
+                      echo "$COMMENT" | gh issue comment "$ISSUE_NUMBER" --body-file -
+                  fi
