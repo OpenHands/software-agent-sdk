@@ -46,17 +46,14 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.fetch import (
-    PluginFetchError,
     fetch_plugin_with_resolution,
-    parse_plugin_source,
 )
 from openhands.sdk.plugin.plugin import Plugin
 
@@ -113,7 +110,7 @@ class InstalledPluginInfo(BaseModel):
             source=source,
             resolved_ref=resolved_ref,
             repo_path=repo_path,
-            installed_at=datetime.now(timezone.utc).isoformat(),
+            installed_at=datetime.now(UTC).isoformat(),
             install_path=str(install_path),
         )
 
@@ -344,9 +341,7 @@ def list_installed_plugins(
             installed_plugins.append(info)
         else:
             # Plugin directory was removed externally, clean up metadata
-            logger.warning(
-                f"Plugin '{name}' directory missing, removing from metadata"
-            )
+            logger.warning(f"Plugin '{name}' directory missing, removing from metadata")
             del metadata.plugins[name]
 
     # Save cleaned metadata if any plugins were removed
@@ -366,7 +361,7 @@ def list_installed_plugins(
                     version=plugin.version,
                     description=plugin.description,
                     source="local",  # Unknown source
-                    installed_at=datetime.now(timezone.utc).isoformat(),
+                    installed_at=datetime.now(UTC).isoformat(),
                     install_path=str(item),
                 )
                 installed_plugins.append(info)

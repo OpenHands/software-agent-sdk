@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -10,7 +10,6 @@ from openhands.sdk.plugin import (
     InstalledPluginInfo,
     InstalledPluginsMetadata,
     Plugin,
-    PluginFetchError,
     get_installed_plugin,
     get_installed_plugins_dir,
     install_plugin,
@@ -21,9 +20,7 @@ from openhands.sdk.plugin import (
 )
 from openhands.sdk.plugin.installed import (
     INSTALLED_METADATA_FILE,
-    _get_metadata_path,
     _load_metadata,
-    _save_metadata,
 )
 
 
@@ -261,9 +258,7 @@ class TestListInstalledPlugins:
         plugins = list_installed_plugins(installed_dir=installed_dir)
         assert plugins == []
 
-    def test_list_installed_plugins(
-        self, sample_plugin_dir: Path, installed_dir: Path
-    ):
+    def test_list_installed_plugins(self, sample_plugin_dir: Path, installed_dir: Path):
         """Test listing installed plugins."""
         # Install a plugin
         install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
@@ -328,9 +323,7 @@ class TestLoadInstalledPlugins:
         plugins = load_installed_plugins(installed_dir=installed_dir)
         assert plugins == []
 
-    def test_load_installed_plugins(
-        self, sample_plugin_dir: Path, installed_dir: Path
-    ):
+    def test_load_installed_plugins(self, sample_plugin_dir: Path, installed_dir: Path):
         """Test loading installed plugins."""
         # Install a plugin
         install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
@@ -346,9 +339,7 @@ class TestLoadInstalledPlugins:
 class TestGetInstalledPlugin:
     """Tests for get_installed_plugin function."""
 
-    def test_get_existing_plugin(
-        self, sample_plugin_dir: Path, installed_dir: Path
-    ):
+    def test_get_existing_plugin(self, sample_plugin_dir: Path, installed_dir: Path):
         """Test getting info for an existing plugin."""
         install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
 
@@ -382,9 +373,7 @@ class TestGetInstalledPlugin:
 class TestUpdatePlugin:
     """Tests for update_plugin function."""
 
-    def test_update_existing_plugin(
-        self, sample_plugin_dir: Path, installed_dir: Path
-    ):
+    def test_update_existing_plugin(self, sample_plugin_dir: Path, installed_dir: Path):
         """Test updating an existing plugin."""
         # Install first (without mocking)
         install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
