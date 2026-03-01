@@ -45,6 +45,7 @@ Example usage:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +66,19 @@ DEFAULT_INSTALLED_PLUGINS_DIR = Path.home() / ".openhands" / "skills" / "install
 
 # Metadata file for tracking installed plugins
 INSTALLED_METADATA_FILE = ".installed.json"
+
+PLUGIN_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _validate_plugin_name(name: str) -> None:
+    """Validate plugin name is Claude-like kebab-case.
+
+    This protects filesystem operations (install/uninstall) from path traversal.
+    """
+    if not PLUGIN_NAME_PATTERN.fullmatch(name):
+        raise ValueError(
+            f"Invalid plugin name. Expected kebab-case like 'my-plugin' (got {name!r})."
+        )
 
 
 class InstalledPluginInfo(BaseModel):
@@ -222,6 +236,7 @@ def install_plugin(
     # Load the plugin to get its metadata
     plugin = Plugin.load(fetched_path)
     plugin_name = plugin.name
+    _validate_plugin_name(plugin_name)
 
     # Check if already installed
     install_path = installed_dir / plugin_name
@@ -265,7 +280,8 @@ def uninstall_plugin(
 ) -> bool:
     """Uninstall a plugin by name.
 
-    Removes the plugin directory and updates the metadata file.
+    Only plugins tracked in the installed plugins metadata file can be uninstalled.
+    This avoids deleting arbitrary directories in the installed plugins directory.
 
     Args:
         name: Name of the plugin to uninstall.
@@ -281,25 +297,27 @@ def uninstall_plugin(
         ... else:
         ...     print("Plugin was not installed")
     """
+    _validate_plugin_name(name)
+
     if installed_dir is None:
         installed_dir = get_installed_plugins_dir()
 
-    plugin_path = installed_dir / name
-
-    # Check if plugin exists
-    if not plugin_path.exists():
+    metadata = _load_metadata(installed_dir)
+    if name not in metadata.plugins:
         logger.warning(f"Plugin '{name}' is not installed")
         return False
 
-    # Remove plugin directory
-    logger.info(f"Uninstalling plugin '{name}' from {plugin_path}")
-    shutil.rmtree(plugin_path)
+    plugin_path = installed_dir / name
+    if plugin_path.exists():
+        logger.info(f"Uninstalling plugin '{name}' from {plugin_path}")
+        shutil.rmtree(plugin_path)
+    else:
+        logger.warning(
+            f"Plugin '{name}' was tracked but its directory is missing: {plugin_path}"
+        )
 
-    # Update metadata
-    metadata = _load_metadata(installed_dir)
-    if name in metadata.plugins:
-        del metadata.plugins[name]
-        _save_metadata(metadata, installed_dir)
+    del metadata.plugins[name]
+    _save_metadata(metadata, installed_dir)
 
     logger.info(f"Successfully uninstalled plugin '{name}'")
     return True
@@ -310,9 +328,9 @@ def list_installed_plugins(
 ) -> list[InstalledPluginInfo]:
     """List all installed plugins.
 
-    Returns information about all plugins installed in the installed plugins
-    directory. This reads from the metadata file and verifies that the
-    plugin directories still exist.
+    This function is self-healing: it may update the installed plugins metadata
+    file to remove entries whose directories were deleted, and to add entries for
+    plugin directories that were manually copied into the installed dir.
 
     Args:
         installed_dir: Directory for installed plugins.
@@ -332,47 +350,69 @@ def list_installed_plugins(
         return []
 
     metadata = _load_metadata(installed_dir)
+    metadata_changed = False
     installed_plugins: list[InstalledPluginInfo] = []
 
-    # Verify each plugin still exists and collect info
+    # Verify each tracked plugin still exists and collect info.
     for name, info in list(metadata.plugins.items()):
+        try:
+            _validate_plugin_name(name)
+        except ValueError as e:
+            logger.warning(f"Invalid tracked plugin name {name!r}, removing: {e}")
+            del metadata.plugins[name]
+            metadata_changed = True
+            continue
+
         plugin_path = installed_dir / name
         if plugin_path.exists():
             installed_plugins.append(info)
-        else:
-            # Plugin directory was removed externally, clean up metadata
-            logger.warning(f"Plugin '{name}' directory missing, removing from metadata")
-            del metadata.plugins[name]
+            continue
 
-    # Save cleaned metadata if any plugins were removed
-    if len(installed_plugins) != len(metadata.plugins):
-        _save_metadata(metadata, installed_dir)
+        logger.warning(f"Plugin '{name}' directory missing, removing from metadata")
+        del metadata.plugins[name]
+        metadata_changed = True
 
-    # Also check for plugins that exist but aren't in metadata
-    # (e.g., manually copied plugins)
+    # Discover plugins that exist but aren't in metadata (e.g., manual copies).
     for item in installed_dir.iterdir():
-        if item.is_dir() and item.name not in metadata.plugins:
-            if item.name.startswith("."):
-                continue  # Skip hidden directories
-            try:
-                plugin = Plugin.load(item)
-                info = InstalledPluginInfo(
-                    name=plugin.name,
-                    version=plugin.version,
-                    description=plugin.description,
-                    source="local",  # Unknown source
-                    installed_at=datetime.now(UTC).isoformat(),
-                    install_path=str(item),
-                )
-                installed_plugins.append(info)
-                # Add to metadata for future reference
-                metadata.plugins[plugin.name] = info
-                logger.info(f"Discovered untracked plugin: {plugin.name}")
-            except Exception as e:
-                logger.debug(f"Skipping directory {item}: {e}")
+        if not item.is_dir() or item.name.startswith("."):
+            continue
+        if item.name in metadata.plugins:
+            continue
 
-    # Save if we discovered new plugins
-    _save_metadata(metadata, installed_dir)
+        try:
+            _validate_plugin_name(item.name)
+        except ValueError:
+            logger.debug(f"Skipping directory with invalid plugin name: {item}")
+            continue
+
+        try:
+            plugin = Plugin.load(item)
+        except Exception as e:
+            logger.debug(f"Skipping directory {item}: {e}")
+            continue
+
+        if plugin.name != item.name:
+            logger.warning(
+                "Skipping plugin directory because manifest name doesn't match "
+                f"directory name: dir={item.name!r}, manifest={plugin.name!r}"
+            )
+            continue
+
+        info = InstalledPluginInfo(
+            name=plugin.name,
+            version=plugin.version,
+            description=plugin.description,
+            source="local",
+            installed_at=datetime.now(UTC).isoformat(),
+            install_path=str(item),
+        )
+        installed_plugins.append(info)
+        metadata.plugins[item.name] = info
+        metadata_changed = True
+        logger.info(f"Discovered untracked plugin: {plugin.name}")
+
+    if metadata_changed:
+        _save_metadata(metadata, installed_dir)
 
     return installed_plugins
 
@@ -425,6 +465,8 @@ def get_installed_plugin(
         >>> if info:
         ...     print(f"Installed from {info.source} at {info.installed_at}")
     """
+    _validate_plugin_name(name)
+
     if installed_dir is None:
         installed_dir = get_installed_plugins_dir()
 
@@ -447,7 +489,9 @@ def update_plugin(
     """Update an installed plugin to the latest version.
 
     Re-fetches the plugin from its original source and reinstalls it.
-    The original source and ref are preserved from the installation metadata.
+
+    This always updates to the latest version available from the original source
+    (i.e., it does not preserve a pinned ref).
 
     Args:
         name: Name of the plugin to update.
@@ -465,6 +509,8 @@ def update_plugin(
         >>> if info:
         ...     print(f"Updated to v{info.version}")
     """
+    _validate_plugin_name(name)
+
     if installed_dir is None:
         installed_dir = get_installed_plugins_dir()
 

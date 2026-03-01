@@ -223,6 +223,18 @@ class TestInstallPlugin:
         assert info.source == "github:owner/sample-plugin"
         assert info.resolved_ref == "abc123def456"
 
+    def test_install_invalid_plugin_name_raises_error(
+        self, sample_plugin_dir: Path, installed_dir: Path
+    ):
+        """Test that installing a plugin with an invalid manifest name fails."""
+        manifest_path = sample_plugin_dir / ".plugin" / "plugin.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["name"] = "bad_name"  # not kebab-case
+        manifest_path.write_text(json.dumps(manifest))
+
+        with pytest.raises(ValueError, match="Invalid plugin name"):
+            install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
+
 
 class TestUninstallPlugin:
     """Tests for uninstall_plugin function."""
@@ -248,6 +260,30 @@ class TestUninstallPlugin:
         """Test uninstalling a plugin that doesn't exist."""
         result = uninstall_plugin("nonexistent", installed_dir=installed_dir)
         assert result is False
+
+    def test_uninstall_untracked_plugin_does_not_delete(
+        self, sample_plugin_dir: Path, installed_dir: Path
+    ):
+        """Test that uninstall refuses to delete untracked plugin directories."""
+        import shutil
+
+        dest = installed_dir / "untracked-plugin"
+        shutil.copytree(sample_plugin_dir, dest)
+
+        manifest_path = dest / ".plugin" / "plugin.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["name"] = "untracked-plugin"
+        manifest_path.write_text(json.dumps(manifest))
+
+        result = uninstall_plugin("untracked-plugin", installed_dir=installed_dir)
+
+        assert result is False
+        assert dest.exists()
+
+    def test_uninstall_invalid_name_raises_error(self, installed_dir: Path):
+        """Test that invalid plugin names are rejected."""
+        with pytest.raises(ValueError, match="Invalid plugin name"):
+            uninstall_plugin("../evil", installed_dir=installed_dir)
 
 
 class TestListInstalledPlugins:
