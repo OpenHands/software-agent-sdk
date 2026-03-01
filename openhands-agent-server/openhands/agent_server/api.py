@@ -24,6 +24,7 @@ from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
+from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.middleware import LocalhostCORSMiddleware
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -196,6 +197,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
     api_router.include_router(hooks_router)
+    api_router.include_router(llm_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 
@@ -342,6 +344,8 @@ def create_app(config: Config | None = None) -> FastAPI:
     if config is None:
         config = get_default_config()
     app = _create_fastapi_instance()
+    app.state.config = config
+
     _add_api_routes(app, config)
     _setup_static_files(app, config)
     app.add_middleware(LocalhostCORSMiddleware, allow_origins=config.allow_cors_origins)

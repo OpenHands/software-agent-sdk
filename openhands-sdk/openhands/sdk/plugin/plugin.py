@@ -18,11 +18,11 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
-    AgentDefinition,
     CommandDefinition,
     PluginAuthor,
     PluginManifest,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 
 
 if TYPE_CHECKING:

@@ -19,7 +19,7 @@ from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
 
 
-agent = ACPAgent(acp_command=["npx", "-y", "@zed-industries/claude-agent-acp"])
+agent = ACPAgent(acp_command=["npx", "-y", "@zed-industries/claude-code-acp"])
 
 try:
     cwd = os.getcwd()

@@ -140,6 +140,13 @@ class Config(BaseModel):
         le=65535,
         description="Port on which VSCode server should run",
     )
+    vscode_base_path: str | None = Field(
+        default=None,
+        description=(
+            "Base path for VSCode server (used in path-based routing). "
+            "For example, '/{runtime_id}/vscode' when using path-based routing."
+        ),
+    )
     enable_vnc: bool = Field(
         default=False,
         description="Whether to enable VNC desktop functionality",

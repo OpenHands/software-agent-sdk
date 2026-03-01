@@ -78,8 +78,8 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
             List containing a single delegate tool definition
         """
         # Import here to avoid circular imports
+        from openhands.sdk.subagent import get_factory_info
         from openhands.tools.delegate.impl import DelegateExecutor
-        from openhands.tools.delegate.registration import get_factory_info
 
         # Get agent info
         agent_types_info = get_factory_info()
