@@ -200,7 +200,9 @@ def validate_git_repository(repo_dir: str | Path) -> Path:
     Raises:
         GitRepositoryError: If not a valid git repository
     """
+    logger.info(f"Validating git repository at: {repo_dir}")
     repo_path = Path(repo_dir).resolve()
+    logger.info(f"Resolved repository path: {repo_path}")
 
     if not repo_path.exists():
         raise GitRepositoryError(f"Directory does not exist: {repo_path}")

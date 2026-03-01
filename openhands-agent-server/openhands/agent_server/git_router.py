@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 async def git_changes(
     path: Path,
 ) -> list[GitChange]:
+    logger.info(f"Received request for git changes in path: {path}")
     update_last_execution_time()
     loop = asyncio.get_running_loop()
     changes = await loop.run_in_executor(None, get_git_changes, path)
@@ -30,6 +31,7 @@ async def git_changes(
 async def git_diff(
     path: Path,
 ) -> GitDiff:
+    logger.info(f"Received request for git diff in path: {path}")
     update_last_execution_time()
     loop = asyncio.get_running_loop()
     changes = await loop.run_in_executor(None, get_git_diff, path)
