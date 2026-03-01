@@ -28,6 +28,13 @@ class DockerDevWorkspace(DockerWorkspace):
             result = workspace.execute_command("ls -la")
     """
 
+    # Override parent's server_image default to None so that callers
+    # providing base_image don't need to explicitly pass server_image=None.
+    server_image: str | None = Field(
+        default=None,
+        description="Pre-built agent server image. Mutually exclusive with base_image.",
+    )
+
     # Add base_image support
     base_image: str | None = Field(
         default=None,

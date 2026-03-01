@@ -1,7 +1,5 @@
 """Tests for openhands.tools package initialization and import handling."""
 
-import pytest
-
 
 def test_submodule_imports_work():
     """Tools should be imported via explicit submodules."""
@@ -16,17 +14,26 @@ def test_submodule_imports_work():
     assert BrowserToolSet is not None
 
 
-def test_tools_module_has_no_direct_exports():
-    """Accessing tools via openhands.tools should fail."""
+def test_tools_module_has_expected_top_level_exports():
+    """Common tools/presets should be importable from the top-level package.
+
+    Note: BrowserToolSet is intentionally NOT exported at the top level to avoid
+    forcing downstream consumers to bundle browser-use and its heavy dependencies.
+    See: https://github.com/OpenHands/OpenHands-CLI/pull/527
+    """
+
     import openhands.tools
 
-    assert not hasattr(openhands.tools, "TerminalTool")
-    with pytest.raises(AttributeError):
-        _ = openhands.tools.TerminalTool  # type: ignore[attr-defined]
+    assert openhands.tools.TerminalTool is not None
+    assert openhands.tools.FileEditorTool is not None
+    assert openhands.tools.TaskTrackerTool is not None
+
+    assert openhands.tools.get_default_agent is not None
+    assert openhands.tools.get_default_tools is not None
+    assert openhands.tools.register_default_tools is not None
 
 
-def test_from_import_raises_import_error():
-    """`from openhands.tools import X` should fail fast."""
+def test_from_import_works():
+    """`from openhands.tools import X` should work for exported symbols."""
 
-    with pytest.raises(ImportError):
-        from openhand.tools import TerminalTool  # type: ignore[import] # noqa: F401
+    from openhands.tools import TerminalTool  # noqa: F401

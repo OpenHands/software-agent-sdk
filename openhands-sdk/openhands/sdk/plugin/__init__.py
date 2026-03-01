@@ -28,7 +28,6 @@ from openhands.sdk.plugin.installed import (
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import (
-    AgentDefinition,
     CommandDefinition,
     Marketplace,
     MarketplaceMetadata,
@@ -50,7 +49,6 @@ __all__ = [
     "PluginAuthor",
     "PluginSource",
     "ResolvedPluginSource",
-    "AgentDefinition",
     "CommandDefinition",
     # Plugin loading
     "load_plugins",

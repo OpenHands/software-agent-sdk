@@ -1,4 +1,5 @@
 import io
+import json
 import re
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
@@ -633,16 +634,23 @@ def load_skills_from_dir(
     regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
+    # Wrap each load in try/except to ensure one bad skill doesn't break all loading
     for skill_md_path in skill_md_files:
-        load_and_categorize(
-            skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
+        try:
+            load_and_categorize(
+                skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
+            )
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
 
     # Load regular .md files
     for path in regular_md_files:
-        load_and_categorize(
-            path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
+        try:
+            load_and_categorize(
+                path, skill_dir, repo_skills, knowledge_skills, agent_skills
+            )
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load skill from {path}: {e}")
 
     total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)
     logger.debug(
@@ -656,6 +664,7 @@ def load_skills_from_dir(
 
 # Default user skills directories (in order of priority)
 USER_SKILLS_DIRS = [
+    Path.home() / ".agents" / "skills",
     Path.home() / ".openhands" / "skills",
     Path.home() / ".openhands" / "microagents",  # Legacy support
 ]
@@ -664,9 +673,10 @@ USER_SKILLS_DIRS = [
 def load_user_skills() -> list[Skill]:
     """Load skills from user's home directory.
 
-    Searches for skills in ~/.openhands/skills/ and ~/.openhands/microagents/
-    (legacy). Skills from both directories are merged, with skills/ taking
-    precedence for duplicate names.
+    Searches for skills in ~/.agents/skills/, ~/.openhands/skills/, and
+    ~/.openhands/microagents/ (legacy). Skills from all directories are merged,
+    with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
+    names.
 
     Returns:
         List of Skill objects loaded from user directories.
@@ -706,22 +716,57 @@ def load_user_skills() -> list[Skill]:
     return all_skills
 
 
+def _find_git_repo_root(path: Path) -> Path | None:
+    """Find the nearest ancestor directory that looks like a Git repository root.
+
+    We intentionally don't shell out to `git`, so this works even when git isn't
+    installed. A directory is considered a git root if it contains a `.git`
+    entry (directory *or* file, to support worktrees/submodules).
+    """
+
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _merge_loaded_skills(
+    *,
+    source_dir: Path,
+    loaded_skills: list[dict[str, Skill]],
+    seen_names: set[str],
+    all_skills: list[Skill],
+) -> None:
+    for skills_dict in loaded_skills:
+        for name, skill in skills_dict.items():
+            if name not in seen_names:
+                all_skills.append(skill)
+                seen_names.add(name)
+            else:
+                logger.warning(f"Skipping duplicate skill '{name}' from {source_dir}")
+
+
 def load_project_skills(work_dir: str | Path) -> list[Skill]:
     """Load skills from project-specific directories.
 
-    Searches for skills in {work_dir}/.agents/skills/,
-    {work_dir}/.openhands/skills/, and {work_dir}/.openhands/microagents/
-    (legacy). Skills are merged in priority order, with earlier directories
-    taking precedence for duplicate names.
+    Searches for skills in {work_dir}/.agents/skills/, {work_dir}/.openhands/skills/,
+    and {work_dir}/.openhands/microagents/ (legacy).
 
-    Use .agents/skills for new skills. .openhands/skills is the legacy
-    OpenHands location, and .openhands/microagents is deprecated.
+    If the working directory is inside a Git repository, this function also loads
+    skills from the Git repo root, so running from a subdirectory still picks up
+    repo-level guidance (e.g., AGENTS.md).
 
-    Example: If "my-skill" exists in both .agents/skills/ and
-    .openhands/skills/, the version from .agents/skills/ is used.
+    Skills are merged in priority order, with the *working directory* taking
+    precedence over the Git repo root when duplicates exist.
 
-    Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
-    directly from the work directory.
+    Use .agents/skills for new skills. .openhands/skills is the legacy OpenHands
+    location, and .openhands/microagents is deprecated.
+
+    Example: If "my-skill" exists in both .agents/skills/ and .openhands/skills/,
+    the version from .agents/skills/ is used.
+
+    Also loads third-party skill files (AGENTS.md, .cursorrules, etc.) from the
+    working directory and (if different) the git repo root.
 
     Args:
         work_dir: Path to the project/working directory.
@@ -736,58 +781,63 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
     all_skills = []
     seen_names: set[str] = set()
 
-    # First, load third-party skill files directly from work directory
-    # This ensures they are loaded even if .openhands/skills doesn't exist
-    third_party_files = find_third_party_files(
-        work_dir, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
-    )
-    for path in third_party_files:
-        try:
-            skill = Skill.load(path)
-            if skill.name not in seen_names:
-                all_skills.append(skill)
-                seen_names.add(skill.name)
-                logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-        except (SkillError, OSError) as e:
-            logger.warning(f"Failed to load third-party skill from {path}: {e}")
+    git_root = _find_git_repo_root(work_dir)
+
+    # Working dir takes precedence (more local rules override repo root rules)
+    search_roots: list[Path] = [work_dir]
+    if git_root is not None and git_root != work_dir:
+        search_roots.append(git_root)
+
+    # First, load third-party skill files (AGENTS.md, .cursorrules, etc.) from each
+    # search root. This ensures they are loaded even if .openhands/skills doesn't
+    # exist.
+    for root in search_roots:
+        third_party_files = find_third_party_files(
+            root, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+        )
+        for path in third_party_files:
+            try:
+                skill = Skill.load(path)
+                if skill.name not in seen_names:
+                    all_skills.append(skill)
+                    seen_names.add(skill.name)
+                    logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
+            except (SkillError, OSError) as e:
+                logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load project-specific skills from .agents/skills, .openhands/skills,
     # and legacy microagents (priority order; first wins for duplicates)
-    project_skills_dirs = [
-        work_dir / ".agents" / "skills",
-        work_dir / ".openhands" / "skills",
-        work_dir / ".openhands" / "microagents",  # Legacy support
-    ]
+    for root in search_roots:
+        project_skills_dirs = [
+            root / ".agents" / "skills",
+            root / ".openhands" / "skills",
+            root / ".openhands" / "microagents",  # Legacy support
+        ]
 
-    for project_skills_dir in project_skills_dirs:
-        if not project_skills_dir.exists():
-            logger.debug(
-                f"Project skills directory does not exist: {project_skills_dir}"
-            )
-            continue
+        for project_skills_dir in project_skills_dirs:
+            if not project_skills_dir.exists():
+                logger.debug(
+                    f"Project skills directory does not exist: {project_skills_dir}"
+                )
+                continue
 
-        try:
-            logger.debug(f"Loading project skills from {project_skills_dir}")
-            repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
-                project_skills_dir
-            )
+            try:
+                logger.debug(f"Loading project skills from {project_skills_dir}")
+                repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
+                    project_skills_dir
+                )
 
-            # Merge all skill categories (skip duplicates including third-party)
-            for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
-                for name, skill in skills_dict.items():
-                    if name not in seen_names:
-                        all_skills.append(skill)
-                        seen_names.add(name)
-                    else:
-                        logger.warning(
-                            f"Skipping duplicate skill '{name}' from "
-                            f"{project_skills_dir}"
-                        )
+                _merge_loaded_skills(
+                    source_dir=project_skills_dir,
+                    loaded_skills=[repo_skills, knowledge_skills, agent_skills],
+                    seen_names=seen_names,
+                    all_skills=all_skills,
+                )
 
-        except Exception as e:
-            logger.warning(
-                f"Failed to load project skills from {project_skills_dir}: {str(e)}"
-            )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load project skills from {project_skills_dir}: {str(e)}"
+                )
 
     logger.debug(
         f"Loaded {len(all_skills)} project skills: {[s.name for s in all_skills]}"
@@ -796,8 +846,57 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
 
 # Public skills repository configuration
-PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
+PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 PUBLIC_SKILLS_BRANCH = "main"
+DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
+
+
+def load_marketplace_skill_names(
+    repo_path: Path, marketplace_path: str
+) -> set[str] | None:
+    """Load the list of skill names from a marketplace manifest file.
+
+    Uses the existing Marketplace model from openhands.sdk.plugin to parse
+    the marketplace JSON file and extract plugin names.
+
+    Args:
+        repo_path: Path to the local repository.
+        marketplace_path: Relative path to the marketplace JSON file within the repo.
+
+    Returns:
+        Set of skill names to load, or None if marketplace file not found or invalid.
+    """
+    from openhands.sdk.plugin import Marketplace
+
+    marketplace_file = repo_path / marketplace_path
+    if not marketplace_file.exists():
+        logger.debug(f"Marketplace file not found: {marketplace_file}")
+        return None
+
+    try:
+        with open(marketplace_file) as f:
+            data = json.load(f)
+
+        # Use Marketplace model for validation and parsing
+        marketplace = Marketplace.model_validate({**data, "path": str(repo_path)})
+
+        skill_names = {plugin.name for plugin in marketplace.plugins}
+
+        logger.debug(
+            f"Loaded {len(skill_names)} skill names from marketplace: "
+            f"{marketplace_path}"
+        )
+        return skill_names
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse marketplace JSON {marketplace_file}: {e}")
+        return None
+    except OSError as e:
+        logger.warning(f"Failed to read marketplace file {marketplace_file}: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to load marketplace {marketplace_file}: {e}")
+        return None
 
 
 def load_public_skills(
@@ -807,10 +906,14 @@ def load_public_skills(
     """Load skills from the public OpenHands skills repository.
 
     This function maintains a local git clone of the public skills registry at
-    https://github.com/OpenHands/skills. On first run, it clones the repository
+    https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
+
+    Only skills listed in the default marketplace (marketplaces/default.json) are
+    loaded. This allows the OpenHands extensions repository to contain additional
+    skills that are not included by default.
 
     Note: When a skill directory contains a SKILL.md file (AgentSkills format),
     any other markdown files in that directory or its subdirectories are treated
@@ -852,15 +955,39 @@ def load_public_skills(
             logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        # Find SKILL.md directories (AgentSkills format) and regular .md files
-        # This ensures that markdown files in SKILL.md directories are NOT loaded
-        # as separate skills - they are reference materials for the parent skill.
-        skill_md_files = find_skill_md_directories(skills_dir)
-        skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
-        regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
+        # Load the default marketplace to determine which skills to include
+        marketplace_skill_names = load_marketplace_skill_names(
+            repo_path, DEFAULT_MARKETPLACE_PATH
+        )
 
-        # Combine all skill files to load
-        all_skill_files = list(skill_md_files) + list(regular_md_files)
+        # Determine which skill files to load
+        if marketplace_skill_names is not None:
+            # Marketplace exists: only load skills listed in marketplace
+            all_skill_files: list[Path] = []
+            for skill_name in marketplace_skill_names:
+                # Check for AgentSkills format (directory with SKILL.md)
+                skill_md = skills_dir / skill_name / "SKILL.md"
+                if skill_md.exists():
+                    all_skill_files.append(skill_md)
+                    continue
+                # Check for legacy format (skill_name.md file)
+                legacy_md = skills_dir / f"{skill_name}.md"
+                if legacy_md.exists():
+                    all_skill_files.append(legacy_md)
+                    continue
+                logger.debug(
+                    f"Skill '{skill_name}' from marketplace not found in skills dir"
+                )
+        else:
+            # No marketplace: load all skills (backward compatible)
+            # Find SKILL.md directories (AgentSkills format) and regular .md files
+            # This ensures that markdown files in SKILL.md directories are NOT
+            # loaded as separate skills - they are reference materials.
+            skill_md_files = find_skill_md_directories(skills_dir)
+            skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
+            regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
+            all_skill_files = list(skill_md_files) + list(regular_md_files)
+
         logger.info(
             f"Found {len(all_skill_files)} skill files in public skills repository"
         )

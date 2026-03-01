@@ -41,6 +41,17 @@ def test_vscode_service_initialization(tmp_path):
 
     assert service.port == 8002
     assert service.connection_token is None
+    assert service.server_base_path is None
+    assert service.process is None
+
+
+def test_vscode_service_initialization_with_server_base_path():
+    """Test VSCode service initialization with server_base_path."""
+    service = VSCodeService(port=8002, server_base_path="/test/vscode")
+
+    assert service.port == 8002
+    assert service.server_base_path == "/test/vscode"
+    assert service.connection_token is None
     assert service.process is None
 
 
@@ -233,6 +244,50 @@ async def test_start_vscode_process(vscode_service, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_vscode_process_with_server_base_path():
+    """Test starting VSCode process with server_base_path includes the arg."""
+    service = VSCodeService(
+        port=8001, connection_token="test-token", server_base_path="/runtime/vscode"
+    )
+
+    mock_process = AsyncMock()
+    mock_process.stdout = AsyncMock()
+
+    with (
+        patch(
+            "asyncio.create_subprocess_shell", return_value=mock_process
+        ) as mock_create,
+        patch.object(service, "_wait_for_startup"),
+    ):
+        await service._start_vscode_process()
+
+        # Verify the command includes --server-base-path
+        cmd = mock_create.call_args[0][0]
+        assert "--server-base-path /runtime/vscode" in cmd
+
+
+@pytest.mark.asyncio
+async def test_start_vscode_process_without_server_base_path():
+    """Test starting VSCode process without server_base_path excludes the arg."""
+    service = VSCodeService(port=8001, connection_token="test-token")
+
+    mock_process = AsyncMock()
+    mock_process.stdout = AsyncMock()
+
+    with (
+        patch(
+            "asyncio.create_subprocess_shell", return_value=mock_process
+        ) as mock_create,
+        patch.object(service, "_wait_for_startup"),
+    ):
+        await service._start_vscode_process()
+
+        # Verify the command does not include --server-base-path
+        cmd = mock_create.call_args[0][0]
+        assert "--server-base-path" not in cmd
+
+
+@pytest.mark.asyncio
 async def test_wait_for_startup_success(vscode_service):
     """Test waiting for VSCode startup with success message."""
     mock_stdout = AsyncMock()
@@ -282,6 +337,8 @@ def test_get_vscode_service_enabled(tmp_path):
     ):
         mock_config.return_value.enable_vscode = True
         mock_config.return_value.vscode_port = 8001
+        mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.session_api_keys = []
 
         service = get_vscode_service()
 
@@ -309,6 +366,8 @@ def test_get_vscode_service_singleton():
     ):
         mock_config.return_value.enable_vscode = True
         mock_config.return_value.vscode_port = 8001
+        mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.session_api_keys = []
 
         service1 = get_vscode_service()
         service2 = get_vscode_service()
@@ -325,11 +384,30 @@ def test_get_vscode_service_with_custom_port():
     ):
         mock_config.return_value.enable_vscode = True
         mock_config.return_value.vscode_port = 9001
+        mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.session_api_keys = []
 
         service = get_vscode_service()
 
         assert isinstance(service, VSCodeService)
         assert service.port == 9001
+
+
+def test_get_vscode_service_with_base_path():
+    """Test get_vscode_service passes vscode_base_path from config."""
+    with (
+        patch("openhands.agent_server.config.get_default_config") as mock_config,
+        patch("openhands.agent_server.vscode_service._vscode_service", None),
+    ):
+        mock_config.return_value.enable_vscode = True
+        mock_config.return_value.vscode_port = 8001
+        mock_config.return_value.vscode_base_path = "/runtime-123/vscode"
+        mock_config.return_value.session_api_keys = []
+
+        service = get_vscode_service()
+
+        assert isinstance(service, VSCodeService)
+        assert service.server_base_path == "/runtime-123/vscode"
 
 
 def test_vscode_service_with_different_ports():
@@ -355,3 +433,19 @@ def test_vscode_port_configuration():
     with patch.dict(os.environ, {"OH_VSCODE_PORT": "9999"}):
         config = from_env(Config, "OH")
         assert config.vscode_port == 9999
+
+
+def test_vscode_base_path_configuration():
+    """Test that vscode_base_path configuration is properly used."""
+    import os
+
+    from openhands.agent_server.config import Config, from_env
+
+    # Test default value is None
+    config = Config()
+    assert config.vscode_base_path is None
+
+    # Test environment variable override
+    with patch.dict(os.environ, {"OH_VSCODE_BASE_PATH": "/runtime-abc/vscode"}):
+        config = from_env(Config, "OH")
+        assert config.vscode_base_path == "/runtime-abc/vscode"

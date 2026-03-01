@@ -169,8 +169,12 @@ Testing loading with trailing slashes.
     assert "trailing" in agent_t.trigger.keywords
 
 
-def test_invalid_skill_type(temp_skills_dir):
-    """Test loading a skill with invalid triggers field (not a list)."""
+def test_invalid_skill_type(temp_skills_dir, caplog):
+    """Test loading a skill with invalid triggers field (not a list).
+
+    Invalid skills should be skipped with a warning, not raise an exception.
+    This ensures resilient loading - one bad skill doesn't break all skills.
+    """
     # Create a skill with invalid triggers (should be a list, not a string)
     invalid_agent = """---
 name: invalid_triggers_agent
@@ -186,12 +190,19 @@ This skill has invalid triggers format.
     invalid_file = temp_skills_dir / "invalid_triggers.md"
     invalid_file.write_text(invalid_agent)
 
-    with pytest.raises(SkillValidationError) as excinfo:
-        load_skills_from_dir(temp_skills_dir)
+    # Should not raise - invalid skills are skipped with a warning
+    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(temp_skills_dir)
 
-    # Check that the error message contains helpful information
-    error_msg = str(excinfo.value)
-    assert "Triggers must be a list" in error_msg
+    # The invalid skill should NOT be loaded
+    all_skill_names = (
+        list(repo_skills.keys())
+        + list(knowledge_skills.keys())
+        + list(agent_skills.keys())
+    )
+    assert "invalid_triggers_agent" not in all_skill_names
+
+    # Check that a warning was logged
+    assert any("Triggers must be a list" in record.message for record in caplog.records)
 
 
 def test_cursorrules_file_load(tmp_path):

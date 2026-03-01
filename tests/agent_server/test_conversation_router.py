@@ -1047,7 +1047,6 @@ def test_generate_conversation_title_success(
 ):
     """Test generate_conversation_title endpoint with successful generation."""
 
-    # Mock the service response
     mock_conversation_service.generate_conversation_title.return_value = (
         "Generated Title"
     )
@@ -1068,12 +1067,11 @@ def test_generate_conversation_title_success(
         data = response.json()
         assert data["title"] == "Generated Title"
 
-        # Verify service was called with correct parameters
         mock_conversation_service.generate_conversation_title.assert_called_once()
         call_args = mock_conversation_service.generate_conversation_title.call_args
         assert call_args[0][0] == sample_conversation_id
-        assert call_args[0][1] == 30  # max_length
-        assert call_args[0][2] is None  # llm (default)
+        assert call_args[0][1] == 30
+        assert call_args[0][2] is None
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1083,7 +1081,6 @@ def test_generate_conversation_title_with_llm(
 ):
     """Test generate_conversation_title endpoint with custom LLM."""
 
-    # Mock the service response
     mock_conversation_service.generate_conversation_title.return_value = (
         "Custom LLM Title"
     )
@@ -1111,12 +1108,11 @@ def test_generate_conversation_title_with_llm(
         data = response.json()
         assert data["title"] == "Custom LLM Title"
 
-        # Verify service was called
         mock_conversation_service.generate_conversation_title.assert_called_once()
         call_args = mock_conversation_service.generate_conversation_title.call_args
         assert call_args[0][0] == sample_conversation_id
-        assert call_args[0][1] == 40  # max_length
-        assert call_args[0][2] is not None  # llm provided
+        assert call_args[0][1] == 40
+        assert call_args[0][2] is not None
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1126,7 +1122,6 @@ def test_generate_conversation_title_failure(
 ):
     """Test generate_conversation_title endpoint with generation failure."""
 
-    # Mock the service response - generation failed
     mock_conversation_service.generate_conversation_title.return_value = None
 
     client.app.dependency_overrides[get_conversation_service] = (
@@ -1141,9 +1136,7 @@ def test_generate_conversation_title_failure(
             json=request_data,
         )
 
-        assert response.status_code == 500  # Internal Server Error
-
-        # Verify service was called
+        assert response.status_code == 500
         mock_conversation_service.generate_conversation_title.assert_called_once()
     finally:
         client.app.dependency_overrides.clear()
@@ -1159,23 +1152,34 @@ def test_generate_conversation_title_invalid_params(
     )
 
     try:
-        # Test with max_length too low
         request_data = {"max_length": 0}
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/generate_title",
             json=request_data,
         )
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 422
 
-        # Test with max_length too high
         request_data = {"max_length": 201}
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/generate_title",
             json=request_data,
         )
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 422
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_generate_title_endpoint_is_deprecated_in_openapi(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    openapi_schema = response.json()
+    operation = openapi_schema["paths"][
+        "/api/conversations/{conversation_id}/generate_title"
+    ]["post"]
+
+    assert operation.get("deprecated") is True
+    assert "scheduled for removal" in operation["description"]
 
 
 def test_start_conversation_with_tool_module_qualnames(
@@ -1280,6 +1284,75 @@ def test_start_conversation_without_tool_module_qualnames(
         assert hasattr(request_arg, "tool_module_qualnames")
         # Should default to empty dict
         assert request_arg.tool_module_qualnames == {}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_autotitle_defaults_to_true(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """autotitle defaults to True when not supplied in the request."""
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert request_arg.autotitle is True
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_autotitle_false(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """autotitle=False is forwarded correctly to the service."""
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "autotitle": False,
+        }
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert request_arg.autotitle is False
     finally:
         client.app.dependency_overrides.clear()
 
