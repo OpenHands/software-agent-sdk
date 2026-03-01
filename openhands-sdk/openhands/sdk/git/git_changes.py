@@ -196,10 +196,12 @@ def get_changes_in_repo(repo_dir: str | Path) -> list[GitChange]:
 
 
 def get_git_changes(cwd: str | Path) -> list[GitChange]:
+    logger.info(f"get_git_changes: Looking in directory {cwd}")
     git_dirs = {
         os.path.dirname(f)[2:]
         for f in glob.glob("./*/.git", root_dir=cwd, recursive=True)
     }
+    logger.info(f"get_git_changes: Found git directories: {git_dirs} in {cwd}")
 
     # First try the workspace directory
     changes = get_changes_in_repo(cwd)
