@@ -7,7 +7,7 @@ It also provides support for plugin marketplaces - directories that list
 available plugins with their metadata and source locations.
 
 Additionally, it provides utilities for managing installed plugins in the
-user's home directory (~/.openhands/skills/installed/).
+user's home directory (~/.openhands/plugins/installed/).
 """
 
 from openhands.sdk.plugin.fetch import (

@@ -136,10 +136,10 @@ class TestGetInstalledPluginsDir:
     """Tests for get_installed_plugins_dir function."""
 
     def test_returns_default_path(self):
-        """Test that default path is under ~/.openhands/skills/installed/."""
+        """Test that default path is under ~/.openhands/plugins/installed/."""
         path = get_installed_plugins_dir()
         assert ".openhands" in str(path)
-        assert "skills" in str(path)
+        assert "plugins" in str(path)
         assert "installed" in str(path)
 
 

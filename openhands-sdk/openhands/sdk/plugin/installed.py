@@ -1,7 +1,7 @@
 """Installed plugins management for OpenHands SDK.
 
 This module provides utilities for managing plugins installed in the user's
-home directory (~/.openhands/skills/installed/). It supports:
+home directory (~/.openhands/plugins/installed/). It supports:
 
 - Installing plugins from GitHub repositories, git URLs, or local paths
 - Listing installed plugins with their metadata
@@ -9,7 +9,7 @@ home directory (~/.openhands/skills/installed/). It supports:
 - Loading all installed plugins
 
 The installed plugins directory structure follows the Claude Code pattern:
-    ~/.openhands/skills/installed/
+    ~/.openhands/plugins/installed/
     ├── plugin-name-1/
     │   ├── .plugin/
     │   │   └── plugin.json
@@ -62,7 +62,7 @@ from openhands.sdk.plugin.plugin import Plugin
 logger = get_logger(__name__)
 
 # Default directory for installed plugins
-DEFAULT_INSTALLED_PLUGINS_DIR = Path.home() / ".openhands" / "skills" / "installed"
+DEFAULT_INSTALLED_PLUGINS_DIR = Path.home() / ".openhands" / "plugins" / "installed"
 
 # Metadata file for tracking installed plugins
 INSTALLED_METADATA_FILE = ".installed.json"
@@ -161,7 +161,7 @@ def get_installed_plugins_dir() -> Path:
     """Get the directory for installed plugins.
 
     Returns:
-        Path to ~/.openhands/skills/installed/
+        Path to ~/.openhands/plugins/installed/
     """
     return DEFAULT_INSTALLED_PLUGINS_DIR
 
@@ -205,7 +205,7 @@ def install_plugin(
         ref: Optional branch, tag, or commit to install.
         repo_path: Subdirectory path within the repository (for monorepos).
         installed_dir: Directory for installed plugins.
-            Defaults to ~/.openhands/skills/installed/
+            Defaults to ~/.openhands/plugins/installed/
         force: If True, overwrite existing installation. If False, raise error
             if plugin is already installed.
 
@@ -286,7 +286,7 @@ def uninstall_plugin(
     Args:
         name: Name of the plugin to uninstall.
         installed_dir: Directory for installed plugins.
-            Defaults to ~/.openhands/skills/installed/
+            Defaults to ~/.openhands/plugins/installed/
 
     Returns:
         True if the plugin was uninstalled, False if it wasn't installed.
@@ -334,7 +334,7 @@ def list_installed_plugins(
 
     Args:
         installed_dir: Directory for installed plugins.
-            Defaults to ~/.openhands/skills/installed/
+            Defaults to ~/.openhands/plugins/installed/
 
     Returns:
         List of InstalledPluginInfo for each installed plugin.
@@ -427,7 +427,7 @@ def load_installed_plugins(
 
     Args:
         installed_dir: Directory for installed plugins.
-            Defaults to ~/.openhands/skills/installed/
+            Defaults to ~/.openhands/plugins/installed/
 
     Returns:
         List of loaded Plugin objects.
@@ -455,7 +455,7 @@ def get_installed_plugin(
     Args:
         name: Name of the plugin to look up.
         installed_dir: Directory for installed plugins.
-            Defaults to ~/.openhands/skills/installed/
+            Defaults to ~/.openhands/plugins/installed/
 
     Returns:
         InstalledPluginInfo if the plugin is installed, None otherwise.
@@ -496,7 +496,7 @@ def update_plugin(
     Args:
         name: Name of the plugin to update.
         installed_dir: Directory for installed plugins.
-            Defaults to ~/.openhands/skills/installed/
+            Defaults to ~/.openhands/plugins/installed/
 
     Returns:
         Updated InstalledPluginInfo if successful, None if plugin not installed.
