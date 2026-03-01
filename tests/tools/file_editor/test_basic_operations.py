@@ -158,14 +158,6 @@ def test_successful_operations(temp_file):
     assert result.text is not None and "has been edited" in result.text
     assert result.text is not None and "inserted line" in result.text
 
-    # Test undo
-    result = file_editor(
-        command="undo_edit",
-        path=str(temp_file),
-    )
-    assert_successful_result(result)
-    assert result.text is not None and "undone successfully" in result.text
-
 
 def test_tab_expansion(temp_file):
     """Test that tabs are properly handled in file operations."""
@@ -580,51 +572,6 @@ def test_insert_with_none_new_str(editor):
     assert "new_str" in str(exc_info.value.message)
 
 
-def test_undo_edit(editor):
-    editor, test_file = editor
-    # Make an edit to be undone
-    result = editor(
-        command="str_replace",
-        path=str(test_file),
-        old_str="test file",
-        new_str="sample file",
-    )
-    # Undo the edit
-    result = editor(command="undo_edit", path=str(test_file))
-    assert isinstance(result, FileEditorObservation)
-    assert "Last edit to" in result.text
-    assert "test file" in test_file.read_text()  # Original content restored
-
-
-def test_multiple_undo_edits(editor):
-    editor, test_file = editor
-    # Make an edit to be undone
-    _ = editor(
-        command="str_replace",
-        path=str(test_file),
-        old_str="test file",
-        new_str="sample file v1",
-    )
-    # Make another edit to be undone
-    _ = editor(
-        command="str_replace",
-        path=str(test_file),
-        old_str="sample file v1",
-        new_str="sample file v2",
-    )
-    # Undo the last edit
-    result = editor(command="undo_edit", path=str(test_file))
-    assert isinstance(result, FileEditorObservation)
-    assert "Last edit to" in result.text
-    assert "sample file v1" in test_file.read_text()  # Previous content restored
-
-    # Undo the first edit
-    result = editor(command="undo_edit", path=str(test_file))
-    assert isinstance(result, FileEditorObservation)
-    assert "Last edit to" in result.text
-    assert "test file" in test_file.read_text()  # Original content restored
-
-
 def test_validate_path_invalid(editor):
     editor, test_file = editor
     invalid_file = test_file.parent / "nonexistent.txt"
@@ -663,14 +610,6 @@ def test_insert_missing_line_param(editor):
     editor, test_file = editor
     with pytest.raises(EditorToolParameterMissingError):
         editor(command="insert", path=str(test_file), new_str="Missing insert line")
-
-
-def test_undo_edit_no_history_error(editor):
-    editor, test_file = editor
-    empty_file = test_file.parent / "empty.txt"
-    empty_file.write_text("")
-    with pytest.raises(ToolError):
-        editor(command="undo_edit", path=str(empty_file))
 
 
 def test_view_directory_with_hidden_files(tmp_path):

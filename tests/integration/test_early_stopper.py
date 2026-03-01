@@ -91,9 +91,9 @@ class TestFileEditPruner:
 
     def test_custom_forbidden_commands(self):
         """Custom forbidden commands should be respected."""
-        # Note: 'undo_edit' is a valid FileEditorAction command
-        pruner = FileEditPruner(forbidden_commands=["undo_edit"])
-        event = create_file_editor_event(command="undo_edit", path="/test.py")
+        # Use 'view' which is NOT in the default forbidden list
+        pruner = FileEditPruner(forbidden_commands=["view"])
+        event = create_file_editor_event(command="view", path="/test.py")
         result = pruner.check(cast(list[Event], [event]))
         assert result.should_stop is True
 

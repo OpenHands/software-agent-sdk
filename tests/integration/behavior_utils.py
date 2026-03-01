@@ -39,7 +39,7 @@ def find_tool_calls(collected_events: list[Event], tool_name: str) -> list[Event
 
 def find_file_editing_operations(collected_events: list[Event]) -> list[Event]:
     """
-    Find all file editing operations (create, str_replace, insert, undo_edit).
+    Find all file editing operations (create, str_replace, insert).
 
     Excludes read-only operations like 'view'.
 
@@ -62,7 +62,6 @@ def find_file_editing_operations(collected_events: list[Event]) -> list[Event]:
                     "create",
                     "str_replace",
                     "insert",
-                    "undo_edit",
                 ]:
                     editing_operations.append(event)
     return editing_operations
