@@ -85,14 +85,17 @@ def refine_prompt(prompt: str) -> str:
 # interface designed in openhands/agenthub/agent/function_calling.py
 
 # Example snippets for each tool
+# Note: security_risk and summary parameters are included in examples to ensure
+# models learn to provide them when using prompt-based function calling.
+# These parameters are always added to tool schemas for security and transparency.
 TOOL_EXAMPLES = {
     "bash": {
         "check_dir": """
 ASSISTANT: Sure! Let me first check the current directory:
 <function=terminal>
-<parameter=command>
-pwd && ls
-</parameter>
+<parameter=command>pwd && ls</parameter>
+<parameter=security_risk>LOW</parameter>
+<parameter=summary>Check current directory and list files</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -103,9 +106,9 @@ openhands@runtime:~/workspace$
 ASSISTANT:
 Let me run the Python file for you:
 <function=terminal>
-<parameter=command>
-python3 app.py > server.log 2>&1 &
-</parameter>
+<parameter=command>python3 app.py > server.log 2>&1 &</parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Start Flask server in background</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -115,9 +118,9 @@ USER: EXECUTION RESULT of [terminal]:
 ASSISTANT:
 Looks like the server was running with PID 121 then crashed. Let me check the server log:
 <function=terminal>
-<parameter=command>
-cat server.log
-</parameter>
+<parameter=command>cat server.log</parameter>
+<parameter=security_risk>LOW</parameter>
+<parameter=summary>Read server log to diagnose crash</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -129,9 +132,9 @@ ModuleNotFoundError: No module named 'flask'
 ASSISTANT:
 Looks like the server crashed because the `flask` module is not installed. Let me install the `flask` module for you:
 <function=terminal>
-<parameter=command>
-pip3 install flask
-</parameter>
+<parameter=command>pip3 install flask</parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Install flask package via pip</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -154,9 +157,9 @@ Successfully installed Werkzeug-3.0.2 blinker-1.7.0 click-8.1.7 flask-3.0.3 itsd
 ASSISTANT:
 The `flask` module is installed successfully. Let me run the Python file again:
 <function=terminal>
-<parameter=command>
-python3 app.py > server.log 2>&1 &
-</parameter>
+<parameter=command>python3 app.py > server.log 2>&1 &</parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Restart Flask server after installing dependencies</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -165,9 +168,9 @@ USER: EXECUTION RESULT of [terminal]:
 ASSISTANT:
 Let me check the server log again:
 <function=terminal>
-<parameter=command>
-cat server.log
-</parameter>
+<parameter=command>cat server.log</parameter>
+<parameter=security_risk>LOW</parameter>
+<parameter=summary>Verify server started successfully</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -186,9 +189,9 @@ USER: Now kill the server, make it display the numbers in a table format.
 ASSISTANT:
 Sure! Let me stop the server first:
 <function=terminal>
-<parameter=command>
-kill 124
-</parameter>
+<parameter=command>kill 124</parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Stop the Flask server process</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -198,9 +201,9 @@ USER: EXECUTION RESULT of [terminal]:
 ASSISTANT:
 Running the updated file:
 <function=terminal>
-<parameter=command>
-python3 app.py > server.log 2>&1 &
-</parameter>
+<parameter=command>python3 app.py > server.log 2>&1 &</parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Start updated Flask server</parameter>
 </function>
 
 USER: EXECUTION RESULT of [terminal]:
@@ -229,6 +232,8 @@ def index():
 if __name__ == '__main__':
     app.run(port=5000)
 </parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Create Flask app.py with number list endpoint</parameter>
 </function>
 
 USER: EXECUTION RESULT of [str_replace_editor]:
@@ -242,6 +247,8 @@ Now let me display the numbers in a table format:
 <parameter=path>/workspace/app.py</parameter>
 <parameter=old_str>return str(numbers)</parameter>
 <parameter=new_str>return '<table>' + ''.join([f'<tr><td>{i}</td></tr>' for i in numbers]) + '</table>'</parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Update return statement to render HTML table</parameter>
 </function>
 
 USER: EXECUTION RESULT of [str_replace_editor]:
@@ -267,6 +274,8 @@ Let me check how the page looks in the browser:
 goto('http://127.0.0.1:5000')
 noop(1000)  # Wait for page to load
 </parameter>
+<parameter=security_risk>LOW</parameter>
+<parameter=summary>Navigate to localhost to verify page display</parameter>
 </function>
 
 USER: EXECUTION RESULT of [browser]:
@@ -292,6 +301,8 @@ def index():
 if __name__ == '__main__':
     app.run(port=5000)
 </parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Create Flask app.py with number list endpoint</parameter>
 </function>
 
 USER: EXECUTION RESULT of [edit_file]:
@@ -310,6 +321,8 @@ Now let me display the numbers in a table format:
     # ... existing code ...
 if __name__ == '__main__':
 </parameter>
+<parameter=security_risk>MEDIUM</parameter>
+<parameter=summary>Update index function to render HTML table</parameter>
 </function>
 
 USER: EXECUTION RESULT of [edit_file]:
@@ -331,6 +344,7 @@ ASSISTANT:
 The server is running on port 5000 with PID 126. You can access the list of numbers in a table format by visiting http://127.0.0.1:5000. Let me know if you have any further requests!
 <function=finish>
 <parameter=message>The task has been completed. The web server is running and displaying numbers 1-10 in a table format at http://127.0.0.1:5000.</parameter>
+<parameter=summary>Task complete - Flask server running with table display</parameter>
 </function>
 """  # noqa: E501
     },
@@ -340,6 +354,7 @@ ASSISTANT:
 Let me check the current task list first:
 <function=task_tracker>
 <parameter=command>view</parameter>
+<parameter=summary>View current task list status</parameter>
 </function>
 """,
         "plan": """
@@ -360,6 +375,7 @@ I'll create or update the full plan based on your requirements and current progr
   }
 ]
 </parameter>
+<parameter=summary>Update task plan with current progress</parameter>
 </function>
 """,
     },
