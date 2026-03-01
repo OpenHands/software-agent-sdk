@@ -1,0 +1,37 @@
+# Console log (PR-only)
+
+This file is **temporary** and lives under `.pr/`, so it will be automatically
+cleaned up by workflow on PR approval.
+
+Command used:
+
+```bash
+uv run python .pr/local_plugin_install_test/run_test.py
+```
+
+Output:
+
+```text
+{"asctime": "2026-03-01 23:48:36,173", "levelname": "INFO", "name": "openhands.sdk.plugin.installed", "filename": "installed.py", "lineno": 228, "message": "Fetching plugin from /workspace/project/software-agent-sdk/.pr/local_plugin_install_test/plugin_src/local-plugin"}
+{"asctime": "2026-03-01 23:48:36,174", "levelname": "INFO", "name": "openhands.sdk.plugin.installed", "filename": "installed.py", "lineno": 251, "message": "Removing existing installation of 'local-plugin'"}
+{"asctime": "2026-03-01 23:48:36,174", "levelname": "INFO", "name": "openhands.sdk.plugin.installed", "filename": "installed.py", "lineno": 255, "message": "Installing plugin 'local-plugin' to /workspace/project/software-agent-sdk/.pr/local_plugin_install_test/installed_root/plugins/installed/local-plugin"}
+{"asctime": "2026-03-01 23:48:36,175", "levelname": "INFO", "name": "openhands.sdk.plugin.installed", "filename": "installed.py", "lineno": 273, "message": "Successfully installed plugin 'local-plugin' v1.0.0"}
+{"asctime": "2026-03-01 23:48:36,179", "levelname": "INFO", "name": "openhands.sdk.conversation.state", "filename": "state.py", "lineno": 331, "message": "Resumed conversation 00000000-0000-0000-0000-000000000203 from persistent storage.\nState: {'id': UUID('00000000-0000-0000-0000-000000000203'), 'workspace': {'working_dir': '/workspace/project/software-agent-sdk/.pr/local_plugin_install_test', 'kind': 'LocalWorkspace'}, 'persistence_dir': '/workspace/project/software-agent-sdk/.pr/local_plugin_install_test/persistence/00000000000000000000000000000203', 'max_iterations': 500, 'stuck_detection': True, 'execution_status': <ConversationExecutionStatus.FINISHED: 'finished'>, 'confirmation_policy': {'kind': 'NeverConfirm'}, 'security_analyzer': None, 'activated_knowledge_skills': ['hello'], 'blocked_actions': {}, 'blocked_messages': {}, 'last_user_message_id': 'b2b9c917-be6f-4641-a8e8-128d830f1979', 'stats': {'usage_to_metrics': {}}, 'secret_registry': {'secret_sources': {}}, 'agent_state': {}}\nAgent: {'llm': {'model': 'test-model', 'openrouter_site_url': 'https://docs.all-hands.dev/', 'openrouter_app_name': 'OpenHands', 'num_retries': 5, 'retry_multiplier': 8.0, 'retry_min_wait': 8, 'retry_max_wait': 64, 'timeout': 300, 'max_message_chars': 30000, 'temperature': 0.0, 'top_p': 1.0, 'stream': False, 'drop_params': True, 'modify_params': True, 'disable_stop_word': False, 'caching_prompt': True, 'log_completions': False, 'log_completions_folder': 'logs/completions', 'native_tool_calling': True, 'reasoning_effort': 'high', 'enable_encrypted_reasoning': True, 'prompt_cache_retention': '24h', 'extended_thinking_budget': 200000, 'usage_id': 'test-llm', 'litellm_extra_body': {}}, 'tools': [], 'mcp_config': {}, 'include_default_tools': ['FinishTool', 'ThinkTool'], 'agent_context': {'skills': [{'name': 'hello', 'content': 'Reply with a short greeting.', 'trigger': {'type': 'keyword', 'keywords': ['hello']}, 'source': '/workspace/project/software-agent-sdk/.pr/local_plugin_install_test/installed_root/plugins/installed/local-plugin/skills/hello/SKILL.md', 'inputs': [], 'is_agentskills_format': True, 'description': 'Say hello', 'resources': {'skill_root': '/workspace/project/software-agent-sdk/.pr/local_plugin_install_test/installed_root/plugins/installed/local-plugin/skills/hello', 'scripts': [], 'references': [], 'assets': []}}], 'load_user_skills': False, 'load_public_skills': False, 'current_datetime': datetime.datetime(2026, 3, 1, 23, 48, 36, 177747)}, 'system_prompt_filename': 'system_prompt.j2', 'security_policy_filename': 'security_policy.j2', 'system_prompt_kwargs': {'llm_security_analyzer': True}, 'kind': 'Agent'}"}
+{"asctime": "2026-03-01 23:48:36,179", "levelname": "INFO", "name": "openhands.sdk.subagent.registry", "filename": "registry.py", "lineno": 260, "message": "Registered file-based agent 'default' from /workspace/project/software-agent-sdk/openhands-sdk/openhands/sdk/subagent/builtins/default.md"}
+{"asctime": "2026-03-01 23:48:36,179", "levelname": "INFO", "name": "openhands.sdk.agent.base", "filename": "base.py", "lineno": 341, "message": "Loaded 0 tools from spec: []"}
+Message from User ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+hello
+
+Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
+
+Message from Agent ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Done
+
+Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
+
+Wrote persistence to: /workspace/project/software-agent-sdk/.pr/local_plugin_install_test/persistence/00000000000000000000000000000203
+/workspace/project/software-agent-sdk/.venv/lib/python3.13/site-packages/litellm/llms/custom_httpx/async_client_cleanup.py:66: DeprecationWarning: There is no current event loop
+  loop = asyncio.get_event_loop()
+```
