@@ -1,0 +1,10 @@
+Stop recording the browser session.
+
+This tool stops the current recording session and saves any remaining events to disk.
+
+Output Location: {{ recording_output_dir }}/recording-<timestamp>/
+Format: Events are saved as numbered JSON files (1.json, 2.json, etc.) containing
+rrweb event arrays. These files can be replayed using rrweb-player to visualize
+the recorded session.
+
+Returns a summary message with the total event count, file count, and save directory.

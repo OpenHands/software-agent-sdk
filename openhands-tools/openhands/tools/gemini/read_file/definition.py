@@ -1,11 +1,13 @@
 """Read file tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
 from rich.text import Text
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -17,6 +19,8 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 
 class ReadFileAction(Action):
@@ -87,19 +91,6 @@ class ReadFileObservation(Observation):
         return text
 
 
-TOOL_DESCRIPTION = """Reads and returns the content of a specified file.
-
-If the file is large, the content will be truncated. The tool's response will
-clearly indicate if truncation has occurred and will provide details on how to
-read more of the file using the 'offset' and 'limit' parameters.
-
-For text files, it can read specific line ranges.
-
-Examples:
-- Read entire file: read_file(file_path="/path/to/file.py")
-- Read with pagination: read_file(file_path="/path/to/file.py", offset=100, limit=50)
-"""
-
 # Maximum lines to read in one call (to prevent overwhelming the context)
 MAX_LINES_PER_READ = 1000
 
@@ -122,17 +113,17 @@ class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
         executor = ReadFileExecutor(workspace_root=conv_state.workspace.working_dir)
 
         working_dir = conv_state.workspace.working_dir
-        enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
-            f"Your current working directory is: {working_dir}\n"
-            f"File paths can be absolute or relative to this directory."
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+            working_dir=working_dir,
         )
 
         return [
             cls(
                 action_type=ReadFileAction,
                 observation_type=ReadFileObservation,
-                description=enhanced_description,
+                description=tool_description,
                 annotations=ToolAnnotations(
                     title="read_file",
                     readOnlyHint=True,

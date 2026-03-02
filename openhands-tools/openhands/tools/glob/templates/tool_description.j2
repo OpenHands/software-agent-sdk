@@ -1,0 +1,14 @@
+Fast file pattern matching tool.
+* Supports glob patterns like "**/*.js" or "src/**/*.ts"
+* Use this tool when you need to find files by name patterns
+* Returns matching file paths sorted by modification time
+* Only the first 100 results are returned. Consider narrowing your search with stricter glob patterns or provide path parameter if you need more results.
+
+Examples:
+- Find all JavaScript files: "**/*.js"
+- Find TypeScript files in src: "src/**/*.ts"
+- Find Python test files: "**/test_*.py"
+- Find configuration files: "**/*.{json,yaml,yml,toml}"
+
+Your current working directory is: {{ working_dir }}
+When searching for files, patterns are relative to this directory.

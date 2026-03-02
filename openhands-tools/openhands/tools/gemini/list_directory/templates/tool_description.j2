@@ -1,0 +1,20 @@
+Lists the contents of a specified directory.
+
+Returns detailed information about each file and subdirectory, including:
+- Name and path
+- Whether it's a file or directory
+- File size (in bytes)
+- Last modified timestamp
+
+By default, lists only the immediate contents of the directory. Use `recursive=True`
+to list subdirectories up to 2 levels deep.
+
+Hidden files (starting with .) are included in the listing.
+
+Examples:
+- List current directory: list_directory()
+- List specific directory: list_directory(dir_path="/path/to/dir")
+- List recursively: list_directory(dir_path="/path/to/dir", recursive=True)
+
+Your current working directory is: {{ working_dir }}
+Relative paths will be resolved from this directory.

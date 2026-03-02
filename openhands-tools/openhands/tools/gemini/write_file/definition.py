@@ -1,11 +1,13 @@
 """Write file tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field, PrivateAttr
 from rich.text import Text
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -17,6 +19,8 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 
 class WriteFileAction(Action):
@@ -77,25 +81,6 @@ class WriteFileObservation(Observation):
         return text
 
 
-TOOL_DESCRIPTION = """Writes content to a specified file in the local filesystem.
-
-This tool overwrites the entire content of the file. If the file doesn't exist,
-it will be created. If it exists, all previous content will be replaced.
-
-This is useful for:
-- Creating new files
-- Completely rewriting files when many changes are needed
-- Setting initial file content
-
-For smaller edits to existing files, consider using the 'edit' tool instead,
-which allows targeted find/replace operations.
-
-Examples:
-- Create new file: write_file(file_path="/path/to/new.py", content="print('hello')")
-- Overwrite file: write_file(file_path="/path/to/existing.py", content="new content")
-"""
-
-
 class WriteFileTool(ToolDefinition[WriteFileAction, WriteFileObservation]):
     """Tool for writing complete file contents."""
 
@@ -114,17 +99,17 @@ class WriteFileTool(ToolDefinition[WriteFileAction, WriteFileObservation]):
         executor = WriteFileExecutor(workspace_root=conv_state.workspace.working_dir)
 
         working_dir = conv_state.workspace.working_dir
-        enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
-            f"Your current working directory is: {working_dir}\n"
-            f"File paths can be absolute or relative to this directory."
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+            working_dir=working_dir,
         )
 
         return [
             cls(
                 action_type=WriteFileAction,
                 observation_type=WriteFileObservation,
-                description=enhanced_description,
+                description=tool_description,
                 annotations=ToolAnnotations(
                     title="write_file",
                     readOnlyHint=False,

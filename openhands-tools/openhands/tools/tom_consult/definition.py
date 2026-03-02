@@ -5,10 +5,12 @@ based on user modeling, and for indexing conversations for user modeling.
 """
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
 from pydantic import Field
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool import Action, Observation, ToolDefinition, register_tool
@@ -17,6 +19,7 @@ from openhands.sdk.tool import Action, Observation, ToolDefinition, register_too
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 # ==================== Action Schemas ====================
 
@@ -111,32 +114,6 @@ class SleeptimeComputeObservation(Observation):
         return [TextContent(text=text)]
 
 
-# ==================== Tool Descriptions ====================
-
-_CONSULT_DESCRIPTION = """Consult Tom agent for guidance when you need help \
-understanding user intent or task requirements.
-
-This tool allows you to consult Tom agent for personalized guidance \
-based on user modeling. Use this when:
-- User instructions are vague or unclear
-- You need help understanding what the user actually wants
-- You want guidance on the best approach for the current task
-- You have your own question for Tom agent about the task or user's needs
-
-By default, Tom agent will analyze the user's message. \
-Optionally, you can ask a custom question."""
-
-_SLEEPTIME_DESCRIPTION = """Index the current conversation for Tom's user modeling.
-
-This tool processes conversation history to build and update the user model. \
-Use this to:
-- Index conversations for future personalization
-- Build user preferences and patterns from conversation history
-- Update Tom's understanding of the user
-
-This is typically used at the end of a conversation or when explicitly requested."""
-
-
 # ==================== Tool Definitions ====================
 
 
@@ -185,7 +162,10 @@ class TomConsultTool(ToolDefinition[ConsultTomAction, ConsultTomObservation]):
 
         return [
             cls(
-                description=_CONSULT_DESCRIPTION,
+                description=render_template(
+                    prompt_dir=str(PROMPT_DIR),
+                    template_name="consult_tool_description.j2",
+                ),
                 action_type=ConsultTomAction,
                 observation_type=ConsultTomObservation,
                 executor=executor,
@@ -240,7 +220,10 @@ class SleeptimeComputeTool(
 
         return [
             cls(
-                description=_SLEEPTIME_DESCRIPTION,
+                description=render_template(
+                    prompt_dir=str(PROMPT_DIR),
+                    template_name="sleeptime_tool_description.j2",
+                ),
                 action_type=SleeptimeComputeAction,
                 observation_type=SleeptimeComputeObservation,
                 executor=executor,

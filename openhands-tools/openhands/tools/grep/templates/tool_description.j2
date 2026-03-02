@@ -1,0 +1,10 @@
+Fast content search tool.
+* Searches file contents using regular expressions
+* Supports full regex syntax (eg. "log.*Error", "function\\s+\\w+", etc.)
+* Filter files by pattern with the include parameter (eg. "*.js", "*.{ts,tsx}")
+* Returns matching file paths sorted by modification time.
+* Only the first 100 results are returned. Consider narrowing your search with stricter regex patterns or provide path parameter if you need more results.
+* Use this tool when you need to find files containing specific patterns.
+
+Your current working directory is: {{ working_dir }}
+When searching for content, searches are performed in this directory.

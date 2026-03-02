@@ -1,0 +1,10 @@
+Set browser storage data including cookies,
+local storage, and session storage.
+
+This tool allows you to restore or set the browser's storage state. You can use the
+output from browser_get_storage to restore a previous session.
+
+Parameters:
+- storage_state: A dictionary containing 'cookies' and 'origins'.
+  - cookies: List of cookie objects
+  - origins: List of origin objects containing 'localStorage' and 'sessionStorage'

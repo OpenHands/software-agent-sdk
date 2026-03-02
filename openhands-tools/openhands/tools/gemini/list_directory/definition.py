@@ -2,11 +2,13 @@
 
 from collections.abc import Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 from rich.text import Text
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -18,6 +20,8 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
+PROMPT_DIR = Path(__file__).parent / "templates"
 
 
 class FileEntry(BaseModel):
@@ -114,25 +118,6 @@ class ListDirectoryObservation(Observation):
         return f"{size_float:.1f}TB"
 
 
-TOOL_DESCRIPTION = """Lists the contents of a specified directory.
-
-Returns detailed information about each file and subdirectory, including:
-- Name and path
-- Whether it's a file or directory
-- File size (in bytes)
-- Last modified timestamp
-
-By default, lists only the immediate contents of the directory. Use `recursive=True`
-to list subdirectories up to 2 levels deep.
-
-Hidden files (starting with .) are included in the listing.
-
-Examples:
-- List current directory: list_directory()
-- List specific directory: list_directory(dir_path="/path/to/dir")
-- List recursively: list_directory(dir_path="/path/to/dir", recursive=True)
-"""
-
 # Maximum entries to return (to prevent overwhelming the context)
 MAX_ENTRIES = 500
 
@@ -157,17 +142,17 @@ class ListDirectoryTool(ToolDefinition[ListDirectoryAction, ListDirectoryObserva
         )
 
         working_dir = conv_state.workspace.working_dir
-        enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
-            f"Your current working directory is: {working_dir}\n"
-            f"Relative paths will be resolved from this directory."
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="tool_description.j2",
+            working_dir=working_dir,
         )
 
         return [
             cls(
                 action_type=ListDirectoryAction,
                 observation_type=ListDirectoryObservation,
-                description=enhanced_description,
+                description=tool_description,
                 annotations=ToolAnnotations(
                     title="list_directory",
                     readOnlyHint=True,

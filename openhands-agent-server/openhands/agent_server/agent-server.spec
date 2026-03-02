@@ -42,7 +42,20 @@ a = Analysis(
         *collect_data_files("openhands.sdk.context.prompts", includes=["templates/*.j2"]),
 
         # OpenHands Tools templates
+        *collect_data_files("openhands.tools.apply_patch", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.browser_use", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.terminal", includes=["templates/*.j2"]),
         *collect_data_files("openhands.tools.delegate", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.file_editor", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.glob", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.grep", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.gemini.edit", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.gemini.list_directory", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.gemini.read_file", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.gemini.write_file", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.planning_file_editor", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.task_tracker", includes=["templates/*.j2"]),
+        *collect_data_files("openhands.tools.tom_consult", includes=["templates/*.j2"]),
 
         # OpenHands Tools browser recording JS files
         *collect_data_files("openhands.tools.browser_use", includes=["js/*.js"]),
