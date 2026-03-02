@@ -1,16 +1,25 @@
 """PTY-based terminal backend implementation (replaces pipe-based subprocess)."""
 
-import fcntl
 import os
-import pty
+import platform
 import re
-import select
 import shutil
 import signal
 import subprocess
 import threading
 import time
 from collections import deque
+
+
+if platform.system() == "Windows":
+    raise ImportError(
+        "SubprocessTerminal is not supported on Windows "
+        "(requires Unix-only modules: fcntl, pty, select)"
+    )
+
+import fcntl
+import pty
+import select
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
