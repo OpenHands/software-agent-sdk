@@ -89,6 +89,7 @@ class TestBrowserInitialization:
                 "openhands.tools.browser_use.impl.CustomBrowserUseServer",
                 return_value=mock_server,
             ),
+            patch("os.getuid", return_value=1000),  # Non-root user
         ):
             executor = BrowserToolExecutor(
                 headless=False,
@@ -101,6 +102,7 @@ class TestBrowserInitialization:
                 "headless": False,
                 "allowed_domains": ["example.com"],
                 "executable_path": "/usr/bin/chromium",
+                "chromium_sandbox": True,  # Enabled for non-root
                 "custom_param": "test",
             }
 

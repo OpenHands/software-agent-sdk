@@ -247,10 +247,24 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             if inject_scripts:
                 self._server.set_inject_scripts(inject_scripts)
 
+            # Chromium refuses to run as root with sandboxing enabled.
+            # Disable the sandbox when running as root so CHROME_DOCKER_ARGS
+            # (--no-sandbox, --disable-setuid-sandbox, etc.) are applied.
+            # SECURITY: Running Chrome as root without a sandbox is risky
+            # - a compromised browser has full root access. Use only in
+            # controlled environments.
+            running_as_root = os.getuid() == 0
+            if running_as_root:
+                logger.warning(
+                    "Running as root - disabling Chromium sandbox "
+                    "(required for root). This reduces security isolation."
+                )
+
             self._config = {
                 "headless": headless,
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
+                "chromium_sandbox": not running_as_root,
                 **config,
             }
 
