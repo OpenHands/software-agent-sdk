@@ -121,7 +121,7 @@ class FallbackStrategy(BaseModel):
     def _profile_store(self) -> LLMProfileStore:
         return LLMProfileStore(self.profile_store_dir)
 
-    def _iter_fallbacks(self) -> Generator[Any, None, None]:
+    def _iter_fallbacks(self) -> Generator[Any]:
         """Yield fallback LLM instances, resolving lazily from profiles.
 
         Profiles are loaded one at a time and appended to ``_resolved``
