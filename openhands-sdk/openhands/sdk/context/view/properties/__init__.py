@@ -6,12 +6,16 @@ from openhands.sdk.context.view.properties.tool_call_matching import (
 from openhands.sdk.context.view.properties.tool_loop_atomicity import (
     ToolLoopAtomicityProperty,
 )
+from openhands.sdk.context.view.properties.tool_result_uniqueness import (
+    ToolResultUniquenessProperty,
+)
 
 
 ALL_PROPERTIES: list[ViewPropertyBase] = [
     BatchAtomicityProperty(),
     ToolCallMatchingProperty(),
     ToolLoopAtomicityProperty(),
+    ToolResultUniquenessProperty(),
 ]
 """A list of all existing properties."""
 
@@ -20,5 +24,6 @@ __all__ = [
     "BatchAtomicityProperty",
     "ToolCallMatchingProperty",
     "ToolLoopAtomicityProperty",
+    "ToolResultUniquenessProperty",
     "ALL_PROPERTIES",
 ]
