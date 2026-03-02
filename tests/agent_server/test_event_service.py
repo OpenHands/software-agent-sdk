@@ -1172,6 +1172,34 @@ class TestEventServiceRun:
         event_service._publish_state_update.assert_called()
 
 
+class TestEventServiceSaveMeta:
+    """Test cases for EventService.save_meta method."""
+
+    @pytest.mark.asyncio
+    async def test_save_meta_preserves_updated_at(self, event_service, tmp_path):
+        """Test that save_meta does not modify updated_at.
+
+        On server restart every conversation's save_meta is called.  Before the
+        fix, save_meta stamped updated_at = utc_now(), so all conversations
+        appeared to have been updated at restart time.
+        """
+        original_updated_at = datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC)
+        event_service.stored.updated_at = original_updated_at
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        await event_service.save_meta()
+
+        # In-memory value must be unchanged
+        assert event_service.stored.updated_at == original_updated_at
+
+        # Persisted value must also match
+        meta_file = conv_dir / "meta.json"
+        loaded = StoredConversation.model_validate_json(meta_file.read_text())
+        assert loaded.updated_at == original_updated_at
+
+
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""
 

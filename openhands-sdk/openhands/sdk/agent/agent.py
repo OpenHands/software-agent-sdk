@@ -188,7 +188,11 @@ class Agent(CriticMixin, AgentBase):
         # The dynamic_context is included as a second content block in the
         # system message (without a cache marker) to enable cross-conversation
         # prompt caching of the static system prompt.
-        dynamic_context = self.dynamic_context
+        #
+        # Agent pulls secrets from conversation's secret_registry to include
+        # them in the dynamic context. This ensures secret names and descriptions
+        # appear in the system prompt.
+        dynamic_context = self.get_dynamic_context(state)
         event = SystemPromptEvent(
             source="agent",
             system_prompt=TextContent(text=self.static_system_message),
@@ -203,6 +207,42 @@ class Agent(CriticMixin, AgentBase):
             hook_config=state.hook_config,
         )
         on_event(event)
+
+    def get_dynamic_context(self, state: ConversationState) -> str | None:
+        """Get dynamic context for the system prompt, including secrets from state.
+
+        This method pulls secrets from the conversation's secret_registry and
+        merges them with agent_context to build the dynamic portion of the
+        system prompt.
+
+        Args:
+            state: The conversation state containing the secret_registry.
+
+        Returns:
+            The dynamic context string, or None if no context is configured.
+        """
+        # Get secret infos from conversation's secret_registry
+        secret_infos = state.secret_registry.get_secret_infos()
+
+        if not self.agent_context:
+            # No agent_context but we might have secrets from registry
+            if secret_infos:
+                from openhands.sdk.context.agent_context import AgentContext
+
+                # Create a minimal context just for secrets
+                temp_context = AgentContext()
+                return temp_context.get_system_message_suffix(
+                    llm_model=self.llm.model,
+                    llm_model_canonical=self.llm.model_canonical_name,
+                    additional_secret_infos=secret_infos,
+                )
+            return None
+
+        return self.agent_context.get_system_message_suffix(
+            llm_model=self.llm.model,
+            llm_model_canonical=self.llm.model_canonical_name,
+            additional_secret_infos=secret_infos,
+        )
 
     def _execute_actions(
         self,

@@ -24,7 +24,8 @@ on:
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: v1.11.1
+                default: v1.11.5
+
             allow_unreleased_branches:
                 description: Allow unreleased branches (bypasses semantic version requirement)
                 required: false
@@ -76,9 +77,9 @@ on:
                 default: ''
                 type: string
             enable_conversation_event_logging:
-                description: 'Enable Datadog persistence for conversation events (default: false)'
+                description: 'Enable Datadog persistence for conversation events (default: true)'
                 required: false
-                default: false
+                default: true
                 type: boolean
             max_retries:
                 description: Max retries per instance (passed to benchmarks)
@@ -128,7 +129,8 @@ jobs:
             - name: Checkout sdk code (base for validation)
               uses: actions/checkout@v4
               with:
-                  ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
+                  ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk_ref || (github.event_name == 'pull_request_target' && 
+                      github.event.pull_request.base.ref || github.ref) }}
                   fetch-depth: 0
 
             - name: Set up Python
@@ -143,6 +145,10 @@ jobs:
                   ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches }}
               run: |
                   python3 .github/run-eval/validate_sdk_ref.py
+
+            - name: Install dependencies
+              run: |
+                  pip install 'litellm>=1.81.0'
 
             - name: Load model IDs from Python script
               id: load-models
@@ -244,15 +250,11 @@ jobs:
                   printf 'pr_number=%s\n' "$PR_NUMBER" >> "$GITHUB_OUTPUT"
                   printf 'trigger_desc=%s\n' "$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
 
-            - name: Install dependencies
-              run: |
-                  pip install 'litellm>=1.81.0'
-
             - name: Resolve model configurations and verify availability
               id: resolve-models
               env:
                   MODEL_IDS: ${{ steps.params.outputs.models }}
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
               run: |
                   python3 .github/run-eval/resolve_model_config.py

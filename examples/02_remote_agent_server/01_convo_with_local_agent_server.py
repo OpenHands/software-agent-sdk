@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -165,7 +166,9 @@ with ManagedAPIServer(port=8001) as server:
 
     # Create RemoteConversation with callbacks
     # NOTE: Workspace is required for RemoteConversation
-    workspace = Workspace(host=server.base_url)
+    # Use a temp directory that exists and is accessible in CI environments
+    temp_workspace_dir = tempfile.mkdtemp(prefix="agent_server_demo_")
+    workspace = Workspace(host=server.base_url, working_dir=temp_workspace_dir)
     result = workspace.execute_command("pwd")
     logger.info(
         f"Command '{result.command}' completed with exit code {result.exit_code}"

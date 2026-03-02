@@ -101,24 +101,34 @@ When reviewing code, provide constructive feedback:
 **Next Steps**: [Clear action items]
 </ROLE>
 <DEV_SETUP>
-- Make sure you `make build` to configure the dependency first
+- Make sure you `make build` to configure the dependencies first
 - We use pre-commit hooks `.pre-commit-config.yaml` that includes:
   - type check through pyright
   - linting and formatter with `uv ruff`
 - NEVER USE `mypy`!
-- Do NOT commit ALL the file, just commit the relavant file you've changed!
-- in every commit message, you should add "Co-authored-by: openhands <openhands@all-hands.dev>"
+- Do NOT commit ALL the file, just commit the relevant file you've changed!
+- In every commit message, you should add "Co-authored-by: openhands <openhands@all-hands.dev>"
 - You can run pytest with `uv run pytest`
 
 # Instruction for fixing "E501 Line too long"
 
-- If it is just code, you can modify it so it spans multiple lne.
+- If it is just code, you can modify it so it spans multiple lines.
 - If it is a single-line string, you can break it into a multi-line string by doing "ABC" -> ("A"\n"B"\n"C")
 - If it is a long multi-line string (e.g., docstring), you should just add type ignore AFTER the ending """. You should NEVER ADD IT INSIDE the docstring.
 
 # PyInstaller Data Files
 
 When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
+
+# Bedrock + LiteLLM note
+
+- LiteLLM interprets the `api_key` parameter for Bedrock models as an **AWS bearer token**.
+  When using IAM/SigV4 auth (AWS credentials / profiles), do **not** forward `LLM.api_key`
+  to LiteLLM for Bedrock models, or Bedrock may return:
+  `Invalid API Key format: Must start with pre-defined prefix`.
+- If you need Bedrock bearer-token auth, set `AWS_BEARER_TOKEN_BEDROCK` in the environment
+  (instead of using `LLM_API_KEY`).
+
 
 </DEV_SETUP>
 
