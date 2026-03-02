@@ -51,7 +51,9 @@ __all__ = [
 # Rebuild SystemPromptEvent model to resolve forward reference to HookConfig
 # This must be done after all imports are complete to avoid circular import
 def _rebuild_models() -> None:
-    from openhands.sdk.hooks import HookConfig
+    # Import from the leaf module to avoid importing the hooks package, which can
+    # create circular import chains (hooks -> events -> hooks).
+    from openhands.sdk.hooks.config import HookConfig
 
     SystemPromptEvent.model_rebuild(_types_namespace={"HookConfig": HookConfig})
 
