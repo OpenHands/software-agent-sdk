@@ -129,6 +129,10 @@ class AgentErrorEvent(ObservationBaseEvent):
 
     source: SourceType = "agent"
     error: str = Field(..., description="The error message from the scaffold")
+    recoverable: bool = Field(
+        default=False,
+        description="Whether the LLM can self-correct from this error",
+    )
 
     @property
     def visualize(self) -> Text:
