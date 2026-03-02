@@ -43,6 +43,27 @@ class ViewPropertyBase(ABC):
             the current view to enforce the property.
         """
 
+    def transform(
+        self,
+        current_view_events: list[LLMConvertibleEvent],  # noqa: ARG002
+        all_events: Sequence[Event],  # noqa: ARG002
+    ) -> dict[EventID, LLMConvertibleEvent]:
+        """Transform events in the view by replacing them with modified versions.
+
+        This method allows properties to merge or modify events rather than just
+        removing them. The default implementation returns an empty dict (no transforms).
+
+        Args:
+            current_view_events: The sequence of events currently in the view.
+            all_events: A list of all Event objects in the conversation.
+
+        Returns:
+            A mapping from original EventID to the replacement LLMConvertibleEvent.
+            Events whose IDs appear as keys will be replaced with the corresponding
+            values. The replacement events should have new unique IDs.
+        """
+        return {}
+
     @abstractmethod
     def manipulation_indices(
         self,

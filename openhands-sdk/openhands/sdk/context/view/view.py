@@ -103,12 +103,27 @@ class View(BaseModel):
         Since enforcement is intended as a fallback to inductively maintaining the
         properties via the associated manipulation indices, any time a property must be
         enforced a warning is logged.
+
+        Properties can also transform events (e.g., merge multiple events into one)
+        via the transform() method. Transformations are applied before enforcement.
         """
         for property in ALL_PROPERTIES:
+            # First apply any transformations (e.g., merging events)
+            transforms = property.transform(current_view_events, all_events)
+            if transforms:
+                logger.warning(
+                    f"Property {property.__class__.__name__} transformed "
+                    f"{len(transforms)} events."
+                )
+                current_view_events = [
+                    transforms.get(event.id, event) for event in current_view_events
+                ]
+
+            # Then enforce by removing events
             events_to_forget = property.enforce(current_view_events, all_events)
             if events_to_forget:
                 logger.warning(
-                    f"Property {property.__class__} enforced, "
+                    f"Property {property.__class__.__name__} enforced, "
                     f"{len(events_to_forget)} events dropped."
                 )
                 return View.enforce_properties(
