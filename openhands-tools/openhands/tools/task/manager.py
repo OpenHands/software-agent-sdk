@@ -22,7 +22,7 @@ from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent.registry import get_agent_factory
+from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 
 
 logger = get_logger(__name__)
@@ -187,10 +187,24 @@ class TaskManager:
     ) -> Task:
         """Create a fresh task."""
         task_id, conversation_id = self._generate_ids()
-        worker_agent = self._get_sub_agent(subagent_type)
+
+        factory = get_agent_factory(subagent_type)
+        worker_agent = self._get_sub_agent_from_factory(factory)
+
+        # Priority:
+        # 1. factory.max_iteration_per_run (agent def)
+        # 2. max_turns (caller)
+        # 3. default to 500
+        if factory.max_iteration_per_run:
+            effective_max_iter = factory.max_iteration_per_run
+        elif max_turns:
+            effective_max_iter = max_turns
+        else:
+            effective_max_iter = 500
+
         sub_conversation = self._get_conversation(
             description=description,
-            max_turns=max_turns,
+            max_iteration_per_run=effective_max_iter,
             task_id=task_id,
             worker_agent=worker_agent,
             conversation_id=conversation_id,
@@ -207,7 +221,7 @@ class TaskManager:
     def _get_conversation(
         self,
         description: str | None,
-        max_turns: int | None,
+        max_iteration_per_run: int,
         task_id: str,
         conversation_id: uuid.UUID,
         worker_agent: Agent,
@@ -226,7 +240,7 @@ class TaskManager:
             visualizer=visualizer,
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
-            max_iteration_per_run=max_turns or 500,
+            max_iteration_per_run=max_iteration_per_run,
             delete_on_close=False,
         )
 
@@ -236,10 +250,13 @@ class TaskManager:
         Raises:
             ValueError: If the subagent type is invalid.
         """
+        factory = get_agent_factory(subagent_type)
+        return self._get_sub_agent_from_factory(factory)
+
+    def _get_sub_agent_from_factory(self, factory: "AgentFactory") -> Agent:
+        """Create a sub-agent from an AgentFactory."""
         parent = self.parent_conversation
         parent_llm = parent.agent.llm
-
-        factory = get_agent_factory(subagent_type)
 
         llm_updates: dict = {"stream": False}
         sub_agent_llm = parent_llm.model_copy(update=llm_updates)

@@ -10,6 +10,15 @@ import frontmatter
 from pydantic import BaseModel, Field
 
 
+def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
+    """Extract max iterations per run from frontmatter file."""
+    max_iter_raw = fm.get("max_iteration_per_run")
+    max_iteration_per_run: int | None = None
+    if isinstance(max_iter_raw, str):
+        max_iteration_per_run = int(max_iter_raw)
+    return max_iteration_per_run
+
+
 def _extract_examples(description: str) -> list[str]:
     """Extract <example> tags from description for agent triggering."""
     pattern = r"<example>(.*?)</example>"
@@ -40,6 +49,12 @@ class AgentDefinition(BaseModel):
     when_to_use_examples: list[str] = Field(
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
+    )
+    max_iteration_per_run: int | None = Field(
+        default=None,
+        description="Maximum iterations per run. "
+        "It must be strictly positive, or None for default.",
+        gt=0,
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
@@ -87,6 +102,8 @@ class AgentDefinition(BaseModel):
         else:
             tools = []
 
+        max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
+
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
 
@@ -97,6 +114,7 @@ class AgentDefinition(BaseModel):
             "model",
             "color",
             "tools",
+            "max_iteration_per_run",
         }
         metadata = {k: v for k, v in fm.items() if k not in known_fields}
 
@@ -106,6 +124,7 @@ class AgentDefinition(BaseModel):
             model=model,
             color=color,
             tools=tools,
+            max_iteration_per_run=max_iteration_per_run,
             system_prompt=content,
             source=str(agent_path),
             when_to_use_examples=when_to_use_examples,
