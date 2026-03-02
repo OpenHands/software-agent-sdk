@@ -10,6 +10,14 @@ from openhands.tools.terminal.terminal.terminal_session import (
     TerminalSession,
 )
 
+__all__ = [
+    "TerminalInterface",
+    "TerminalSessionBase",
+    "TerminalSession",
+    "TerminalCommandStatus",
+    "create_terminal_session",
+]
+
 # SubprocessTerminal and TmuxTerminal use Unix-only modules (fcntl, pty)
 # Only import them on Unix-like systems
 if sys.platform != "win32":
@@ -18,20 +26,4 @@ if sys.platform != "win32":
     )
     from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
-    __all__ = [
-        "TerminalInterface",
-        "TerminalSessionBase",
-        "TmuxTerminal",
-        "SubprocessTerminal",
-        "TerminalSession",
-        "TerminalCommandStatus",
-        "create_terminal_session",
-    ]
-else:
-    __all__ = [
-        "TerminalInterface",
-        "TerminalSessionBase",
-        "TerminalSession",
-        "TerminalCommandStatus",
-        "create_terminal_session",
-    ]
+    __all__.extend(["TmuxTerminal", "SubprocessTerminal"])
