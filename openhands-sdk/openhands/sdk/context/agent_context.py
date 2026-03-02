@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.skills import (
+    DEFAULT_MARKETPLACE_PATH,
     Skill,
     SkillKnowledge,
     load_public_skills,
@@ -72,6 +73,16 @@ class AgentContext(BaseModel):
             "This allows you to get the latest skills without SDK updates."
         ),
     )
+    marketplace_path: str | None = Field(
+        default=DEFAULT_MARKETPLACE_PATH,
+        description=(
+            "Path to the marketplace JSON file within the public skills repository. "
+            "The marketplace defines which skills are loaded by default. "
+            "Defaults to 'marketplaces/default.json'. Set to None to load all "
+            "skills without marketplace filtering, or specify a custom marketplace "
+            "path like 'marketplaces/custom.json'."
+        ),
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -134,7 +145,7 @@ class AgentContext(BaseModel):
         if not self.load_public_skills:
             return self
         try:
-            public_skills = load_public_skills()
+            public_skills = load_public_skills(marketplace_path=self.marketplace_path)
             # Merge public skills with explicit skills, avoiding duplicates
             existing_names = {skill.name for skill in self.skills}
             for public_skill in public_skills:

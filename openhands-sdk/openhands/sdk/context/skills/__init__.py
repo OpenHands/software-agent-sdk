@@ -1,5 +1,6 @@
 from openhands.sdk.context.skills.exceptions import SkillValidationError
 from openhands.sdk.context.skills.skill import (
+    DEFAULT_MARKETPLACE_PATH,
     Skill,
     SkillResources,
     load_project_skills,
@@ -22,6 +23,7 @@ from openhands.sdk.context.skills.utils import (
 
 
 __all__ = [
+    "DEFAULT_MARKETPLACE_PATH",
     "Skill",
     "SkillResources",
     "BaseTrigger",
