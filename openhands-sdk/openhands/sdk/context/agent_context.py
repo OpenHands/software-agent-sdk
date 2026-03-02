@@ -149,7 +149,7 @@ class AgentContext(BaseModel):
             logger.warning(f"Failed to load public skills: {str(e)}")
         return self
 
-    def get_secret_infos(self) -> list[dict[str, str]]:
+    def get_secret_infos(self) -> list[dict[str, str | None]]:
         """Get secret information (name and description) from the secrets field.
 
         Returns:
@@ -159,7 +159,7 @@ class AgentContext(BaseModel):
         """
         if not self.secrets:
             return []
-        secret_infos = []
+        secret_infos: list[dict[str, str | None]] = []
         for name, secret_value in self.secrets.items():
             description = None
             if isinstance(secret_value, SecretSource):
@@ -185,6 +185,7 @@ class AgentContext(BaseModel):
         self,
         llm_model: str | None = None,
         llm_model_canonical: str | None = None,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
     ) -> str | None:
         """Get the system message with repo skill content and custom suffix.
 
@@ -194,6 +195,13 @@ class AgentContext(BaseModel):
         - Conversation instructions (e.g., user preferences, task details)
         - Repository-specific instructions (collected from repo skills)
         - Available skills list (for AgentSkills-format and triggered skills)
+
+        Args:
+            llm_model: Optional LLM model name for vendor-specific skill filtering.
+            llm_model_canonical: Optional canonical LLM model name.
+            additional_secret_infos: Optional list of additional secret info dicts
+                (with 'name' and 'description' keys) to merge with agent_context
+                secrets. Typically passed from conversation's secret_registry.
 
         Skill categorization:
         - AgentSkills-format (SKILL.md): Always in <available_skills> (progressive
@@ -250,7 +258,14 @@ class AgentContext(BaseModel):
             )
 
         # Build the workspace context information
+        # Merge agent_context secrets with additional secrets from registry
         secret_infos = self.get_secret_infos()
+        if additional_secret_infos:
+            # Merge: additional secrets override agent_context secrets by name
+            secret_dict = {s["name"]: s for s in secret_infos}
+            for additional in additional_secret_infos:
+                secret_dict[additional["name"]] = additional
+            secret_infos = list(secret_dict.values())
         formatted_datetime = self.get_formatted_datetime()
         has_content = (
             repo_skills

@@ -730,14 +730,20 @@ class LocalConversation(BaseConversation):
                 logger.info("Agent execution pause requested")
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
-        """Add secrets to the conversation.
+        """Add secrets to the conversation's secret registry.
+
+        Secrets are stored in the conversation's secret_registry which:
+        1. Provides environment variable injection during command execution
+        2. Is read by the agent when building its system prompt (dynamic_context)
+
+        The agent pulls secrets from the registry via get_dynamic_context() during
+        init_state(), ensuring secret names and descriptions appear in the prompt.
 
         Args:
             secrets: Dictionary mapping secret keys to values or no-arg callables.
                      SecretValue = str | Callable[[], str]. Callables are invoked lazily
                      when a command references the secret key.
         """
-
         secret_registry = self._state.secret_registry
         secret_registry.update_secrets(secrets)
         logger.info(f"Added {len(secrets)} secrets to conversation")
