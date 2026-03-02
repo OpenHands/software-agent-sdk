@@ -67,7 +67,7 @@ async def git_diff_query(
     deprecated_in="1.15.0",
     removed_in="1.20.0",
     details=(
-        "Use the /git/changes endpoint with a query parameter for the path "
+        "Use the /git/diff endpoint with a query parameter for the path "
         "instead of a path parameter. This allows for better handling of "
         "complex paths and is more consistent with other endpoints."
     ),
