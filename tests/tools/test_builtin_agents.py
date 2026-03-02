@@ -1,4 +1,4 @@
-"""Tests for SDK built-in agent definitions (default, explore, bash)."""
+"""Tests for built-in subagents definitions."""
 
 from collections.abc import Iterator
 from pathlib import Path

@@ -24,7 +24,7 @@ from openhands.tools.delegate import (
     DelegateTool,
     DelegationVisualizer,
 )
-from openhands.tools.preset.default import get_default_tools
+from openhands.tools.preset.default import get_default_tools, register_builtins_agents
 
 
 ONLY_RUN_SIMPLE_DELEGATION = False
@@ -43,6 +43,7 @@ cwd = os.getcwd()
 
 tools = get_default_tools(enable_browser=True)
 tools.append(Tool(name=DelegateTool.name))
+register_builtins_agents()
 
 main_agent = Agent(
     llm=llm,

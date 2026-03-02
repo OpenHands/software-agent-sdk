@@ -124,6 +124,9 @@ def agent_definition_to_factory(
       `AgentContext`.
     - `model: inherit` preserves the parent LLM; an explicit model name
       creates a copy via `model_copy(update=...)`.
+
+    Raises:
+        ValueError: If a tool provided to the agent is not registered.
     """
 
     def _factory(llm: "LLM") -> "Agent":
@@ -149,8 +152,8 @@ def agent_definition_to_factory(
         registered_tools: set[str] = set(list_registered_tools())
         for tool_name in agent_def.tools:
             if tool_name not in registered_tools:
-                logger.warning(
-                    f"Tool '{tool_name}' is not registered "
+                raise ValueError(
+                    f"Tool '{tool_name}' not registered"
                     f"but was given to agent {agent_def.name}."
                 )
             tools.append(Tool(name=tool_name))
