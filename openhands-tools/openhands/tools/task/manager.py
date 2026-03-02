@@ -238,9 +238,19 @@ class TaskManager:
         """
         parent = self.parent_conversation
         parent_llm = parent.agent.llm
+        sub_agent_llm = parent_llm.model_copy()
+        # Reset metrics such that the sub-agent has its own
+        # Metrics object
+        sub_agent_llm.reset_metrics()
 
         factory = get_agent_factory(subagent_type)
-        return factory.factory_func(parent_llm)
+        sub_agent = factory.factory_func(sub_agent_llm)
+
+        # ensuring that the sub-agent LLM has stream deactivated
+        sub_agent = sub_agent.model_copy(
+            update={"llm": sub_agent.llm.model_copy(update={"stream": False})}
+        )
+        return sub_agent
 
     def _run_task(self, task: Task, prompt: str) -> Task:
         """Run a task synchronously."""

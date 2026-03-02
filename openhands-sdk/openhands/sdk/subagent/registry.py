@@ -146,7 +146,7 @@ def agent_definition_to_factory(
         from openhands.sdk.tool.spec import Tool
 
         # Load LLM profile if agent_def.model is different from
-        # 'inherit' and it was given
+        # 'inherit' and empty string
         if agent_def.model and agent_def.model != "inherit":
             store = _get_profile_store()
             available_profiles = [name.removesuffix(".json") for name in store.list()]
@@ -158,12 +158,6 @@ def agent_definition_to_factory(
 
             profile_name = agent_def.model
             llm = store.load(profile_name)
-
-        # Ensure sub-agent LLM always has streaming disabled and
-        # reset metrics such that the sub-agent has its own
-        # Metrics object
-        llm = llm.model_copy(update={"stream": False})
-        llm.reset_metrics()
 
         # the system prompt of the subagent is added as a suffix of the
         # main system prompt
