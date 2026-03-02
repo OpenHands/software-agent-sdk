@@ -240,14 +240,7 @@ class TaskManager:
         parent_llm = parent.agent.llm
 
         factory = get_agent_factory(subagent_type)
-
-        llm_updates: dict = {"stream": False}
-        sub_agent_llm = parent_llm.model_copy(update=llm_updates)
-        # Reset metrics such that the sub-agent has its own
-        # Metrics object
-        sub_agent_llm.reset_metrics()
-
-        return factory.factory_func(sub_agent_llm)
+        return factory.factory_func(parent_llm)
 
     def _run_task(self, task: Task, prompt: str) -> Task:
         """Run a task synchronously."""
