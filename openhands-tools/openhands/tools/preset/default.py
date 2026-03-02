@@ -57,6 +57,7 @@ def get_default_tools(
         from openhands.tools.browser_use import BrowserToolSet
 
         tools.append(Tool(name=BrowserToolSet.name))
+    _ = register_builtins_agents(not enable_browser)
     return tools
 
 
