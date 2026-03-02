@@ -671,6 +671,31 @@ class TestMarketplaceIntegration:
         assert manifest.description == ""  # Default
         assert manifest.author is None
 
+    def test_to_plugin_manifest_with_entry_command(self):
+        """Test to_plugin_manifest preserves entry_command field."""
+        entry = MarketplacePluginEntry(
+            name="city-weather",
+            source="./plugins/city-weather",
+            version="1.0.0",
+            description="Get current weather for any city",
+            entry_command="now",
+        )
+
+        manifest = entry.to_plugin_manifest()
+
+        assert manifest.name == "city-weather"
+        assert manifest.entry_command == "now"
+
+    def test_entry_with_entry_command(self):
+        """Test MarketplacePluginEntry with entry_command field."""
+        entry = MarketplacePluginEntry(
+            name="city-weather",
+            source="./plugins/city-weather",
+            entry_command="now",
+        )
+        assert entry.name == "city-weather"
+        assert entry.entry_command == "now"
+
     def test_invalid_github_source_missing_repo(self, tmp_path: Path):
         """Test that invalid GitHub source (missing repo) raises error at load time."""
         marketplace_dir = tmp_path / "invalid-source"
