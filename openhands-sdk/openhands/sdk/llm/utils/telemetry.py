@@ -271,9 +271,10 @@ class Telemetry(BaseModel):
 
         # move on to litellm cost calculator
         # Handle model name properly - if it doesn't contain "/", use as-is
-        model_parts = self.model_name.split("/")
-        if len(model_parts) > 1:
-            extra_kwargs["model"] = "/".join(model_parts[1:])
+        if "/" in self.model_name:
+            provider, bare = self.model_name.split("/", 1)
+            extra_kwargs["model"] = bare
+            extra_kwargs["custom_llm_provider"] = provider
         else:
             extra_kwargs["model"] = self.model_name
         try:
