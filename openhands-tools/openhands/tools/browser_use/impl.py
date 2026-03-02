@@ -1,12 +1,16 @@
 """Browser tool executor implementation using browser-use MCP server wrapper."""
 
+from __future__ import annotations
+
+import functools
 import json
 import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 
 if TYPE_CHECKING:
@@ -16,9 +20,62 @@ from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
-from openhands.tools.browser_use.definition import BrowserAction, BrowserObservation
+from openhands.tools.browser_use.definition import (
+    BROWSER_RECORDING_OUTPUT_DIR,
+    BrowserAction,
+    BrowserObservation,
+)
 from openhands.tools.browser_use.server import CustomBrowserUseServer
 from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
+
+
+F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
+
+
+def recording_aware(
+    func: Callable[..., Coroutine[Any, Any, Any]],
+) -> Callable[..., Coroutine[Any, Any, Any]]:
+    """Decorator that handles recording flush before/after navigation operations.
+
+    This decorator:
+    1. Flushes recording events before the operation (to preserve them)
+    2. Executes the operation
+    3. Restarts recording on the new page if recording was active
+
+    Error Handling Policy (see recording.py module docstring for full details):
+    - Recording is a secondary feature that should never block browser operations
+    - AttributeError: silent pass (recording not initialized - expected)
+    - Other exceptions: log at DEBUG, don't interrupt navigation
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self: BrowserToolExecutor, *args: Any, **kwargs: Any) -> Any:
+        is_recording = self._server._is_recording
+        if is_recording:
+            try:
+                await self._server._flush_recording_events()
+            except AttributeError:
+                # Recording not initialized - expected, silent pass
+                pass
+            except Exception as e:
+                # Internal operation: log at DEBUG, don't interrupt navigation
+                logger.debug(f"Recording flush before {func.__name__} skipped: {e}")
+
+        result = await func(self, *args, **kwargs)
+
+        if is_recording:
+            try:
+                await self._server._restart_recording_on_new_page()
+            except AttributeError:
+                # Recording not initialized - expected, silent pass
+                pass
+            except Exception as e:
+                # Internal operation: log at DEBUG, don't interrupt navigation
+                logger.debug(f"Recording restart after {func.__name__} skipped: {e}")
+
+        return result
+
+    return wrapper
 
 
 # Suppress browser-use logging for cleaner integration
@@ -123,7 +180,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 for chromium_dir in chromium_dirs:
                     # Check platform-specific paths
                     possible_paths = [
-                        chromium_dir / "chrome-linux" / "chrome",  # Linux
+                        chromium_dir / "chrome-linux" / "chrome",  # Linux (old)
+                        chromium_dir / "chrome-linux64" / "chrome",  # Linux (new)
                         chromium_dir
                         / "chrome-mac"
                         / "Chromium.app"
@@ -156,6 +214,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         session_timeout_minutes: int = 30,
         init_timeout_seconds: int = 30,
         full_output_save_dir: str | None = None,
+        inject_scripts: list[str] | None = None,
         **config,
     ):
         """Initialize BrowserToolExecutor with timeout protection.
@@ -166,7 +225,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             session_timeout_minutes: Browser session timeout in minutes
             init_timeout_seconds: Timeout for browser initialization in seconds
             full_output_save_dir: Absolute path to directory to save full output
-            logs and files, used when truncation is needed.
+                logs and files, used when truncation is needed.
+            inject_scripts: List of JavaScript code strings to inject into every
+                new document. Scripts are injected via CDP's
+                Page.addScriptToEvaluateOnNewDocument and run before page scripts.
+                Useful for injecting recording tools like rrweb.
             **config: Additional configuration options
         """
 
@@ -179,6 +242,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             if os.getenv("OH_ENABLE_VNC", "false").lower() in {"true", "1", "yes"}:
                 headless = False  # Force headless off if VNC is enabled
                 logger.info("VNC is enabled - running browser in non-headless mode")
+
+            # Configure scripts to inject
+            if inject_scripts:
+                self._server.set_inject_scripts(inject_scripts)
 
             self._config = {
                 "headless": headless,
@@ -202,7 +269,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     def __call__(
         self,
         action: BrowserAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+        conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
         return self._async_executor.run_async(
@@ -223,6 +290,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserObservation,
             BrowserScrollAction,
             BrowserSetStorageAction,
+            BrowserStartRecordingAction,
+            BrowserStopRecordingAction,
             BrowserSwitchTabAction,
             BrowserTypeAction,
         )
@@ -256,6 +325,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.switch_tab(action.tab_id)
             elif isinstance(action, BrowserCloseTabAction):
                 result = await self.close_tab(action.tab_id)
+            elif isinstance(action, BrowserStartRecordingAction):
+                result = await self.start_recording()
+            elif isinstance(action, BrowserStopRecordingAction):
+                result = await self.stop_recording()
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
                 return BrowserObservation.from_text(
@@ -283,20 +356,26 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         if not self._initialized:
             # Initialize browser session with our config
             await self._server._init_browser_session(**self._config)
+            # Inject any configured user scripts after session is ready
+            # Note: rrweb scripts are injected lazily when recording starts
+            await self._server._inject_scripts_to_session()
             self._initialized = True
 
     # Navigation & Browser Control Methods
+    @recording_aware
     async def navigate(self, url: str, new_tab: bool = False) -> str:
         """Navigate to a URL."""
         await self._ensure_initialized()
         return await self._server._navigate(url, new_tab)
 
+    @recording_aware
     async def go_back(self) -> str:
         """Go back in browser history."""
         await self._ensure_initialized()
         return await self._server._go_back()
 
     # Page Interaction
+    @recording_aware
     async def click(self, index: int, new_tab: bool = False) -> str:
         """Click an element by index."""
         await self._ensure_initialized()
@@ -375,6 +454,29 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         return await self._server._get_content(
             extract_links=extract_links, start_from_char=start_from_char
         )
+
+    # Session Recording
+    async def start_recording(self) -> str:
+        """Start recording the browser session using rrweb.
+
+        Recording events are periodically flushed to timestamped JSON files
+        in a session subfolder under BROWSER_RECORDING_OUTPUT_DIR.
+        Events are flushed every 5 seconds.
+        """
+        await self._ensure_initialized()
+        return await self._server._start_recording(
+            output_dir=BROWSER_RECORDING_OUTPUT_DIR
+        )
+
+    async def stop_recording(self) -> str:
+        """Stop recording and save remaining events to file.
+
+        Stops the periodic flush, collects any remaining events, and saves
+        them to a final numbered JSON file. Returns a summary message with
+        the total events and file count.
+        """
+        await self._ensure_initialized()
+        return await self._server._stop_recording()
 
     async def close_browser(self) -> str:
         """Close the browser session."""

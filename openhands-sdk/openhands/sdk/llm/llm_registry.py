@@ -25,6 +25,11 @@ class LLMRegistry:
 
     This registry provides a simple way to manage multiple LLM instances,
     avoiding the need to recreate LLMs with the same configuration.
+
+    The registry also ensures that each registered LLM has independent metrics,
+    preventing metrics from being shared between LLMs that were created via
+    model_copy(). This is important for scenarios like creating a condenser LLM
+    from an agent LLM, where each should track its own usage independently.
     """
 
     registry_id: str
@@ -42,6 +47,8 @@ class LLMRegistry:
         self.registry_id = str(uuid4())
         self.retry_listener = retry_listener
         self._usage_to_llm: dict[str, LLM] = {}
+        # Track metrics object IDs to detect shared metrics
+        self._metrics_ids: set[int] = set()
         self.subscriber: Callable[[RegistryEvent], None] | None = None
 
     def subscribe(self, callback: Callable[[RegistryEvent], None]) -> None:
@@ -70,8 +77,41 @@ class LLMRegistry:
 
         return MappingProxyType(self._usage_to_llm)
 
+    def _ensure_independent_metrics(self, llm: LLM) -> None:
+        """Ensure the LLM has independent metrics not shared with other LLMs.
+
+        When LLMs are created via model_copy(), Pydantic does a shallow copy of
+        private attributes by default, causing the original and copied LLM to
+        share the same Metrics object. This method detects such sharing and
+        resets the metrics to ensure each LLM tracks its own usage independently.
+
+        Args:
+            llm: The LLM instance to check and potentially reset metrics for.
+        """
+        # Access the metrics to trigger lazy initialization if needed
+        metrics = llm.metrics
+        metrics_id = id(metrics)
+
+        # Check if this metrics object is already tracked by another LLM
+        if metrics_id in self._metrics_ids:
+            logger.debug(
+                f"[LLM registry {self.registry_id}]: Detected shared metrics for "
+                f"usage '{llm.usage_id}', resetting to independent metrics"
+            )
+            llm.reset_metrics()
+            # Get the new metrics ID after reset
+            metrics_id = id(llm.metrics)
+
+        # Track this metrics object ID
+        self._metrics_ids.add(metrics_id)
+
     def add(self, llm: LLM) -> None:
         """Add an LLM instance to the registry.
+
+        This method ensures that the LLM has independent metrics before
+        registering it. If the LLM's metrics are shared with another
+        registered LLM (e.g., due to model_copy()), fresh metrics will
+        be created automatically.
 
         Args:
             llm: The LLM instance to register.
@@ -87,6 +127,9 @@ class LLMRegistry:
                 "call get() to retrieve the existing LLM."
             )
             raise ValueError(message)
+
+        # Ensure this LLM has independent metrics before registering
+        self._ensure_independent_metrics(llm)
 
         self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))

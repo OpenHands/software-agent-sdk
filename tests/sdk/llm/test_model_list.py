@@ -17,7 +17,9 @@ def test_organize_models_and_providers():
         "mistral/devstral-small-2505",
         "anthropic.claude-3-5",  # Ignore dot separator for anthropic
         "unknown-model",
-        "custom-provider/custom-model",
+        "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # invalid provider prefix
+        "1024-x-1024/gpt-image-1.5",  # invalid provider prefix
         "openai/another-model",
     ]
 
@@ -35,8 +37,11 @@ def test_organize_models_and_providers():
         assert len(result["openai"]) == 1
         assert "another-model" in result["openai"]
 
-        assert len(result["other"]) == 1
+        assert len(result["other"]) == 4
         assert "unknown-model" in result["other"]
+        assert "custom-provider/custom-model" in result["other"]
+        assert "us.anthropic.claude-3-5-sonnet-20241022-v2:0" in result["other"]
+        assert "1024-x-1024/gpt-image-1.5" in result["other"]
 
 
 def test_list_bedrock_models_without_boto3(monkeypatch):

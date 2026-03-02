@@ -7,6 +7,7 @@ from rich.text import Text
 
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.llm.message import content_to_str
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
 )
@@ -15,6 +16,8 @@ from openhands.sdk.utils.visualize import display_dict
 
 if TYPE_CHECKING:
     from typing import Self
+
+logger = get_logger(__name__)
 
 S = TypeVar("S", bound="Schema")
 
@@ -49,23 +52,80 @@ def py_type(spec: dict[str, Any]) -> Any:
     return Any
 
 
-def _process_schema_node(node, defs):
+def _shallow_expand_circular_ref(ref_def: dict[str, Any]) -> dict[str, Any]:
+    """Return a simple fallback for circular references.
+
+    Args:
+        ref_def: The definition of the referenced type.
+
+    Returns:
+        A generic object schema with description preserved if available.
+    """
+    result: dict[str, Any] = {"type": "object"}
+    if "description" in ref_def:
+        result["description"] = ref_def["description"]
+    return result
+
+
+def _process_schema_node(
+    node: dict[str, Any],
+    defs: dict[str, Any],
+    _visiting: frozenset[str] | None = None,
+) -> dict[str, Any]:
     """Recursively process a schema node to simplify and resolve $ref.
 
-    https://www.reddit.com/r/mcp/comments/1kjo9gt/toolinputschema_conversion_from_pydanticmodel/
-    https://gist.github.com/leandromoreira/3de4819e4e4df9422d87f1d3e7465c16
+    This function resolves JSON Schema $ref references and simplifies the schema
+    structure for compatibility with MCP tool schemas. It handles circular
+    references by tracking visited refs and stopping recursion when a cycle
+    is detected.
+
+    Args:
+        node: The schema node to process.
+        defs: The $defs dictionary containing reference definitions.
+        _visiting: Internal parameter tracking refs currently being processed
+            in the current recursion path to detect cycles.
+
+    Returns:
+        A simplified schema dict with $ref resolved (except for circular refs).
+
+    Note:
+        When a circular reference is detected, returns a generic
+        ``{"type": "object"}`` placeholder (with description preserved if
+        available). This prevents infinite recursion but loses type information
+        about the recursive structure. Callers should be aware that recursive
+        data types (trees, linked lists) will have simplified schemas that may
+        not fully represent their structure.
+
+    References:
+        https://www.reddit.com/r/mcp/comments/1kjo9gt/toolinputschema_conversion_from_pydanticmodel/
+        https://gist.github.com/leandromoreira/3de4819e4e4df9422d87f1d3e7465c16
     """
+    if _visiting is None:
+        _visiting = frozenset()
+
     # Handle $ref references
     if "$ref" in node:
         ref_path = node["$ref"]
         if ref_path.startswith("#/$defs/"):
             ref_name = ref_path.split("/")[-1]
             if ref_name in defs:
+                # Check for circular reference - if we're already visiting this
+                # ref in the current path, don't recurse (would cause infinite loop)
+                if ref_name in _visiting:
+                    logger.debug(
+                        "Circular reference detected for '%s', using shallow expansion",
+                        ref_name,
+                    )
+                    # Return generic object to prevent infinite recursion
+                    return _shallow_expand_circular_ref(defs[ref_name])
+
+                # Add this ref to the visiting set for this recursion path
+                new_visiting = _visiting | {ref_name}
                 # Process the referenced definition
-                return _process_schema_node(defs[ref_name], defs)
+                return _process_schema_node(defs[ref_name], defs, new_visiting)
 
     # Start with a new schema object
-    result = {}
+    result: dict[str, Any] = {}
 
     # Copy the basic properties
     if "type" in node:
@@ -76,7 +136,7 @@ def _process_schema_node(node, defs):
         non_null_types = [t for t in node["anyOf"] if t.get("type") != "null"]
         if non_null_types:
             # Process the first non-null type
-            processed = _process_schema_node(non_null_types[0], defs)
+            processed = _process_schema_node(non_null_types[0], defs, _visiting)
             result.update(processed)
 
     # Handle description
@@ -90,7 +150,9 @@ def _process_schema_node(node, defs):
 
         # Process each property
         for prop_name, prop_schema in node["properties"].items():
-            result["properties"][prop_name] = _process_schema_node(prop_schema, defs)
+            result["properties"][prop_name] = _process_schema_node(
+                prop_schema, defs, _visiting
+            )
 
         # Add required fields if present
         if "required" in node:
@@ -99,7 +161,7 @@ def _process_schema_node(node, defs):
     # Handle arrays
     if node.get("type") == "array" and "items" in node:
         result["type"] = "array"
-        result["items"] = _process_schema_node(node["items"], defs)
+        result["items"] = _process_schema_node(node["items"], defs, _visiting)
 
     # Handle enum
     if "enum" in node:

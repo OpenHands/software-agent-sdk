@@ -53,6 +53,7 @@ from typing import Any
 from lmnr import Laminar
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
+from openhands.sdk.context.skills import load_project_skills
 from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.git.utils import run_git_command
 from openhands.tools.preset.default import get_default_condenser, get_default_tools
@@ -134,8 +135,15 @@ def _call_github_api(
         raise RuntimeError(f"GitHub API returned invalid JSON: {e}") from e
 
 
-def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
-    """Fetch all reviews for a PR.
+def get_pr_reviews(pr_number: str, max_reviews: int = 100) -> list[dict[str, Any]]:
+    """Fetch the latest reviews for a PR using GraphQL.
+
+    Uses GraphQL with `last` to fetch the most recent reviews directly,
+    avoiding the need to paginate through all reviews from oldest to newest.
+
+    Args:
+        pr_number: The PR number
+        max_reviews: Maximum number of reviews to return (default: 100)
 
     Returns a list of review objects containing:
     - id: Review ID
@@ -145,14 +153,122 @@ def get_pr_reviews(pr_number: str) -> list[dict[str, Any]]:
     - submitted_at: When the review was submitted
     """
     repo = _get_required_env("REPO_NAME")
-    url = f"/repos/{repo}/pulls/{pr_number}/reviews"
-    return _call_github_api(url)
+    owner, repo_name = repo.split("/")
+
+    # Use GraphQL to fetch the latest reviews directly
+    # `last: N` fetches the N most recent items
+    query = """
+    query(
+      $owner: String!
+      $repo: String!
+      $pr_number: Int!
+      $count: Int!
+      $cursor: String
+    ) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr_number) {
+          reviews(last: $count, before: $cursor) {
+            pageInfo {
+              hasPreviousPage
+              startCursor
+            }
+            nodes {
+              id
+              author {
+                login
+              }
+              body
+              state
+              submittedAt
+            }
+          }
+        }
+      }
+    }
+    """
+
+    all_reviews: list[dict[str, Any]] = []
+    cursor = None
+    start_time = time.time()
+    page_count = 0
+
+    while len(all_reviews) < max_reviews:
+        # Check for pagination timeout
+        elapsed = time.time() - start_time
+        if elapsed > MAX_PAGINATION_TIME:
+            logger.warning(
+                f"Reviews pagination timeout after {elapsed:.1f}s, "
+                f"fetched {len(all_reviews)} reviews across {page_count} pages"
+            )
+            break
+
+        # Fetch up to remaining needed reviews
+        remaining = max_reviews - len(all_reviews)
+        fetch_count = min(remaining, 100)  # GraphQL max is 100 per request
+
+        variables = {
+            "owner": owner,
+            "repo": repo_name,
+            "pr_number": int(pr_number),
+            "count": fetch_count,
+            "cursor": cursor,
+        }
+
+        result = _call_github_api(
+            "https://api.github.com/graphql",
+            method="POST",
+            data={"query": query, "variables": variables},
+        )
+
+        if "errors" in result:
+            logger.warning(f"GraphQL errors fetching reviews: {result['errors']}")
+            break
+
+        pr_data = result.get("data", {}).get("repository", {}).get("pullRequest")
+        if not pr_data:
+            break
+
+        reviews_data = pr_data.get("reviews", {})
+        nodes = reviews_data.get("nodes", [])
+        page_count += 1
+
+        if not nodes:
+            break
+
+        # Convert GraphQL format to REST-like format for compatibility
+        for node in nodes:
+            author = node.get("author") or {}
+            all_reviews.append(
+                {
+                    "id": node.get("id"),
+                    "user": {"login": author.get("login", "unknown")},
+                    "body": node.get("body", ""),
+                    "state": node.get("state", "UNKNOWN"),
+                    "submitted_at": node.get("submittedAt"),
+                }
+            )
+
+        logger.debug(
+            f"Fetched page {page_count} with {len(nodes)} reviews "
+            f"(total: {len(all_reviews)})"
+        )
+
+        page_info = reviews_data.get("pageInfo", {})
+        if not page_info.get("hasPreviousPage"):
+            break
+        cursor = page_info.get("startCursor")
+
+    # Reviews are fetched newest-first with `last`, reverse to get chronological order
+    # (oldest first) for consistent display
+    return list(reversed(all_reviews))
 
 
 def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
-    """Fetch review threads with resolution status using GraphQL API.
+    """Fetch the latest review threads with resolution status using GraphQL API.
 
     The REST API doesn't expose thread resolution status, so we use GraphQL.
+    Uses `last` to fetch the most recent threads first, ensuring we get the
+    latest discussions rather than the oldest ones.
 
     Note: This query fetches up to 100 review threads per page, each with up to
     50 comments. For PRs exceeding these limits, older threads/comments may be
@@ -169,14 +285,16 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
     repo = _get_required_env("REPO_NAME")
     owner, repo_name = repo.split("/")
 
+    # Use `last` to fetch the most recent threads first
+    # `before: $cursor` paginates backwards through older threads
     query = """
     query($owner: String!, $repo: String!, $pr_number: Int!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $pr_number) {
-          reviewThreads(first: 100, after: $cursor) {
+          reviewThreads(last: 100, before: $cursor) {
             pageInfo {
-              hasNextPage
-              endCursor
+              hasPreviousPage
+              startCursor
             }
             nodes {
               id
@@ -205,6 +323,7 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
     cursor = None
     start_time = time.time()
     page_count = 0
+    has_more_pages = False
 
     while True:
         # Check for overall pagination timeout
@@ -248,18 +367,20 @@ def get_review_threads_graphql(pr_number: str) -> list[dict[str, Any]]:
         )
 
         page_info = review_threads.get("pageInfo", {})
-        if not page_info.get("hasNextPage"):
+        has_more_pages = page_info.get("hasPreviousPage", False)
+        if not has_more_pages:
             break
-        cursor = page_info.get("endCursor")
+        cursor = page_info.get("startCursor")
 
-    # Warn if we hit pagination limits
-    if len(threads) >= 100 and page_count == 1:
+    # Warn only if there are actually more pages we didn't fetch
+    if has_more_pages:
         logger.warning(
-            f"Fetched {len(threads)} review threads (at page limit). "
+            f"Review threads limited to {len(threads)} threads. "
             "Some threads may be omitted for PRs with extensive review history."
         )
 
-    return threads
+    # Threads are fetched newest-first with `last`, reverse to get chronological order
+    return list(reversed(threads))
 
 
 def format_review_context(
@@ -600,7 +721,7 @@ def main():
         prompt = format_prompt(
             skill_trigger=skill_trigger,
             title=pr_info.get("title", "N/A"),
-            body=pr_info.get("body", "No description provided"),
+            body=pr_info.get("body") or "No description provided",
             repo_name=pr_info.get("repo_name", "N/A"),
             base_branch=pr_info.get("base_branch", "main"),
             head_branch=pr_info.get("head_branch", "N/A"),
@@ -630,12 +751,22 @@ def main():
         # Get the current working directory as workspace
         cwd = os.getcwd()
 
-        # Create AgentContext with public skills enabled
-        # This loads skills from https://github.com/OpenHands/skills including:
+        # Load project-specific skills from the repository being reviewed
+        # This includes AGENTS.md, .cursorrules, and skills from .agents/skills/
+        project_skills = load_project_skills(cwd)
+        logger.info(
+            f"Loaded {len(project_skills)} project skills: "
+            f"{[s.name for s in project_skills]}"
+        )
+
+        # Create AgentContext with public skills enabled and project skills
+        # Public skills from https://github.com/OpenHands/extensions include:
         # - /codereview: Standard code review skill
         # - /codereview-roasted: Linus Torvalds style brutally honest review
+        # Project skills include repo-specific guidance (AGENTS.md, etc.)
         agent_context = AgentContext(
             load_public_skills=True,
+            skills=project_skills,
         )
 
         # Create agent with default tools and agent context
@@ -711,16 +842,26 @@ def main():
             else None
         )
 
-        if trace_id:
-            # Set trace metadata for later retrieval and filtering
-            Laminar.set_trace_metadata(
-                {
-                    "pr_number": pr_info["number"],
-                    "repo_name": pr_info["repo_name"],
-                    "workflow_phase": "review",
-                    "review_style": review_style,
-                }
-            )
+        if trace_id and laminar_span_context:
+            # Set trace metadata within an active span context
+            # Using start_as_current_span with parent_span_context to continue the trace
+            with Laminar.start_as_current_span(
+                name="pr-review-metadata",
+                parent_span_context=laminar_span_context,
+            ) as _:
+                # Set trace metadata within this active span context
+                # Include model for A/B testing analysis
+                pr_url = f"https://github.com/{pr_info['repo_name']}/pull/{pr_info['number']}"
+                Laminar.set_trace_metadata(
+                    {
+                        "pr_number": pr_info["number"],
+                        "repo_name": pr_info["repo_name"],
+                        "pr_url": pr_url,
+                        "workflow_phase": "review",
+                        "review_style": review_style,
+                        "model": model,
+                    }
+                )
 
             # Store trace context in file for GitHub artifact upload
             # This allows the evaluation workflow to add its span to this trace
@@ -733,10 +874,12 @@ def main():
                 "repo_name": pr_info["repo_name"],
                 "commit_id": commit_id,
                 "review_style": review_style,
+                "model": model,
             }
             with open("laminar_trace_info.json", "w") as f:
                 json.dump(trace_data, f, indent=2)
             logger.info(f"Laminar trace ID: {trace_id}")
+            logger.info(f"Model used: {model}")
             if span_context:
                 logger.info("Laminar span context captured for trace continuation")
             print("\n=== Laminar Trace ===")

@@ -21,6 +21,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
@@ -37,7 +38,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     import litellm
 
-from typing import cast
+from typing import Final, cast
 
 from litellm import (
     ChatCompletionToolParam,
@@ -90,6 +91,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
@@ -103,7 +105,7 @@ __all__ = ["LLM"]
 
 
 # Exceptions we retry on
-LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
+LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     APIConnectionError,
     RateLimitError,
     ServiceUnavailableError,
@@ -115,10 +117,10 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
 # Minimum context window size required for OpenHands to function properly.
 # Based on typical usage: system prompt (~2k) + conversation history (~4k)
 # + tool definitions (~2k) + working memory (~8k) = ~16k minimum.
-MIN_CONTEXT_WINDOW_TOKENS = 16384
+MIN_CONTEXT_WINDOW_TOKENS: Final[int] = 16384
 
 # Environment variable to override the minimum context window check
-ENV_ALLOW_SHORT_CONTEXT_WINDOWS = "ALLOW_SHORT_CONTEXT_WINDOWS"
+ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -345,6 +347,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ),
     )
 
+    fallback_strategy: FallbackStrategy | None = Field(
+        default=None,
+        description=(
+            "Optional fallback strategy for trying alternate LLMs on transient "
+            "failure. Construct with FallbackStrategy(fallback_llms=[...])."
+            "Excluded from serialization; must be reconfigured after load."
+        ),
+        exclude=True,
+    )
+
     # =========================================================================
     # Internal fields (excluded from dumps)
     # =========================================================================
@@ -360,6 +372,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
+    _litellm_provider: str | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -504,9 +517,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> cost = llm.metrics.accumulated_cost
             >>> print(f"Total cost: ${cost}")
         """
-        assert self._metrics is not None, (
-            "Metrics should be initialized after model validation"
-        )
+        if self._metrics is None:
+            self._metrics = Metrics(model_name=self.model)
         return self._metrics
 
     @property
@@ -519,9 +531,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Example:
             >>> llm.telemetry.set_log_completions_callback(my_callback)
         """
-        assert self._telemetry is not None, (
-            "Telemetry should be initialized after model validation"
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self.metrics,
+            )
         return self._telemetry
 
     @property
@@ -540,6 +558,48 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+
+    def reset_metrics(self) -> None:
+        """Reset metrics and telemetry to fresh instances.
+
+        This is used by the LLMRegistry to ensure each registered LLM has
+        independent metrics, preventing metrics from being shared between
+        LLMs that were created via model_copy().
+
+        When an LLM is copied (e.g., to create a condenser LLM from an agent LLM),
+        Pydantic's model_copy() does a shallow copy of private attributes by default,
+        causing the original and copied LLM to share the same Metrics object.
+        This method allows the registry to fix this by resetting metrics to None,
+        which will be lazily recreated when accessed.
+        """
+        self._metrics = None
+        self._telemetry = None
+
+    def _handle_error(
+        self,
+        error: Exception,
+        fallback_call_fn: Callable[[LLM], LLMResponse],
+    ) -> LLMResponse:
+        """Handle an error from completion/responses: try fallback, then map and raise.
+
+        Must be called from within an except block. Either returns an
+        LLMResponse (fallback succeeded) or re-raises (mapped or original).
+        """
+        assert self._telemetry is not None
+        self._telemetry.on_error(error)
+        if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
+            result = self.fallback_strategy.try_fallback(
+                primary_model=self.model,
+                primary_error=error,
+                primary_metrics=self.metrics,
+                call_fn=fallback_call_fn,
+            )
+            if result is not None:
+                return result
+        mapped = map_provider_exception(error)
+        if mapped is not error:
+            raise mapped from error
+        raise
 
     def completion(
         self,
@@ -693,11 +753,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=resp
             )
         except Exception as e:
-            self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            return self._handle_error(
+                e,
+                lambda fb: fb.completion(
+                    messages,
+                    tools,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    on_token,
+                ),
+            )
 
     # =========================================================================
     # Responses API (v1)
@@ -793,11 +858,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     typed_input: ResponseInputParam | str = (
                         cast(ResponseInputParam, input_items) if input_items else ""
                     )
-                    # Extract api_key value with type assertion for type checker
-                    api_key_value: str | None = None
-                    if self.api_key:
-                        assert isinstance(self.api_key, SecretStr)
-                        api_key_value = self.api_key.get_secret_value()
+                    api_key_value = self._get_litellm_api_key_value()
 
                     ret = litellm_responses(
                         model=self.model,
@@ -894,15 +955,46 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=resp
             )
         except Exception as e:
-            self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            return self._handle_error(
+                e,
+                lambda fb: fb.responses(
+                    messages,
+                    tools,
+                    include,
+                    store,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    on_token,
+                ),
+            )
 
     # =========================================================================
     # Transport + helpers
     # =========================================================================
+
+    def _infer_litellm_provider(self) -> str | None:
+        if self._litellm_provider is not None:
+            return self._litellm_provider
+
+        provider = infer_litellm_provider(model=self.model, api_base=self.base_url)
+        self._litellm_provider = provider
+        return provider
+
+    def _get_litellm_api_key_value(self) -> str | None:
+        api_key_value: str | None = None
+        if self.api_key:
+            assert isinstance(self.api_key, SecretStr)
+            api_key_value = self.api_key.get_secret_value()
+
+        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
+        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
+        # to reject the request with an "Invalid API Key format" error.
+        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
+        if api_key_value is not None and self._infer_litellm_provider() == "bedrock":
+            return None
+
+        return api_key_value
+
     def _transport_call(
         self,
         *,
@@ -936,11 +1028,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     category=DeprecationWarning,
                     message="Accessing the 'model_fields' attribute.*",
                 )
-                # Extract api_key value with type assertion for type checker
-                api_key_value: str | None = None
-                if self.api_key:
-                    assert isinstance(self.api_key, SecretStr)
-                    api_key_value = self.api_key.get_secret_value()
+                api_key_value = self._get_litellm_api_key_value()
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(

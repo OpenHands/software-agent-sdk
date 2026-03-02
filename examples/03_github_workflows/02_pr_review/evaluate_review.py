@@ -362,6 +362,10 @@ def main():
             }
         )
 
+        # Capture trace ID while inside the span context
+        # (get_trace_id() returns None outside a span context)
+        eval_trace_id = Laminar.get_trace_id()
+
     # Flush to ensure span is sent
     Laminar.flush()
 
@@ -416,8 +420,7 @@ def main():
             logger.warning(f"Failed to score original trace: {e}")
             # Don't fail the workflow if scoring fails
 
-    # Get and print the evaluation trace ID
-    eval_trace_id = Laminar.get_trace_id()
+    # Print evaluation summary
     print("\n=== PR Review Evaluation ===")
     print(f"PR: {repo_name}#{pr_number}")
     print(f"Merged: {pr_merged}")

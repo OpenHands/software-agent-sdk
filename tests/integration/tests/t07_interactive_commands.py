@@ -4,10 +4,8 @@ import hashlib
 import os
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
-from tests.integration.base import BaseIntegrationTest, TestResult
+from openhands.sdk.tool import Tool
+from tests.integration.base import BaseIntegrationTest, TestResult, get_tools_for_preset
 
 
 INSTRUCTION = (
@@ -42,13 +40,8 @@ class InteractiveCommandsTest(BaseIntegrationTest):
 
     @property
     def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        register_tool("TerminalTool", TerminalTool)
-        register_tool("FileEditorTool", FileEditorTool)
-        return [
-            Tool(name="TerminalTool"),
-            Tool(name="FileEditorTool"),
-        ]
+        """List of tools available to the agent based on configured tool preset."""
+        return get_tools_for_preset(self.tool_preset, enable_browser=False)
 
     def setup(self) -> None:
         """Set up the interactive Python script."""

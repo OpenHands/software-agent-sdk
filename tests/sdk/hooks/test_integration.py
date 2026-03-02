@@ -928,12 +928,12 @@ fi
         # 2. Second step sets FINISHED, stop hook allows, conversation ends
         assert step_count == 2
 
-        # Check that feedback was injected as a user message with prefix
+        # Check that feedback was injected as an environment message with prefix
         feedback_messages = [
             e
             for e in events_captured
             if isinstance(e, MessageEvent)
-            and e.source == "user"
+            and e.source == "environment"
             and any(
                 "[Stop hook feedback] Complete the task first" in c.text
                 for c in e.llm_message.content

@@ -263,7 +263,8 @@ class DockerWorkspace(RemoteWorkspace):
         # Set host for RemoteWorkspace to use
         # The container exposes port 8000, mapped to self.host_port
         # Override parent's host initialization
-        object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
+        if not self.host:
+            object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
         object.__setattr__(self, "api_key", None)
 
         # Wait for container to be healthy
@@ -303,7 +304,10 @@ class DockerWorkspace(RemoteWorkspace):
     def _wait_for_health(self, timeout: float = 120.0) -> None:
         """Wait for the Docker container to become healthy."""
         start = time.time()
-        health_url = f"http://127.0.0.1:{self.host_port}/health"
+        # We can construct the health URL based on self.host if available,
+        # or fallback to localhost
+        base_url = self.host.rstrip("/")
+        health_url = f"{base_url}/health"
 
         while time.time() - start < timeout:
             try:

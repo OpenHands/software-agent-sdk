@@ -565,3 +565,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if not self._initialized:
             raise RuntimeError("Agent not initialized; call _initialize() before use")
         return self._tools
+
+    def ask_agent(self, question: str) -> str | None:  # noqa: ARG002
+        """Optional override for stateless question answering.
+
+        Subclasses (e.g. ACPAgent) may override this to provide their own
+        implementation of ask_agent that bypasses the default LLM-based path.
+
+        Returns:
+            Response string, or ``None`` to use the default LLM-based approach.
+        """
+        return None

@@ -44,6 +44,9 @@ a = Analysis(
         # OpenHands Tools templates
         *collect_data_files("openhands.tools.delegate", includes=["templates/*.j2"]),
 
+        # OpenHands Tools browser recording JS files
+        *collect_data_files("openhands.tools.browser_use", includes=["js/*.js"]),
+
         # Package metadata for importlib.metadata
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),

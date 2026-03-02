@@ -11,7 +11,6 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
-from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -62,7 +61,6 @@ class EventService:
         )
 
     async def save_meta(self):
-        self.stored.updated_at = utc_now()
         meta_file = self.conversation_dir / "meta.json"
         meta_file.write_text(
             self.stored.model_dump_json(

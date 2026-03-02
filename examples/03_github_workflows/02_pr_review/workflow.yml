@@ -43,7 +43,8 @@ jobs:
             - name: Run PR Review
               uses: ./.github/actions/pr-review
               with:
-                  # LLM configuration
+                  # LLM model(s) to use. Can be comma-separated for A/B testing
+                  # - one model will be randomly selected per review
                   llm-model: anthropic/claude-sonnet-4-5-20250929
                   llm-base-url: ''
                   # Review style: roasted (other option: standard)

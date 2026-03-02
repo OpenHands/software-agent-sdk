@@ -20,11 +20,11 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.context import Skill
+from openhands.sdk.subagent import register_agent
 from openhands.sdk.tool import register_tool
 from openhands.tools.delegate import (
     DelegateTool,
     DelegationVisualizer,
-    register_agent,
 )
 from openhands.tools.preset.default import get_default_tools
 
