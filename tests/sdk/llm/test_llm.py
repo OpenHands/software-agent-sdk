@@ -79,6 +79,32 @@ def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_kimi_k2_5_uses_provider_defaults(mock_get):
+    """Test that kimi-k2.5 uses provider defaults (None) for temperature and top_p."""
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    llm = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-kimi-llm",
+    )
+    # Both temperature and top_p should be None (use provider defaults)
+    assert llm.temperature is None
+    assert llm.top_p is None
+
+    # Explicit values should still be respected
+    llm_explicit = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-kimi-llm-explicit",
+        top_p=0.8,
+        temperature=0.5,
+    )
+    assert llm_explicit.top_p == 0.8
+    assert llm_explicit.temperature == 0.5
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider_with_custom_url(mock_get):
     """Test that openhands/ provider respects custom base_url when provided."""
     # Mock the model info fetch to avoid actual HTTP calls
@@ -637,7 +663,7 @@ def test_llm_local_detection_based_on_model_name(default_llm):
 
     # Test basic model configuration
     assert llm.model == "gpt-4o"
-    assert llm.temperature == 0.0
+    assert llm.temperature is None  # Uses provider default
 
     # Test with localhost base_url
     local_llm = default_llm.model_copy(update={"base_url": "http://localhost:8000"})
