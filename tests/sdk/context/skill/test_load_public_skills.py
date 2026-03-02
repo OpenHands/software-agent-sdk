@@ -283,7 +283,7 @@ def test_update_skills_repository_update_existing(tmp_path):
     cache_dir.mkdir()
 
     # Create existing repo with .git directory
-    # The cache name is derived from the URL: OpenHands/extensions -> OpenHands-extensions
+    # Cache name derived from URL: OpenHands/extensions -> OpenHands-extensions
     repo_path = cache_dir / "OpenHands-extensions"
     repo_path.mkdir()
     git_dir = repo_path / ".git"
@@ -339,7 +339,7 @@ def test_update_skills_repository_update_fails_uses_cache(tmp_path):
     cache_dir.mkdir()
 
     # Create existing repo with .git directory
-    # The cache name is derived from the URL: OpenHands/extensions -> OpenHands-extensions
+    # Cache name derived from URL: OpenHands/extensions -> OpenHands-extensions
     repo_path = cache_dir / "OpenHands-extensions"
     repo_path.mkdir()
     git_dir = repo_path / ".git"

@@ -21,7 +21,6 @@ from openhands.sdk.context.skills.utils import (
     find_regular_md_files,
     find_skill_md_directories,
     find_third_party_files,
-    get_cache_name_from_url,
     get_skills_cache_dir,
     load_and_categorize,
     load_mcp_config,
@@ -930,10 +929,12 @@ def parse_skill_source(source: str | None) -> tuple[str | None, str]:
     """Parse a skill source string into repo spec and skill name.
 
     Args:
-        source: Skill source string (e.g., "./skill-name", "owner/repo:skills/skill-name").
+        source: Skill source string
+            (e.g., "./skill-name", "owner/repo:skills/skill-name").
 
     Returns:
-        Tuple of (repo_spec, skill_name) where repo_spec is "owner/repo" or None for local.
+        Tuple of (repo_spec, skill_name) where repo_spec is "owner/repo"
+        or None for local.
     """
     if source is None:
         return (None, "")
@@ -1104,9 +1105,7 @@ def load_public_skills(
                         all_skills.append(skill)
                         loaded_skill_names.add(skill.name)
 
-        logger.info(
-            f"Found {len(all_skills)} skill files in public skills repository"
-        )
+        logger.info(f"Found {len(all_skills)} skill files in public skills repository")
 
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
