@@ -67,10 +67,14 @@ runs:
           with:
               python-version: '3.12'
 
+        # Security: this workflow executes untrusted PR content (diff/title/body) via an
+        # LLM-powered reviewer agent that can run Bash. GitHub Actions caches are shared
+        # across workflows within a repository and can enable cache-poisoning pivots into
+        # more-privileged workflows. Keep caching disabled here.
         - name: Install uv
           uses: astral-sh/setup-uv@v6
           with:
-              enable-cache: true
+              enable-cache: false
 
         - name: Install GitHub CLI
           shell: bash

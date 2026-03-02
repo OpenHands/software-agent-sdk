@@ -1,9 +1,10 @@
 """Tests for resolve_model_config.py GitHub Actions script."""
 
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel, field_validator, model_validator
@@ -15,6 +16,8 @@ sys.path.append(str(run_eval_path))
 from resolve_model_config import (  # noqa: E402  # type: ignore[import-not-found]
     MODELS,
     find_models_by_id,
+    run_preflight_check,
+    test_model,
 )
 
 
@@ -253,3 +256,229 @@ def test_glm_5_config():
     assert model["id"] == "glm-5"
     assert model["display_name"] == "GLM-5"
     assert model["llm_config"]["model"] == "litellm_proxy/openrouter/z-ai/glm-5"
+    assert model["llm_config"]["disable_vision"] is True
+
+
+# Tests for preflight check functionality
+
+
+class TestTestModel:
+    """Tests for the test_model function."""
+
+    def test_successful_response(self):
+        """Test that a successful model response returns True."""
+        model_config = {
+            "display_name": "Test Model",
+            "llm_config": {"model": "litellm_proxy/test-model"},
+        }
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
+
+        with patch("litellm.completion", return_value=mock_response):
+            success, message = test_model(model_config, "test-key", "https://test.com")
+
+        assert success is True
+        assert "✓" in message
+        assert "Test Model" in message
+
+    def test_empty_response(self):
+        """Test that an empty response returns False."""
+        model_config = {
+            "display_name": "Test Model",
+            "llm_config": {"model": "litellm_proxy/test-model"},
+        }
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content=""))]
+
+        with patch("litellm.completion", return_value=mock_response):
+            success, message = test_model(model_config, "test-key", "https://test.com")
+
+        assert success is False
+        assert "✗" in message
+        assert "Empty response" in message
+
+    def test_timeout_error(self):
+        """Test that timeout errors are handled correctly."""
+        import litellm
+
+        model_config = {
+            "display_name": "Test Model",
+            "llm_config": {"model": "litellm_proxy/test-model"},
+        }
+
+        with patch(
+            "litellm.completion",
+            side_effect=litellm.exceptions.Timeout(
+                message="Timeout", model="test-model", llm_provider="test"
+            ),
+        ):
+            success, message = test_model(model_config, "test-key", "https://test.com")
+
+        assert success is False
+        assert "✗" in message
+        assert "timed out" in message
+
+    def test_connection_error(self):
+        """Test that connection errors are handled correctly."""
+        import litellm
+
+        model_config = {
+            "display_name": "Test Model",
+            "llm_config": {"model": "litellm_proxy/test-model"},
+        }
+
+        with patch(
+            "litellm.completion",
+            side_effect=litellm.exceptions.APIConnectionError(
+                message="Connection failed", llm_provider="test", model="test-model"
+            ),
+        ):
+            success, message = test_model(model_config, "test-key", "https://test.com")
+
+        assert success is False
+        assert "✗" in message
+        assert "Connection error" in message
+
+    def test_model_not_found_error(self):
+        """Test that model not found errors are handled correctly."""
+        import litellm
+
+        model_config = {
+            "display_name": "Test Model",
+            "llm_config": {"model": "litellm_proxy/test-model"},
+        }
+
+        with patch(
+            "litellm.completion",
+            side_effect=litellm.exceptions.NotFoundError(
+                "Model not found", llm_provider="test", model="test-model"
+            ),
+        ):
+            success, message = test_model(model_config, "test-key", "https://test.com")
+
+        assert success is False
+        assert "✗" in message
+        assert "not found" in message
+
+    def test_passes_llm_config_params(self):
+        """Test that llm_config parameters are passed to litellm."""
+        model_config = {
+            "display_name": "Test Model",
+            "llm_config": {
+                "model": "litellm_proxy/test-model",
+                "temperature": 0.5,
+                "top_p": 0.9,
+            },
+        }
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
+
+        with patch("litellm.completion", return_value=mock_response) as mock_completion:
+            test_model(model_config, "test-key", "https://test.com")
+
+        mock_completion.assert_called_once()
+        call_kwargs = mock_completion.call_args[1]
+        assert call_kwargs["temperature"] == 0.5
+        assert call_kwargs["top_p"] == 0.9
+
+
+class TestRunPreflightCheck:
+    """Tests for the run_preflight_check function."""
+
+    def test_skip_when_no_api_key(self):
+        """Test that preflight check is skipped when LLM_API_KEY is not set."""
+        models = [{"display_name": "Test", "llm_config": {"model": "test"}}]
+
+        with patch.dict("os.environ", {}, clear=True):
+            result = run_preflight_check(models)
+
+        assert result is True  # Skipped = success
+
+    def test_skip_when_skip_preflight_true(self):
+        """Test that preflight check is skipped when SKIP_PREFLIGHT=true."""
+        models = [{"display_name": "Test", "llm_config": {"model": "test"}}]
+
+        with patch.dict(
+            "os.environ", {"LLM_API_KEY": "test", "SKIP_PREFLIGHT": "true"}
+        ):
+            result = run_preflight_check(models)
+
+        assert result is True  # Skipped = success
+
+    def test_all_models_pass(self):
+        """Test that preflight check returns True when all models pass."""
+        models = [
+            {"display_name": "Model A", "llm_config": {"model": "model-a"}},
+            {"display_name": "Model B", "llm_config": {"model": "model-b"}},
+        ]
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
+
+        with patch.dict("os.environ", {"LLM_API_KEY": "test"}):
+            with patch("litellm.completion", return_value=mock_response):
+                result = run_preflight_check(models)
+
+        assert result is True
+
+    def test_any_model_fails(self):
+        """Test that preflight check returns False when any model fails."""
+        models = [
+            {"display_name": "Model A", "llm_config": {"model": "model-a"}},
+            {"display_name": "Model B", "llm_config": {"model": "model-b"}},
+        ]
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
+
+        def mock_completion(**kwargs):
+            if kwargs["model"] == "model-b":
+                raise Exception("Model B failed")
+            return mock_response
+
+        with patch.dict("os.environ", {"LLM_API_KEY": "test"}):
+            with patch("litellm.completion", side_effect=mock_completion):
+                result = run_preflight_check(models)
+
+        assert result is False
+
+
+def test_models_importable_without_litellm():
+    """Test that MODELS dictionary can be imported without litellm installed.
+
+    This is critical for the integration-runner workflow which uses MODELS
+    in the setup-matrix job without installing litellm. The import should
+    work in a clean Python environment.
+
+    Regression test for issue #2124.
+    """
+    # Get the repository root (where .github/ is located)
+    repo_root = Path(__file__).parent.parent.parent
+
+    script = """
+import sys
+sys.path.insert(0, '.github/run-eval')
+
+# This import should succeed without litellm being installed
+from resolve_model_config import MODELS
+
+# Verify we got the MODELS dictionary
+assert isinstance(MODELS, dict)
+assert len(MODELS) > 0
+print(f"SUCCESS: Imported {len(MODELS)} models without litellm")
+"""
+
+    # Run the script in a subprocess with a clean environment
+    # This ensures litellm is not available in sys.modules
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+
+    # Check that the script succeeded
+    assert result.returncode == 0, (
+        f"Failed to import MODELS without litellm.\n"
+        f"stdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+    assert "SUCCESS" in result.stdout
