@@ -4,15 +4,22 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation, RemoteConversation, Workspace, get_logger
 from openhands.sdk.event import ConversationStateUpdateEvent
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.tools.preset.default import get_default_agent
 
 
 logger = get_logger(__name__)
+
+# Hook script directory - reuse the hook scripts from 33_hooks example
+HOOK_SCRIPTS_DIR = (
+    Path(__file__).parent.parent / "01_standalone_sdk/33_hooks/hook_scripts"
+)
 
 
 def _stream_output(stream, prefix, target_stream):
@@ -168,10 +175,36 @@ with ManagedAPIServer(port=8001) as server:
     )
     logger.info(f"Output: {result.stdout}")
 
+    # Configure hooks - demonstrating the hooks system with RemoteConversation
+    # Server-side hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop) are
+    # executed by the agent server. Client-side hooks (SessionStart, SessionEnd)
+    # are executed locally.
+    log_file = Path("/tmp/tool_usage.log")
+
+    hook_config = HookConfig(
+        # PostToolUse hook - logs all tool usage to a file.
+        # Note: PostToolUse hooks run on the agent server, so the referenced
+        # script path must be accessible in the server environment.
+        post_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=(
+                            f"LOG_FILE={log_file} {HOOK_SCRIPTS_DIR / 'log_tools.sh'}"
+                        ),
+                        timeout=5,
+                    )
+                ],
+            )
+        ],
+    )
+
     conversation = Conversation(
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
+        hook_config=hook_config,
     )
     assert isinstance(conversation, RemoteConversation)
 

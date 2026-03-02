@@ -46,7 +46,6 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.hooks import (
     HookConfig,
     HookEventProcessor,
-    HookEventType,
     HookManager,
 )
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -531,6 +530,15 @@ class RemoteState(ConversationStateProtocol):
         stats_data = info.get("stats", {})
         return ConversationStats.model_validate(stats_data)
 
+    @property
+    def hook_config(self) -> HookConfig | None:
+        """Get hook configuration (fetched from remote)."""
+        info = self._get_conversation_info()
+        hook_config_data = info.get("hook_config")
+        if hook_config_data is not None:
+            return HookConfig.model_validate(hook_config_data)
+        return None
+
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
         info = self._get_conversation_info()
@@ -654,6 +662,8 @@ class RemoteConversation(BaseConversation):
                 "tool_module_qualnames": tool_qualnames,
                 # Include plugins to load on server
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
+                # Include hook_config for server-side hooks
+                "hook_config": hook_config.model_dump() if hook_config else None,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -769,17 +779,9 @@ class RemoteConversation(BaseConversation):
 
         self._start_observability_span(str(self._id))
         if hook_config is not None:
-            unsupported = (
-                HookEventType.PRE_TOOL_USE,
-                HookEventType.POST_TOOL_USE,
-                HookEventType.USER_PROMPT_SUBMIT,
-                HookEventType.STOP,
-            )
-            if any(hook_config.has_hooks_for_event(t) for t in unsupported):
-                logger.warning(
-                    "RemoteConversation only supports SessionStart/SessionEnd hooks; "
-                    "other hook types will not be enforced."
-                )
+            # Server-side hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop)
+            # are handled by the server - we send hook_config in the payload.
+            # Client-side hooks (SessionStart, SessionEnd) are handled locally here.
             hook_manager = HookManager(
                 config=hook_config,
                 working_dir=os.getcwd(),
