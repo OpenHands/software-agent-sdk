@@ -36,8 +36,8 @@ When reviewing, consider:
 PROMPT = """{skill_trigger}
 /github-pr-review
 
-When posting a review, keep the review body brief unless your active review instructions
-require a longer structured format.
+When posting a review, keep the review body brief unless your active review
+instructions require a longer structured format.
 
 Review the PR changes below and identify issues that need to be addressed.
 

@@ -21,7 +21,12 @@ def find_free_port():
 
 
 def run_agent_server(port, api_key):
-    os.environ["OH_SESSION_API_KEYS"] = f'["{api_key}"]'
+    # Configure authentication for the server process.
+    #
+    # Use both the V1 indexed env var and the legacy V0 var to keep this test
+    # stable across different config parsing behaviors.
+    os.environ["OH_SESSION_API_KEYS_0"] = api_key
+    os.environ["SESSION_API_KEY"] = api_key
     sys.argv = ["agent-server", "--port", str(port)]
     from openhands.agent_server.__main__ import main
 
@@ -33,7 +38,8 @@ def agent_server():
     port = find_free_port()
     api_key = "test-wsproto-key"
 
-    process = multiprocessing.Process(target=run_agent_server, args=(port, api_key))
+    ctx = multiprocessing.get_context("spawn")
+    process = ctx.Process(target=run_agent_server, args=(port, api_key))
     process.start()
 
     for _ in range(30):
@@ -103,4 +109,47 @@ async def test_agent_server_websocket_with_wsproto(agent_server):
 
         await ws.send(
             json.dumps({"role": "user", "content": "Hello from wsproto test"})
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_server_websocket_with_wsproto_header_auth(agent_server):
+    port = agent_server["port"]
+    api_key = agent_server["api_key"]
+
+    response = requests.post(
+        f"http://127.0.0.1:{port}/api/conversations",
+        headers={"X-Session-API-Key": api_key},
+        json={
+            "agent": {
+                "llm": {
+                    "usage_id": "test-llm",
+                    "model": "test-provider/test-model",
+                    "api_key": "test-key",
+                },
+                "tools": [],
+            },
+            "workspace": {"working_dir": "/tmp/test-workspace"},
+        },
+    )
+    assert response.status_code in [200, 201]
+    conversation_id = response.json()["id"]
+
+    ws_url = f"ws://127.0.0.1:{port}/sockets/events/{conversation_id}?resend_all=true"
+
+    async with websockets.connect(
+        ws_url,
+        open_timeout=5,
+        additional_headers={"X-Session-API-Key": api_key},
+    ) as ws:
+        try:
+            response = await asyncio.wait_for(ws.recv(), timeout=2)
+            assert response is not None
+        except TimeoutError:
+            pass
+
+        await ws.send(
+            json.dumps(
+                {"role": "user", "content": "Hello from wsproto header auth test"}
+            )
         )

@@ -275,13 +275,20 @@ async def update_conversation(
 @conversation_router.post(
     "/{conversation_id}/generate_title",
     responses={404: {"description": "Item not found"}},
+    deprecated=True,
 )
 async def generate_conversation_title(
     conversation_id: UUID,
     request: GenerateTitleRequest,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> GenerateTitleResponse:
-    """Generate a title for the conversation using LLM."""
+    """Generate a title for the conversation using LLM.
+
+    Deprecated since v1.11.5 and scheduled for removal in v1.14.0.
+
+    Prefer enabling `autotitle` in `StartConversationRequest` to have the server
+    generate and persist the title automatically from the first user message.
+    """
     title = await conversation_service.generate_conversation_title(
         conversation_id, request.max_length, request.llm
     )

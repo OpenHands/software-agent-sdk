@@ -1,4 +1,5 @@
 import io
+import json
 import re
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
@@ -847,6 +848,55 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 # Public skills repository configuration
 PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 PUBLIC_SKILLS_BRANCH = "main"
+DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
+
+
+def load_marketplace_skill_names(
+    repo_path: Path, marketplace_path: str
+) -> set[str] | None:
+    """Load the list of skill names from a marketplace manifest file.
+
+    Uses the existing Marketplace model from openhands.sdk.plugin to parse
+    the marketplace JSON file and extract plugin names.
+
+    Args:
+        repo_path: Path to the local repository.
+        marketplace_path: Relative path to the marketplace JSON file within the repo.
+
+    Returns:
+        Set of skill names to load, or None if marketplace file not found or invalid.
+    """
+    from openhands.sdk.plugin import Marketplace
+
+    marketplace_file = repo_path / marketplace_path
+    if not marketplace_file.exists():
+        logger.debug(f"Marketplace file not found: {marketplace_file}")
+        return None
+
+    try:
+        with open(marketplace_file) as f:
+            data = json.load(f)
+
+        # Use Marketplace model for validation and parsing
+        marketplace = Marketplace.model_validate({**data, "path": str(repo_path)})
+
+        skill_names = {plugin.name for plugin in marketplace.plugins}
+
+        logger.debug(
+            f"Loaded {len(skill_names)} skill names from marketplace: "
+            f"{marketplace_path}"
+        )
+        return skill_names
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse marketplace JSON {marketplace_file}: {e}")
+        return None
+    except OSError as e:
+        logger.warning(f"Failed to read marketplace file {marketplace_file}: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to load marketplace {marketplace_file}: {e}")
+        return None
 
 
 def load_public_skills(
@@ -860,6 +910,10 @@ def load_public_skills(
     to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
     to keep the skills up-to-date. This approach is more efficient than fetching
     individual files via HTTP.
+
+    Only skills listed in the default marketplace (marketplaces/default.json) are
+    loaded. This allows the OpenHands extensions repository to contain additional
+    skills that are not included by default.
 
     Note: When a skill directory contains a SKILL.md file (AgentSkills format),
     any other markdown files in that directory or its subdirectories are treated
@@ -901,15 +955,39 @@ def load_public_skills(
             logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        # Find SKILL.md directories (AgentSkills format) and regular .md files
-        # This ensures that markdown files in SKILL.md directories are NOT loaded
-        # as separate skills - they are reference materials for the parent skill.
-        skill_md_files = find_skill_md_directories(skills_dir)
-        skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
-        regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
+        # Load the default marketplace to determine which skills to include
+        marketplace_skill_names = load_marketplace_skill_names(
+            repo_path, DEFAULT_MARKETPLACE_PATH
+        )
 
-        # Combine all skill files to load
-        all_skill_files = list(skill_md_files) + list(regular_md_files)
+        # Determine which skill files to load
+        if marketplace_skill_names is not None:
+            # Marketplace exists: only load skills listed in marketplace
+            all_skill_files: list[Path] = []
+            for skill_name in marketplace_skill_names:
+                # Check for AgentSkills format (directory with SKILL.md)
+                skill_md = skills_dir / skill_name / "SKILL.md"
+                if skill_md.exists():
+                    all_skill_files.append(skill_md)
+                    continue
+                # Check for legacy format (skill_name.md file)
+                legacy_md = skills_dir / f"{skill_name}.md"
+                if legacy_md.exists():
+                    all_skill_files.append(legacy_md)
+                    continue
+                logger.debug(
+                    f"Skill '{skill_name}' from marketplace not found in skills dir"
+                )
+        else:
+            # No marketplace: load all skills (backward compatible)
+            # Find SKILL.md directories (AgentSkills format) and regular .md files
+            # This ensures that markdown files in SKILL.md directories are NOT
+            # loaded as separate skills - they are reference materials.
+            skill_md_files = find_skill_md_directories(skills_dir)
+            skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
+            regular_md_files = find_regular_md_files(skills_dir, skill_md_dirs)
+            all_skill_files = list(skill_md_files) + list(regular_md_files)
+
         logger.info(
             f"Found {len(all_skill_files)} skill files in public skills repository"
         )
