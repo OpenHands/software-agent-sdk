@@ -27,3 +27,7 @@ OPENHANDS_EXAMPLE_ARTIFACT_DIR=.pr/local_plugin_install_test \
 - `persistence/`: persisted `base_state.json` and `events/` from the smoke-test conversation
 
 > Note: `.pr/` content is automatically cleaned up on PR approval.
+>
+> Cleanup workflow: `.github/workflows/pr-artifacts.yml` (job: `cleanup-on-approval`).
+>
+> See `console_log.md` for a detailed explanation + the console output.

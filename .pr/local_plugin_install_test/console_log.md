@@ -3,6 +3,83 @@
 This file is **temporary** and lives under `.pr/`, so it will be automatically
 cleaned up by workflow on PR approval.
 
+
+## Cleanup guarantee
+
+- This `.pr/` directory is **temporary** and will be automatically removed when the PR is approved.
+- Cleanup is handled by: **`.github/workflows/pr-artifacts.yml`** (job: `cleanup-on-approval`).
+
+## How the TestLLM smoke test works (verbatim explanation)
+
+With **TestLLM**, the “live test” worked like this:
+
+### What we were trying to prove
+We wanted an end-to-end-ish smoke test that:
+
+1) installs a *local* plugin directory into an `installed_dir` (no real `~/.openhands/` writes)  
+2) loads that installed plugin as a `Plugin` object  
+3) merges the plugin’s `skills/` into an `Agent`’s `agent_context`  
+4) runs a real `Conversation` loop and confirms the skill actually **triggers**  
+5) persists the conversation to disk (so reviewers can inspect `base_state.json` + `events/*.json`)
+
+### Why TestLLM is enough here
+`TestLLM` is a real `LLM` subclass in the SDK (`openhands.sdk.testing.TestLLM`). Instead of calling an external provider, it returns **scripted** assistant messages.
+
+In the example we used:
+
+```py
+TestLLM.from_messages([
+  Message(role="assistant", content=[TextContent(text="Done")])
+])
+```
+
+So when the conversation calls the LLM once, it deterministically returns `"Done"` (and cost stays 0). No network calls, no API keys.
+
+### The important “real behavior” that still happens
+Even though the LLM response is scripted, the SDK still does the real steps around it:
+
+- The installed plugin’s `skills/hello/SKILL.md` is loaded as a `Skill` object (via `Plugin.load_all()` → `Plugin.load()` → `_load_skills()`).
+- We merge it into the agent via `plugin.add_skills_to(...)`.
+- When we do:
+
+```py
+conversation.send_message("hello")
+conversation.run()
+```
+
+the `AgentContext` keyword trigger logic runs, and we actually see:
+
+- the skill gets activated (`conversation.state.activated_knowledge_skills` becomes `['hello']`)
+- logs show: `Skill 'hello' triggered by keyword 'hello'`
+
+That’s the key proof that “installed plugin → loaded plugin → skill in agent context → skill triggers in a conversation” works.
+
+### What got persisted
+Because `Conversation(..., persistence_dir=...)` was set, it wrote:
+
+- `base_state.json`
+- `events/event-*.json`
+
+Those events include (at minimum) the user message event and the agent message event (from TestLLM). In artifact mode, we also delete `events/.eventlog.lock` so the persisted folder is clean for review.
+
+### What this does *not* test
+It doesn’t test:
+- external LLM behavior (reasoning quality/tool calls/etc.)
+- git fetching from GitHub (we used a local path source)
+- plugin hooks/MCP/etc
+
+But it **does** test the installed-plugin utilities + the skill loading/activation path in a “real Conversation”.
+
+If you still want a “real-world-like” run with a cheap real model (e.g. `gpt-5-nano`) we can swap `TestLLM` for `LLM(...)` in the example and keep the same artifact directory behavior—just note the example would then require `OPENAI_API_KEY` (or `LLM_API_KEY` + base_url) and would incur small cost.
+
+## Result from this run
+
+From the log below, you can see:
+
+- `Skill 'hello' triggered by keyword 'hello'`
+- `Activated skills: ['hello']`
+- persistence written to: `.../persistence/<conversation-id>`
+
 Command used:
 
 ```bash
