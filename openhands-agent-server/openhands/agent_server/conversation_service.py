@@ -25,6 +25,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
 
@@ -505,6 +506,10 @@ class ConversationService:
         )
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
+        if stored.autotitle and stored.title is None:
+            await event_service.subscribe_to_events(
+                AutoTitleSubscriber(service=event_service)
+            )
         asyncio.gather(
             *[
                 event_service.subscribe_to_events(
@@ -546,6 +551,35 @@ class _EventSubscriber(Subscriber):
             return
         self.service.stored.updated_at = utc_now()
         update_last_execution_time()
+
+
+@dataclass
+class AutoTitleSubscriber(Subscriber):
+    service: EventService
+
+    async def __call__(self, event: Event) -> None:
+        # Only act on incoming user messages
+        if not isinstance(event, MessageEvent) or event.source != "user":
+            return
+        # Guard: skip if a title was already set (e.g. by a concurrent task)
+        if self.service.stored.title is not None:
+            return
+
+        async def _generate_and_save() -> None:
+            try:
+                title = await self.service.generate_title()
+                if title and self.service.stored.title is None:
+                    self.service.stored.title = title
+                    self.service.stored.updated_at = utc_now()
+                    await self.service.save_meta()
+            except Exception:
+                logger.warning(
+                    f"Auto-title generation failed for "
+                    f"conversation {self.service.stored.id}",
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_generate_and_save())
 
 
 @dataclass

@@ -18,6 +18,12 @@ import sys
 from typing import Any
 
 
+# SDK-specific parameters that should not be passed to litellm.
+# These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
+# Keep this list in sync with SDK LLM config parameters that are SDK-internal.
+SDK_ONLY_PARAMS = {"disable_vision"}
+
+
 # Model configurations dictionary
 MODELS = {
     "claude-sonnet-4-5-20250929": {
@@ -31,7 +37,10 @@ MODELS = {
     "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",
         "display_name": "Kimi K2 Thinking",
-        "llm_config": {"model": "litellm_proxy/moonshot/kimi-k2-thinking"},
+        "llm_config": {
+            "model": "litellm_proxy/moonshot/kimi-k2-thinking",
+            "temperature": 1.0,
+        },
     },
     # https://www.kimi.com/blog/kimi-k2-5.html
     "kimi-k2.5": {
@@ -87,17 +96,26 @@ MODELS = {
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
-        "llm_config": {"model": "litellm_proxy/gemini-3-pro-preview"},
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3-pro-preview",
+            "temperature": 0.0,
+        },
     },
     "gemini-3-flash": {
         "id": "gemini-3-flash",
         "display_name": "Gemini 3 Flash",
-        "llm_config": {"model": "litellm_proxy/gemini-3-flash-preview"},
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3-flash-preview",
+            "temperature": 0.0,
+        },
     },
     "gemini-3.1-pro": {
         "id": "gemini-3.1-pro",
         "display_name": "Gemini 3.1 Pro",
-        "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview"},
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3.1-pro-preview",
+            "temperature": 0.0,
+        },
     },
     "gpt-5.2": {
         "id": "gpt-5.2",
@@ -120,7 +138,10 @@ MODELS = {
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
-        "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
+        "llm_config": {
+            "model": "litellm_proxy/minimax/minimax-m2",
+            "temperature": 0.0,
+        },
     },
     "minimax-m2.5": {
         "id": "minimax-m2.5",
@@ -134,7 +155,10 @@ MODELS = {
     "minimax-m2.1": {
         "id": "minimax-m2.1",
         "display_name": "MiniMax M2.1",
-        "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M2.1",
+            "temperature": 0.0,
+        },
     },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
@@ -145,7 +169,8 @@ MODELS = {
         "id": "qwen-3-coder",
         "display_name": "Qwen 3 Coder",
         "llm_config": {
-            "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct"
+            "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct",
+            "temperature": 0.0,
         },
     },
     "nemotron-3-nano-30b": {
@@ -161,6 +186,7 @@ MODELS = {
         "display_name": "GLM-4.7",
         "llm_config": {
             "model": "litellm_proxy/openrouter/z-ai/glm-4.7",
+            "temperature": 0.0,
             # OpenRouter glm-4.7 is text-only despite LiteLLM reporting vision support
             "disable_vision": True,
         },
@@ -170,6 +196,7 @@ MODELS = {
         "display_name": "GLM-5",
         "llm_config": {
             "model": "litellm_proxy/openrouter/z-ai/glm-5",
+            "temperature": 0.0,
             # OpenRouter glm-5 is text-only despite LiteLLM reporting vision support
             "disable_vision": True,
         },
@@ -177,17 +204,26 @@ MODELS = {
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",
         "display_name": "Qwen3 Coder Next",
-        "llm_config": {"model": "litellm_proxy/openrouter/qwen/qwen3-coder-next"},
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/qwen/qwen3-coder-next",
+            "temperature": 0.0,
+        },
     },
     "qwen3-coder-30b-a3b-instruct": {
         "id": "qwen3-coder-30b-a3b-instruct",
         "display_name": "Qwen3 Coder 30B A3B Instruct",
-        "llm_config": {"model": "litellm_proxy/Qwen3-Coder-30B-A3B-Instruct"},
+        "llm_config": {
+            "model": "litellm_proxy/Qwen3-Coder-30B-A3B-Instruct",
+            "temperature": 0.0,
+        },
     },
     "gpt-oss-20b": {
         "id": "gpt-oss-20b",
         "display_name": "GPT OSS 20B",
-        "llm_config": {"model": "litellm_proxy/gpt-oss-20b"},
+        "llm_config": {
+            "model": "litellm_proxy/gpt-oss-20b",
+            "temperature": 0.0,
+        },
     },
 }
 
@@ -229,13 +265,13 @@ def find_models_by_id(model_ids: list[str]) -> list[dict]:
     return resolved
 
 
-def test_model(
+def check_model(
     model_config: dict[str, Any],
     api_key: str,
     base_url: str,
     timeout: int = 60,
 ) -> tuple[bool, str]:
-    """Test a single model with a simple completion request using litellm.
+    """Check a single model with a simple completion request using litellm.
 
     Args:
         model_config: Model configuration dict with 'llm_config' key
@@ -253,13 +289,20 @@ def test_model(
     display_name = model_config.get("display_name", model_name)
 
     try:
-        # Build kwargs from llm_config, excluding 'model' which is passed separately
-        kwargs = {k: v for k, v in llm_config.items() if k != "model"}
+        # Build kwargs from llm_config, excluding 'model' and SDK-specific params
+        kwargs = {
+            k: v
+            for k, v in llm_config.items()
+            if k != "model" and k not in SDK_ONLY_PARAMS
+        }
 
+        # Use simple arithmetic prompt that works reliably across all models
+        # max_tokens=100 provides enough room for models to respond
+        # (some need >10 tokens)
         response = litellm.completion(
             model=model_name,
-            messages=[{"role": "user", "content": "Say 'OK' if you can read this."}],
-            max_tokens=10,
+            messages=[{"role": "user", "content": "1+1="}],
+            max_tokens=100,
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
@@ -267,10 +310,22 @@ def test_model(
         )
 
         content = response.choices[0].message.content if response.choices else None
+
         if content:
             return True, f"✓ {display_name}: OK"
         else:
-            return False, f"✗ {display_name}: Empty response"
+            # Check if there's any other data in the response for diagnostics
+            finish_reason = (
+                response.choices[0].finish_reason if response.choices else None
+            )
+            usage = getattr(response, "usage", None)
+            return (
+                False,
+                (
+                    f"✗ {display_name}: Empty response "
+                    f"(finish_reason={finish_reason}, usage={usage})"
+                ),
+            )
 
     except litellm.exceptions.Timeout:
         return False, f"✗ {display_name}: Request timed out after {timeout}s"
@@ -310,7 +365,7 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
 
     all_passed = True
     for model_config in models:
-        success, message = test_model(model_config, api_key, base_url)
+        success, message = check_model(model_config, api_key, base_url)
         print(message)
         if not success:
             all_passed = False
