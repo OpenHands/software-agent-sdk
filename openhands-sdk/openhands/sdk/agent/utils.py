@@ -1,6 +1,5 @@
 import json
 import types
-from collections.abc import Sequence
 from typing import (
     Annotated,
     Any,
@@ -13,7 +12,7 @@ from typing import (
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.types import ConversationTokenCallbackType
-from openhands.sdk.event.base import Event, LLMConvertibleEvent
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
@@ -117,7 +116,7 @@ def fix_malformed_tool_arguments(
 
 @overload
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -126,7 +125,7 @@ def prepare_llm_messages(
 
 @overload
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -134,19 +133,19 @@ def prepare_llm_messages(
 
 
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
 ) -> list[Message] | Condensation:
-    """Prepare LLM messages from conversation context.
+    """Prepare LLM messages from a pre-built View.
 
     This utility function extracts the common logic for preparing conversation
     context that is shared between agent.step() and ask_agent() methods.
     It handles condensation internally and calls the callback when needed.
 
     Args:
-        events: Sequence of events to prepare messages from
+        view: The current View maintained by the conversation state
         condenser: Optional condenser for handling context window limits
         additional_messages: Optional additional messages to append
         llm: Optional LLM instance from the agent, passed to condenser for
@@ -155,12 +154,8 @@ def prepare_llm_messages(
     Returns:
         List of messages ready for LLM completion, or a Condensation event
         if condensation is needed
-
-    Raises:
-        RuntimeError: If condensation is needed but no callback is provided
     """
 
-    view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
 
     # If a condenser is registered, we need to give it an

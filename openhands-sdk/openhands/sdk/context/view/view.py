@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from functools import cached_property
 from logging import getLogger
 from typing import overload
 
@@ -28,18 +27,17 @@ class View(BaseModel):
     in deciding whether further condensation is needed.
     """
 
-    events: list[LLMConvertibleEvent]
+    events: list[LLMConvertibleEvent] = Field(default_factory=list)
 
     unhandled_condensation_request: bool = False
     """Whether there is an unhandled condensation request in the view."""
 
-    condensations: list[Condensation] = Field(default_factory=list)
-    """A list of condensations that were processed to produce the view."""
+    _cached_manipulation_indices: ManipulationIndices | None = None
 
     def __len__(self) -> int:
         return len(self.events)
 
-    @cached_property
+    @property
     def manipulation_indices(self) -> ManipulationIndices:
         """The indices where the view events can be manipulated without violating the
         properties expected by LLM APIs.
@@ -48,10 +46,18 @@ class View(BaseModel):
         in the returned set of manipulation indices if it exists in _all_ the sets of
         property-derived indices.
         """
+        if self._cached_manipulation_indices is not None:
+            return self._cached_manipulation_indices
+
         results: ManipulationIndices = ManipulationIndices.complete(self.events)
         for property in ALL_PROPERTIES:
             results &= property.manipulation_indices(self.events)
+
+        self._cached_manipulation_indices = results
         return results
+
+    def _invalidate_manipulation_indices(self) -> None:
+        self._cached_manipulation_indices = None
 
     # To preserve list-like indexing, we ideally support slicing and position-based
     # indexing. The only challenge with that is switching the return type based on the
@@ -91,10 +97,7 @@ class View(BaseModel):
                 return True
         return False
 
-    @staticmethod
-    def enforce_properties(
-        current_view_events: list[LLMConvertibleEvent], all_events: Sequence[Event]
-    ) -> list[LLMConvertibleEvent]:
+    def enforce_properties(self, all_events: Sequence[Event]) -> None:
         """Enforce all properties on the list of current view events.
 
         Repeatedly applies each property's enforcement mechanism until the list of view
@@ -103,62 +106,81 @@ class View(BaseModel):
         Since enforcement is intended as a fallback to inductively maintaining the
         properties via the associated manipulation indices, any time a property must be
         enforced a warning is logged.
+
+        Modifies the view in-place.
         """
         for property in ALL_PROPERTIES:
-            events_to_forget = property.enforce(current_view_events, all_events)
+            events_to_forget = property.enforce(self.events, all_events)
             if events_to_forget:
                 logger.warning(
                     f"Property {property.__class__} enforced, "
                     f"{len(events_to_forget)} events dropped."
                 )
-                return View.enforce_properties(
-                    [
-                        event
-                        for event in current_view_events
-                        if event.id not in events_to_forget
-                    ],
-                    all_events,
-                )
-        return current_view_events
+                self.events = [
+                    event for event in self.events if event.id not in events_to_forget
+                ]
+                self._invalidate_manipulation_indices()
 
-    @staticmethod
-    def from_events(events: Sequence[Event]) -> View:
-        """Create a view from a list of events, respecting the semantics of any
-        condensation events.
+                # If we've forgotten events to enforce the properties, we'll need to
+                # attempt to apply each property again. Once we get all the way through
+                # the properties without any kind of modification, we can exit the loop.
+                self.enforce_properties(all_events)
+                break
+
+    def add_event(self, event: Event) -> None:
+        """Add an event to the view.
+
+        Updates the view in-place.
+
+        LLMConvertibleEvent objects are appended to the end of the view's events.
+        Condensation-related events will update the unhandled_condensation_request flag
+        and apply any condensations to the view's events by forgetting marked events and
+        inserting summaries.
+
+        Condensation semantics assume events are added in chronological order, as they
+        are produced by the LLM.
+
+        Args:
+            event: An event to add to the view.
         """
-        output: list[LLMConvertibleEvent] = []
-        condensations: list[Condensation] = []
+        match event:
+            case CondensationRequest():
+                self.unhandled_condensation_request = True
 
-        # Generate the LLMConvertibleEvent objects the agent can send to the LLM by
-        # removing un-sendable events and applying condensations in order.
-        for event in events:
-            # By the time we come across a Condensation event, the output list should
+            # By the time we come across a Condensation event, the events list should
             # already reflect the events seen by the agent up to that point. We can
-            # therefore apply the condensation semantics directly to the output list.
-            if isinstance(event, Condensation):
-                condensations.append(event)
-                output = event.apply(output)
+            # therefore apply the condensation semantics directly to the view's events.
+            case Condensation():
+                self.unhandled_condensation_request = False
+                self.events = event.apply(self.events)
+                self._invalidate_manipulation_indices()
 
-            elif isinstance(event, LLMConvertibleEvent):
-                output.append(event)
+            case LLMConvertibleEvent():
+                self.events.append(event)
+                self._invalidate_manipulation_indices()
 
             # If the event isn't related to condensation and isn't LLMConvertible, it
             # should not be in the resulting view. Examples include certain internal
             # events used for state tracking that the LLM does not need to see -- see,
             # for example, ConversationStateUpdateEvent, PauseEvent, and (relevant here)
             # CondensationRequest.
-            else:
-                logger.debug(
-                    f"Skipping non-LLMConvertibleEvent of type {type(event)} "
-                    "in View.from_events"
-                )
+            case _:
+                logger.debug(f"Skipping non-LLMConvertibleEvent of type {type(event)}")
 
-        output = View.enforce_properties(output, events)
+    @staticmethod
+    def from_events(events: Sequence[Event]) -> View:
+        """Create a view from a list of events, respecting the semantics of any
+        condensation events.
+        """
+        output: View = View()
 
-        return View(
-            events=output,
-            unhandled_condensation_request=View.unhandled_condensation_request_exists(
-                events
-            ),
-            condensations=condensations,
-        )
+        # Incrementally add all events one by one. This will track the unhandled
+        # condensation flag and apply any condensations along the way.
+        for event in events:
+            output.add_event(event)
+
+        # Enforce the view properties. These will drop any events that might violate
+        # structural properties expected by LLM APIs.
+        output.enforce_properties(events)
+
+        return output
