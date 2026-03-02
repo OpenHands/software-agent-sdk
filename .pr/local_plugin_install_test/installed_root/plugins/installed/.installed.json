@@ -2,12 +2,12 @@
   "plugins": {
     "local-plugin": {
       "name": "local-plugin",
-      "version": "1.0.0",
-      "description": "Example local plugin (PR smoke test)",
+      "version": "1.0.1",
+      "description": "Example local plugin",
       "source": "/workspace/project/software-agent-sdk/.pr/local_plugin_install_test/plugin_src/local-plugin",
       "resolved_ref": null,
       "repo_path": null,
-      "installed_at": "2026-03-01T23:48:36.175328+00:00",
+      "installed_at": "2026-03-02T00:17:35.569316+00:00",
       "install_path": "/workspace/project/software-agent-sdk/.pr/local_plugin_install_test/installed_root/plugins/installed/local-plugin"
     }
   }

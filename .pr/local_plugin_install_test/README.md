@@ -13,8 +13,11 @@ plugin utilities end-to-end in this PR.
 
 ## How to (re)generate
 
+This reuses the committed example script, but writes artifacts into `.pr/` via an env var:
+
 ```bash
-uv run python .pr/local_plugin_install_test/run_test.py
+OPENHANDS_EXAMPLE_ARTIFACT_DIR=.pr/local_plugin_install_test \
+  uv run python examples/05_skills_and_plugins/03_local_plugin_install/main.py
 ```
 
 ## Artifacts
