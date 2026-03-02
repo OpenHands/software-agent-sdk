@@ -23,6 +23,22 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Max number of characters we persist in HookExecutionEvent log fields.
+# Hooks can emit arbitrary output; truncation prevents event persistence bloat.
+MAX_HOOK_LOG_CHARS = 50_000
+_TRUNCATION_SUFFIX = "\n<TRUNCATED>"
+
+
+def _truncate_hook_log(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) <= MAX_HOOK_LOG_CHARS:
+        return value
+    if MAX_HOOK_LOG_CHARS <= len(_TRUNCATION_SUFFIX):
+        return value[:MAX_HOOK_LOG_CHARS]
+    return value[: MAX_HOOK_LOG_CHARS - len(_TRUNCATION_SUFFIX)] + _TRUNCATION_SUFFIX
+
+
 # Type alias for the callback function that emits events
 EventEmitter = Callable[[Event], None]
 
@@ -72,11 +88,11 @@ class HookEventProcessor:
             success=result.success,
             blocked=result.blocked,
             exit_code=result.exit_code,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            reason=result.reason,
-            additional_context=result.additional_context,
-            error=result.error,
+            stdout=_truncate_hook_log(result.stdout) or "",
+            stderr=_truncate_hook_log(result.stderr) or "",
+            reason=_truncate_hook_log(result.reason),
+            additional_context=_truncate_hook_log(result.additional_context),
+            error=_truncate_hook_log(result.error),
             action_id=action_id,
             message_id=message_id,
             hook_input=hook_input,
