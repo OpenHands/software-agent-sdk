@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "agent-client-protocol>=0.8.1",
     "deprecation>=2.1.0",
-    "fastmcp>=2.11.3",
+    "fastmcp>=2.11.3,<3",
     "filelock>=3.20.1",
     "httpx>=0.27.0",
     "litellm>=1.80.10",
