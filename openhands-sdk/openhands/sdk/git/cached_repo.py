@@ -12,7 +12,7 @@ from pathlib import Path
 from filelock import FileLock, Timeout
 
 from openhands.sdk.git.exceptions import GitCommandError
-from openhands.sdk.git.utils import run_git_command
+from openhands.sdk.git.utils import redact_url_credentials, run_git_command
 from openhands.sdk.logger import get_logger
 
 
@@ -285,7 +285,7 @@ def _do_clone_or_update(
         else:
             logger.debug(f"Using cached repository at {repo_path}")
     else:
-        logger.info(f"Cloning repository from {url}")
+        logger.info(f"Cloning repository from {redact_url_credentials(url)}")
         _clone_repository(url, repo_path, ref, git)
 
     return repo_path
