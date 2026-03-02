@@ -13,6 +13,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
+from openhands.sdk.conversation.switch_model_handler import SwitchModelHandler
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
@@ -33,6 +34,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -100,6 +102,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        allow_model_switching: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -139,6 +142,8 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            allow_model_switching: Whether to allow switching between persisted
+                models using the `/model <MODEL_NAME> [prompt]` command.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -251,6 +256,13 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
+        self._model_handler = (
+            SwitchModelHandler(
+                llm_registry=self.llm_registry, profile_store=LLMProfileStore()
+            )
+            if allow_model_switching
+            else None
+        )
 
         # Initialize secrets if provided
         if secrets:
@@ -470,6 +482,42 @@ class LocalConversation(BaseConversation):
 
             self._agent_ready = True
 
+    def _handle_model_command(
+        self,
+        profile_name: str,
+        remaining_text: str | None,
+        sender: str | None,
+    ) -> None:
+        """Handle a parsed /model command.
+
+        Args:
+            profile_name: Profile name ("" for info request).
+            remaining_text: Optional message to send after switching.
+            sender: Optional sender identifier.
+        """
+        assert self._model_handler is not None
+
+        if not profile_name:
+            logger.info(self._model_handler.get_profiles_info_message(self.agent.llm))
+            return
+
+        try:
+            self.agent = self._model_handler.switch(self.agent, profile_name)
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning(f"Failed to switch {profile_name}: {e}")
+            return
+
+        with self._state:
+            self._state.agent = self.agent
+
+        logger.info(
+            f"Switched to model profile `{profile_name}` "
+            f"(model: {self.agent.llm.model})"
+        )
+
+        if remaining_text:
+            self.send_message(remaining_text, sender=sender)
+
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
@@ -485,8 +533,15 @@ class LocalConversation(BaseConversation):
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
 
-        # Convert string to Message if needed
         if isinstance(message, str):
+            # Intercept /model command before converting to Message
+            if self._model_handler is not None:
+                parsed = self._model_handler.parse(message)
+                if parsed is not None:
+                    profile_name, remaining_text = parsed
+                    self._handle_model_command(profile_name, remaining_text, sender)
+                    return
+
             message = Message(role="user", content=[TextContent(text=message)])
 
         assert message.role == "user", (
