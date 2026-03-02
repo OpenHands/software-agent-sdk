@@ -13,10 +13,11 @@ from pydantic import BaseModel, Field
 def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     """Extract max iterations per run from frontmatter file."""
     max_iter_raw = fm.get("max_iteration_per_run")
-    max_iteration_per_run: int | None = None
     if isinstance(max_iter_raw, str):
-        max_iteration_per_run = int(max_iter_raw)
-    return max_iteration_per_run
+        return int(max_iter_raw)
+    if isinstance(max_iter_raw, int):
+        return max_iter_raw
+    return None
 
 
 def _extract_examples(description: str) -> list[str]:

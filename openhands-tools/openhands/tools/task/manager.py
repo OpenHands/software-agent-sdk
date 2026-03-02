@@ -185,7 +185,13 @@ class TaskManager:
         description: str | None,
         max_turns: int | None,
     ) -> Task:
-        """Create a fresh task."""
+        """Create a fresh task.
+
+        The iteration limit is resolved with the following precedence:
+        1. ``factory.max_iteration_per_run`` (from the agent definition)
+        2. ``max_turns`` (explicit caller override)
+        3. Hard-coded default of 500
+        """
         task_id, conversation_id = self._generate_ids()
 
         factory = get_agent_factory(subagent_type)
