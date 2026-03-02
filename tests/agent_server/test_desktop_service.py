@@ -16,6 +16,17 @@ class TestDesktopService:
         service = DesktopService()
         assert service._proc is None
         assert service.novnc_port == int(os.getenv("NOVNC_PORT", "8002"))
+        assert service.connection_token is None
+        assert service.token_file is None
+
+    def test_desktop_service_initialization_with_token(self):
+        """Test desktop service initialization with token."""
+        token = "test_token_12345"
+        service = DesktopService(connection_token=token)
+        assert service._proc is None
+        assert service.novnc_port == int(os.getenv("NOVNC_PORT", "8002"))
+        assert service.connection_token == token
+        assert service.token_file is None
 
     def test_desktop_service_custom_port(self):
         """Test desktop service with custom port."""
@@ -31,6 +42,89 @@ class TestDesktopService:
         with patch.object(service, "is_running", return_value=True):
             result = await service.start()
             assert result is True
+
+    @pytest.mark.asyncio
+    async def test_start_desktop_generates_token(self):
+        """Test that start generates a token if not provided."""
+        service = DesktopService()
+        assert service.connection_token is None
+
+        with (
+            patch.object(service, "is_running", return_value=False),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.exists", return_value=False),
+            patch("pathlib.Path.write_text"),
+            patch("pathlib.Path.chmod"),
+            patch("subprocess.run", side_effect=Exception("Stop early for test")),
+        ):
+            try:
+                await service.start()
+            except Exception:
+                pass  # We expect failure, we just want to check token generation
+
+            # Token should be generated
+            assert service.connection_token is not None
+            assert len(service.connection_token) == 64  # 32 bytes * 2 hex chars
+
+    @pytest.mark.asyncio
+    async def test_start_desktop_uses_provided_token(self):
+        """Test that start uses provided token instead of generating new one."""
+        token = "provided_token_12345"
+        service = DesktopService(connection_token=token)
+
+        with (
+            patch.object(service, "is_running", return_value=False),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.exists", return_value=False),
+            patch("pathlib.Path.write_text"),
+            patch("pathlib.Path.chmod"),
+            patch("subprocess.run", side_effect=Exception("Stop early for test")),
+        ):
+            try:
+                await service.start()
+            except Exception:
+                pass
+
+            # Token should remain the same
+            assert service.connection_token == token
+
+    @pytest.mark.asyncio
+    async def test_start_desktop_creates_token_file(self):
+        """Test that start creates token file with correct format."""
+        service = DesktopService(connection_token="test_token_123")
+        mock_write = MagicMock()
+
+        with (
+            patch.object(service, "is_running", return_value=False),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.exists", return_value=False),
+            patch("pathlib.Path.write_text", mock_write),
+            patch("pathlib.Path.chmod"),
+            patch("subprocess.run", side_effect=Exception("Stop early for test")),
+        ):
+            try:
+                await service.start()
+            except Exception:
+                pass
+
+            # Token file should be created with correct format
+            # Check that the token file content was written (first call)
+            assert mock_write.call_count >= 1
+            first_call = mock_write.call_args_list[0]
+            assert first_call[0][0] == "test_token_123: 127.0.0.1:5901\n"
+
+    @pytest.mark.asyncio
+    async def test_start_desktop_token_file_creation_failure(self):
+        """Test starting desktop when token file creation fails."""
+        service = DesktopService()
+
+        with (
+            patch.object(service, "is_running", return_value=False),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.write_text", side_effect=Exception("Write failed")),
+        ):
+            result = await service.start()
+            assert result is False
 
     @pytest.mark.asyncio
     async def test_start_desktop_directory_creation_failure(self):
@@ -166,6 +260,8 @@ class TestDesktopService:
             ),  # Not running initially, then running after start
             patch("pathlib.Path.mkdir"),
             patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.write_text"),
+            patch("pathlib.Path.chmod"),
             patch(
                 "subprocess.run",
                 side_effect=[
@@ -199,6 +295,8 @@ class TestDesktopService:
             patch.object(service, "is_running", return_value=False),
             patch("pathlib.Path.mkdir"),
             patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.write_text"),
+            patch("pathlib.Path.chmod"),
             patch(
                 "subprocess.run",
                 side_effect=[
@@ -331,29 +429,49 @@ class TestDesktopService:
         with patch("subprocess.run", side_effect=Exception("Command failed")):
             assert service.is_running() is False
 
-    def test_get_vnc_url_running(self):
-        """Test get_vnc_url when desktop is running."""
-        service = DesktopService()
+    def test_get_vnc_url_running_with_token(self):
+        """Test get_vnc_url when desktop is running with token."""
+        token = "test_token_12345"
+        service = DesktopService(connection_token=token)
 
         with patch.object(service, "is_running", return_value=True):
             url = service.get_vnc_url("http://example.com:8000")
-            assert url == "http://example.com:8000/vnc.html?autoconnect=1&resize=remote"
+            expected = (
+                "http://example.com:8000/vnc.html?"
+                f"path=websockify?token={token}&"
+                "autoconnect=1&resize=remote"
+            )
+            assert url == expected
 
     def test_get_vnc_url_not_running(self):
         """Test get_vnc_url when desktop is not running."""
-        service = DesktopService()
+        service = DesktopService(connection_token="test_token")
 
         with patch.object(service, "is_running", return_value=False):
             url = service.get_vnc_url("http://example.com:8000")
             assert url is None
 
-    def test_get_vnc_url_default_base(self):
-        """Test get_vnc_url with default base URL."""
+    def test_get_vnc_url_no_token(self):
+        """Test get_vnc_url when no token is set."""
         service = DesktopService()
 
         with patch.object(service, "is_running", return_value=True):
+            url = service.get_vnc_url("http://example.com:8000")
+            assert url is None
+
+    def test_get_vnc_url_default_base_with_token(self):
+        """Test get_vnc_url with default base URL and token."""
+        token = "test_token_12345"
+        service = DesktopService(connection_token=token)
+
+        with patch.object(service, "is_running", return_value=True):
             url = service.get_vnc_url()
-            assert url == "http://localhost:8003/vnc.html?autoconnect=1&resize=remote"
+            expected = (
+                "http://localhost:8003/vnc.html?"
+                f"path=websockify?token={token}&"
+                "autoconnect=1&resize=remote"
+            )
+            assert url == expected
 
 
 class TestGetDesktopService:
@@ -369,6 +487,7 @@ class TestGetDesktopService:
         """Test getting desktop service when VNC is enabled."""
         mock_config = MagicMock()
         mock_config.enable_vnc = True
+        mock_config.session_api_keys = []
 
         with patch(
             "openhands.agent_server.desktop_service.get_default_config",
@@ -377,6 +496,22 @@ class TestGetDesktopService:
             service = get_desktop_service()
             assert service is not None
             assert isinstance(service, DesktopService)
+            assert service.connection_token is None
+
+    def test_get_desktop_service_vnc_enabled_with_api_keys(self):
+        """Test getting desktop service when VNC is enabled with API keys."""
+        mock_config = MagicMock()
+        mock_config.enable_vnc = True
+        mock_config.session_api_keys = ["api_key_1", "api_key_2"]
+
+        with patch(
+            "openhands.agent_server.desktop_service.get_default_config",
+            return_value=mock_config,
+        ):
+            service = get_desktop_service()
+            assert service is not None
+            assert isinstance(service, DesktopService)
+            assert service.connection_token == "api_key_1"
 
     def test_get_desktop_service_vnc_disabled(self):
         """Test getting desktop service when VNC is disabled."""
@@ -394,6 +529,7 @@ class TestGetDesktopService:
         """Test that get_desktop_service returns the same instance."""
         mock_config = MagicMock()
         mock_config.enable_vnc = True
+        mock_config.session_api_keys = []
 
         with patch(
             "openhands.agent_server.desktop_service.get_default_config",
@@ -407,6 +543,7 @@ class TestGetDesktopService:
         """Test resetting the global desktop service."""
         mock_config = MagicMock()
         mock_config.enable_vnc = True
+        mock_config.session_api_keys = []
 
         with patch(
             "openhands.agent_server.desktop_service.get_default_config",
