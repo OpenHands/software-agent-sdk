@@ -10,6 +10,7 @@ from openhands.tools.terminal.terminal.terminal_session import (
     TerminalSession,
 )
 
+
 # SubprocessTerminal and TmuxTerminal use Unix-only modules (fcntl, pty)
 # Only import them on Unix-like systems
 if sys.platform != "win32":
