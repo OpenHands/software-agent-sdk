@@ -122,6 +122,12 @@ MIN_CONTEXT_WINDOW_TOKENS: Final[int] = 16384
 # Environment variable to override the minimum context window check
 ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 
+# Default max output tokens when model info only provides 'max_tokens' (ambiguous).
+# Some providers use 'max_tokens' for the total context window, not output limit.
+# This cap prevents requesting output that exceeds the context window.
+# 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
+DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
+
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
@@ -1112,7 +1118,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
                 elif isinstance(self._model_info.get("max_tokens"), int):
-                    self.max_output_tokens = self._model_info.get("max_tokens")
+                    # 'max_tokens' is ambiguous: some providers use it for total
+                    # context window, not output limit. Cap it to avoid requesting
+                    # output that exceeds the context window.
+                    max_tokens_value = self._model_info.get("max_tokens")
+                    assert isinstance(max_tokens_value, int)  # for type checker
+                    self.max_output_tokens = min(
+                        max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                    )
+                    if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s for %s "
+                            "(max_tokens may be context window, not output)",
+                            max_tokens_value,
+                            self.max_output_tokens,
+                            self.model,
+                        )
 
         if "o3" in self.model:
             o3_limit = 100000
