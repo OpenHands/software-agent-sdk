@@ -331,7 +331,7 @@ def test_agent_definition_to_factory_model_profile(tmp_path: Path) -> None:
     agent_def = AgentDefinition(
         name="profile-agent",
         description="Uses a profile",
-        model="fast-gpt.json",
+        model="fast-gpt",
         tools=["ReadTool"],
         system_prompt="Profile test.",
     )
@@ -387,7 +387,7 @@ def test_agent_definition_to_factory_model_profile_custom_store(tmp_path: Path) 
     agent_def = AgentDefinition(
         name="custom-store-agent",
         description="Uses custom store",
-        model="my-profile.json",
+        model="my-profile",
         tools=[],
         system_prompt="",
     )

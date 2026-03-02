@@ -126,15 +126,18 @@ def agent_definition_to_factory(
 ) -> Callable[["LLM"], "Agent"]:
     """Create an agent factory closure from an `AgentDefinition`.
 
-    The returned callable accepts an `LLM` instance (the parent agent's LLM)
-    and builds a fully-configured `Agent` instance.
+    The returned callable accepts the parent agent's LLM and produces a
+    fully-configured `Agent`. Regardless of which model mode is
+    used, the resulting LLM always has streaming disabled and independent
+    metrics (via `model_copy` + `reset_metrics`).
 
-    - Tool names from `agent_def.tools` are mapped to `Tool` objects.
-    - The system prompt is set as the `system_message_suffix` on the
-      `AgentContext`.
-    - ``model: inherit`` preserves the parent LLM unchanged.
-    - ``model: profile:<name>`` loads a complete LLM from *profile_store*
-      (or a default :class:`LLMProfileStore` when *profile_store* is ``None``).
+    Model resolution (`agent_def.model`):
+        - "inherit" or empty: Re-uses the parent LLM configuration as-is.
+        - Any other value: Treated as a profile name and loaded from `LLMProfileStore`.
+            Raises `ValueError` if the profile is not found.
+
+    The factory also wires up tools (from `agent_def.tools`) and the
+    system prompt (as `AgentContext.system_message_suffix`).
     """
 
     def _factory(llm: "LLM") -> "Agent":
@@ -146,10 +149,11 @@ def agent_definition_to_factory(
         # 'inherit' and it was given
         if agent_def.model and agent_def.model != "inherit":
             store = _get_profile_store()
-            if agent_def.model not in store.list():
+            available_profiles = [name.removesuffix(".json") for name in store.list()]
+            if agent_def.model not in available_profiles:
                 raise ValueError(
                     f"Profile {agent_def.model} not found in profile store.\n"
-                    f"Available profiles: {store.list()}"
+                    f"Available profiles: {available_profiles}"
                 )
 
             profile_name = agent_def.model
