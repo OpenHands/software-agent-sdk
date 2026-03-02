@@ -6,15 +6,12 @@ are properly handled:
 - Duplicates are removed after merging
 """
 
-from unittest.mock import create_autospec
-
 from openhands.sdk.context.view.properties.tool_result_uniqueness import (
     ToolResultUniquenessProperty,
     _create_merged_observation,
 )
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import (
-    ActionEvent,
     AgentErrorEvent,
     ObservationEvent,
     UserRejectObservation,
@@ -63,7 +60,8 @@ class TestCreateMergedObservation:
 
         merged = _create_merged_observation(obs, [error])
 
-        assert merged.id == "obs_1-merged"
+        # ID format: {original_id}-merged-{uuid}
+        assert merged.id.startswith("obs_1-merged-")
         assert merged.tool_call_id == "call_1"
         assert merged.tool_name == "terminal"
         # Check that error context is prepended
@@ -129,7 +127,8 @@ class TestToolResultUniquenessPropertyTransform:
         assert "obs_1" in transforms
         merged = transforms["obs_1"]
         assert isinstance(merged, ObservationEvent)
-        assert merged.id == "obs_1-merged"
+        # ID format: {original_id}-merged-{uuid}
+        assert merged.id.startswith("obs_1-merged-")
         # Error content should be in merged observation
         content_text = "".join(
             c.text
@@ -173,13 +172,8 @@ class TestToolResultUniquenessPropertyEnforcement:
 
     def test_no_duplicates(self) -> None:
         """Test enforce when there are no duplicate tool_call_ids."""
-        obs1 = create_autospec(ObservationEvent, instance=True)
-        obs1.tool_call_id = "call_1"
-        obs1.id = "obs_1"
-
-        obs2 = create_autospec(ObservationEvent, instance=True)
-        obs2.tool_call_id = "call_2"
-        obs2.id = "obs_2"
+        obs1 = create_observation_event("obs_1", "call_1", "Result 1")
+        obs2 = create_observation_event("obs_2", "call_2", "Result 2")
 
         events: list[LLMConvertibleEvent] = [
             message_event("Start"),
@@ -193,13 +187,8 @@ class TestToolResultUniquenessPropertyEnforcement:
 
     def test_duplicate_observation_events(self) -> None:
         """Test that duplicate ObservationEvents keep the later one."""
-        obs1 = create_autospec(ObservationEvent, instance=True)
-        obs1.tool_call_id = "call_1"
-        obs1.id = "obs_1"
-
-        obs2 = create_autospec(ObservationEvent, instance=True)
-        obs2.tool_call_id = "call_1"  # Same tool_call_id!
-        obs2.id = "obs_2"
+        obs1 = create_observation_event("obs_1", "call_1", "First result")
+        obs2 = create_observation_event("obs_2", "call_1", "Second result")
 
         events: list[LLMConvertibleEvent] = [obs1, obs2]
 
@@ -216,10 +205,7 @@ class TestToolResultUniquenessPropertyEnforcement:
             tool_call_id="call_1",
             error="Restart occurred while tool was running",
         )
-
-        obs = create_autospec(ObservationEvent, instance=True)
-        obs.tool_call_id = "call_1"  # Same tool_call_id!
-        obs.id = "obs_1"
+        obs = create_observation_event("obs_1", "call_1", "Actual result")
 
         events: list[LLMConvertibleEvent] = [agent_error, obs]
 
@@ -229,24 +215,15 @@ class TestToolResultUniquenessPropertyEnforcement:
 
     def test_agent_error_before_observation_event(self) -> None:
         """Test AgentErrorEvent followed by ObservationEvent (restart scenario)."""
-        action = create_autospec(ActionEvent, instance=True)
-        action.tool_call_id = "call_1"
-        action.id = "action_1"
-        action.llm_response_id = "response_1"
-
         agent_error = AgentErrorEvent(
             tool_name="terminal",
             tool_call_id="call_1",
             error="A restart occurred while this tool was in progress.",
         )
-
-        obs = create_autospec(ObservationEvent, instance=True)
-        obs.tool_call_id = "call_1"
-        obs.id = "obs_1"
+        obs = create_observation_event("obs_1", "call_1", "Actual result")
 
         events: list[LLMConvertibleEvent] = [
             message_event("User message"),
-            action,
             agent_error,
             obs,  # Actual result arrives later
         ]
@@ -283,10 +260,7 @@ class TestToolResultUniquenessPropertyEnforcement:
             action_id="action_1",
             rejection_reason="User rejected",
         )
-
-        obs = create_autospec(ObservationEvent, instance=True)
-        obs.tool_call_id = "call_1"
-        obs.id = "obs_1"
+        obs = create_observation_event("obs_1", "call_1", "Actual result")
 
         events: list[LLMConvertibleEvent] = [reject, obs]
 
@@ -302,14 +276,10 @@ class TestToolResultUniquenessPropertyEnforcement:
             tool_call_id="call_1",
             error="Restart error",
         )
-        obs1 = create_autospec(ObservationEvent, instance=True)
-        obs1.tool_call_id = "call_1"
-        obs1.id = "obs_1"
+        obs1 = create_observation_event("obs_1", "call_1", "Result 1")
 
         # Tool call 2: single observation (no duplicate)
-        obs2 = create_autospec(ObservationEvent, instance=True)
-        obs2.tool_call_id = "call_2"
-        obs2.id = "obs_2"
+        obs2 = create_observation_event("obs_2", "call_2", "Result 2")
 
         # Tool call 3: single error (no duplicate)
         error3 = AgentErrorEvent(
@@ -340,9 +310,7 @@ class TestToolResultUniquenessPropertyManipulationIndices:
 
     def test_complete_indices_returned(self) -> None:
         """Test that manipulation indices are complete (no restrictions)."""
-        obs = create_autospec(ObservationEvent, instance=True)
-        obs.tool_call_id = "call_1"
-        obs.id = "obs_1"
+        obs = create_observation_event("obs_1", "call_1", "Result")
 
         events: list[LLMConvertibleEvent] = [
             message_event("Start"),

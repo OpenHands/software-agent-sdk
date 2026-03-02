@@ -10,6 +10,7 @@ the error context is merged into the observation to preserve both pieces of
 information for the LLM.
 """
 
+import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 
@@ -24,7 +25,7 @@ from openhands.sdk.event import (
     ObservationEvent,
     ToolCallID,
 )
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import ImageContent, TextContent
 
 
 def _create_merged_observation(
@@ -49,27 +50,44 @@ def _create_merged_observation(
 
     # Create new content list with error context prepended
     original_content = list(obs_event.observation.content)
-    merged_content: list[TextContent] = [TextContent(text=error_prefix)]
-    merged_content.extend(original_content)  # type: ignore[arg-type]
+    merged_content: list[TextContent | ImageContent] = [TextContent(text=error_prefix)]
+    merged_content.extend(original_content)
 
-    # Create a new observation with merged content
-    # We need to preserve all fields from the original observation
-    obs_data = obs_event.observation.model_dump()
-    obs_data["content"] = merged_content
-
-    # Create the new observation using the same class as the original
-    merged_observation = obs_event.observation.__class__(**obs_data)
+    # Create a new observation with merged content using model_copy
+    merged_observation = obs_event.observation.model_copy(
+        update={"content": merged_content}
+    )
 
     # Create new ObservationEvent with a unique ID
-    # ID format: "{original_id}-merged" to ensure uniqueness
+    # ID format: "{original_id}-merged-{uuid}" to ensure uniqueness
     return ObservationEvent(
-        id=f"{obs_event.id}-merged",
+        id=f"{obs_event.id}-merged-{uuid.uuid4().hex[:8]}",
         tool_name=obs_event.tool_name,
         tool_call_id=obs_event.tool_call_id,
         observation=merged_observation,
         action_id=obs_event.action_id,
         source=obs_event.source,
     )
+
+
+def _group_observations_by_tool_call(
+    events: list[LLMConvertibleEvent],
+) -> dict[ToolCallID, list[ObservationBaseEvent]]:
+    """Group observations by their tool_call_id.
+
+    Args:
+        events: The list of events to process.
+
+    Returns:
+        A mapping from tool_call_id to list of observations with that ID.
+    """
+    observations_by_tool_call: dict[ToolCallID, list[ObservationBaseEvent]] = (
+        defaultdict(list)
+    )
+    for event in events:
+        if isinstance(event, ObservationBaseEvent):
+            observations_by_tool_call[event.tool_call_id].append(event)
+    return observations_by_tool_call
 
 
 class ToolResultUniquenessProperty(ViewPropertyBase):
@@ -92,15 +110,9 @@ class ToolResultUniquenessProperty(ViewPropertyBase):
         (typically from a restart scenario), merge the error context into the
         observation so the LLM has full context about what happened.
         """
-        # Group observations by tool_call_id
-        observations_by_tool_call: dict[ToolCallID, list[ObservationBaseEvent]] = (
-            defaultdict(list)
+        observations_by_tool_call = _group_observations_by_tool_call(
+            current_view_events
         )
-
-        for event in current_view_events:
-            if isinstance(event, ObservationBaseEvent):
-                observations_by_tool_call[event.tool_call_id].append(event)
-
         transforms: dict[EventID, LLMConvertibleEvent] = {}
 
         for observations in observations_by_tool_call.values():
@@ -132,15 +144,9 @@ class ToolResultUniquenessProperty(ViewPropertyBase):
         removes the remaining duplicate events (the original AgentErrorEvents and
         any other duplicates).
         """
-        # Group observations by tool_call_id
-        observations_by_tool_call: dict[ToolCallID, list[ObservationBaseEvent]] = (
-            defaultdict(list)
+        observations_by_tool_call = _group_observations_by_tool_call(
+            current_view_events
         )
-
-        for event in current_view_events:
-            if isinstance(event, ObservationBaseEvent):
-                observations_by_tool_call[event.tool_call_id].append(event)
-
         events_to_remove: set[EventID] = set()
 
         for observations in observations_by_tool_call.values():
