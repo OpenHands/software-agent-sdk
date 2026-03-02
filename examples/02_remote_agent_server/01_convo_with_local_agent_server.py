@@ -182,9 +182,9 @@ with ManagedAPIServer(port=8001) as server:
     log_file = Path("/tmp/tool_usage.log")
 
     hook_config = HookConfig(
-        # PostToolUse hook - logs all tool usage to a file
-        # Note: This won't work with RemoteConversation (warning will be shown)
-        # but demonstrates how hooks would be configured
+        # PostToolUse hook - logs all tool usage to a file.
+        # Note: PostToolUse hooks run on the agent server, so the referenced
+        # script path must be accessible in the server environment.
         post_tool_use=[
             HookMatcher(
                 matcher="*",
