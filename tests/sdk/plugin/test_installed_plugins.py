@@ -18,10 +18,6 @@ from openhands.sdk.plugin import (
     uninstall_plugin,
     update_plugin,
 )
-from openhands.sdk.plugin.installed import (
-    INSTALLED_METADATA_FILE,
-    _load_metadata,
-)
 
 
 @pytest.fixture
@@ -95,15 +91,15 @@ class TestInstalledPluginInfo:
 class TestInstalledPluginsMetadata:
     """Tests for InstalledPluginsMetadata model."""
 
-    def test_load_nonexistent(self, tmp_path: Path):
-        """Test loading metadata from nonexistent file returns empty."""
-        metadata_path = tmp_path / "nonexistent.json"
-        metadata = InstalledPluginsMetadata.load(metadata_path)
+    def test_load_from_dir_nonexistent(self, tmp_path: Path):
+        """Test loading metadata from nonexistent directory returns empty."""
+        metadata = InstalledPluginsMetadata.load_from_dir(tmp_path / "nonexistent")
         assert metadata.plugins == {}
 
-    def test_load_and_save(self, tmp_path: Path):
+    def test_load_from_dir_and_save_to_dir(self, tmp_path: Path):
         """Test saving and loading metadata."""
-        metadata_path = tmp_path / INSTALLED_METADATA_FILE
+        installed_dir = tmp_path / "installed"
+        installed_dir.mkdir()
 
         # Create metadata with a plugin
         info = InstalledPluginInfo(
@@ -115,20 +111,22 @@ class TestInstalledPluginsMetadata:
             install_path="/path/to/plugin",
         )
         metadata = InstalledPluginsMetadata(plugins={"test-plugin": info})
-        metadata.save(metadata_path)
+        metadata.save_to_dir(installed_dir)
 
         # Load and verify
-        loaded = InstalledPluginsMetadata.load(metadata_path)
+        loaded = InstalledPluginsMetadata.load_from_dir(installed_dir)
         assert "test-plugin" in loaded.plugins
         assert loaded.plugins["test-plugin"].name == "test-plugin"
         assert loaded.plugins["test-plugin"].version == "1.0.0"
 
-    def test_load_invalid_json(self, tmp_path: Path):
+    def test_load_from_dir_invalid_json(self, tmp_path: Path):
         """Test loading invalid JSON returns empty metadata."""
-        metadata_path = tmp_path / INSTALLED_METADATA_FILE
+        installed_dir = tmp_path / "installed"
+        installed_dir.mkdir()
+        metadata_path = InstalledPluginsMetadata.get_path(installed_dir)
         metadata_path.write_text("invalid json {")
 
-        metadata = InstalledPluginsMetadata.load(metadata_path)
+        metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
         assert metadata.plugins == {}
 
 
@@ -165,7 +163,7 @@ class TestInstallPlugin:
         assert (plugin_path / ".plugin" / "plugin.json").exists()
 
         # Verify metadata was updated
-        metadata = _load_metadata(installed_dir)
+        metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
         assert "sample-plugin" in metadata.plugins
 
     def test_install_already_exists_raises_error(
@@ -253,7 +251,7 @@ class TestUninstallPlugin:
         assert not (installed_dir / "sample-plugin").exists()
 
         # Verify metadata was updated
-        metadata = _load_metadata(installed_dir)
+        metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
         assert "sample-plugin" not in metadata.plugins
 
     def test_uninstall_nonexistent_plugin(self, installed_dir: Path):
@@ -347,7 +345,7 @@ class TestListInstalledPlugins:
         assert len(plugins) == 0
 
         # Verify metadata was cleaned
-        metadata = _load_metadata(installed_dir)
+        metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
         assert "sample-plugin" not in metadata.plugins
 
 
