@@ -34,7 +34,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
-from openhands.sdk.logger import get_logger
+from openhands.sdk.logger import flush_stdin, get_logger
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -620,6 +620,12 @@ class LocalConversation(BaseConversation):
                         self, on_event=self._on_event, on_token=self._on_token
                     )
                     iteration += 1
+
+                    # Flush any pending terminal query responses that may have
+                    # accumulated during the step (Rich display, tool execution, etc.)
+                    # This prevents ANSI escape codes from leaking to stdin.
+                    # See: https://github.com/OpenHands/software-agent-sdk/issues/2244
+                    flush_stdin()
 
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
