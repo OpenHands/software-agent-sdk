@@ -24,10 +24,12 @@ Example usage:
 """
 
 from collections.abc import Callable
+from functools import cache
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, NamedTuple
 
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.load import (
     load_agents_from_dir,
@@ -114,6 +116,11 @@ def register_agent_if_absent(
         return True
 
 
+@cache
+def _get_profile_store() -> LLMProfileStore:
+    return LLMProfileStore()
+
+
 def agent_definition_to_factory(
     agent_def: AgentDefinition,
 ) -> Callable[["LLM"], "Agent"]:
@@ -125,8 +132,9 @@ def agent_definition_to_factory(
     - Tool names from `agent_def.tools` are mapped to `Tool` objects.
     - The system prompt is set as the `system_message_suffix` on the
       `AgentContext`.
-    - `model: inherit` preserves the parent LLM; an explicit model name
-      creates a copy via `model_copy(update=...)`.
+    - ``model: inherit`` preserves the parent LLM unchanged.
+    - ``model: profile:<name>`` loads a complete LLM from *profile_store*
+      (or a default :class:`LLMProfileStore` when *profile_store* is ``None``).
     """
 
     def _factory(llm: "LLM") -> "Agent":
@@ -134,9 +142,24 @@ def agent_definition_to_factory(
         from openhands.sdk.context.agent_context import AgentContext
         from openhands.sdk.tool.spec import Tool
 
-        # Handle model override
+        # Load LLM profile if agent_def.model is different from
+        # 'inherit' and it was given
         if agent_def.model and agent_def.model != "inherit":
-            llm = llm.model_copy(update={"model": agent_def.model})
+            store = _get_profile_store()
+            if agent_def.model not in store.list():
+                raise ValueError(
+                    f"Profile {agent_def.model} not found in profile store.\n"
+                    f"Available profiles: {store.list()}"
+                )
+
+            profile_name = agent_def.model
+            llm = store.load(profile_name)
+
+        # Ensure sub-agent LLM always has streaming disabled and
+        # reset metrics such that the sub-agent has its own
+        # Metrics object
+        llm = llm.model_copy(update={"stream": False})
+        llm.reset_metrics()
 
         # the system prompt of the subagent is added as a suffix of the
         # main system prompt

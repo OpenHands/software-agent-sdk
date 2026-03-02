@@ -122,14 +122,8 @@ class DelegateExecutor(ToolExecutor):
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
-                # Each sub-agent gets its own LLM copy with independent metrics.
-                # model_copy() shallow-copies private attrs, so reset_metrics()
-                # is needed to break the shared Metrics reference with the parent.
-                sub_agent_llm = parent_llm.model_copy(update={"stream": False})
-                sub_agent_llm.reset_metrics()
-
                 factory = get_agent_factory(name=agent_type)
-                worker_agent = factory.factory_func(sub_agent_llm)
+                worker_agent = factory.factory_func(parent_llm)
 
                 # Use parent visualizer's create_sub_visualizer method if available
                 # This allows custom visualizers (e.g., TUI-based) to create
