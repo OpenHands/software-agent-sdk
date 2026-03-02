@@ -3,6 +3,22 @@
 This folder contains **temporary PR artifacts** used to validate the installed
 plugin utilities end-to-end in this PR.
 
+## Guarantee: this will not be merged
+
+The `.pr/` directory is PR-only. When this PR is approved, a workflow will
+automatically remove the entire `.pr/` directory so it does not get merged to
+`main`.
+
+- Cleanup workflow: `.github/workflows/pr-artifacts.yml` (job: `cleanup-on-approval`).
+
+## How this smoke test works (summary)
+
+This smoke test uses `TestLLM` (a scripted LLM) to run a real `Conversation`
+loop without external network calls, and verifies that an installed plugin’s
+skill can be loaded and triggered.
+
+See `console_log.md` for the full explanation (verbatim) and console output.
+
 ## What this tests
 
 - Installs a small **local plugin** into an `installed_dir` (without touching the
