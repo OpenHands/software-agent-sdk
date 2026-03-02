@@ -10,12 +10,12 @@ from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, TextContent
-from openhands.sdk.subagent.registry import register_builtins_agents
 from openhands.tools.delegate import (
     DelegateExecutor,
     DelegateObservation,
 )
 from openhands.tools.delegate.definition import DelegateAction
+from openhands.tools.preset import register_builtins_agents
 
 
 def create_test_executor_and_parent():

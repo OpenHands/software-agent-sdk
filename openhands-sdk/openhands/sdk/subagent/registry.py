@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.load import (
-    load_agents_from_dir,
     load_project_agents,
     load_user_agents,
 )
@@ -42,8 +41,6 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
 
 logger = get_logger(__name__)
-
-BUILTINS_DIR = Path(__file__).parent / "builtins"
 
 
 class AgentFactory(NamedTuple):
@@ -152,7 +149,10 @@ def agent_definition_to_factory(
         registered_tools: set[str] = set(list_registered_tools())
         for tool_name in agent_def.tools:
             if tool_name not in registered_tools:
-                logger.info(f"Tool '{tool_name}' is not registered (yet).")
+                logger.warning(
+                    f"Tool '{tool_name}' is not registered "
+                    f"but was given to agent {agent_def.name}."
+                )
             tools.append(Tool(name=tool_name))
 
         return Agent(
@@ -238,35 +238,6 @@ def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
             registered.append(agent_def.name)
             logger.info(f"Registered plugin agent '{agent_def.name}'")
 
-    return registered
-
-
-def register_builtins_agents() -> list[str]:
-    """Load and register SDK builtin agents from ``subagent/builtins/*.md``.
-
-    They are registered via ``register_agent_if_absent`` and will not
-    overwrite agents already registered by programmatic calls, plugins,
-    or project/user-level file-based definitions.
-
-    Returns:
-        List of agent names that were actually registered.
-    """
-    builtins_agents_def = load_agents_from_dir(BUILTINS_DIR)
-
-    registered: list[str] = []
-    for agent_def in builtins_agents_def:
-        factory = agent_definition_to_factory(agent_def)
-        was_registered = register_agent_if_absent(
-            name=agent_def.name,
-            factory_func=factory,
-            description=agent_def.description or f"Agent: {agent_def.name}",
-        )
-        if was_registered:
-            registered.append(agent_def.name)
-            logger.info(
-                f"Registered file-based agent '{agent_def.name}'"
-                + (f" from {agent_def.source}" if agent_def.source else "")
-            )
     return registered
 
 

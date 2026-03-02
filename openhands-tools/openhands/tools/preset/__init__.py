@@ -18,7 +18,7 @@ Notes:
   setups.
 """
 
-from .default import get_default_agent
+from .default import get_default_agent, register_builtins_agents
 from .gemini import get_gemini_agent, get_gemini_tools
 from .gpt5 import get_gpt5_agent
 from .planning import get_planning_agent
@@ -30,4 +30,5 @@ __all__ = [
     "get_gemini_tools",
     "get_gpt5_agent",
     "get_planning_agent",
+    "register_builtins_agents",
 ]
