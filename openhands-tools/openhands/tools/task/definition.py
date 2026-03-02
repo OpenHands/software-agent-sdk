@@ -193,9 +193,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         """
         from openhands.tools.task.impl import TaskExecutor, TaskManager
 
-        full_agent_types_info = get_factory_info()
-        lines = full_agent_types_info.splitlines()
-        agent_types_info = "\n".join(lines[1:])
+        agent_types_info = get_factory_info()
 
         task_description = TASK_TOOL_DESCRIPTION.format(
             agent_types_info=agent_types_info

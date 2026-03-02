@@ -302,7 +302,7 @@ def get_factory_info() -> str:
     with _registry_lock:
         user_factories = dict(_agent_factories)
 
-    info_lines = ["Available agent factories:"]
+    info_lines = []
     info_lines.append(
         "- **default**: Default general-purpose agent (used when no agent type is provided)"  # noqa: E501
     )

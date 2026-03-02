@@ -126,6 +126,13 @@ class StartConversationRequest(BaseModel):
             "hooks."
         ),
     )
+    autotitle: bool = Field(
+        default=True,
+        description=(
+            "If true, automatically generate a title for the conversation from "
+            "the first user message using the conversation's LLM."
+        ),
+    )
 
 
 class StoredConversation(StartConversationRequest):
