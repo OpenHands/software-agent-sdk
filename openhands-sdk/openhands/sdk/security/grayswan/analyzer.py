@@ -89,7 +89,7 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
             )
         return self
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, _context: Any) -> None:
         """Initialize the analyzer after model creation."""
         # Resolve API key from environment if not provided
         if self.api_key is None:

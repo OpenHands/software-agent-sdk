@@ -53,7 +53,7 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         """
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(self, exc_type: Any, _exc_val: Any, _exc_tb: Any) -> None:
         """Exit the workspace context and cleanup resources.
 
         Default implementation performs no cleanup. Subclasses should override
@@ -61,8 +61,8 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
 
         Args:
             exc_type: Exception type if an exception occurred
-            exc_val: Exception value if an exception occurred
-            exc_tb: Exception traceback if an exception occurred
+            _exc_val: Exception value if an exception occurred (unused)
+            _exc_tb: Exception traceback if an exception occurred (unused)
         """
         pass
 
