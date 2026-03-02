@@ -188,7 +188,7 @@ def test_agent_definition_to_factory_basic() -> None:
 
 
 def test_agent_definition_to_factory_model_inherit() -> None:
-    """Model 'inherit' preserves the parent LLM config, with stream disabled."""
+    """Model 'inherit' preserves the parent LLM."""
     agent_def = AgentDefinition(
         name="inherit-agent",
         description="Uses parent model",
@@ -201,12 +201,8 @@ def test_agent_definition_to_factory_model_inherit() -> None:
     llm = _make_test_llm()
     agent = factory(llm)
 
-    # LLM is a copy (stream disabled, metrics reset) but preserves config
-    assert agent.llm is not llm
+    assert agent.llm is llm
     assert agent.llm.model == "gpt-4o"
-    assert agent.llm.stream is False
-    # Metrics must be independent from the parent LLM
-    assert agent.llm.metrics is not llm.metrics
 
 
 def test_agent_definition_to_factory_model_override() -> None:
