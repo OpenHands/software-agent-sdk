@@ -227,8 +227,8 @@ with ManagedAPIServer(port=8001) as server:
             "Create a Python file called 'test_broken.py' in the current directory "
             "with an obvious syntax error (like 'def broken(:\n    pass' - missing "
             "closing parenthesis). After creating the file, immediately use the "
-            "finish action. Do NOT fix the syntax error yourself - I want to test "
-            "the validation hook."
+            "finish action. If you receive any feedback about errors, fix them and "
+            "try to finish again."
         )
 
         # Generate title using a specific LLM
@@ -246,7 +246,7 @@ with ManagedAPIServer(port=8001) as server:
         # When a stop hook denies, the state goes: running -> finished -> running
         # The client's run() may return when it sees 'finished', so we need to
         # check if the agent is still running and continue
-        max_runs = 5  # Prevent infinite loops
+        max_runs = 10  # Allow enough retries for agent to fix issues
         run_count = 0
         while run_count < max_runs:
             run_count += 1
