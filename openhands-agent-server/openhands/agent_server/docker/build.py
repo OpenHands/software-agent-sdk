@@ -564,6 +564,10 @@ def build(opts: BuildOptions) -> list[str]:
         opts.target,
         "--build-arg",
         f"BASE_IMAGE={opts.base_image}",
+        "--build-arg",
+        f"OPENHANDS_BUILD_GIT_SHA={opts.git_sha}",
+        "--build-arg",
+        f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
     ]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]

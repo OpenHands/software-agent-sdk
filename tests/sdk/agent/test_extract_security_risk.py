@@ -62,24 +62,29 @@ def agent_without_analyzer(mock_llm):
         ("agent_with_llm_analyzer", "MEDIUM", SecurityRisk.MEDIUM, False),
         ("agent_with_llm_analyzer", "HIGH", SecurityRisk.HIGH, False),
         ("agent_with_llm_analyzer", "UNKNOWN", SecurityRisk.UNKNOWN, False),
-        # Case 2: analyzer is not set, security risk is passed, extracted properly
+        # Case 2: Non-LLM analyzer set, security risk is passed, extracted properly
         ("agent_with_non_llm_analyzer", "LOW", SecurityRisk.LOW, False),
         ("agent_with_non_llm_analyzer", "MEDIUM", SecurityRisk.MEDIUM, False),
         ("agent_with_non_llm_analyzer", "HIGH", SecurityRisk.HIGH, False),
         ("agent_with_non_llm_analyzer", "UNKNOWN", SecurityRisk.UNKNOWN, False),
-        ("agent_without_analyzer", "LOW", SecurityRisk.LOW, False),
-        ("agent_without_analyzer", "MEDIUM", SecurityRisk.MEDIUM, False),
-        ("agent_without_analyzer", "HIGH", SecurityRisk.HIGH, False),
+        # Case 3: No analyzer set, security risk is passed, should be ignored
+        # (return UNKNOWN)
+        ("agent_without_analyzer", "LOW", SecurityRisk.UNKNOWN, False),
+        ("agent_without_analyzer", "MEDIUM", SecurityRisk.UNKNOWN, False),
+        ("agent_without_analyzer", "HIGH", SecurityRisk.UNKNOWN, False),
         ("agent_without_analyzer", "UNKNOWN", SecurityRisk.UNKNOWN, False),
-        # Case 3: LLM analyzer set, security risk not passed, ValueError raised
+        # Case 4: LLM analyzer set, security risk not passed, ValueError raised
         ("agent_with_llm_analyzer", None, None, True),
-        # Case 4: analyzer is not set, security risk is not passed, UNKNOWN returned
+        # Case 5: analyzer is not set, security risk is not passed, UNKNOWN returned
         ("agent_with_non_llm_analyzer", None, SecurityRisk.UNKNOWN, False),
         ("agent_without_analyzer", None, SecurityRisk.UNKNOWN, False),
-        # Case 5: invalid security risk value passed, ValueError raised
+        # Case 6: invalid security risk value passed
+        # - With LLM analyzer: ValueError raised for validation
+        # - With non-LLM analyzer: ValueError raised for invalid enum
+        # - Without analyzer: ignored, returns UNKNOWN (no validation attempted)
         ("agent_with_llm_analyzer", "INVALID", None, True),
         ("agent_with_non_llm_analyzer", "INVALID", None, True),
-        ("agent_without_analyzer", "INVALID", None, True),
+        ("agent_without_analyzer", "INVALID", SecurityRisk.UNKNOWN, False),
     ],
 )
 def test_extract_security_risk(
@@ -122,14 +127,14 @@ def test_extract_security_risk_arguments_mutation():
         )
     )
 
-    # Test with security_risk present
+    # Test with security_risk present but no analyzer (should be ignored)
     arguments = {"param1": "value1", "security_risk": "LOW", "param2": "value2"}
     original_args = arguments.copy()
 
     result = agent._extract_security_risk(arguments, "test_tool", False, None)
 
-    # Verify result
-    assert result == SecurityRisk.LOW
+    # Verify result is UNKNOWN when no analyzer is set (security_risk is ignored)
+    assert result == SecurityRisk.UNKNOWN
 
     # Verify security_risk was popped
     assert "security_risk" not in arguments
