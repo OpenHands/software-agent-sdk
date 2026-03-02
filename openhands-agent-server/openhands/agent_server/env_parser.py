@@ -13,7 +13,17 @@ from enum import Enum
 from io import StringIO
 from pathlib import Path
 from types import UnionType
-from typing import IO, Annotated, Any, Literal, Union, cast, get_args, get_origin
+from typing import (
+    IO,
+    Annotated,
+    Any,
+    Literal,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+)
 from uuid import UUID
 
 from pydantic import BaseModel, SecretStr, TypeAdapter
@@ -31,6 +41,8 @@ class MissingType:
 
 MISSING = MissingType()
 JsonType = str | int | float | bool | dict | list | None | MissingType
+
+T = TypeVar("T")
 
 
 class EnvParser(ABC):
@@ -480,11 +492,11 @@ def _create_sample(type_: type):
     return type_()
 
 
-def from_env(
-    target_type: type,
+def from_env[T](
+    target_type: type[T],
     prefix: str = "",
     parsers: dict[type, EnvParser] | None = None,
-):
+) -> T:
     if parsers is None:
         parsers = _get_default_parsers()
     parser = get_env_parser(target_type, parsers)

@@ -6,7 +6,10 @@ import pytest
 
 from openhands.sdk.tool.schema import TextContent
 from openhands.tools.browser_use.definition import BrowserObservation
-from openhands.tools.browser_use.impl import BrowserToolExecutor
+from openhands.tools.browser_use.impl import get_browser_executor_class
+
+
+BrowserToolExecutor = get_browser_executor_class()
 
 
 @pytest.fixture
@@ -19,8 +22,11 @@ def mock_browser_server():
 
 
 @pytest.fixture
-def mock_browser_executor(mock_browser_server):
+def mock_browser_executor(mock_browser_server, monkeypatch):
     """Create a BrowserToolExecutor with mocked server."""
+    monkeypatch.setattr(
+        BrowserToolExecutor, "_ensure_chromium_available", lambda self: "/mock/chromium"
+    )
     executor = BrowserToolExecutor()
     executor._server = mock_browser_server
     return executor

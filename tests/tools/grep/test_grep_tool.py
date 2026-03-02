@@ -131,7 +131,8 @@ def test_grep_tool_specific_directory():
         assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.search_path == str(src_dir.resolve())
-        assert str(src_dir) in observation.matches[0]
+        # Use resolved path for comparison (handles Windows short paths)
+        assert str(src_dir.resolve()) in observation.matches[0]
 
 
 def test_grep_tool_no_matches():

@@ -183,7 +183,7 @@ class BaseIntegrationTest(ABC):
             self.setup()
 
             # Initialize log file with header
-            with open(self.log_file_path, "w") as f:
+            with open(self.log_file_path, "w", encoding="utf-8") as f:
                 f.write(f"Agent Logs for Test: {self.instance_id}\n")
                 f.write("=" * 50 + "\n\n")
 
@@ -198,7 +198,7 @@ class BaseIntegrationTest(ABC):
             captured_output = stdout_buffer.getvalue()
             captured_errors = stderr_buffer.getvalue()
 
-            with open(self.log_file_path, "a") as f:
+            with open(self.log_file_path, "a", encoding="utf-8") as f:
                 if captured_output:
                     f.write("STDOUT:\n")
                     f.write(captured_output)
