@@ -8,6 +8,10 @@ for the same tool_call_id, typically due to restarts or race conditions.
 When both AgentErrorEvent and ObservationEvent exist for the same tool_call_id,
 the error context is merged into the observation to preserve both pieces of
 information for the LLM.
+
+IMPORTANT: This property only handles CONSECUTIVE duplicate observations.
+If two observations with the same tool_call_id are separated by other events,
+this indicates a more serious bug that should be exposed rather than hidden.
 """
 
 import uuid
@@ -70,33 +74,70 @@ def _create_merged_observation(
     )
 
 
-def _group_observations_by_tool_call(
+def _group_consecutive_observations_by_tool_call(
     events: list[LLMConvertibleEvent],
 ) -> dict[ToolCallID, list[ObservationBaseEvent]]:
-    """Group observations by their tool_call_id.
+    """Group CONSECUTIVE observations by their tool_call_id.
+
+    Only observations that are consecutive in the event list are grouped together.
+    If two observations with the same tool_call_id are separated by other events,
+    they are NOT grouped (indicating a bug that should be exposed).
 
     Args:
         events: The list of events to process.
 
     Returns:
-        A mapping from tool_call_id to list of observations with that ID.
+        A mapping from tool_call_id to list of consecutive observations with that ID.
+        Only includes tool_call_ids that have consecutive duplicate observations.
     """
-    observations_by_tool_call: dict[ToolCallID, list[ObservationBaseEvent]] = (
-        defaultdict(list)
-    )
+    consecutive_groups: dict[ToolCallID, list[ObservationBaseEvent]] = defaultdict(list)
+
+    # Track the last tool_call_id and its observations for consecutive detection
+    last_tool_call_id: ToolCallID | None = None
+    current_group: list[ObservationBaseEvent] = []
+
     for event in events:
         if isinstance(event, ObservationBaseEvent):
-            observations_by_tool_call[event.tool_call_id].append(event)
-    return observations_by_tool_call
+            if last_tool_call_id == event.tool_call_id:
+                # Consecutive observation with same tool_call_id
+                current_group.append(event)
+            else:
+                # New tool_call_id - save previous group if it had duplicates
+                if len(current_group) > 1:
+                    assert last_tool_call_id is not None
+                    consecutive_groups[last_tool_call_id] = current_group
+                # Start new group
+                last_tool_call_id = event.tool_call_id
+                current_group = [event]
+        else:
+            # Non-observation event - save previous group if it had duplicates
+            if len(current_group) > 1:
+                assert last_tool_call_id is not None
+                consecutive_groups[last_tool_call_id] = current_group
+            # Reset tracking
+            last_tool_call_id = None
+            current_group = []
+
+    # Don't forget the last group
+    if len(current_group) > 1:
+        assert last_tool_call_id is not None
+        consecutive_groups[last_tool_call_id] = current_group
+
+    return consecutive_groups
 
 
 class ToolResultUniquenessProperty(ViewPropertyBase):
     """Each tool_call_id must have exactly one tool result.
 
-    When multiple observations exist for the same tool_call_id, this property:
+    When multiple CONSECUTIVE observations exist for the same tool_call_id,
+    this property:
     1. Merges AgentErrorEvent content into ObservationEvent (if both exist)
     2. Keeps only the merged/primary event and removes duplicates
     3. Prefers ObservationEvent > other observations > AgentErrorEvent
+
+    IMPORTANT: Only consecutive duplicates are handled. If two observations
+    with the same tool_call_id are separated by other events, this property
+    does NOT merge them - the underlying bug should be exposed rather than hidden.
     """
 
     def transform(
@@ -107,18 +148,17 @@ class ToolResultUniquenessProperty(ViewPropertyBase):
         """Merge AgentErrorEvent content into ObservationEvent when both exist.
 
         When an AgentErrorEvent and ObservationEvent share the same tool_call_id
-        (typically from a restart scenario), merge the error context into the
-        observation so the LLM has full context about what happened.
+        AND are consecutive (typically from a restart scenario), merge the error
+        context into the observation so the LLM has full context about what happened.
+
+        Non-consecutive duplicates are NOT merged - they indicate a bug.
         """
-        observations_by_tool_call = _group_observations_by_tool_call(
+        consecutive_groups = _group_consecutive_observations_by_tool_call(
             current_view_events
         )
         transforms: dict[EventID, LLMConvertibleEvent] = {}
 
-        for observations in observations_by_tool_call.values():
-            if len(observations) <= 1:
-                continue
-
+        for observations in consecutive_groups.values():
             # Find ObservationEvents and AgentErrorEvents
             obs_events = [o for o in observations if isinstance(o, ObservationEvent)]
             error_events = [o for o in observations if isinstance(o, AgentErrorEvent)]
@@ -143,17 +183,17 @@ class ToolResultUniquenessProperty(ViewPropertyBase):
         After transform() has merged error context into observations, this method
         removes the remaining duplicate events (the original AgentErrorEvents and
         any other duplicates).
+
+        Only handles CONSECUTIVE duplicates - non-consecutive duplicates are NOT
+        removed to expose the underlying bug.
         """
-        observations_by_tool_call = _group_observations_by_tool_call(
+        consecutive_groups = _group_consecutive_observations_by_tool_call(
             current_view_events
         )
         events_to_remove: set[EventID] = set()
 
-        for observations in observations_by_tool_call.values():
-            if len(observations) <= 1:
-                continue
-
-            # Multiple observations for same tool_call_id - need to pick one
+        for observations in consecutive_groups.values():
+            # Multiple consecutive observations for same tool_call_id - need to pick one
             # Priority: ObservationEvent > other observations > AgentErrorEvent
             # If same priority, keep the later one (more recent)
             obs_events = [o for o in observations if isinstance(o, ObservationEvent)]

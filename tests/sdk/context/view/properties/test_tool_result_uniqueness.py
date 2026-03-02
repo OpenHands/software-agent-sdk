@@ -4,11 +4,13 @@ This module tests that duplicate tool results for the same tool_call_id
 are properly handled:
 - AgentErrorEvent content is merged into ObservationEvent when both exist
 - Duplicates are removed after merging
+- ONLY consecutive duplicates are handled; non-consecutive ones are NOT
 """
 
 from openhands.sdk.context.view.properties.tool_result_uniqueness import (
     ToolResultUniquenessProperty,
     _create_merged_observation,
+    _group_consecutive_observations_by_tool_call,
 )
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import (
@@ -44,6 +46,88 @@ def create_observation_event(
         ),
         action_id=action_id,
     )
+
+
+class TestGroupConsecutiveObservations:
+    """Tests for the _group_consecutive_observations_by_tool_call helper."""
+
+    def test_no_observations(self) -> None:
+        """Test with no observations returns empty dict."""
+        events: list[LLMConvertibleEvent] = [message_event("Hello")]
+        result = _group_consecutive_observations_by_tool_call(events)
+        assert result == {}
+
+    def test_single_observation_no_duplicates(self) -> None:
+        """Test that single observations are not grouped."""
+        obs = create_observation_event("obs_1", "call_1", "Result")
+        events: list[LLMConvertibleEvent] = [obs]
+        result = _group_consecutive_observations_by_tool_call(events)
+        assert result == {}
+
+    def test_consecutive_duplicates_are_grouped(self) -> None:
+        """Test that consecutive observations with same tool_call_id are grouped."""
+        error = AgentErrorEvent(
+            tool_name="terminal",
+            tool_call_id="call_1",
+            error="Restart error",
+        )
+        obs = create_observation_event("obs_1", "call_1", "Result")
+        events: list[LLMConvertibleEvent] = [error, obs]
+
+        result = _group_consecutive_observations_by_tool_call(events)
+
+        assert "call_1" in result
+        assert len(result["call_1"]) == 2
+        assert error in result["call_1"]
+        assert obs in result["call_1"]
+
+    def test_non_consecutive_duplicates_are_not_grouped(self) -> None:
+        """Test non-consecutive observations with same tool_call_id are NOT grouped."""
+        error = AgentErrorEvent(
+            tool_name="terminal",
+            tool_call_id="call_1",
+            error="Restart error",
+        )
+        obs = create_observation_event("obs_1", "call_1", "Result")
+        # A message event between them breaks consecutiveness
+        events: list[LLMConvertibleEvent] = [error, message_event("Interruption"), obs]
+
+        result = _group_consecutive_observations_by_tool_call(events)
+
+        # Should be empty - non-consecutive duplicates are not handled
+        assert result == {}
+
+    def test_multiple_consecutive_groups(self) -> None:
+        """Test multiple groups of consecutive duplicates."""
+        # Group 1
+        error1 = AgentErrorEvent(
+            tool_name="terminal",
+            tool_call_id="call_1",
+            error="Error 1",
+        )
+        obs1 = create_observation_event("obs_1", "call_1", "Result 1")
+        # Group 2 (after a message)
+        error2 = AgentErrorEvent(
+            tool_name="terminal",
+            tool_call_id="call_2",
+            error="Error 2",
+        )
+        obs2 = create_observation_event("obs_2", "call_2", "Result 2")
+
+        events: list[LLMConvertibleEvent] = [
+            error1,
+            obs1,
+            message_event("Between groups"),
+            error2,
+            obs2,
+        ]
+
+        result = _group_consecutive_observations_by_tool_call(events)
+
+        assert "call_1" in result
+        assert "call_2" in result
+        assert len(result["call_1"]) == 2
+        assert len(result["call_2"]) == 2
 
 
 class TestCreateMergedObservation:
@@ -111,14 +195,15 @@ class TestToolResultUniquenessPropertyTransform:
 
         assert transforms == {}
 
-    def test_transforms_when_error_and_observation_exist(self) -> None:
-        """Test that ObservationEvent is transformed when AgentErrorEvent exists."""
+    def test_transforms_when_consecutive_error_and_observation_exist(self) -> None:
+        """Test ObservationEvent transforms when consecutive AgentErrorEvent exists."""
         error = AgentErrorEvent(
             tool_name="terminal",
             tool_call_id="call_1",
             error="Restart occurred",
         )
         obs = create_observation_event("obs_1", "call_1", "Actual result")
+        # Error and obs are consecutive
         events: list[LLMConvertibleEvent] = [error, obs]
 
         transforms = self.property.transform(events, events)
@@ -137,6 +222,22 @@ class TestToolResultUniquenessPropertyTransform:
         )
         assert "[Note: Restart occurred]" in content_text
         assert "Actual result" in content_text
+
+    def test_no_transform_when_non_consecutive_duplicates(self) -> None:
+        """Test that non-consecutive duplicates are NOT transformed."""
+        error = AgentErrorEvent(
+            tool_name="terminal",
+            tool_call_id="call_1",
+            error="Restart occurred",
+        )
+        obs = create_observation_event("obs_1", "call_1", "Actual result")
+        # A message between them breaks consecutiveness
+        events: list[LLMConvertibleEvent] = [error, message_event("Interruption"), obs]
+
+        transforms = self.property.transform(events, events)
+
+        # No transform - non-consecutive duplicates should fail at API level
+        assert transforms == {}
 
     def test_no_transform_when_only_errors(self) -> None:
         """Test that no transform occurs when only AgentErrorEvents exist."""
@@ -159,7 +260,11 @@ class TestToolResultUniquenessPropertyTransform:
 
 
 class TestToolResultUniquenessPropertyEnforcement:
-    """Tests for the enforce method of ToolResultUniquenessProperty."""
+    """Tests for the enforce method of ToolResultUniquenessProperty.
+
+    NOTE: enforce() only handles CONSECUTIVE duplicates. Non-consecutive
+    duplicates are intentionally left untouched to expose bugs.
+    """
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
@@ -178,6 +283,7 @@ class TestToolResultUniquenessPropertyEnforcement:
         events: list[LLMConvertibleEvent] = [
             message_event("Start"),
             obs1,
+            message_event("Middle"),
             obs2,
             message_event("End"),
         ]
@@ -185,35 +291,44 @@ class TestToolResultUniquenessPropertyEnforcement:
         result = self.property.enforce(events, events)
         assert result == set()
 
-    def test_duplicate_observation_events(self) -> None:
-        """Test that duplicate ObservationEvents keep the later one."""
+    def test_consecutive_duplicate_observation_events(self) -> None:
+        """Test that consecutive duplicate ObservationEvents keep the later one."""
         obs1 = create_observation_event("obs_1", "call_1", "First result")
         obs2 = create_observation_event("obs_2", "call_1", "Second result")
-
+        # Consecutive duplicates
         events: list[LLMConvertibleEvent] = [obs1, obs2]
 
         result = self.property.enforce(events, events)
         # obs1 should be removed, obs2 (later) should be kept
         assert result == {"obs_1"}
 
-    def test_observation_event_preferred_over_agent_error(self) -> None:
-        """Test that ObservationEvent is preferred over AgentErrorEvent."""
-        # After transform, the merged observation replaces the original
-        # Then enforce removes the AgentErrorEvent
+    def test_non_consecutive_duplicates_not_enforced(self) -> None:
+        """Test that non-consecutive duplicates are NOT removed."""
+        obs1 = create_observation_event("obs_1", "call_1", "First result")
+        obs2 = create_observation_event("obs_2", "call_1", "Second result")
+        # Message between them breaks consecutiveness
+        events: list[LLMConvertibleEvent] = [obs1, message_event("Interruption"), obs2]
+
+        result = self.property.enforce(events, events)
+        # Nothing removed - non-consecutive duplicates should fail at API level
+        assert result == set()
+
+    def test_consecutive_observation_event_preferred_over_agent_error(self) -> None:
+        """Test ObservationEvent is preferred over AgentErrorEvent when consecutive."""
         agent_error = AgentErrorEvent(
             tool_name="terminal",
             tool_call_id="call_1",
             error="Restart occurred while tool was running",
         )
         obs = create_observation_event("obs_1", "call_1", "Actual result")
-
+        # Consecutive
         events: list[LLMConvertibleEvent] = [agent_error, obs]
 
         result = self.property.enforce(events, events)
         # AgentErrorEvent should be removed, ObservationEvent kept
         assert result == {agent_error.id}
 
-    def test_agent_error_before_observation_event(self) -> None:
+    def test_consecutive_agent_error_before_observation_event(self) -> None:
         """Test AgentErrorEvent followed by ObservationEvent (restart scenario)."""
         agent_error = AgentErrorEvent(
             tool_name="terminal",
@@ -221,39 +336,38 @@ class TestToolResultUniquenessPropertyEnforcement:
             error="A restart occurred while this tool was in progress.",
         )
         obs = create_observation_event("obs_1", "call_1", "Actual result")
-
+        # Consecutive after the message event
         events: list[LLMConvertibleEvent] = [
             message_event("User message"),
             agent_error,
-            obs,  # Actual result arrives later
+            obs,  # Actual result arrives immediately after error (consecutive)
         ]
 
         result = self.property.enforce(events, events)
         # AgentErrorEvent should be removed since we have actual ObservationEvent
         assert result == {agent_error.id}
 
-    def test_multiple_agent_errors_keep_last(self) -> None:
-        """Test that when only AgentErrorEvents exist, the last one is kept."""
+    def test_consecutive_multiple_agent_errors_keep_last(self) -> None:
+        """Test when only consecutive AgentErrorEvents exist, the last one is kept."""
         error1 = AgentErrorEvent(
             tool_name="terminal",
             tool_call_id="call_1",
             error="First error",
         )
-
         error2 = AgentErrorEvent(
             tool_name="terminal",
             tool_call_id="call_1",
             error="Second error",
         )
-
+        # Consecutive
         events: list[LLMConvertibleEvent] = [error1, error2]
 
         result = self.property.enforce(events, events)
         # First error should be removed, second (later) should be kept
         assert result == {error1.id}
 
-    def test_user_reject_observation_handling(self) -> None:
-        """Test that UserRejectObservation is handled correctly."""
+    def test_consecutive_user_reject_observation_handling(self) -> None:
+        """Test that UserRejectObservation is handled correctly when consecutive."""
         reject = UserRejectObservation(
             tool_name="terminal",
             tool_call_id="call_1",
@@ -261,16 +375,16 @@ class TestToolResultUniquenessPropertyEnforcement:
             rejection_reason="User rejected",
         )
         obs = create_observation_event("obs_1", "call_1", "Actual result")
-
+        # Consecutive
         events: list[LLMConvertibleEvent] = [reject, obs]
 
         result = self.property.enforce(events, events)
         # ObservationEvent is preferred over UserRejectObservation
         assert result == {reject.id}
 
-    def test_mixed_scenario_multiple_tool_calls(self) -> None:
-        """Test with multiple tool calls, some with duplicates."""
-        # Tool call 1: has duplicate (error + observation)
+    def test_mixed_scenario_consecutive_duplicates_only(self) -> None:
+        """Test with multiple tool calls, only consecutive duplicates handled."""
+        # Tool call 1: has consecutive duplicate (error + observation)
         error1 = AgentErrorEvent(
             tool_name="terminal",
             tool_call_id="call_1",
@@ -288,16 +402,19 @@ class TestToolResultUniquenessPropertyEnforcement:
             error="Tool not found",
         )
 
+        # error1 and obs1 are consecutive
         events: list[LLMConvertibleEvent] = [
             message_event("Start"),
             error1,
-            obs1,
+            obs1,  # Consecutive with error1
+            message_event("Middle"),
             obs2,
+            message_event("Another"),
             error3,
         ]
 
         result = self.property.enforce(events, events)
-        # Only error1 should be removed (duplicate with obs1)
+        # Only error1 should be removed (consecutive duplicate with obs1)
         assert result == {error1.id}
 
 
@@ -327,18 +444,22 @@ class TestToolResultUniquenessPropertyManipulationIndices:
 
 
 class TestToolResultUniquenessEndToEnd:
-    """End-to-end tests for the full transform + enforce workflow."""
+    """End-to-end tests for the full transform + enforce workflow.
+
+    NOTE: Only CONSECUTIVE duplicates are handled. Non-consecutive duplicates
+    are intentionally not processed to expose underlying bugs.
+    """
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
         self.property = ToolResultUniquenessProperty()
 
-    def test_restart_scenario_merges_and_removes(self) -> None:
-        """Test full restart scenario: error created, then actual result arrives."""
+    def test_restart_scenario_consecutive_merges_and_removes(self) -> None:
+        """Test restart scenario: error then actual result arrives consecutively."""
         # Simulates the actual bug scenario:
         # 1. Agent invokes tool
         # 2. Runtime restarts, creates AgentErrorEvent
-        # 3. Tool completes, creates ObservationEvent
+        # 3. Tool completes immediately, creates ObservationEvent (consecutive)
         # 4. Both events have same tool_call_id
 
         error = AgentErrorEvent(
@@ -347,7 +468,7 @@ class TestToolResultUniquenessEndToEnd:
             error="A restart occurred while this tool was in progress.",
         )
         obs = create_observation_event("obs_1", "call_1", "Command output: success")
-
+        # Events are consecutive
         events: list[LLMConvertibleEvent] = [error, obs]
 
         # Step 1: Transform merges error into observation
@@ -374,3 +495,25 @@ class TestToolResultUniquenessEndToEnd:
         )
         assert "restart occurred" in content_text.lower()
         assert "Command output: success" in content_text
+
+    def test_non_consecutive_duplicates_not_handled(self) -> None:
+        """Test that non-consecutive duplicates are NOT handled (to expose bugs)."""
+        # This scenario represents a bug: duplicates with other events between them
+        error = AgentErrorEvent(
+            tool_name="terminal",
+            tool_call_id="call_1",
+            error="A restart occurred while this tool was in progress.",
+        )
+        obs = create_observation_event("obs_1", "call_1", "Command output: success")
+        # Events are NOT consecutive - there's a message between them
+        events: list[LLMConvertibleEvent] = [error, message_event("Interruption"), obs]
+
+        # Step 1: Transform should NOT merge non-consecutive events
+        transforms = self.property.transform(events, events)
+        assert transforms == {}
+
+        # Step 2: Enforce should NOT remove non-consecutive duplicates
+        to_remove = self.property.enforce(events, events)
+        assert to_remove == set()
+
+        # Both events remain - the API will reject this, exposing the bug
