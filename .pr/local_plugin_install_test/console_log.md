@@ -1,6 +1,6 @@
 # Console log (PR-only)
 
-This file is **temporary** and lives under `.pr/`, so it will be automatically
+The `.pr/` directory is **temporary** : it will be automatically
 cleaned up by workflow on PR approval.
 
 Command used:
