@@ -246,7 +246,7 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
 
 def register_plugin_agents(
     agents: list[AgentDefinition],
-    work_dir: str | Path,
+    work_dir: str | Path | None = None,
 ) -> list[str]:
     """Register plugin-provided agent definitions into the delegate registry.
 
