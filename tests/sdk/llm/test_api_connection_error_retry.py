@@ -40,16 +40,16 @@ def default_config():
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_completion_retries_api_connection_error(
-    mock_litellm_completion, default_config
+    mock_litellm_acompletion, default_config
 ):
     """Test that APIConnectionError is properly retried."""
     mock_response = create_mock_response("Retry successful")
 
-    # Mock the litellm_completion to first raise an APIConnectionError,
+    # Mock the litellm_acompletion to first raise an APIConnectionError,
     # then return a successful response
-    mock_litellm_completion.side_effect = [
+    mock_litellm_acompletion.side_effect = [
         APIConnectionError(
             message="API connection error",
             llm_provider="test_provider",
@@ -74,16 +74,16 @@ def test_completion_retries_api_connection_error(
     # Verify that the retry was successful
     assert isinstance(response, LLMResponse)
     assert response.raw_response == mock_response
-    assert mock_litellm_completion.call_count == 2  # Initial call + 1 retry
+    assert mock_litellm_acompletion.call_count == 2  # Initial call + 1 retry
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_completion_max_retries_api_connection_error(
-    mock_litellm_completion, default_config
+    mock_litellm_acompletion, default_config
 ):
     """Test that APIConnectionError respects max retries and is mapped to SDK error."""
-    # Mock the litellm_completion to raise APIConnectionError multiple times
-    mock_litellm_completion.side_effect = [
+    # Mock the litellm_acompletion to raise APIConnectionError multiple times
+    mock_litellm_acompletion.side_effect = [
         APIConnectionError(
             message="API connection error 1",
             llm_provider="test_provider",
@@ -120,7 +120,7 @@ def test_completion_max_retries_api_connection_error(
 
     # Verify that the correct number of retries were attempted
     # The actual behavior is that it tries num_retries times total
-    assert mock_litellm_completion.call_count == default_config.num_retries
+    assert mock_litellm_acompletion.call_count == default_config.num_retries
 
     # The exception should contain connection error information
     assert "API connection error" in str(excinfo.value)
@@ -129,11 +129,11 @@ def test_completion_max_retries_api_connection_error(
     assert isinstance(excinfo.value.__cause__, APIConnectionError)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_completion_no_retry_on_success(mock_litellm_completion, default_config):
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_completion_no_retry_on_success(mock_litellm_acompletion, default_config):
     """Test that successful calls don't trigger retries."""
     mock_response = create_mock_response("Success on first try")
-    mock_litellm_completion.return_value = mock_response
+    mock_litellm_acompletion.return_value = mock_response
 
     # Create an LLM instance and call completion
     llm = LLM(
@@ -151,16 +151,16 @@ def test_completion_no_retry_on_success(mock_litellm_completion, default_config)
     # Verify that no retries were needed
     assert isinstance(response, LLMResponse)
     assert response.raw_response == mock_response
-    assert mock_litellm_completion.call_count == 1  # Only the initial call
+    assert mock_litellm_acompletion.call_count == 1  # Only the initial call
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_completion_no_retry_on_non_retryable_error(
-    mock_litellm_completion, default_config
+    mock_litellm_acompletion, default_config
 ):
     """Test that non-retryable errors don't trigger retries."""
     # Mock a non-retryable error (e.g., ValueError)
-    mock_litellm_completion.side_effect = ValueError("Invalid input")
+    mock_litellm_acompletion.side_effect = ValueError("Invalid input")
 
     # Create an LLM instance and call completion
     llm = LLM(
@@ -179,7 +179,7 @@ def test_completion_no_retry_on_non_retryable_error(
         )
 
     # Verify that no retries were attempted
-    assert mock_litellm_completion.call_count == 1  # Only the initial call
+    assert mock_litellm_acompletion.call_count == 1  # Only the initial call
     assert "Invalid input" in str(excinfo.value)
 
 
@@ -210,8 +210,8 @@ def test_retry_configuration_validation():
     assert llm_custom.retry_multiplier == 2.0
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_retry_listener_callback(mock_litellm_completion, default_config):
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+def test_retry_listener_callback(mock_litellm_acompletion, default_config):
     """Test that retry listener callback is called during retries."""
     retry_calls = []
 
@@ -220,7 +220,7 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
 
     mock_response = create_mock_response("Success after retry")
 
-    mock_litellm_completion.side_effect = [
+    mock_litellm_acompletion.side_effect = [
         APIConnectionError(
             message="Connection failed",
             llm_provider="test_provider",

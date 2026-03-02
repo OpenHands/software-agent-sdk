@@ -68,7 +68,7 @@ def test_emits_action_event_with_none_action_then_error_on_missing_tool() -> Non
     conv = Conversation(agent=agent, callbacks=[cb])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         conv.send_message(Message(role="user", content=[TextContent(text="go")]))
         agent.step(conv, on_event=cb)

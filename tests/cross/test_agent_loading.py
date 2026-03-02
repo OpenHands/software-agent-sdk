@@ -422,7 +422,7 @@ def test_conversation_fails_when_agent_type_changes():
             )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_persistence_lifecycle(mock_completion):
     """Test full conversation persistence lifecycle similar to examples/10_persistence.py."""  # noqa: E501
     from tests.conftest import create_mock_litellm_response

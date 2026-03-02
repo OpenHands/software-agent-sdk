@@ -293,7 +293,7 @@ def test_security_risk_param_ignored_when_no_analyzer():
     convo = Conversation(agent=agent, callbacks=[events.append])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion",
+        "openhands.sdk.llm.llm.litellm_acompletion",
         return_value=_tool_response(
             "think",
             '{"thought": "This is a test thought", "security_risk": "LOW"}',

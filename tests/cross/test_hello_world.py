@@ -145,7 +145,7 @@ class TestHelloWorld:
 
         return [first_response, second_response]
 
-    @patch("openhands.sdk.llm.llm.litellm_completion")
+    @patch("openhands.sdk.llm.llm.litellm_acompletion")
     def test_hello_world_with_real_llm_data(self, mock_completion, fncall_raw_logs):
         """Test the complete hello world flow with real LLM completion data."""
         # Setup real LLM responses from fixtures
@@ -269,7 +269,7 @@ class TestHelloWorld:
                         "Real responses should have content"
                     )
 
-    @patch("openhands.sdk.llm.llm.litellm_completion")
+    @patch("openhands.sdk.llm.llm.litellm_acompletion")
     def test_llm_completion_logging_fidelity(self, mock_completion, fncall_raw_logs):
         """Test mocked LLM completion logging produces same output."""
         # Use mock responses for consistent behavior instead of real fixture data
@@ -434,7 +434,7 @@ class TestHelloWorld:
 
         # Mock the completion method
         with patch(
-            "openhands.sdk.llm.llm.litellm_completion",
+            "openhands.sdk.llm.llm.litellm_acompletion",
             side_effect=capture_completion_fidelity,
         ):
             # Create conversation and send a message
@@ -527,7 +527,7 @@ class TestHelloWorld:
 
         # Mock the completion method
         with patch(
-            "openhands.sdk.llm.llm.litellm_completion",
+            "openhands.sdk.llm.llm.litellm_acompletion",
             side_effect=capture_completion_non_func,
         ):
             # Create conversation and send a message

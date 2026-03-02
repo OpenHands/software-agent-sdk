@@ -1111,6 +1111,14 @@ class RemoteConversation(BaseConversation):
     def pause(self) -> None:
         _send_request(self._client, "POST", f"/api/conversations/{self._id}/pause")
 
+    def interrupt(self) -> None:
+        """Interrupt the conversation immediately, cancelling any in-flight LLM calls.
+
+        For remote conversations, this sends an interrupt request to the server.
+        The server will cancel the current operation and set the status to paused.
+        """
+        _send_request(self._client, "POST", f"/api/conversations/{self._id}/interrupt")
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         # Convert SecretValue to strings for JSON serialization
         # SecretValue can be str or callable, we need to handle both
