@@ -10,8 +10,8 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     register_agent,
-    register_builtins_agents,
 )
+from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task.manager import (
     Task,
     TaskManager,

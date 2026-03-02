@@ -38,3 +38,4 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "*" = ["py.typed", "**/*.j2"]
+"openhands.tools.preset.subagents" = ["*.md"]

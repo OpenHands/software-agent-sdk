@@ -1,12 +1,15 @@
 """Default preset configuration for OpenHands agents."""
 
-from openhands.sdk import Agent
+from pathlib import Path
+
+from openhands.sdk import Agent, agent_definition_to_factory, load_agents_from_dir
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
+from openhands.sdk.subagent import register_agent_if_absent
 from openhands.sdk.tool import Tool
 
 
@@ -83,3 +86,52 @@ def get_default_agent(
         ),
     )
     return agent
+
+
+def register_builtins_agents(cli_mode: bool = False) -> list[str]:
+    """Load and register builtin agents from ``subagent/*.md``.
+
+    They are registered via `register_agent_if_absent` and will not
+    overwrite agents already registered by programmatic calls, plugins,
+    or project/user-level file-based definitions.
+
+    Args:
+        cli_mode: Whether to load the default agent in cli mode or not.
+
+    Returns:
+        List of agents which were actually registered.
+    """
+    register_default_tools(
+        # Disable browser tools in CLI mode
+        enable_browser=not cli_mode,
+    )
+
+    subagent_dir = Path(__file__).parent / "subagents"
+    builtins_agents_def = load_agents_from_dir(subagent_dir)
+
+    # if we are in cli mode, we filter out the default agent (with browser tool)
+    # otherwise, we filter out the default cli agent
+    if cli_mode:
+        builtins_agents_def = [
+            agent for agent in builtins_agents_def if agent.name != "default"
+        ]
+    else:
+        builtins_agents_def = [
+            agent for agent in builtins_agents_def if agent.name != "default cli mode"
+        ]
+
+    registered: list[str] = []
+    for agent_def in builtins_agents_def:
+        factory = agent_definition_to_factory(agent_def)
+        was_registered = register_agent_if_absent(
+            name=agent_def.name,
+            factory_func=factory,
+            description=agent_def.description or f"Agent: {agent_def.name}",
+        )
+        if was_registered:
+            registered.append(agent_def.name)
+            logger.info(
+                f"Registered file-based agent '{agent_def.name}'"
+                + (f" from {agent_def.source}" if agent_def.source else "")
+            )
+    return registered

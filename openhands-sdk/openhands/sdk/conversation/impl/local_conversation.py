@@ -51,7 +51,6 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.subagent.registry import register_builtins_agents
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -417,12 +416,9 @@ class LocalConversation(BaseConversation):
                 then `{project}/.openhands/agents/*.md`)
           4. User-level file agents (`~/.agents/agents/*.md`,
                 then `~/.openhands/agents/*.md`)
-          5. SDK builtin agents (`subagent/builtins/*.md`)
         """
         # register project-level and then user-level file-based agents
         register_file_agents(self.workspace.working_dir)
-        # register builtins agents
-        register_builtins_agents()
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
