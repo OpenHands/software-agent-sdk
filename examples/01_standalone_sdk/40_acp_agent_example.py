@@ -1,6 +1,6 @@
 """Example: Using ACPAgent with Claude Code ACP server.
 
-This example shows how to use an ACP-compatible server (claude-code-acp)
+This example shows how to use an ACP-compatible server (claude-agent-acp)
 as the agent backend instead of direct LLM calls.  It also demonstrates
 ``ask_agent()`` — a stateless side-question that forks the ACP session
 and leaves the main conversation untouched.
@@ -19,7 +19,7 @@ from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
 
 
-agent = ACPAgent(acp_command=["npx", "-y", "@zed-industries/claude-code-acp"])
+agent = ACPAgent(acp_command=["npx", "-y", "@zed-industries/claude-agent-acp"])
 
 try:
     cwd = os.getcwd()

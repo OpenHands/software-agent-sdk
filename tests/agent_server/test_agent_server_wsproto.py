@@ -82,6 +82,7 @@ async def test_agent_server_websocket_with_wsproto(agent_server):
         headers={"X-Session-API-Key": api_key},
         json={
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "usage_id": "test-llm",
                     "model": "test-provider/test-model",

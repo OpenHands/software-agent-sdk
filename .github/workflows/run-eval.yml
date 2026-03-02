@@ -99,6 +99,18 @@ on:
                     - gemini
                     - gpt5
                     - planning
+            agent_type:
+                description: >-
+                    Agent type: 'default' for standard Agent,
+                    'acp-claude' for ACPAgent with Claude Code,
+                    'acp-codex' for ACPAgent with Codex.
+                required: false
+                default: default
+                type: choice
+                options:
+                    - default
+                    - acp-claude
+                    - acp-codex
 
 
 env:
@@ -277,6 +289,7 @@ jobs:
                   ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || false }}
                   MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
                   TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
+                  AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH, tool preset: $TOOL_PRESET)"
@@ -295,8 +308,9 @@ jobs:
                     --argjson enable_conversation_event_logging "$ENABLE_CONVERSATION_EVENT_LOGGING" \
                     --arg max_retries "$MAX_RETRIES" \
                     --arg tool_preset "$TOOL_PRESET" \
+                    --arg agent_type "$AGENT_TYPE" \
                     --arg triggered_by "$TRIGGERED_BY" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, triggered_by: $triggered_by}}')
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \

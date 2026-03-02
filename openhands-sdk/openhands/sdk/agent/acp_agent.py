@@ -11,8 +11,11 @@ See https://agentclientprotocol.com/protocol/overview
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
+import time
+import uuid
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
@@ -34,8 +37,15 @@ from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.event import (
+    ACPToolCallEvent,
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+    SystemPromptEvent,
+)
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Tool  # noqa: TC002
 
@@ -64,6 +74,15 @@ _NOTIFICATION_DRAIN_DELAY: float = float(
     os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
 )
 
+# Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
+# The default (64 KiB) is too small for session_update notifications that
+# carry large tool-call outputs (e.g. file contents, test results).  When
+# a single JSON-RPC line exceeds the limit, readline() raises
+# LimitOverrunError, silently killing the filter/receive pipeline and
+# leaving the prompt() future unresolved forever.  100 MiB is generous
+# enough for any realistic message while still bounding memory.
+_STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
+
 
 async def _drain_notifications() -> None:
     """Best-effort drain of pending ``session_update`` notifications.
@@ -84,6 +103,53 @@ def _make_dummy_llm() -> LLM:
 # ---------------------------------------------------------------------------
 # ACP Client implementation
 # ---------------------------------------------------------------------------
+
+
+# Known ACP server name → bypass-permissions mode ID mappings.
+_BYPASS_MODE_MAP: dict[str, str] = {
+    "claude-agent": "bypassPermissions",
+    "codex-acp": "full-access",
+}
+_DEFAULT_BYPASS_MODE = "full-access"
+
+# ACP auth method ID → environment variable that supplies the credential.
+# When the server reports auth_methods, we pick the first method whose
+# required env var is set.
+_AUTH_METHOD_ENV_MAP: dict[str, str] = {
+    "codex-api-key": "CODEX_API_KEY",
+    "openai-api-key": "OPENAI_API_KEY",
+}
+
+
+def _select_auth_method(
+    auth_methods: list[Any],
+    env: dict[str, str],
+) -> str | None:
+    """Pick an auth method whose required env var is present.
+
+    Returns the ``id`` of the first matching method, or ``None`` if no
+    env-var-based method is available (the server may not require auth).
+    """
+    method_ids = {m.id for m in auth_methods}
+    for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
+        if method_id in method_ids and env_var in env:
+            return method_id
+    return None
+
+
+def _resolve_bypass_mode(agent_name: str) -> str:
+    """Return the session mode ID that bypasses all permission prompts.
+
+    Different ACP servers use different mode IDs for the same concept:
+    - claude-agent-acp → ``bypassPermissions``
+    - codex-acp        → ``full-access``
+
+    Falls back to ``full-access`` for unknown servers.
+    """
+    for key, mode in _BYPASS_MODE_MAP.items():
+        if key in agent_name.lower():
+            return mode
+    return _DEFAULT_BYPASS_MODE
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -315,7 +381,7 @@ class ACPAgent(AgentBase):
     acp_command: list[str] = Field(
         ...,
         description=(
-            "Command to start the ACP server, e.g. ['npx', '-y', 'claude-code-acp']"
+            "Command to start the ACP server, e.g. ['npx', '-y', '@zed-industries/claude-agent-acp']"
         ),
     )
     acp_args: list[str] = Field(
@@ -325,6 +391,21 @@ class ACPAgent(AgentBase):
     acp_env: dict[str, str] = Field(
         default_factory=dict,
         description="Additional environment variables for the ACP server process",
+    )
+    acp_session_mode: str | None = Field(
+        default=None,
+        description=(
+            "Session mode ID to set after creating a session. "
+            "If None (default), auto-detected from the ACP server type: "
+            "'bypassPermissions' for claude-agent-acp, 'full-access' for codex-acp."
+        ),
+    )
+    acp_prompt_timeout: float = Field(
+        default=1800.0,
+        description=(
+            "Timeout in seconds for a single ACP prompt() call. "
+            "Prevents indefinite hangs when the ACP server fails to respond."
+        ),
     )
 
     # Private runtime state
@@ -336,11 +417,24 @@ class ACPAgent(AgentBase):
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
+    _agent_name: str = PrivateAttr(default="")  # ACP server name from InitializeResponse
+    _agent_version: str = PrivateAttr(default="")  # ACP server version from InitializeResponse
 
     # -- Helpers -----------------------------------------------------------
 
-    def _record_usage(self, response: PromptResponse | None, session_id: str) -> None:
-        """Record token usage and notify stats callback from a PromptResponse."""
+    def _record_usage(
+        self,
+        response: PromptResponse | None,
+        session_id: str,
+        elapsed: float | None = None,
+    ) -> None:
+        """Record token usage, latency, and notify stats callback from a PromptResponse.
+
+        Args:
+            response: The ACP PromptResponse (may carry a ``usage`` field).
+            session_id: Session identifier used as the response_id for metrics.
+            elapsed: Wall-clock seconds for this prompt round-trip (optional).
+        """
         if response is not None and response.usage is not None:
             usage = response.usage
             self.llm.metrics.add_token_usage(
@@ -353,6 +447,9 @@ class ACPAgent(AgentBase):
                 response_id=session_id,
             )
 
+        if elapsed is not None:
+            self.llm.metrics.add_response_latency(elapsed, session_id)
+
         if self.llm.telemetry._stats_update_callback is not None:
             try:
                 self.llm.telemetry._stats_update_callback()
@@ -364,6 +461,16 @@ class ACPAgent(AgentBase):
     @property
     def system_message(self) -> str:
         return "ACP-managed agent"
+
+    @property
+    def agent_name(self) -> str:
+        """Name of the ACP server (from InitializeResponse.agent_info)."""
+        return self._agent_name
+
+    @property
+    def agent_version(self) -> str:
+        """Version of the ACP server (from InitializeResponse.agent_info)."""
+        return self._agent_version
 
     def get_all_llms(self) -> Generator[LLM, None, None]:
         yield self.llm
@@ -445,7 +552,7 @@ class ACPAgent(AgentBase):
 
         working_dir = str(state.workspace.working_dir)
 
-        async def _init() -> tuple[Any, Any, Any, str]:
+        async def _init() -> tuple[Any, Any, Any, str, str, str]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -457,13 +564,14 @@ class ACPAgent(AgentBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                limit=_STREAM_READER_LIMIT,
             )
             assert process.stdin is not None
             assert process.stdout is not None
 
             # Wrap the subprocess stdout in a filtering reader that
             # only passes lines starting with '{' (JSON-RPC messages).
-            filtered_reader = asyncio.StreamReader()
+            filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
             asyncio.get_event_loop().create_task(
                 _filter_jsonrpc_lines(process.stdout, filtered_reader)
             )
@@ -474,17 +582,58 @@ class ACPAgent(AgentBase):
                 filtered_reader,  # read filtered output
             )
 
-            # Initialize the protocol
-            await conn.initialize(protocol_version=1)
+            # Initialize the protocol and discover server identity
+            init_response = await conn.initialize(protocol_version=1)
+            agent_name = ""
+            agent_version = ""
+            if init_response.agent_info is not None:
+                agent_name = init_response.agent_info.name or ""
+                agent_version = init_response.agent_info.version or ""
+            logger.info(
+                "ACP server initialized: agent_name=%r, agent_version=%r",
+                agent_name,
+                agent_version,
+            )
+
+            # Authenticate if the server requires it.  Some ACP servers
+            # (e.g. codex-acp) require an explicit authenticate call
+            # before session creation.  We auto-detect the method from
+            # the env vars that are available to the process.
+            auth_methods = init_response.auth_methods or []
+            if auth_methods:
+                method_id = _select_auth_method(auth_methods, env)
+                if method_id is not None:
+                    logger.info(
+                        "Authenticating with ACP method: %s", method_id
+                    )
+                    await conn.authenticate(method_id=method_id)
+                else:
+                    logger.warning(
+                        "ACP server offers auth methods %s but no matching "
+                        "env var is set — session creation may fail",
+                        [m.id for m in auth_methods],
+                    )
 
             # Create a new session
             response = await conn.new_session(cwd=working_dir)
             session_id = response.session_id
 
-            return conn, process, filtered_reader, session_id
+            # Resolve the permission mode to use.  Different ACP servers
+            # use different mode IDs for the same concept (no-prompts):
+            #   - claude-agent-acp → "bypassPermissions"
+            #   - codex-acp        → "full-access"
+            mode_id = self.acp_session_mode
+            if mode_id is None:
+                mode_id = _resolve_bypass_mode(agent_name)
+            logger.info("Setting ACP session mode: %s", mode_id)
+            await conn.set_session_mode(
+                mode_id=mode_id, session_id=session_id
+            )
+
+            return conn, process, filtered_reader, session_id, agent_name, agent_version
 
         result = self._executor.run_async(_init)
-        self._conn, self._process, self._filtered_reader, self._session_id = result
+        self._conn, self._process, self._filtered_reader, self._session_id, self._agent_name, self._agent_version = result
         self._working_dir = working_dir
 
     def step(
@@ -517,6 +666,7 @@ class ACPAgent(AgentBase):
         self._client.reset()
         self._client.on_token = on_token
 
+        t0 = time.monotonic()
         try:
 
             async def _prompt() -> PromptResponse:
@@ -527,10 +677,19 @@ class ACPAgent(AgentBase):
                 await _drain_notifications()
                 return response
 
-            # Send prompt to ACP server
-            response = self._executor.run_async(_prompt)
+            # Send prompt to ACP server (with timeout to prevent indefinite hangs)
+            logger.info(
+                "Sending ACP prompt (timeout=%.0fs, msg=%d chars)",
+                self.acp_prompt_timeout,
+                len(user_message),
+            )
+            response = self._executor.run_async(
+                _prompt, timeout=self.acp_prompt_timeout
+            )
+            elapsed = time.monotonic() - t0
+            logger.info("ACP prompt returned in %.1fs", elapsed)
 
-            self._record_usage(response, self._session_id or "")
+            self._record_usage(response, self._session_id or "", elapsed=elapsed)
 
             # Emit ACPToolCallEvents for each accumulated tool call
             for tc in self._client.accumulated_tool_calls:
@@ -563,8 +722,65 @@ class ACPAgent(AgentBase):
                 llm_message=message,
             )
             on_event(msg_event)
+
+            # Emit FinishAction so evaluation frameworks (SWE-bench, etc.)
+            # recognize that the agent has completed its task.  The regular
+            # Agent emits this when the LLM calls the "finish" tool; for
+            # ACPAgent each step() is a complete turn, so we always finish.
+            finish_action = FinishAction(message=response_text)
+            tc_id = str(uuid.uuid4())
+            action_event = ActionEvent(
+                source="agent",
+                thought=[],
+                action=finish_action,
+                tool_name="finish",
+                tool_call_id=tc_id,
+                tool_call=MessageToolCall(
+                    id=tc_id,
+                    name="finish",
+                    arguments=json.dumps({"message": response_text}),
+                    origin="completion",
+                ),
+                llm_response_id=str(uuid.uuid4()),
+            )
+            on_event(action_event)
+            on_event(
+                ObservationEvent(
+                    observation=FinishObservation.from_text(text=response_text),
+                    action_id=action_event.id,
+                    tool_name="finish",
+                    tool_call_id=tc_id,
+                )
+            )
+
             state.execution_status = ConversationExecutionStatus.FINISHED
 
+        except TimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.error(
+                "ACP prompt timed out after %.1fs (limit=%.0fs). "
+                "The ACP server may have completed its work but failed to "
+                "send the JSON-RPC response. Accumulated %d text chunks, "
+                "%d tool calls.",
+                elapsed,
+                self.acp_prompt_timeout,
+                len(self._client.accumulated_text),
+                len(self._client.accumulated_tool_calls),
+            )
+            error_message = Message(
+                role="assistant",
+                content=[
+                    TextContent(
+                        text=(
+                            f"ACP prompt timed out after {elapsed:.0f}s. "
+                            "The agent may have completed its work but "
+                            "the response was not received."
+                        )
+                    )
+                ],
+            )
+            on_event(MessageEvent(source="agent", llm_message=error_message))
+            state.execution_status = ConversationExecutionStatus.ERROR
         except Exception as e:
             logger.error("ACP prompt failed: %s", e, exc_info=True)
             # Emit error as an agent message since AgentErrorEvent requires
@@ -601,14 +817,16 @@ class ACPAgent(AgentBase):
             client._fork_session_id = fork_session_id
             client._fork_accumulated_text.clear()
             try:
+                fork_t0 = time.monotonic()
                 response = await self._conn.prompt(
                     [text_block(question)],
                     fork_session_id,
                 )
                 await _drain_notifications()
+                fork_elapsed = time.monotonic() - fork_t0
 
                 result = "".join(client._fork_accumulated_text)
-                self._record_usage(response, fork_session_id)
+                self._record_usage(response, fork_session_id, elapsed=fork_elapsed)
                 return result
             finally:
                 client._fork_session_id = None

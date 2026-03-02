@@ -78,7 +78,22 @@ RUN set -eux; \
     chown -R ${USERNAME}:${USERNAME} /workspace; \
     rm -rf /var/lib/apt/lists/*
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here, 
+# Pre-install ACP servers for ACPAgent support (Claude Code + Codex)
+# Install Node.js/npm if not present (SWE-bench base images may lack them)
+RUN set -eux; \
+    if ! command -v npm >/dev/null 2>&1; then \
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+        apt-get install -y --no-install-recommends nodejs && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp
+
+# Configure Claude Code managed settings for headless operation:
+# Allow all tool permissions (no human in the loop to approve).
+RUN mkdir -p /etc/claude-code && \
+    echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
+
+# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 

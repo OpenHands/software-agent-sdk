@@ -11,7 +11,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
-from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
+from openhands.sdk import LLM, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -425,7 +425,8 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent = Agent.model_validate(
+        agent_cls = type(self.stored.agent)
+        agent = agent_cls.model_validate(
             self.stored.agent.model_dump(context={"expose_secrets": True}),
         )
 

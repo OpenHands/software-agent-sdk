@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from openhands.sdk.agent.acp_agent import ACPAgent, _OpenHandsACPBridge
+from openhands.sdk.agent.acp_agent import (
+    ACPAgent,
+    _OpenHandsACPBridge,
+    _resolve_bypass_mode,
+    _select_auth_method,
+)
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -62,8 +67,8 @@ class TestACPAgentInstantiation:
             ACPAgent()  # type: ignore[call-arg]
 
     def test_acp_command_stored(self):
-        agent = ACPAgent(acp_command=["npx", "-y", "claude-code-acp"])
-        assert agent.acp_command == ["npx", "-y", "claude-code-acp"]
+        agent = ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"])
+        assert agent.acp_command == ["npx", "-y", "claude-agent-acp"]
 
     def test_acp_args_default_empty(self):
         agent = _make_agent()
@@ -102,7 +107,7 @@ class TestACPAgentSerialization:
 
     def test_roundtrip_serialization(self):
         agent = ACPAgent(
-            acp_command=["npx", "-y", "claude-code-acp"],
+            acp_command=["npx", "-y", "claude-agent-acp"],
             acp_args=["--verbose"],
             acp_env={"FOO": "bar"},
         )
@@ -294,7 +299,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("The answer is 4")
 
         mock_executor = MagicMock()
@@ -303,7 +308,8 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        assert len(events) == 1
+        # step() emits MessageEvent + ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
+        assert len(events) == 3
         assert isinstance(events[0], MessageEvent)
         assert events[0].source == "agent"
         content_block = events[0].llm_message.content[0]
@@ -320,7 +326,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("4")
             mock_client.accumulated_thoughts.append("I need to add 2+2")
 
@@ -342,7 +348,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("done")
 
         mock_executor = MagicMock()
@@ -403,7 +409,7 @@ class TestACPAgentStep:
         agent._session_id = "test-session"
 
         mock_executor = MagicMock()
-        mock_executor.run_async = lambda _coro: None
+        mock_executor.run_async = lambda _coro, **_kwargs: None
         agent._executor = mock_executor
 
         agent.step(conversation, on_event=events.append)
@@ -421,7 +427,7 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("ok")
 
         mock_executor = MagicMock()
@@ -611,7 +617,7 @@ class TestACPAgentTelemetry:
         mock_response = MagicMock()
         mock_response.usage = mock_usage
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
             return mock_response
 
@@ -645,7 +651,7 @@ class TestACPAgentTelemetry:
         mock_response = MagicMock()
         mock_response.usage = None
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response")
             return mock_response
 
@@ -739,7 +745,7 @@ class TestACPAgentTelemetry:
         mock_response = MagicMock()
         mock_response.usage = None
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("ok")
             return mock_response
 
@@ -940,7 +946,7 @@ class TestACPToolCallEmission:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("done")
             mock_client.accumulated_tool_calls.extend(
                 [
@@ -969,8 +975,8 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        # Should be: 2 tool call events + 1 message event
-        assert len(events) == 3
+        # Should be: 2 tool call events + 1 message event + finish action + finish observation
+        assert len(events) == 5
         assert isinstance(events[0], ACPToolCallEvent)
         assert isinstance(events[1], ACPToolCallEvent)
         assert isinstance(events[2], MessageEvent)
@@ -999,7 +1005,7 @@ class TestACPToolCallEmission:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("no tools used")
 
         mock_executor = MagicMock()
@@ -1008,7 +1014,8 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        assert len(events) == 1
+        # MessageEvent + ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
+        assert len(events) == 3
         assert isinstance(events[0], MessageEvent)
 
     def test_tool_call_events_cleared_between_turns(self, tmp_path):
@@ -1034,7 +1041,7 @@ class TestACPToolCallEmission:
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
 
-        def _fake_run_async(_coro):
+        def _fake_run_async(_coro, **_kwargs):
             # After reset, accumulated_tool_calls should be empty
             # Only add text so step() succeeds
             mock_client.accumulated_text.append("response")
@@ -1046,8 +1053,9 @@ class TestACPToolCallEmission:
         # step() calls reset() which should clear old tool calls
         agent.step(conversation, on_event=events.append)
 
-        # Only the MessageEvent should appear — the old tool call was cleared
-        assert len(events) == 1
+        # Only the MessageEvent + FinishAction + FinishObservation should appear —
+        # the old tool call was cleared by reset()
+        assert len(events) == 3
         assert isinstance(events[0], MessageEvent)
 
 
@@ -1094,7 +1102,7 @@ class TestACPAgentAskAgent:
             mock_client._fork_accumulated_text.extend(["Hello", " world"])
             return mock_prompt_response
 
-        def _fake_run_async(coro_fn):
+        def _fake_run_async(coro_fn, **_kwargs):
             """Simulate the async execution synchronously."""
             loop = asyncio.new_event_loop()
             try:
@@ -1139,7 +1147,7 @@ class TestACPAgentAskAgent:
             mock_client._fork_accumulated_text.append("response")
             return mock_prompt_response
 
-        def _fake_run_async(coro_fn):
+        def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
                 agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
@@ -1183,7 +1191,7 @@ class TestACPAgentAskAgent:
             mock_client._fork_accumulated_text.append("ok")
             return mock_prompt_response
 
-        def _fake_run_async(coro_fn):
+        def _fake_run_async(coro_fn, **_kwargs):
             loop = asyncio.new_event_loop()
             try:
                 agent._conn.fork_session = AsyncMock(return_value=mock_fork_response)
@@ -1262,3 +1270,108 @@ class TestClientForkTextRouting:
 
         assert client.accumulated_text == ["normal text"]
         assert client._fork_accumulated_text == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_bypass_mode
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBypassMode:
+    def test_claude_agent(self):
+        assert _resolve_bypass_mode("claude-agent-acp") == "bypassPermissions"
+
+    def test_claude_agent_with_scope(self):
+        assert _resolve_bypass_mode("@zed-industries/claude-agent-acp") == "bypassPermissions"
+
+    def test_codex_acp(self):
+        assert _resolve_bypass_mode("codex-acp") == "full-access"
+
+    def test_codex_acp_with_version(self):
+        assert _resolve_bypass_mode("Codex-ACP v0.9.2") == "full-access"
+
+    def test_unknown_server_defaults_to_full_access(self):
+        assert _resolve_bypass_mode("some-other-agent") == "full-access"
+
+    def test_empty_name_defaults_to_full_access(self):
+        assert _resolve_bypass_mode("") == "full-access"
+
+
+# ---------------------------------------------------------------------------
+# acp_session_mode field
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _select_auth_method
+# ---------------------------------------------------------------------------
+
+
+class TestSelectAuthMethod:
+    """Test auto-detection of ACP auth method from env vars."""
+
+    @staticmethod
+    def _make_auth_method(method_id: str) -> MagicMock:
+        m = MagicMock()
+        m.id = method_id
+        return m
+
+    def test_openai_api_key(self):
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("codex-api-key"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"OPENAI_API_KEY": "sk-test"}
+        assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_codex_api_key_preferred(self):
+        """CODEX_API_KEY is checked first (appears first in the map)."""
+        methods = [
+            self._make_auth_method("codex-api-key"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_API_KEY": "key1", "OPENAI_API_KEY": "key2"}
+        assert _select_auth_method(methods, env) == "codex-api-key"
+
+    def test_no_matching_env_var(self):
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"UNRELATED": "value"}
+        assert _select_auth_method(methods, env) is None
+
+    def test_empty_auth_methods(self):
+        assert _select_auth_method([], {}) is None
+
+    def test_method_not_in_server_list(self):
+        """Even if env var is set, method must be offered by server."""
+        methods = [self._make_auth_method("chatgpt")]
+        env = {"OPENAI_API_KEY": "sk-test"}
+        assert _select_auth_method(methods, env) is None
+
+
+# ---------------------------------------------------------------------------
+# acp_session_mode field
+# ---------------------------------------------------------------------------
+
+
+class TestACPSessionMode:
+    def test_default_is_none(self):
+        agent = _make_agent()
+        assert agent.acp_session_mode is None
+
+    def test_can_set_explicit_mode(self):
+        agent = ACPAgent(acp_command=["echo"], acp_session_mode="custom-mode")
+        assert agent.acp_session_mode == "custom-mode"
+
+    def test_serialization_roundtrip(self):
+        agent = ACPAgent(
+            acp_command=["codex-acp"],
+            acp_session_mode="full-access",
+        )
+        dumped = agent.model_dump_json()
+        restored = AgentBase.model_validate_json(dumped)
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_session_mode == "full-access"

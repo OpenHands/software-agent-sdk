@@ -768,6 +768,11 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
+        # Clean up agent resources (e.g., ACPAgent subprocess)
+        try:
+            self.agent.close()
+        except Exception as e:
+            logger.warning(f"Error closing agent: {e}")
         if self.delete_on_close:
             try:
                 tools_map = self.agent.tools_map
