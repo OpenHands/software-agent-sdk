@@ -11,15 +11,11 @@ By default this example uses a temporary directory and leaves no artifacts.
 
 To write artifacts to disk (useful for PR review), set:
 
-```bash
-export OPENHANDS_EXAMPLE_ARTIFACT_DIR=.pr/local_plugin_install_test
-```
+    export OPENHANDS_EXAMPLE_ARTIFACT_DIR=.pr/local_plugin_install_test
 
 Then run:
 
-```bash
-uv run python examples/05_skills_and_plugins/03_local_plugin_install/main.py
-```
+    uv run python examples/05_skills_and_plugins/03_local_plugin_install/main.py
 
 This will create (and overwrite) `plugin_src/`, `installed_root/`, and
 `persistence/` under the artifact directory.
