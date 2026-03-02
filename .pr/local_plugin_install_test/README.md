@@ -7,7 +7,7 @@ plugin utilities end-to-end in this PR.
 
 The `.pr/` directory is PR-only. When this PR is approved, a workflow will
 automatically remove the entire `.pr/` directory so it does not get merged to
-`main`.
+`main`. So you can approve this PR so that it gets cleaned up.
 
 - Cleanup workflow: `.github/workflows/pr-artifacts.yml` (job: `cleanup-on-approval`).
 
