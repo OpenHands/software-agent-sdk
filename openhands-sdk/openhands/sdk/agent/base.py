@@ -22,6 +22,7 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.lsp import create_lsp_tools
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
@@ -85,6 +86,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="Optional MCP configuration dictionary to create MCP tools.",
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
+        ],
+    )
+    lsp_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional LSP configuration dictionary to create LSP tools.",
+        examples=[
+            {
+                "lspServers": {
+                    "typescript": {
+                        "command": "typescript-language-server",
+                        "args": ["--stdio"],
+                        "extensionToLanguage": {".ts": "typescript"},
+                    }
+                }
+            }
         ],
     )
     filter_tools_regex: str | None = Field(
@@ -331,6 +347,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             # Submit MCP tools creation if configured
             if self.mcp_config:
                 future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                futures.append(future)
+
+            # Submit LSP tools creation if configured
+            if self.lsp_config:
+                future = executor.submit(
+                    create_lsp_tools,
+                    self.lsp_config,
+                    state.workspace.working_dir,
+                    30,
+                )
                 futures.append(future)
 
             # Collect results as they complete
