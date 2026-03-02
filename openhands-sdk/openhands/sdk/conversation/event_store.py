@@ -120,6 +120,7 @@ class EventLog(EventsListBase):
                     )
 
                 target_path = self._path(self._length, event_id=evt_id)
+
                 self._fs.write(target_path, event.model_dump_json(exclude_none=True))
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length

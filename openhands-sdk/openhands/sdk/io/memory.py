@@ -23,12 +23,12 @@ class InMemoryFileStore(FileStore):
         if files is not None:
             self.files = files
 
-    def write(self, path: str, contents: str | bytes) -> None:
+    def write(self, path: str, contents: str | bytes, **_kwargs) -> None:
         if isinstance(contents, bytes):
             contents = contents.decode("utf-8")
         self.files[path] = contents
 
-    def read(self, path: str) -> str:
+    def read(self, path: str, **_kwargs) -> str:
         if path not in self.files:
             raise FileNotFoundError(path)
         return self.files[path]
