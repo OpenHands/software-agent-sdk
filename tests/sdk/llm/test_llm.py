@@ -1070,4 +1070,95 @@ def test_llm_reset_metrics():
     assert llm.metrics.accumulated_cost == 0.0
 
 
+# max_output_tokens Capping Tests
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_info):
+    """Test that max_output_tokens is capped when falling back to max_tokens.
+
+    Some providers (e.g., OpenRouter) set max_tokens to the context window size
+    rather than the output limit. Without capping, this could request output
+    that exceeds the context window.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/XXX
+    """
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    # Simulate a model where max_tokens = context window (200k) but
+    # max_output_tokens is not set
+    mock_get_model_info.return_value = {
+        "max_tokens": 200000,  # This is the context window, not output limit
+        "max_output_tokens": None,
+        "max_input_tokens": 200000,
+    }
+
+    llm = LLM(
+        model="openrouter/anthropic/claude-3-haiku",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # max_output_tokens should be capped, not set to 200000
+    assert llm.max_output_tokens is not None
+    assert llm.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    assert llm.max_output_tokens < 200000
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info):
+    """Test that actual max_output_tokens is used when available."""
+    # Simulate a model with proper max_output_tokens
+    mock_get_model_info.return_value = {
+        "max_tokens": 8192,
+        "max_output_tokens": 8192,
+        "max_input_tokens": 200000,
+    }
+
+    llm = LLM(
+        model="anthropic/claude-3-5-sonnet-latest",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Should use the actual max_output_tokens, not capped
+    assert llm.max_output_tokens == 8192
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
+    """Test that small max_tokens fallback is not unnecessarily capped."""
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    # Simulate a model where max_tokens is small (actual output limit)
+    mock_get_model_info.return_value = {
+        "max_tokens": 4096,  # This is the actual output limit
+        "max_output_tokens": None,
+        "max_input_tokens": None,
+    }
+
+    llm = LLM(
+        model="openrouter/test/small-model",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Should use the actual value since it's below the cap
+    assert llm.max_output_tokens == 4096
+    assert llm.max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+
+def test_explicit_max_output_tokens_not_overridden():
+    """Test that explicitly set max_output_tokens is respected."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        max_output_tokens=32768,  # Explicitly set higher than cap
+    )
+
+    # Should respect the explicit value
+    assert llm.max_output_tokens == 32768
+
+
 # LLM Registry Tests
