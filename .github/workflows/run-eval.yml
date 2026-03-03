@@ -32,16 +32,10 @@ on:
                 default: false
                 type: boolean
             eval_limit:
-                description: Number of instances to run
+                description: Number of instances to run (any positive integer)
                 required: false
                 default: '1'
-                type: choice
-                options:
-                    - '1'
-                    - '100'
-                    - '50'
-                    - '200'
-                    - '500'
+                type: string
             model_ids:
                 description: Comma-separated model IDs to evaluate. Must be keys of MODELS in resolve_model_config.py. Defaults to first model in that
                     dict.
@@ -137,6 +131,14 @@ jobs:
               uses: actions/setup-python@v5
               with:
                   python-version: '3.13'
+
+            - name: Validate eval_limit
+              if: github.event_name == 'workflow_dispatch'
+              run: |
+                  if ! [[ "${{ github.event.inputs.eval_limit }}" =~ ^[1-9][0-9]*$ ]]; then
+                    echo "Error: eval_limit must be a positive integer, got: ${{ github.event.inputs.eval_limit }}"
+                    exit 1
+                  fi
 
             - name: Validate SDK reference (semantic version check)
               if: github.event_name == 'workflow_dispatch'
