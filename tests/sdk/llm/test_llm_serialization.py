@@ -106,14 +106,13 @@ def test_llm_private_attributes_not_serialized() -> None:
     llm = LLM(model="test-model", usage_id="test-llm")
 
     # Set private attributes (these would normally be set internally)
-    llm._model_info = {"some": "info"}
     llm._tokenizer = "mock-tokenizer"
 
     # Serialize to dict
     llm_dict = llm.model_dump()
 
     # Private attributes should not be present
-    assert "_model_info" not in llm_dict
+    assert "_capabilities" not in llm_dict
     assert "_tokenizer" not in llm_dict
     assert "_telemetry" not in llm_dict
 
@@ -121,10 +120,10 @@ def test_llm_private_attributes_not_serialized() -> None:
     llm_json = llm.model_dump_json()
     deserialized_llm = LLM.model_validate_json(llm_json)
 
-    # Private attributes should have default values
-    # (LLM creates telemetry automatically)
-    assert deserialized_llm._model_info is None
-    assert deserialized_llm._tokenizer is None
+    # Private attributes should have default values or be re-initialized
+    # (LLM creates capabilities and telemetry automatically during validation)
+    assert deserialized_llm._capabilities is not None  # Re-initialized on deserialize
+    assert deserialized_llm._tokenizer is None  # Default is None
     assert deserialized_llm.native_tool_calling is True
     assert (
         deserialized_llm._telemetry is not None

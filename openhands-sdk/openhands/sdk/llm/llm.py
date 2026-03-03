@@ -21,8 +21,8 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.capabilities import LLMCapabilities
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
-from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -70,12 +70,10 @@ from litellm.types.utils import (
 )
 from litellm.utils import (
     create_pretrained_tokenizer,
-    supports_vision,
     token_counter,
 )
 
 from openhands.sdk.llm.exceptions import (
-    LLMContextWindowTooSmallError,
     LLMNoResponseError,
     map_provider_exception,
 )
@@ -113,20 +111,6 @@ LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     InternalServerError,
     LLMNoResponseError,
 )
-
-# Minimum context window size required for OpenHands to function properly.
-# Based on typical usage: system prompt (~2k) + conversation history (~4k)
-# + tool definitions (~2k) + working memory (~8k) = ~16k minimum.
-MIN_CONTEXT_WINDOW_TOKENS: Final[int] = 16384
-
-# Environment variable to override the minimum context window check
-ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
-
-# Default max output tokens when model info only provides 'max_tokens' (ambiguous).
-# Some providers use 'max_tokens' for the total context window, not output limit.
-# This cap prevents requesting output that exceeds the context window.
-# 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
-DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -385,7 +369,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     _metrics: Metrics | None = PrivateAttr(default=None)
     # Runtime-only private attrs
-    _model_info: Any = PrivateAttr(default=None)
+    _capabilities: LLMCapabilities | None = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
@@ -482,8 +466,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.custom_tokenizer:
             self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
 
-        # Capabilities + model info
-        self._init_model_info_and_caps()
+        # Initialize capabilities (handles model info lookup and validation)
+        self._capabilities = LLMCapabilities(
+            model=self.model,
+            model_canonical_name=self.model_canonical_name,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            disable_vision=self.disable_vision,
+            caching_prompt=self.caching_prompt,
+            max_input_tokens=self.max_input_tokens,
+            max_output_tokens=self.max_output_tokens,
+        )
+        # Sync auto-detected token limits back to LLM instance
+        if self.max_input_tokens is None:
+            self.max_input_tokens = self._capabilities.max_input_tokens
+        if self.max_output_tokens is None:
+            self.max_output_tokens = self._capabilities.max_output_tokens
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
@@ -1074,151 +1072,47 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             litellm.modify_params = old
 
     # =========================================================================
-    # Capabilities, formatting, and info
+    # Capabilities (delegated to LLMCapabilities)
     # =========================================================================
     def _model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
+        if self._capabilities is not None:
+            return self._capabilities.model_name_for_capabilities
         return self.model_canonical_name or self.model
 
-    def _init_model_info_and_caps(self) -> None:
-        self._model_info = get_litellm_model_info(
-            secret_api_key=self.api_key,
-            base_url=self.base_url,
-            model=self._model_name_for_capabilities(),
-        )
-
-        # Context window and max_output_tokens
-        if (
-            self.max_input_tokens is None
-            and self._model_info is not None
-            and isinstance(self._model_info.get("max_input_tokens"), int)
-        ):
-            self.max_input_tokens = self._model_info.get("max_input_tokens")
-
-        # Validate context window size
-        self._validate_context_window_size()
-
-        if self.max_output_tokens is None:
-            if any(
-                m in self.model
-                for m in [
-                    "claude-3-7-sonnet",
-                    "claude-sonnet-4",
-                    "kimi-k2-thinking",
-                ]
-            ):
-                self.max_output_tokens = (
-                    64000  # practical cap (litellm may allow 128k with header)
-                )
-                logger.debug(
-                    f"Setting max_output_tokens to {self.max_output_tokens} "
-                    f"for {self.model}"
-                )
-            elif self._model_info is not None:
-                if isinstance(self._model_info.get("max_output_tokens"), int):
-                    self.max_output_tokens = self._model_info.get("max_output_tokens")
-                elif isinstance(self._model_info.get("max_tokens"), int):
-                    # 'max_tokens' is ambiguous: some providers use it for total
-                    # context window, not output limit. Cap it to avoid requesting
-                    # output that exceeds the context window.
-                    max_tokens_value = self._model_info.get("max_tokens")
-                    assert isinstance(max_tokens_value, int)  # for type checker
-                    self.max_output_tokens = min(
-                        max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
-                    )
-                    if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
-                        logger.debug(
-                            "Capping max_output_tokens from %s to %s for %s "
-                            "(max_tokens may be context window, not output)",
-                            max_tokens_value,
-                            self.max_output_tokens,
-                            self.model,
-                        )
-
-        if "o3" in self.model:
-            o3_limit = 100000
-            if self.max_output_tokens is None or self.max_output_tokens > o3_limit:
-                self.max_output_tokens = o3_limit
-                logger.debug(
-                    "Clamping max_output_tokens to %s for %s",
-                    self.max_output_tokens,
-                    self.model,
-                )
-
-    def _validate_context_window_size(self) -> None:
-        """Validate that the context window is large enough for OpenHands."""
-        # Allow override via environment variable
-        if os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower() in (
-            "true",
-            "1",
-            "yes",
-        ):
-            return
-
-        # Unknown context window - cannot validate
-        if self.max_input_tokens is None:
-            return
-
-        # Check minimum requirement
-        if self.max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
-            raise LLMContextWindowTooSmallError(
-                self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
-            )
-
     def vision_is_active(self) -> bool:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return not self.disable_vision and self._supports_vision()
-
-    def _supports_vision(self) -> bool:
-        """Acquire from litellm if model is vision capable.
+        """Check if vision is supported and enabled.
 
         Returns:
-            bool: True if model is vision capable. Return False if model not
-                supported by litellm.
+            True if the model supports vision and it's not disabled.
         """
-        # litellm.supports_vision currently returns False for 'openai/gpt-...' or 'anthropic/claude-...' (with prefixes)  # noqa: E501
-        # but model_info will have the correct value for some reason.
-        # we can go with it, but we will need to keep an eye if model_info is correct for Vertex or other providers  # noqa: E501
-        # remove when litellm is updated to fix https://github.com/BerriAI/litellm/issues/5608  # noqa: E501
-        # Check both the full model name and the name after proxy prefix for vision support  # noqa: E501
-        model_for_caps = self._model_name_for_capabilities()
-        return (
-            supports_vision(model_for_caps)
-            or supports_vision(model_for_caps.split("/")[-1])
-            or (
-                self._model_info is not None
-                and self._model_info.get("supports_vision", False)
-            )
-            or False  # fallback to False if model_info is None
-        )
+        assert self._capabilities is not None
+        return self._capabilities.vision_is_active()
 
     def is_caching_prompt_active(self) -> bool:
         """Check if prompt caching is supported and enabled for current model.
 
         Returns:
-            boolean: True if prompt caching is supported and enabled for the given
-                model.
+            True if prompt caching is supported and enabled for the given model.
         """
-        if not self.caching_prompt:
-            return False
-        # We don't need to look-up model_info, because
-        # only Anthropic models need explicit caching breakpoints
-        return (
-            self.caching_prompt
-            and get_features(self._model_name_for_capabilities()).supports_prompt_cache
-        )
+        assert self._capabilities is not None
+        return self._capabilities.is_caching_prompt_active()
 
     def uses_responses_api(self) -> bool:
-        """Whether this model uses the OpenAI Responses API path."""
+        """Whether this model uses the OpenAI Responses API path.
 
-        # by default, uses = supports
-        return get_features(self._model_name_for_capabilities()).supports_responses_api
+        Returns:
+            True if the model should use the Responses API.
+        """
+        assert self._capabilities is not None
+        return self._capabilities.uses_responses_api()
 
     @property
     def model_info(self) -> dict | None:
         """Returns the model info dictionary."""
-        return self._model_info
+        if self._capabilities is not None:
+            return self._capabilities.model_info
+        return None
 
     # =========================================================================
     # Utilities preserved from previous class

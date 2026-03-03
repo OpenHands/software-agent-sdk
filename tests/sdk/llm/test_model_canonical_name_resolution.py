@@ -37,10 +37,14 @@ def test_model_canonical_name_used_for_capabilities(monkeypatch):
         return DummyFeatures(model)
 
     monkeypatch.setattr(
-        "openhands.sdk.llm.llm.get_litellm_model_info", fake_get_model_info
+        "openhands.sdk.llm.capabilities.get_litellm_model_info", fake_get_model_info
     )
-    monkeypatch.setattr("openhands.sdk.llm.llm.supports_vision", fake_supports_vision)
-    monkeypatch.setattr("openhands.sdk.llm.llm.get_features", fake_get_features)
+    monkeypatch.setattr(
+        "openhands.sdk.llm.capabilities.supports_vision", fake_supports_vision
+    )
+    monkeypatch.setattr(
+        "openhands.sdk.llm.capabilities.get_features", fake_get_features
+    )
 
     real_llm = LLM(model="openai/gpt-5-mini")
     proxy_llm = LLM(

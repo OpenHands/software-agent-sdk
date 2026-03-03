@@ -979,11 +979,11 @@ def test_unmapped_model_with_logging_enabled(mock_transport):
 # Context Window Validation Tests
 
 
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+@patch("openhands.sdk.llm.capabilities.get_litellm_model_info")
 def test_llm_raises_error_on_small_context_window(mock_get_model_info):
     """Test that LLM raises error when context window is too small."""
+    from openhands.sdk.llm.capabilities import MIN_CONTEXT_WINDOW_TOKENS
     from openhands.sdk.llm.exceptions import LLMContextWindowTooSmallError
-    from openhands.sdk.llm.llm import MIN_CONTEXT_WINDOW_TOKENS
 
     mock_get_model_info.return_value = {"max_input_tokens": 2048}
 
@@ -999,12 +999,12 @@ def test_llm_raises_error_on_small_context_window(mock_get_model_info):
     assert "docs.openhands.dev" in str(exc_info.value)
 
 
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+@patch("openhands.sdk.llm.capabilities.get_litellm_model_info")
 def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
     """Test that ALLOW_SHORT_CONTEXT_WINDOWS env var bypasses validation."""
     import os
 
-    from openhands.sdk.llm.llm import ENV_ALLOW_SHORT_CONTEXT_WINDOWS
+    from openhands.sdk.llm.capabilities import ENV_ALLOW_SHORT_CONTEXT_WINDOWS
 
     mock_get_model_info.return_value = {"max_input_tokens": 2048}
 
@@ -1073,7 +1073,7 @@ def test_llm_reset_metrics():
 # max_output_tokens Capping Tests
 
 
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+@patch("openhands.sdk.llm.capabilities.get_litellm_model_info")
 def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_info):
     """Test that max_output_tokens is capped when falling back to max_tokens.
 
@@ -1083,7 +1083,7 @@ def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_
 
     See: https://github.com/OpenHands/software-agent-sdk/issues/XXX
     """
-    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    from openhands.sdk.llm.capabilities import DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
     # Simulate a model where max_tokens = context window (200k) but
     # max_output_tokens is not set
@@ -1105,7 +1105,7 @@ def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_
     assert llm.max_output_tokens < 200000
 
 
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+@patch("openhands.sdk.llm.capabilities.get_litellm_model_info")
 def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info):
     """Test that actual max_output_tokens is used when available."""
     # Simulate a model with proper max_output_tokens
@@ -1125,10 +1125,10 @@ def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info)
     assert llm.max_output_tokens == 8192
 
 
-@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+@patch("openhands.sdk.llm.capabilities.get_litellm_model_info")
 def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
     """Test that small max_tokens fallback is not unnecessarily capped."""
-    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    from openhands.sdk.llm.capabilities import DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
     # Simulate a model where max_tokens is small (actual output limit)
     mock_get_model_info.return_value = {
