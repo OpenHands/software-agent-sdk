@@ -424,27 +424,4 @@ For examples that use the critic model (e.g., `34_critic_example.py`), the criti
 - Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
 
-<CODING_GUIDELINES>
-## Testing
-
-- **Test new behavior, not just removed behavior**: When refactoring, verify the new implementation works correctly, not just that the old code was removed.
-- **Add test cases for new model/feature support**: When adding new model identifiers or feature flags, include corresponding test cases to prevent regressions.
-
-## Input Validation
-
-- **Validate user inputs early**: For workflow inputs (especially string-based), add validation to fail fast with clear error messages rather than causing confusing downstream failures.
-
-## API Changes
-
-- **Document breaking changes**: When modifying public API output (e.g., `get_factory_info()`), update docstrings to reflect the new behavior.
-- **Mark deprecated endpoints**: Legacy endpoints should be marked with deprecation annotations.
-
-## Eval Risk Assessment
-
-Changes that could affect benchmark/evaluation performance require special handling:
-- Flag changes to prompt templates, tool descriptions, or agent decision logic
-- Request lightweight evals before merge
-- Use COMMENT instead of APPROVE for uncertain cases
-- See `.openhands/skills/eval-risk-assessment/SKILL.md` for detailed guidelines
-</CODING_GUIDELINES>
 </REPO>
