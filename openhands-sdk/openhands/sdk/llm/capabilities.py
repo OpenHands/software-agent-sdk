@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import os
 import warnings
-from typing import Any, Final
+from dataclasses import dataclass
+from typing import Final
 
+from litellm.types.utils import ModelInfo
 from litellm.utils import supports_vision
 from pydantic import SecretStr
 
@@ -26,7 +28,24 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["LLMCapabilities"]
+__all__ = ["CapabilitiesConfig", "LLMCapabilities", "ModelInfo"]
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilitiesConfig:
+    """Configuration for LLMCapabilities initialization.
+
+    Groups the parameters needed to detect model capabilities, keeping
+    the LLMCapabilities constructor signature stable as new fields are added.
+    """
+
+    model: str
+    model_canonical_name: str | None
+    base_url: str | None
+    api_key: SecretStr | str | None
+    disable_vision: bool
+    caching_prompt: bool
+
 
 # Minimum context window size required for OpenHands to function properly.
 # Based on typical usage: system prompt (~2k) + conversation history (~4k)
@@ -51,64 +70,43 @@ class LLMCapabilities:
     - Prompt caching support
     - Responses API support
     - Context window validation
+    - Auto-detection of token limits from model info
 
     It is initialized with model configuration and caches model info from litellm.
+    Token limits are auto-detected and exposed as ``detected_max_input_tokens``
+    and ``detected_max_output_tokens``. The caller (LLM) owns the resolution of
+    user overrides vs detected values.
 
     Example:
-        >>> caps = LLMCapabilities(
+        >>> config = CapabilitiesConfig(
         ...     model="claude-sonnet-4-20250514",
         ...     model_canonical_name=None,
         ...     base_url=None,
         ...     api_key=SecretStr("key"),
         ...     disable_vision=False,
         ...     caching_prompt=True,
-        ...     max_input_tokens=None,
-        ...     max_output_tokens=None,
         ... )
+        >>> caps = LLMCapabilities(config)
         >>> caps.vision_is_active()
         True
         >>> caps.is_caching_prompt_active()
         True
     """
 
-    def __init__(
-        self,
-        model: str,
-        model_canonical_name: str | None,
-        base_url: str | None,
-        api_key: SecretStr | str | None,
-        disable_vision: bool | None,
-        caching_prompt: bool,
-        max_input_tokens: int | None,
-        max_output_tokens: int | None,
-    ) -> None:
+    def __init__(self, config: CapabilitiesConfig) -> None:
         """Initialize capabilities detection.
 
         Args:
-            model: The model name/identifier.
-            model_canonical_name: Optional canonical model name for feature lookups.
-            base_url: Optional custom base URL for API calls.
-            api_key: API key for authentication (used for proxy model info lookup).
-            disable_vision: Whether vision is explicitly disabled. None is treated
-                as False (vision enabled if model supports it).
-            caching_prompt: Whether prompt caching is enabled.
-            max_input_tokens: User-specified max input tokens, or None for auto.
-            max_output_tokens: User-specified max output tokens, or None for auto.
+            config: Configuration for capability detection.
         """
-        self._model = model
-        self._model_canonical_name = model_canonical_name
-        self._base_url = base_url
-        self._api_key = api_key
-        # Treat None as False (vision enabled if model supports it)
-        self._disable_vision = disable_vision if disable_vision is not None else False
-        self._caching_prompt = caching_prompt
+        self._config = config
 
-        # These can be auto-detected from model info
-        self.max_input_tokens = max_input_tokens
-        self.max_output_tokens = max_output_tokens
+        # Auto-detected token limits (never user overrides)
+        self.detected_max_input_tokens: int | None = None
+        self.detected_max_output_tokens: int | None = None
 
-        # Internal cache for model info (typed as Any to match LLM class)
-        self._model_info: Any = None
+        # Internal cache for model info
+        self._model_info: ModelInfo | None = None
 
         # Initialize model info and capabilities
         self._init_model_info_and_caps()
@@ -116,68 +114,67 @@ class LLMCapabilities:
     @property
     def model(self) -> str:
         """Return the model name."""
-        return self._model
+        return self._config.model
 
     @property
     def model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
-        return self._model_canonical_name or self._model
+        return self._config.model_canonical_name or self._config.model
 
     @property
-    def model_info(self) -> dict[str, Any] | None:
+    def model_info(self) -> ModelInfo | None:
         """Return the cached model info dictionary."""
         return self._model_info
 
     def _init_model_info_and_caps(self) -> None:
         """Initialize model info and auto-detect token limits."""
         self._model_info = get_litellm_model_info(
-            secret_api_key=self._api_key,
-            base_url=self._base_url,
+            secret_api_key=self._config.api_key,
+            base_url=self._config.base_url,
             model=self.model_name_for_capabilities,
         )
 
         # Context window (max_input_tokens)
-        if (
-            self.max_input_tokens is None
-            and self._model_info is not None
-            and isinstance(self._model_info.get("max_input_tokens"), int)
+        if self._model_info is not None and isinstance(
+            self._model_info.get("max_input_tokens"), int
         ):
-            self.max_input_tokens = self._model_info.get("max_input_tokens")
+            self.detected_max_input_tokens = self._model_info.get("max_input_tokens")
 
         # Validate context window size
         self._validate_context_window_size()
 
         # Auto-detect max_output_tokens
-        if self.max_output_tokens is None:
-            self._auto_detect_max_output_tokens()
+        self._auto_detect_max_output_tokens()
 
     def _auto_detect_max_output_tokens(self) -> None:
         """Auto-detect max_output_tokens from model info."""
         if any(
-            m in self._model
+            m in self._config.model
             for m in [
                 "claude-3-7-sonnet",
                 "claude-sonnet-4",
                 "kimi-k2-thinking",
             ]
         ):
-            self.max_output_tokens = (
+            self.detected_max_output_tokens = (
                 64000  # practical cap (litellm may allow 128k with header)
             )
             logger.debug(
-                f"Setting max_output_tokens to {self.max_output_tokens} "
-                f"for {self._model}"
+                f"Setting max_output_tokens to {self.detected_max_output_tokens} "
+                f"for {self._config.model}"
             )
         elif self._model_info is not None:
             if isinstance(self._model_info.get("max_output_tokens"), int):
-                self.max_output_tokens = self._model_info.get("max_output_tokens")
-            elif isinstance(self._model_info.get("max_tokens"), int):
+                self.detected_max_output_tokens = self._model_info.get(
+                    "max_output_tokens"
+                )
+            elif isinstance(
+                max_tokens_value := self._model_info.get("max_tokens"), int
+            ):
                 # 'max_tokens' is ambiguous: some providers use it for total
                 # context window, not output limit. Cap it to avoid requesting
                 # output that exceeds the context window.
-                max_tokens_value = self._model_info.get("max_tokens")
-                assert isinstance(max_tokens_value, int)  # for type checker
-                self.max_output_tokens = min(
+                self.detected_max_output_tokens = min(
                     max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
                 )
                 if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
@@ -185,19 +182,22 @@ class LLMCapabilities:
                         "Capping max_output_tokens from %s to %s for %s "
                         "(max_tokens may be context window, not output)",
                         max_tokens_value,
-                        self.max_output_tokens,
-                        self._model,
+                        self.detected_max_output_tokens,
+                        self._config.model,
                     )
 
         # Special handling for o3 models
-        if "o3" in self._model:
+        if "o3" in self._config.model:
             o3_limit = 100000
-            if self.max_output_tokens is None or self.max_output_tokens > o3_limit:
-                self.max_output_tokens = o3_limit
+            if (
+                self.detected_max_output_tokens is None
+                or self.detected_max_output_tokens > o3_limit
+            ):
+                self.detected_max_output_tokens = o3_limit
                 logger.debug(
                     "Clamping max_output_tokens to %s for %s",
-                    self.max_output_tokens,
-                    self._model,
+                    self.detected_max_output_tokens,
+                    self._config.model,
                 )
 
     def _validate_context_window_size(self) -> None:
@@ -211,13 +211,13 @@ class LLMCapabilities:
             return
 
         # Unknown context window - cannot validate
-        if self.max_input_tokens is None:
+        if self.detected_max_input_tokens is None:
             return
 
         # Check minimum requirement
-        if self.max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
+        if self.detected_max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
             raise LLMContextWindowTooSmallError(
-                self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
+                self.detected_max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
             )
 
     def vision_is_active(self) -> bool:
@@ -228,7 +228,7 @@ class LLMCapabilities:
         """
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return not self._disable_vision and self._supports_vision()
+            return not self._config.disable_vision and self._supports_vision()
 
     def _supports_vision(self) -> bool:
         """Check if the model supports vision capabilities.
@@ -242,14 +242,13 @@ class LLMCapabilities:
         # the correct value for some reason.
         # Check both the full model name and the name after proxy prefix
         model_for_caps = self.model_name_for_capabilities
-        return (
+        return bool(
             supports_vision(model_for_caps)
             or supports_vision(model_for_caps.split("/")[-1])
             or (
                 self._model_info is not None
                 and self._model_info.get("supports_vision", False)
             )
-            or False  # fallback to False if model_info is None
         )
 
     def is_caching_prompt_active(self) -> bool:
@@ -258,12 +257,12 @@ class LLMCapabilities:
         Returns:
             True if prompt caching is supported and enabled for the given model.
         """
-        if not self._caching_prompt:
+        if not self._config.caching_prompt:
             return False
         # We don't need to look-up model_info, because
         # only Anthropic models need explicit caching breakpoints
         return (
-            self._caching_prompt
+            self._config.caching_prompt
             and get_features(self.model_name_for_capabilities).supports_prompt_cache
         )
 

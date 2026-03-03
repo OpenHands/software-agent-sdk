@@ -21,7 +21,11 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from openhands.sdk.llm.capabilities import LLMCapabilities
+from openhands.sdk.llm.capabilities import (
+    CapabilitiesConfig,
+    LLMCapabilities,
+    ModelInfo,
+)
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
@@ -466,22 +470,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.custom_tokenizer:
             self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
 
-        # Initialize capabilities (handles model info lookup and validation)
+        # LLMCapabilities owns capability detection (vision, caching, token limits).
+        # It auto-detects token limits from model info. LLM owns the final resolved
+        # values: user override wins, otherwise use auto-detected.
         self._capabilities = LLMCapabilities(
-            model=self.model,
-            model_canonical_name=self.model_canonical_name,
-            base_url=self.base_url,
-            api_key=self.api_key,
-            disable_vision=self.disable_vision,
-            caching_prompt=self.caching_prompt,
-            max_input_tokens=self.max_input_tokens,
-            max_output_tokens=self.max_output_tokens,
+            CapabilitiesConfig(
+                model=self.model,
+                model_canonical_name=self.model_canonical_name,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                disable_vision=self.disable_vision
+                if self.disable_vision is not None
+                else False,
+                caching_prompt=self.caching_prompt,
+            )
         )
-        # Sync auto-detected token limits back to LLM instance
         if self.max_input_tokens is None:
-            self.max_input_tokens = self._capabilities.max_input_tokens
+            self.max_input_tokens = self._capabilities.detected_max_input_tokens
         if self.max_output_tokens is None:
-            self.max_output_tokens = self._capabilities.max_output_tokens
+            self.max_output_tokens = self._capabilities.detected_max_output_tokens
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
@@ -1074,11 +1081,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Capabilities (delegated to LLMCapabilities)
     # =========================================================================
+    def _get_capabilities(self) -> LLMCapabilities:
+        """Return the capabilities instance, raising if not initialized."""
+        if self._capabilities is None:
+            raise RuntimeError("LLM capabilities not initialized")
+        return self._capabilities
+
     def _model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
-        if self._capabilities is not None:
-            return self._capabilities.model_name_for_capabilities
-        return self.model_canonical_name or self.model
+        return self._get_capabilities().model_name_for_capabilities
 
     def vision_is_active(self) -> bool:
         """Check if vision is supported and enabled.
@@ -1086,8 +1097,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             True if the model supports vision and it's not disabled.
         """
-        assert self._capabilities is not None
-        return self._capabilities.vision_is_active()
+        return self._get_capabilities().vision_is_active()
 
     def is_caching_prompt_active(self) -> bool:
         """Check if prompt caching is supported and enabled for current model.
@@ -1095,8 +1105,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             True if prompt caching is supported and enabled for the given model.
         """
-        assert self._capabilities is not None
-        return self._capabilities.is_caching_prompt_active()
+        return self._get_capabilities().is_caching_prompt_active()
 
     def uses_responses_api(self) -> bool:
         """Whether this model uses the OpenAI Responses API path.
@@ -1104,15 +1113,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             True if the model should use the Responses API.
         """
-        assert self._capabilities is not None
-        return self._capabilities.uses_responses_api()
+        return self._get_capabilities().uses_responses_api()
 
     @property
-    def model_info(self) -> dict | None:
+    def model_info(self) -> ModelInfo | None:
         """Returns the model info dictionary."""
-        if self._capabilities is not None:
-            return self._capabilities.model_info
-        return None
+        return self._get_capabilities().model_info
 
     # =========================================================================
     # Utilities preserved from previous class
