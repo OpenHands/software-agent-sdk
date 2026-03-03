@@ -39,9 +39,12 @@ def select_chat_options(
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
 
-        # All reasoning models ignore temp/top_p
-        out.pop("temperature", None)
-        out.pop("top_p", None)
+        # OpenAI reasoning models (o1, o3) ignore temp/top_p
+        # Gemini models DO respect temperature, so we only pop for OpenAI
+        model_lower = llm.model.lower()
+        if "o1-" in model_lower or "o3-" in model_lower or model_lower.startswith("o1") or model_lower.startswith("o3"):
+            out.pop("temperature", None)
+            out.pop("top_p", None)
 
         # Gemini 2.5-pro default to low if not set
         if "gemini-2.5-pro" in llm.model:
