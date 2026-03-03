@@ -79,7 +79,7 @@ def demo_conversation_with_github_plugin(llm: LLM) -> None:
             # Ask a question that uses the pptx skill
             conversation.send_message(
                 "What's the best way to create a PowerPoint presentation "
-                "programmatically? Brief answer please."
+                "programmatically? Check the skill before you answer."
             )
 
             # Verify skills were loaded
