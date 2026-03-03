@@ -50,7 +50,7 @@ async def test_long_running_command_respects_timeout(bash_service):
 # ---------------------------------------------------------------------------
 def test_server_stays_responsive_during_long_command():
     """While /execute_bash_command is blocked on a slow task,
-    other endpoints (e.g. /info) must still respond promptly."""
+    other endpoints (e.g. /health) must still respond promptly."""
 
     from openhands.agent_server.api import create_app
     from openhands.agent_server.config import Config
@@ -60,8 +60,8 @@ def test_server_stays_responsive_during_long_command():
 
     # Use a real TestClient (runs the ASGI app in a thread)
     with TestClient(app, raise_server_exceptions=False) as client:
-        # Sanity: server is up
-        r = client.get("/info")
+        # Sanity: server is up (use /health which always returns 200)
+        r = client.get("/health")
         assert r.status_code == 200
 
         # Fire a 5-second command with a 2-second timeout via the sync endpoint.
