@@ -47,7 +47,12 @@ from openhands.sdk.event import (
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.tool import Tool  # noqa: TC002
+
+
+logger = get_logger(__name__)
+maybe_init_laminar()
 
 
 if TYPE_CHECKING:
@@ -58,8 +63,6 @@ if TYPE_CHECKING:
         LocalConversation,
     )
 
-
-logger = get_logger(__name__)
 
 # Seconds to wait after prompt() for pending session_update notifications
 # to be processed.  This is a best-effort workaround: the ACP protocol does
@@ -636,6 +639,7 @@ class ACPAgent(AgentBase):
         self._conn, self._process, self._filtered_reader, self._session_id, self._agent_name, self._agent_version = result
         self._working_dir = working_dir
 
+    @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
         conversation: LocalConversation,
