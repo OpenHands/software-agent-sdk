@@ -4,6 +4,22 @@
 
 This file (`resolve_model_config.py`) defines models available for evaluation. Models must be added here before they can be used in integration tests or evaluations.
 
+## Critical Rules
+
+**ONLY ADD NEW CONTENT - DO NOT MODIFY EXISTING MODELS**
+
+1. **Never modify existing model entries** - they are already correct and in production use
+2. **Never reformat existing code** - preserve exact spacing, quotes, formatting
+3. **Never reorder existing models** - dictionary order must be preserved
+4. **Never "improve" or "fix" existing entries** - if they're in the file, they work
+5. **Only add your new model entry** - insert it in the appropriate location alphabetically if possible
+
+**When adding a model**:
+- Add ONE new entry to the MODELS dictionary
+- Add ONE new test function
+- Add to feature lists in model_features.py ONLY if needed
+- Do not touch any other existing content
+
 ## Files to Modify
 
 1. **Always required**:
