@@ -385,36 +385,52 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 
 
 def _load_skills(plugin_dir: Path) -> list[Skill]:
-    """Load skills from the skills/ directory.
+    """Load skills from the plugin directory.
+
+    Supports two formats:
+    1. SDK format: skills in skills/<name>/SKILL.md subdirectories
+    2. Flat format: single SKILL.md at plugin root (e.g., anthropics/skills)
 
     Note: Plugin skills are loaded with relaxed validation (strict=False)
     to support Claude Code plugins which may use different naming conventions.
     """
-    skills_dir = plugin_dir / "skills"
-    if not skills_dir.is_dir():
-        return []
-
     skills: list[Skill] = []
-    for item in skills_dir.iterdir():
-        if item.is_dir():
-            skill_md = find_skill_md(item)
-            if skill_md:
+
+    # Check for skills/ subdirectory (SDK format)
+    skills_dir = plugin_dir / "skills"
+    if skills_dir.is_dir():
+        for item in skills_dir.iterdir():
+            if item.is_dir():
+                skill_md = find_skill_md(item)
+                if skill_md:
+                    try:
+                        skill = Skill.load(skill_md, skills_dir, strict=False)
+                        # Discover and attach resources
+                        skill.resources = discover_skill_resources(item)
+                        skills.append(skill)
+                        logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
+                    except Exception as e:
+                        logger.warning(f"Failed to load skill from {item}: {e}")
+            elif item.suffix == ".md" and item.name.lower() != "readme.md":
+                # Also support single .md files in skills/ directory
                 try:
-                    skill = Skill.load(skill_md, skills_dir, strict=False)
-                    # Discover and attach resources
-                    skill.resources = discover_skill_resources(item)
+                    skill = Skill.load(item, skills_dir, strict=False)
                     skills.append(skill)
-                    logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
+                    logger.debug(f"Loaded skill: {skill.name} from {item}")
                 except Exception as e:
                     logger.warning(f"Failed to load skill from {item}: {e}")
-        elif item.suffix == ".md" and item.name.lower() != "readme.md":
-            # Also support single .md files in skills/ directory
+
+    # Fallback: check for root-level SKILL.md (flat format, e.g., anthropics/skills)
+    if not skills:
+        root_skill_md = find_skill_md(plugin_dir)
+        if root_skill_md:
             try:
-                skill = Skill.load(item, skills_dir, strict=False)
+                skill = Skill.load(root_skill_md, plugin_dir, strict=False)
+                skill.resources = discover_skill_resources(plugin_dir)
                 skills.append(skill)
-                logger.debug(f"Loaded skill: {skill.name} from {item}")
+                logger.debug(f"Loaded root skill: {skill.name} from {root_skill_md}")
             except Exception as e:
-                logger.warning(f"Failed to load skill from {item}: {e}")
+                logger.warning(f"Failed to load root skill from {root_skill_md}: {e}")
 
     return skills
 

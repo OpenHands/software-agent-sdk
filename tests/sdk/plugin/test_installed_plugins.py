@@ -471,6 +471,100 @@ def test_update_nonexistent_plugin(installed_dir: Path) -> None:
 
 
 # ============================================================================
+# Root-Level SKILL.md Tests (flat format support)
+# ============================================================================
+
+
+def test_load_plugin_with_root_skill_md(tmp_path: Path) -> None:
+    """Test loading a plugin with SKILL.md at the root (flat format).
+
+    This tests support for the anthropics/skills format where SKILL.md
+    is at the plugin root instead of in a skills/ subdirectory.
+    """
+    plugin_dir = tmp_path / "flat-plugin"
+    plugin_dir.mkdir(parents=True)
+
+    # Create plugin manifest
+    (plugin_dir / ".plugin").mkdir()
+    (plugin_dir / ".plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "flat-plugin",
+                "version": "1.0.0",
+                "description": "A flat-format plugin",
+            }
+        )
+    )
+
+    # Create SKILL.md at root (not in skills/ subdirectory)
+    (plugin_dir / "SKILL.md").write_text(
+        """---
+name: flat-skill
+description: A skill at the root level
+---
+# Flat Skill
+
+This skill is at the plugin root, not in skills/ subdirectory.
+"""
+    )
+
+    # Load the plugin
+    plugin = Plugin.load(plugin_dir)
+
+    assert plugin.name == "flat-plugin"
+    skills = plugin.get_all_skills()
+    assert len(skills) == 1
+    assert skills[0].name == "flat-skill"
+
+
+def test_load_plugin_prefers_skills_dir_over_root(tmp_path: Path) -> None:
+    """Test that skills/ directory takes precedence over root SKILL.md."""
+    plugin_dir = tmp_path / "mixed-plugin"
+    plugin_dir.mkdir(parents=True)
+
+    # Create plugin manifest
+    (plugin_dir / ".plugin").mkdir()
+    (plugin_dir / ".plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "mixed-plugin",
+                "version": "1.0.0",
+                "description": "Plugin with both formats",
+            }
+        )
+    )
+
+    # Create SKILL.md at root
+    (plugin_dir / "SKILL.md").write_text(
+        """---
+name: root-skill
+description: Skill at root
+---
+Root skill content.
+"""
+    )
+
+    # Create skill in skills/ subdirectory
+    skills_dir = plugin_dir / "skills" / "nested-skill"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text(
+        """---
+name: nested-skill
+description: Skill in skills/ directory
+---
+Nested skill content.
+"""
+    )
+
+    # Load the plugin - should prefer skills/ directory
+    plugin = Plugin.load(plugin_dir)
+
+    skills = plugin.get_all_skills()
+    assert len(skills) == 1
+    assert skills[0].name == "nested-skill"  # Not root-skill
+
+
+# ============================================================================
 # Integration Tests (Real GitHub)
 # ============================================================================
 
@@ -529,6 +623,7 @@ def test_install_from_anthropic_skills(installed_dir: Path) -> None:
     """Test installing a skill from anthropics/skills repository.
 
     This tests the Claude Code skill format where SKILL.md is at the root.
+    The SDK should detect and load the root-level SKILL.md as the plugin's skill.
     """
     try:
         info = install_plugin(
@@ -549,6 +644,14 @@ def test_install_from_anthropic_skills(installed_dir: Path) -> None:
         content = skill_md.read_text()
         assert "name: pptx" in content
         assert "description:" in content
+
+        # Verify the skill is loaded (tests root-level SKILL.md support)
+        plugins = load_installed_plugins(installed_dir=installed_dir)
+        pptx_plugin = next((p for p in plugins if p.name == "pptx"), None)
+        assert pptx_plugin is not None
+        skills = pptx_plugin.get_all_skills()
+        assert len(skills) == 1
+        assert skills[0].name == "pptx"
 
     except PluginFetchError:
         pytest.skip("GitHub not accessible (network issue)")

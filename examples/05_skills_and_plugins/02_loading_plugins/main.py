@@ -2,9 +2,9 @@
 
 This example demonstrates plugin loading and management in the SDK:
 
-1. Loading plugins via Conversation (PluginSource)
-2. Installing plugins to persistent storage
-3. Listing, updating, and uninstalling plugins
+1. Loading plugins from GitHub via Conversation (PluginSource)
+2. Installing plugins to persistent storage (local and GitHub)
+3. Listing, loading, and uninstalling plugins
 
 Plugins bundle skills, hooks, and MCP config together.
 
@@ -43,22 +43,24 @@ script_dir = Path(__file__).parent
 local_plugin_path = script_dir / "example_plugins" / "code-quality"
 
 
-def demo_conversation_with_plugins(llm: LLM) -> None:
-    """Demo 1: Load plugins via Conversation's plugins parameter.
+def demo_conversation_with_github_plugin(llm: LLM) -> None:
+    """Demo 1: Load plugin from GitHub via Conversation.
 
-    This is the recommended way to use plugins - they are loaded lazily
-    when the conversation starts.
+    This demonstrates loading a plugin directly from GitHub using PluginSource.
+    The plugin is fetched and loaded lazily when the conversation starts.
     """
     print("\n" + "=" * 60)
-    print("DEMO 1: Loading plugins via Conversation")
+    print("DEMO 1: Loading plugin from GitHub via Conversation")
     print("=" * 60)
 
-    # Define plugins to load
+    # Load the pptx skill from anthropics/skills repository
+    # This skill helps create PowerPoint presentations
     plugins = [
-        PluginSource(source=str(local_plugin_path)),
-        # Examples of other sources:
-        # PluginSource(source="github:owner/repo", ref="v1.0.0"),
-        # PluginSource(source="github:owner/monorepo", repo_path="plugins/my-plugin"),
+        PluginSource(
+            source="github:anthropics/skills",
+            repo_path="skills/pptx",
+            ref="main",
+        ),
     ]
 
     agent = Agent(
@@ -67,24 +69,34 @@ def demo_conversation_with_plugins(llm: LLM) -> None:
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        conversation = Conversation(
-            agent=agent,
-            workspace=tmpdir,
-            plugins=plugins,
-        )
+        try:
+            conversation = Conversation(
+                agent=agent,
+                workspace=tmpdir,
+                plugins=plugins,
+            )
 
-        # The "lint" keyword triggers the python-linting skill
-        conversation.send_message("How do I lint Python code? Brief answer please.")
+            # Ask a question that uses the pptx skill
+            conversation.send_message(
+                "What's the best way to create a PowerPoint presentation "
+                "programmatically? Brief answer please."
+            )
 
-        # Verify skills were loaded
-        skills = (
-            conversation.agent.agent_context.skills
-            if conversation.agent.agent_context
-            else []
-        )
-        print(f"✓ Loaded {len(skills)} skill(s) from plugins")
+            # Verify skills were loaded
+            skills = (
+                conversation.agent.agent_context.skills
+                if conversation.agent.agent_context
+                else []
+            )
+            print(f"✓ Loaded {len(skills)} skill(s) from GitHub plugin")
+            for skill in skills:
+                print(f"  - {skill.name}")
 
-        conversation.run()
+            conversation.run()
+
+        except PluginFetchError as e:
+            print(f"⚠ Could not fetch from GitHub: {e}")
+            print("  Skipping this demo (network or rate limiting issue)")
 
 
 def demo_install_local_plugin(installed_dir: Path) -> None:
@@ -103,7 +115,7 @@ def demo_install_local_plugin(installed_dir: Path) -> None:
 
 
 def demo_install_github_plugin(installed_dir: Path) -> None:
-    """Demo 3: Install a plugin from GitHub.
+    """Demo 3: Install a plugin from GitHub to persistent storage.
 
     Demonstrates the github:owner/repo shorthand with repo_path for monorepos.
     """
@@ -122,6 +134,16 @@ def demo_install_github_plugin(installed_dir: Path) -> None:
         print(f"✓ Installed: {info.name} v{info.version}")
         print(f"  Source: {info.source}")
         print(f"  Resolved ref: {info.resolved_ref}")
+
+        # Show the skills loaded from the plugin
+        plugins = load_installed_plugins(installed_dir=installed_dir)
+        for plugin in plugins:
+            if plugin.name == info.name:
+                skills = plugin.get_all_skills()
+                print(f"  Skills: {len(skills)}")
+                for skill in skills:
+                    desc = skill.description or "(no description)"
+                    print(f"    - {skill.name}: {desc[:50]}...")
 
     except PluginFetchError as e:
         print(f"⚠ Could not fetch from GitHub: {e}")
@@ -181,9 +203,9 @@ if __name__ == "__main__":
         installed_dir = Path(tmpdir) / "installed"
         installed_dir.mkdir()
 
-        # Demo 1: Conversation with plugins (requires LLM)
+        # Demo 1: Conversation with GitHub plugin (requires LLM)
         if llm:
-            demo_conversation_with_plugins(llm)
+            demo_conversation_with_github_plugin(llm)
 
         # Demo 2-5: Plugin management (no LLM required)
         demo_install_local_plugin(installed_dir)
