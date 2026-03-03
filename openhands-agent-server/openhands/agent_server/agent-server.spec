@@ -63,6 +63,8 @@ a = Analysis(
         *collect_submodules("tiktoken_ext"),
         *collect_submodules("litellm"),
         *collect_submodules("fastmcp"),
+        *collect_submodules("fakeredis"),
+        *collect_submodules("lupa"),  # Required for fakeredis[lua] Lua scripting support
 
         # mcp subpackages used at runtime (avoid CLI)
         "mcp.types",
