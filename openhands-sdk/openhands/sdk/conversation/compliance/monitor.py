@@ -26,9 +26,8 @@ class APIComplianceMonitor:
     State machine:
     - IDLE (no pending calls): Messages and new actions allowed
     - TOOL_CALLING (pending calls): Only matching observations allowed
-
-    Currently operates in observation mode (violations are logged but events
-    are still processed).
+    Currently operates in rejection mode: violating events are logged and rejected
+    (not added to the conversation).
 
     Attributes:
         state: Compliance state tracking pending/completed tool calls.
