@@ -66,6 +66,7 @@ REASONING_EFFORT_MODELS: list[str] = [
     # Gemini 3 family
     "gemini-3-flash-preview",
     "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
     # Anthropic Opus 4.5 and 4.6
