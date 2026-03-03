@@ -35,6 +35,7 @@ def test_model_matches(name, pattern, expected):
         # Gemini 3 family
         ("gemini-3-pro-preview", True),
         ("gemini-3-flash-preview", True),
+        ("gemini-3.1-pro-preview", True),
         # GPT-5 family
         ("gpt-5.2", True),
         ("gpt-5.2-codex", True),
