@@ -135,6 +135,11 @@ MODELS = {
             "reasoning_effort": "high",
         },
     },
+    "gpt-5.3-codex": {
+        "id": "gpt-5.3-codex",
+        "display_name": "GPT-5.3 Codex",
+        "llm_config": {"model": "litellm_proxy/gpt-5.3-codex"},
+    },
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
