@@ -424,11 +424,7 @@ For examples that use the critic model (e.g., `34_critic_example.py`), the criti
 - Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
 
-<CODE_REVIEW_LEARNINGS>
-# Code Review Learnings
-
-Patterns distilled from recurring code review feedback (auto-generated).
-
+<CODING_GUIDELINES>
 ## Testing
 
 - **Test new behavior, not just removed behavior**: When refactoring, verify the new implementation works correctly, not just that the old code was removed.
@@ -450,5 +446,5 @@ Changes that could affect benchmark/evaluation performance require special handl
 - Request lightweight evals before merge
 - Use COMMENT instead of APPROVE for uncertain cases
 - See `.openhands/skills/eval-risk-assessment/SKILL.md` for detailed guidelines
-</CODE_REVIEW_LEARNINGS>
+</CODING_GUIDELINES>
 </REPO>
