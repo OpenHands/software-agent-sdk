@@ -48,17 +48,19 @@ def demo_conversation_with_github_plugin(llm: LLM) -> None:
 
     This demonstrates loading a plugin directly from GitHub using PluginSource.
     The plugin is fetched and loaded lazily when the conversation starts.
+
+    We load the anthropics/skills repository which contains the "document-skills"
+    plugin with skills for pptx, xlsx, docx, and pdf document processing.
     """
     print("\n" + "=" * 60)
     print("DEMO 1: Loading plugin from GitHub via Conversation")
     print("=" * 60)
 
-    # Load the pptx skill from anthropics/skills repository
-    # This skill helps create PowerPoint presentations
+    # Load the anthropics/skills repository which contains the document-skills plugin
+    # This plugin bundles multiple document processing skills including pptx
     plugins = [
         PluginSource(
             source="github:anthropics/skills",
-            repo_path="skills/pptx",
             ref="main",
         ),
     ]
@@ -76,12 +78,6 @@ def demo_conversation_with_github_plugin(llm: LLM) -> None:
                 plugins=plugins,
             )
 
-            # Ask a question that uses the pptx skill
-            conversation.send_message(
-                "What's the best way to create a PowerPoint presentation "
-                "programmatically? Check the skill before you answer."
-            )
-
             # Verify skills were loaded
             skills = (
                 conversation.agent.agent_context.skills
@@ -91,6 +87,12 @@ def demo_conversation_with_github_plugin(llm: LLM) -> None:
             print(f"✓ Loaded {len(skills)} skill(s) from GitHub plugin")
             for skill in skills:
                 print(f"  - {skill.name}")
+
+            # Ask a question that uses the pptx skill
+            conversation.send_message(
+                "What's the best way to create a PowerPoint presentation "
+                "programmatically? Check the skill before you answer."
+            )
 
             conversation.run()
 
@@ -117,17 +119,17 @@ def demo_install_local_plugin(installed_dir: Path) -> None:
 def demo_install_github_plugin(installed_dir: Path) -> None:
     """Demo 3: Install a plugin from GitHub to persistent storage.
 
-    Demonstrates the github:owner/repo shorthand with repo_path for monorepos.
+    Demonstrates loading the anthropics/skills repository which contains
+    multiple document processing skills (pptx, xlsx, docx, pdf).
     """
     print("\n" + "=" * 60)
     print("DEMO 3: Installing plugin from GitHub")
     print("=" * 60)
 
     try:
-        # Install from anthropics/skills repository
+        # Install the anthropics/skills repository (contains document-skills plugin)
         info = install_plugin(
             source="github:anthropics/skills",
-            repo_path="skills/pptx",
             ref="main",
             installed_dir=installed_dir,
         )
@@ -141,9 +143,11 @@ def demo_install_github_plugin(installed_dir: Path) -> None:
             if plugin.name == info.name:
                 skills = plugin.get_all_skills()
                 print(f"  Skills: {len(skills)}")
-                for skill in skills:
+                for skill in skills[:5]:  # Show first 5 skills
                     desc = skill.description or "(no description)"
                     print(f"    - {skill.name}: {desc[:50]}...")
+                if len(skills) > 5:
+                    print(f"    ... and {len(skills) - 5} more skills")
 
     except PluginFetchError as e:
         print(f"⚠ Could not fetch from GitHub: {e}")
