@@ -1,7 +1,6 @@
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
-from logging import getLogger
 from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import ConfigDict, Field
@@ -14,8 +13,6 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 if TYPE_CHECKING:
     from openhands.sdk.event.llm_convertible import ActionEvent, ObservationBaseEvent
-
-logger = getLogger(__name__)
 
 N_CHAR_PREVIEW = 500
 
@@ -154,10 +151,6 @@ class LLMConvertibleEvent(Event, ABC):
 
                 # Select the best observation to use
                 if len(batch_observations) > 1:
-                    logger.warning(
-                        f"Found {len(batch_observations)} consecutive observations "
-                        f"for tool_call_id={tool_call_id}. Deduplicating."
-                    )
                     selected = _select_best_observation(batch_observations)
                 else:
                     selected = batch_observations[0]

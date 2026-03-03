@@ -250,6 +250,7 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+- When logging is needed, use the SDK's logger from `openhands.sdk.logger` instead of `logging.getLogger(__name__)`.
 
 ## Event Type Deprecation Policy
 
