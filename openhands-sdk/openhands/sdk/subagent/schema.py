@@ -9,6 +9,8 @@ from typing import Any
 import frontmatter
 from pydantic import BaseModel, Field
 
+from openhands.sdk.hooks.config import HookConfig
+
 
 def _extract_examples(description: str) -> list[str]:
     """Extract <example> tags from description for agent triggering."""
@@ -40,6 +42,9 @@ class AgentDefinition(BaseModel):
     when_to_use_examples: list[str] = Field(
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
+    )
+    hooks: HookConfig | None = Field(
+        default=None, description="Hook configuration for this agent"
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
@@ -87,6 +92,12 @@ class AgentDefinition(BaseModel):
         else:
             tools = []
 
+        # Parse hooks configuration
+        hooks_raw = fm.get("hooks")
+        hooks: HookConfig | None = None
+        if hooks_raw is not None and isinstance(hooks_raw, dict):
+            hooks = HookConfig.model_validate(hooks_raw)
+
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
 
@@ -97,6 +108,7 @@ class AgentDefinition(BaseModel):
             "model",
             "color",
             "tools",
+            "hooks",
         }
         metadata = {k: v for k, v in fm.items() if k not in known_fields}
 
@@ -106,6 +118,7 @@ class AgentDefinition(BaseModel):
             model=model,
             color=color,
             tools=tools,
+            hooks=hooks,
             system_prompt=content,
             source=str(agent_path),
             when_to_use_examples=when_to_use_examples,

@@ -28,6 +28,7 @@ from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, NamedTuple
 
+from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.load import (
     load_project_agents,
@@ -48,6 +49,7 @@ class AgentFactory(NamedTuple):
 
     factory_func: Callable[["LLM"], "Agent"]
     description: str
+    hook_config: HookConfig | None = None
 
 
 # Global registry for user-registered agent factories
@@ -59,6 +61,7 @@ def register_agent(
     name: str,
     factory_func: Callable[["LLM"], "Agent"],
     description: str,
+    hook_config: HookConfig | None = None,
 ) -> None:
     """
     Register a custom agent globally.
@@ -67,6 +70,7 @@ def register_agent(
         name: Unique name for the agent
         factory_func: Function that takes an LLM and returns an Agent
         description: Human-readable description of what this agent does
+        hook_config: Optional hook configuration for this agent
 
     Raises:
         ValueError: If an agent with the same name already exists
@@ -76,7 +80,9 @@ def register_agent(
             raise ValueError(f"Agent '{name}' already registered")
 
         _agent_factories[name] = AgentFactory(
-            factory_func=factory_func, description=description
+            factory_func=factory_func,
+            description=description,
+            hook_config=hook_config,
         )
 
 
@@ -84,6 +90,7 @@ def register_agent_if_absent(
     name: str,
     factory_func: Callable[["LLM"], "Agent"],
     description: str,
+    hook_config: HookConfig | None = None,
 ) -> bool:
     """
     Register a custom agent if no agent with that name exists yet.
@@ -96,6 +103,7 @@ def register_agent_if_absent(
         name: Unique name for the agent
         factory_func: Function that takes an LLM and returns an Agent
         description: Human-readable description of what this agent does
+        hook_config: Optional hook configuration for this agent
 
     Returns:
         True if the agent was registered, False if an agent with that name
@@ -106,7 +114,9 @@ def register_agent_if_absent(
             return False
 
         _agent_factories[name] = AgentFactory(
-            factory_func=factory_func, description=description
+            factory_func=factory_func,
+            description=description,
+            hook_config=hook_config,
         )
         return True
 
@@ -204,6 +214,7 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
             name=agent_def.name,
             factory_func=factory,
             description=agent_def.description or f"File-based agent: {agent_def.name}",
+            hook_config=agent_def.hooks,
         )
         if was_registered:
             registered.append(agent_def.name)
@@ -236,6 +247,7 @@ def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
             name=agent_def.name,
             factory_func=factory,
             description=agent_def.description or f"Plugin agent: {agent_def.name}",
+            hook_config=agent_def.hooks,
         )
         if was_registered:
             registered.append(agent_def.name)

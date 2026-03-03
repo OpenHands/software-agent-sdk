@@ -6,6 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     agent_definition_to_factory,
@@ -308,6 +309,104 @@ def test_register_agent_if_absent_new() -> None:
 
     factory = get_agent_factory("new_agent")
     assert factory.description == "New agent"
+
+
+def test_register_agent_with_hook_config() -> None:
+    """register_agent stores hook_config in the AgentFactory."""
+    hook_config = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="terminal",
+                hooks=[HookDefinition(command="./validate.sh")],
+            )
+        ]
+    )
+
+    def dummy_factory(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    register_agent(
+        name="hooked-agent",
+        factory_func=dummy_factory,
+        description="Agent with hooks",
+        hook_config=hook_config,
+    )
+
+    factory = get_agent_factory("hooked-agent")
+    assert factory.hook_config is not None
+    assert len(factory.hook_config.pre_tool_use) == 1
+    assert factory.hook_config.pre_tool_use[0].matcher == "terminal"
+
+
+def test_register_agent_hook_config_defaults_to_none() -> None:
+    """AgentFactory.hook_config defaults to None when not provided."""
+
+    def dummy_factory(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    register_agent(
+        name="no-hooks-agent",
+        factory_func=dummy_factory,
+        description="Agent without hooks",
+    )
+
+    factory = get_agent_factory("no-hooks-agent")
+    assert factory.hook_config is None
+
+
+def test_register_file_agents_with_hooks(tmp_path: Path) -> None:
+    """File-based agents with hooks have hook_config stored in the factory."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "hooked.md").write_text(
+        "---\n"
+        "name: hooked-file-agent\n"
+        "description: File agent with hooks\n"
+        "hooks:\n"
+        "  pre_tool_use:\n"
+        "    - matcher: '*'\n"
+        "      hooks:\n"
+        "        - command: ./log.sh\n"
+        "---\n\n"
+        "You are an agent with hooks.\n"
+    )
+
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert "hooked-file-agent" in registered
+    factory = get_agent_factory("hooked-file-agent")
+    assert factory.hook_config is not None
+    assert len(factory.hook_config.pre_tool_use) == 1
+
+
+def test_register_plugin_agents_with_hooks() -> None:
+    """Plugin agents with hooks have hook_config stored in the factory."""
+    hook_config = HookConfig(
+        stop=[
+            HookMatcher(
+                matcher="*",
+                hooks=[HookDefinition(command="./check_stop.sh")],
+            )
+        ]
+    )
+    plugin_agent = AgentDefinition(
+        name="plugin-hooked",
+        description="Plugin agent with hooks",
+        model="inherit",
+        tools=[],
+        system_prompt="Plugin prompt.",
+        hooks=hook_config,
+    )
+
+    registered = register_plugin_agents([plugin_agent])
+    assert "plugin-hooked" in registered
+
+    factory = get_agent_factory("plugin-hooked")
+    assert factory.hook_config is not None
+    assert len(factory.hook_config.stop) == 1
 
 
 def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
