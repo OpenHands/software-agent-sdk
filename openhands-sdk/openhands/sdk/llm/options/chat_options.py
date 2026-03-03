@@ -44,12 +44,7 @@ def select_chat_options(
         model_lower = llm.model.lower()
         # Normalize to basename so provider-prefixed IDs like "openai/o1" are handled
         model_name = model_lower.split("/")[-1]
-        if (
-            "o1-" in model_name
-            or "o3-" in model_name
-            or model_name.startswith("o1")
-            or model_name.startswith("o3")
-        ):
+        if model_name.startswith(("o1", "o3")):
             out.pop("temperature", None)
             out.pop("top_p", None)
 
