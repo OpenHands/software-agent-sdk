@@ -35,7 +35,9 @@ This file (`resolve_model_config.py`) defines models available for evaluation. M
 - Add ONE new test function (follow existing pattern exactly)
 - Add to feature lists in model_features.py ONLY if needed for your model
 - Do not touch any other files, tests, imports, or configurations
-- If you think something is broken, it's probably not - leave it alone
+- Test the PR branch with the integration test action.
+- Add a link to the integrations test to the PR.
+- If you think something is broken, it's probably not - add a comment to the PR.
 
 ## Files to Modify
 
