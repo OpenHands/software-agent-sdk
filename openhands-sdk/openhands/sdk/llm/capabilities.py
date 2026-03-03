@@ -61,6 +61,17 @@ ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 # 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
 DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 
+# Model-specific output token limits.
+# These override litellm's model_info when a substring match is found.
+# The limit is applied as an upper cap: if litellm reports a higher value,
+# it's clamped down; if the model isn't in model_info at all, this value is used.
+MODEL_OUTPUT_TOKEN_LIMITS: Final[dict[str, int]] = {
+    "claude-3-7-sonnet": 64000,
+    "claude-sonnet-4": 64000,
+    "kimi-k2-thinking": 64000,
+    "o3": 100000,
+}
+
 
 class LLMCapabilities:
     """Detects and caches model capabilities.
@@ -148,22 +159,21 @@ class LLMCapabilities:
 
     def _auto_detect_max_output_tokens(self) -> None:
         """Auto-detect max_output_tokens from model info."""
-        if any(
-            m in self._config.model
-            for m in [
-                "claude-3-7-sonnet",
-                "claude-sonnet-4",
-                "kimi-k2-thinking",
-            ]
-        ):
-            self.detected_max_output_tokens = (
-                64000  # practical cap (litellm may allow 128k with header)
-            )
-            logger.debug(
-                f"Setting max_output_tokens to {self.detected_max_output_tokens} "
-                f"for {self._config.model}"
-            )
-        elif self._model_info is not None:
+        model = self._config.model
+
+        # 1. Check model-specific overrides (from MODEL_OUTPUT_TOKEN_LIMITS)
+        for model_prefix, limit in MODEL_OUTPUT_TOKEN_LIMITS.items():
+            if model_prefix in model:
+                self.detected_max_output_tokens = limit
+                logger.debug(
+                    "Setting max_output_tokens to %s for %s (model-specific limit)",
+                    limit,
+                    model,
+                )
+                return
+
+        # 2. Fall back to model_info detection
+        if self._model_info is not None:
             if isinstance(self._model_info.get("max_output_tokens"), int):
                 self.detected_max_output_tokens = self._model_info.get(
                     "max_output_tokens"
@@ -183,22 +193,8 @@ class LLMCapabilities:
                         "(max_tokens may be context window, not output)",
                         max_tokens_value,
                         self.detected_max_output_tokens,
-                        self._config.model,
+                        model,
                     )
-
-        # Special handling for o3 models
-        if "o3" in self._config.model:
-            o3_limit = 100000
-            if (
-                self.detected_max_output_tokens is None
-                or self.detected_max_output_tokens > o3_limit
-            ):
-                self.detected_max_output_tokens = o3_limit
-                logger.debug(
-                    "Clamping max_output_tokens to %s for %s",
-                    self.detected_max_output_tokens,
-                    self._config.model,
-                )
 
     def _validate_context_window_size(self) -> None:
         """Validate that the context window is large enough for OpenHands."""

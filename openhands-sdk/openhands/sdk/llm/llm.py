@@ -373,7 +373,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     _metrics: Metrics | None = PrivateAttr(default=None)
     # Runtime-only private attrs
-    _capabilities: LLMCapabilities | None = PrivateAttr(default=None)
+    # set in _set_env_side_effects validator
+    _capabilities: LLMCapabilities = PrivateAttr(default=None)  # type: ignore[assignment]
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
@@ -1081,15 +1082,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Capabilities (delegated to LLMCapabilities)
     # =========================================================================
-    def _get_capabilities(self) -> LLMCapabilities:
-        """Return the capabilities instance, raising if not initialized."""
-        if self._capabilities is None:
-            raise RuntimeError("LLM capabilities not initialized")
-        return self._capabilities
-
     def _model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
-        return self._get_capabilities().model_name_for_capabilities
+        return self._capabilities.model_name_for_capabilities
 
     def vision_is_active(self) -> bool:
         """Check if vision is supported and enabled.
@@ -1097,7 +1092,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             True if the model supports vision and it's not disabled.
         """
-        return self._get_capabilities().vision_is_active()
+        return self._capabilities.vision_is_active()
 
     def is_caching_prompt_active(self) -> bool:
         """Check if prompt caching is supported and enabled for current model.
@@ -1105,7 +1100,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             True if prompt caching is supported and enabled for the given model.
         """
-        return self._get_capabilities().is_caching_prompt_active()
+        return self._capabilities.is_caching_prompt_active()
 
     def uses_responses_api(self) -> bool:
         """Whether this model uses the OpenAI Responses API path.
@@ -1113,12 +1108,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             True if the model should use the Responses API.
         """
-        return self._get_capabilities().uses_responses_api()
+        return self._capabilities.uses_responses_api()
 
     @property
     def model_info(self) -> ModelInfo | None:
         """Returns the model info dictionary."""
-        return self._get_capabilities().model_info
+        return self._capabilities.model_info
 
     # =========================================================================
     # Utilities preserved from previous class
