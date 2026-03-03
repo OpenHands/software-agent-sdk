@@ -455,20 +455,21 @@ class TestEventsToMessages:
         assert msgs[1].tool_call_id == "call_ne"
 
 
-class TestDuplicateObservationDeduplication:
-    """Tests for deduplication of consecutive observations with the same tool_call_id.
+class TestDuplicateObservationMerging:
+    """Tests for merging consecutive observations with the same tool_call_id.
 
     This handles the scenario where:
     1. Agent invokes a tool (ActionEvent with tool_call_id)
     2. Runtime restarts, creating AgentErrorEvent for "unmatched" action
     3. Tool completes, creating ObservationEvent with same tool_call_id
-    4. Both have the same tool_call_id, but only one message should be sent
+    4. Both have the same tool_call_id, so their content is merged into one message
 
-    The deduplication prioritizes: ObservationEvent > other types > AgentErrorEvent
+    All consecutive observations with the same tool_call_id are merged by combining
+    their content fields into a single tool result message.
     """
 
-    def test_consecutive_error_and_observation_keeps_observation(self):
-        """Test that ObservationEvent is kept over AgentErrorEvent when consecutive."""
+    def test_consecutive_error_and_observation_merges_content(self):
+        """Test that consecutive observations with same tool_call_id are merged."""
         error = AgentErrorEvent(
             error="A restart occurred while this tool was in progress.",
             tool_call_id="call_1",
@@ -485,15 +486,18 @@ class TestDuplicateObservationDeduplication:
         events = cast(list[LLMConvertibleEvent], [error, obs])
         messages = LLMConvertibleEvent.events_to_messages(events)
 
-        # Only one message should be produced (the ObservationEvent)
+        # Only one message should be produced (merged content)
         assert len(messages) == 1
         assert messages[0].role == "tool"
         assert messages[0].tool_call_id == "call_1"
-        # Should contain the actual result, not the error
-        assert "Command succeeded" in messages[0].content[0].text  # type: ignore
+        # Should contain BOTH the error AND the result (merged)
+        assert len(messages[0].content) == 2
+        content_texts = [c.text for c in messages[0].content]  # type: ignore
+        assert any("restart occurred" in t for t in content_texts)
+        assert any("Command succeeded" in t for t in content_texts)
 
-    def test_consecutive_observation_and_error_keeps_observation(self):
-        """Test deduplication regardless of order - observation still preferred."""
+    def test_consecutive_observation_and_error_merges_content(self):
+        """Test merging works regardless of order."""
         obs = ObservationEvent(
             source="environment",
             observation=EventsToMessagesMockObservation(result="Command succeeded"),
@@ -510,9 +514,12 @@ class TestDuplicateObservationDeduplication:
         events = cast(list[LLMConvertibleEvent], [obs, error])
         messages = LLMConvertibleEvent.events_to_messages(events)
 
-        # Only one message - ObservationEvent is preferred
+        # Only one message with merged content
         assert len(messages) == 1
-        assert "Command succeeded" in messages[0].content[0].text  # type: ignore
+        assert len(messages[0].content) == 2
+        content_texts = [c.text for c in messages[0].content]  # type: ignore
+        assert any("Command succeeded" in t for t in content_texts)
+        assert any("restart occurred" in t for t in content_texts)
 
     def test_non_consecutive_duplicates_not_deduplicated(self):
         """Test that non-consecutive duplicates are NOT deduplicated.
@@ -548,8 +555,8 @@ class TestDuplicateObservationDeduplication:
         assert messages[1].role == "user"  # message
         assert messages[2].role == "tool"  # observation
 
-    def test_multiple_consecutive_errors_keeps_last(self):
-        """Test that when only errors exist, the last one is kept."""
+    def test_multiple_consecutive_errors_merges_all(self):
+        """Test that when multiple errors exist, they are all merged."""
         error1 = AgentErrorEvent(
             error="First error",
             tool_call_id="call_1",
@@ -564,12 +571,15 @@ class TestDuplicateObservationDeduplication:
         events = cast(list[LLMConvertibleEvent], [error1, error2])
         messages = LLMConvertibleEvent.events_to_messages(events)
 
-        # Only one message - the last error
+        # Only one message with merged content from both errors
         assert len(messages) == 1
-        assert "Second error" in messages[0].content[0].text  # type: ignore
+        assert len(messages[0].content) == 2
+        content_texts = [c.text for c in messages[0].content]  # type: ignore
+        assert any("First error" in t for t in content_texts)
+        assert any("Second error" in t for t in content_texts)
 
-    def test_multiple_consecutive_observations_keeps_last(self):
-        """Test that when multiple observations exist, the last one is kept."""
+    def test_multiple_consecutive_observations_merges_all(self):
+        """Test that when multiple observations exist, they are all merged."""
         obs1 = ObservationEvent(
             source="environment",
             observation=EventsToMessagesMockObservation(result="First result"),
@@ -588,9 +598,12 @@ class TestDuplicateObservationDeduplication:
         events = cast(list[LLMConvertibleEvent], [obs1, obs2])
         messages = LLMConvertibleEvent.events_to_messages(events)
 
-        # Only one message - the last observation
+        # Only one message with merged content from both observations
         assert len(messages) == 1
-        assert "Second result" in messages[0].content[0].text  # type: ignore
+        assert len(messages[0].content) == 2
+        content_texts = [c.text for c in messages[0].content]  # type: ignore
+        assert any("First result" in t for t in content_texts)
+        assert any("Second result" in t for t in content_texts)
 
     def test_mixed_scenario_multiple_tool_calls(self):
         """Test with multiple tool calls, some having consecutive duplicates."""
@@ -626,11 +639,15 @@ class TestDuplicateObservationDeduplication:
         events = cast(list[LLMConvertibleEvent], [error1, obs1, user_msg, obs2])
         messages = LLMConvertibleEvent.events_to_messages(events)
 
-        # 3 messages: deduplicated tool_1 result + user message + tool_2 result
+        # 3 messages: merged tool_1 result + user message + tool_2 result
         assert len(messages) == 3
         assert messages[0].role == "tool"
         assert messages[0].tool_call_id == "call_1"
-        assert "Result 1" in messages[0].content[0].text  # type: ignore
+        # First message has merged content from error and observation
+        assert len(messages[0].content) == 2
+        content_texts = [c.text for c in messages[0].content]  # type: ignore
+        assert any("Restart error" in t for t in content_texts)
+        assert any("Result 1" in t for t in content_texts)
         assert messages[1].role == "user"
         assert messages[2].role == "tool"
         assert messages[2].tool_call_id == "call_2"
@@ -675,8 +692,7 @@ class TestDuplicateObservationDeduplication:
         )
         messages = LLMConvertibleEvent.events_to_messages(events)
 
-        # Should have 3 messages: user, assistant (tool call), tool result
-        # The restart error should be deduplicated
+        # Should have 3 messages: user, assistant (tool call), merged tool result
         assert len(messages) == 3
         assert messages[0].role == "user"
         assert messages[1].role == "assistant"
@@ -684,5 +700,8 @@ class TestDuplicateObservationDeduplication:
         assert messages[1].tool_calls[0].id == "call_ls"
         assert messages[2].role == "tool"
         assert messages[2].tool_call_id == "call_ls"
-        # Should have the actual result, not the error
-        assert "drwxr-xr-x" in messages[2].content[0].text  # type: ignore
+        # Should have merged content from both error and result
+        assert len(messages[2].content) == 2
+        content_texts = [c.text for c in messages[2].content]  # type: ignore
+        assert any("restart occurred" in t for t in content_texts)
+        assert any("drwxr-xr-x" in t for t in content_texts)

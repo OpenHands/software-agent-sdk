@@ -95,11 +95,8 @@ class LLMConvertibleEvent(Event, ABC):
         1. ActionEvents with the same llm_response_id are combined into a single
            message (parallel tool calls from the same LLM response)
         2. Consecutive ObservationBaseEvents with the same tool_call_id are
-           deduplicated (handles race conditions when a tool completes after a
-           restart creates an error)
-
-        For duplicate observations, priority is:
-        ObservationEvent > others > AgentErrorEvent.
+           merged into a single message with combined content (handles race
+           conditions when a tool completes after a restart creates an error)
         """
         from openhands.sdk.event.llm_convertible import (
             ActionEvent,
@@ -149,13 +146,11 @@ class LLMConvertibleEvent(Event, ABC):
                     batch_observations.append(next_event)
                     j += 1
 
-                # Select the best observation to use
+                # Merge all observations by combining their content
                 if len(batch_observations) > 1:
-                    selected = _select_best_observation(batch_observations)
+                    messages.append(_merge_observation_messages(batch_observations))
                 else:
-                    selected = batch_observations[0]
-
-                messages.append(selected.to_llm_message())
+                    messages.append(batch_observations[0].to_llm_message())
                 i = j
             else:
                 # Regular event - direct conversion
@@ -165,35 +160,30 @@ class LLMConvertibleEvent(Event, ABC):
         return messages
 
 
-def _select_best_observation(
+def _merge_observation_messages(
     observations: list["ObservationBaseEvent"],
-) -> "ObservationBaseEvent":
-    """Select the best observation when multiple exist for the same tool_call_id.
-
-    Priority: ObservationEvent > other types > AgentErrorEvent
-    If same priority, prefer the later one (more recent).
+) -> Message:
+    """Merge multiple observations with the same tool_call_id into a single message.
 
     This handles the race condition where a runtime restart creates an
     AgentErrorEvent for an "unmatched" action, but the tool then completes and
-    creates an ObservationEvent. The ObservationEvent has the actual result,
-    so it takes priority.
+    creates an ObservationEvent. Instead of selecting one, we merge all
+    observation contents into a single tool result message.
     """
-    from openhands.sdk.event.llm_convertible import AgentErrorEvent, ObservationEvent
+    # Convert all observations to messages and merge their content
+    merged_content: list[TextContent | ImageContent] = []
+    first_message = observations[0].to_llm_message()
 
-    obs_events = [o for o in observations if isinstance(o, ObservationEvent)]
-    error_events = [o for o in observations if isinstance(o, AgentErrorEvent)]
-    other_events = [
-        o
-        for o in observations
-        if not isinstance(o, (ObservationEvent, AgentErrorEvent))
-    ]
+    for obs in observations:
+        msg = obs.to_llm_message()
+        merged_content.extend(msg.content)
 
-    # Return by priority - later events within each category are preferred
-    if obs_events:
-        return obs_events[-1]
-    if other_events:
-        return other_events[-1]
-    return error_events[-1]
+    return Message(
+        role="tool",
+        content=merged_content,
+        tool_call_id=first_message.tool_call_id,
+        name=first_message.name,
+    )
 
 
 def _combine_action_events(events: list["ActionEvent"]) -> Message:
