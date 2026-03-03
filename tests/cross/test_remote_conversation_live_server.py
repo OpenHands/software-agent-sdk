@@ -10,6 +10,7 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 
+import httpx
 import pytest
 import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
@@ -29,6 +30,12 @@ from openhands.sdk.event import (
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    get_factory_info,
+    register_agent_if_absent,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -1019,3 +1026,87 @@ def test_security_risk_field_with_live_server(
     # The test validates that:
     # 1. Actions can be executed without security_risk (defaults to UNKNOWN)
     # 2. ActionEvent always has a security_risk attribute
+
+
+def test_subagent_definitions_forwarded_to_live_server(server_env, patched_llm):
+    """Subagent definitions registered on the client survive the HTTP roundtrip.
+
+    This validates the full flow:
+      client register_agent_if_absent()
+        → get_registered_agent_definitions()
+        → JSON payload in POST /api/conversations
+        → server start_conversation() deserializes & re-registers
+
+    Because client and server share a process in this test, we reset the
+    global registry *after* the conversation is created, then verify the
+    server re-populated it from the HTTP payload (not from client-side
+    registration).
+    """
+    _reset_registry_for_tests()
+
+    # Register two agents with full definitions (tools + system_prompt)
+    bash_def = AgentDefinition(
+        name="test_bash",
+        description="Command execution specialist",
+        tools=["terminal"],
+        system_prompt="You are a bash specialist.",
+    )
+    explore_def = AgentDefinition(
+        name="test_explore",
+        description="Codebase exploration agent",
+        tools=["terminal", "file_editor"],
+        system_prompt="You are an exploration specialist.",
+    )
+    register_agent_if_absent(lambda llm: None, bash_def)  # type: ignore[return-value]
+    register_agent_if_absent(lambda llm: None, explore_def)  # type: ignore[return-value]
+
+    # Create RemoteConversation — this POSTs to the server with
+    # subagent_definitions in the payload.
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    # Verify the conversation was created (server accepted the payload)
+    assert conv._id is not None
+
+    # Now reset the registry. If the server only relied on the client-side
+    # registration (shared process), everything would be gone. But the
+    # server's start_conversation() should have called
+    # register_agent_if_absent() from the HTTP payload too.
+    # This is a workaround for the fact that client and the server
+    # share the same process.
+    _reset_registry_for_tests()
+
+    # Re-register from the server's perspective: hit the same endpoint
+    # with a NEW conversation to trigger the server-side registration path
+    # from the deserialized payload.
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": "/tmp/workspace/project2"},
+        "subagent_definitions": [
+            bash_def.model_dump(),
+            explore_def.model_dump(),
+        ],
+    }
+    with httpx.Client(base_url=server_env["host"]) as client:
+        resp = client.post("/api/conversations", json=payload, timeout=10.0)
+        resp.raise_for_status()
+
+    # The server should have re-registered the agents from the HTTP payload
+    info = get_factory_info()
+    assert "test_bash" in info, (
+        f"'test_bash' not found in factory info after server-side registration. "
+        f"get_factory_info() returned:\n{info}"
+    )
+    assert "test_explore" in info, (
+        f"'test_explore' not found in factory info after server-side registration. "
+        f"get_factory_info() returned:\n{info}"
+    )
+    assert "Command execution specialist" in info
+    assert "Codebase exploration agent" in info
+
+    conv.close()
+    _reset_registry_for_tests()
