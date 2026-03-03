@@ -119,6 +119,7 @@ _DEFAULT_BYPASS_MODE = "full-access"
 # When the server reports auth_methods, we pick the first method whose
 # required env var is set.
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
+    "claude-login": "ANTHROPIC_API_KEY",
     "codex-api-key": "CODEX_API_KEY",
     "openai-api-key": "OPENAI_API_KEY",
 }
