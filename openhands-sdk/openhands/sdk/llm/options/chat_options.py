@@ -42,7 +42,14 @@ def select_chat_options(
         # OpenAI reasoning models (o1, o3) ignore temp/top_p
         # Gemini models DO respect temperature, so we only pop for OpenAI
         model_lower = llm.model.lower()
-        if "o1-" in model_lower or "o3-" in model_lower or model_lower.startswith("o1") or model_lower.startswith("o3"):
+        # Normalize to basename so provider-prefixed IDs like "openai/o1" are handled
+        model_name = model_lower.split("/")[-1]
+        if (
+            "o1-" in model_name
+            or "o3-" in model_name
+            or model_name.startswith("o1")
+            or model_name.startswith("o3")
+        ):
             out.pop("temperature", None)
             out.pop("top_p", None)
 
