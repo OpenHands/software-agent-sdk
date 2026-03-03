@@ -45,6 +45,7 @@ def get_default_tools(
 
     # Import tools to access their name attributes
     from openhands.tools.file_editor import FileEditorTool
+    from openhands.tools.task import TaskToolSet
     from openhands.tools.task_tracker import TaskTrackerTool
     from openhands.tools.terminal import TerminalTool
 
@@ -52,7 +53,9 @@ def get_default_tools(
         Tool(name=TerminalTool.name),
         Tool(name=FileEditorTool.name),
         Tool(name=TaskTrackerTool.name),
+        Tool(name=TaskToolSet.name),
     ]
+
     if enable_browser:
         from openhands.tools.browser_use import BrowserToolSet
 
