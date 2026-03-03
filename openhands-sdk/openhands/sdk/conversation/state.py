@@ -213,7 +213,12 @@ class ConversationState(OpenHandsModel):
         return data
 
     @property
-    def events(self) -> EventLog:
+    def events(self) -> Sequence[Event]:
+        """Read-only view of conversation events.
+
+        Returns events as a Sequence to discourage direct mutation.
+        Use add_event() to add new events with compliance monitoring.
+        """
         return self._events
 
     @property
