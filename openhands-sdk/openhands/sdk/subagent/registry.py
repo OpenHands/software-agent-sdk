@@ -282,17 +282,10 @@ def get_factory_info() -> str:
     with _registry_lock:
         user_factories = dict(_agent_factories)
 
-    info_lines = []
-    info_lines.append(
-        "- **default**: Default general-purpose agent (used when no agent type is provided)"  # noqa: E501
-    )
-
     if not user_factories:
-        info_lines.append(
-            "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
-        )
-        return "\n".join(info_lines)
+        return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
+    info_lines = []
     for name, factory in sorted(user_factories.items()):
         info_lines.append(f"- **{name}**: {factory.description}")
 
