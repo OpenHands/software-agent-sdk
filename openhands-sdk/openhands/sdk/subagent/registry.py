@@ -55,6 +55,40 @@ _agent_factories: dict[str, AgentFactory] = {}
 _registry_lock = RLock()
 
 
+def _definition_from_factory(
+    name: str,
+    factory_func: Callable[["LLM"], "Agent"],
+    description: str,
+) -> AgentDefinition:
+    """Introspect *factory_func* with a TestLLM to build a full AgentDefinition.
+
+    This lets register_agent() accept just (name, factory_func, description)
+    while still producing a complete definition (tools, system_prompt, model)
+    that can be forwarded to a remote server.  Falls back to a minimal
+    definition if the factory raises.
+    """
+    _model_placeholder = "test-model"
+    try:
+        from openhands.sdk.testing import TestLLM
+
+        agent = factory_func(TestLLM(model=_model_placeholder))
+        tools = [t.name for t in agent.tools]
+        system_prompt = ""
+        if agent.agent_context and agent.agent_context.system_message_suffix:
+            system_prompt = agent.agent_context.system_message_suffix
+        model = agent.llm.model if agent.llm.model != _model_placeholder else "inherit"
+        return AgentDefinition(
+            name=name,
+            description=description,
+            tools=tools,
+            system_prompt=system_prompt,
+            model=model,
+        )
+    except Exception:
+        logger.debug(f"Could not introspect factory for agent '{name}'")
+        return AgentDefinition(name=name, description=description)
+
+
 def register_agent(
     name: str,
     factory_func: Callable[["LLM"], "Agent"],
@@ -77,7 +111,7 @@ def register_agent(
 
         _agent_factories[name] = AgentFactory(
             factory_func=factory_func,
-            definition=AgentDefinition(name=name, description=description),
+            definition=_definition_from_factory(name, factory_func, description),
         )
 
 

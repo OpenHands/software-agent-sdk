@@ -19,6 +19,7 @@ from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     get_factory_info,
     get_registered_agent_definitions,
+    register_agent,
     register_agent_if_absent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -113,3 +114,29 @@ def test_get_registered_agent_definitions_returns_stored_definitions():
 
     defs = get_registered_agent_definitions()
     assert {d.name for d in defs} == {"bash", "explore"}
+
+
+def test_register_agent_introspects_factory():
+    """register_agent() introspects the factory to build a full definition."""
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.tool.spec import Tool
+
+    def create_expert(llm):
+        return Agent(
+            llm=llm,
+            tools=[Tool(name="terminal")],
+            agent_context=AgentContext(
+                system_message_suffix="You are an expert.",
+            ),
+        )
+
+    register_agent(
+        name="expert",
+        factory_func=create_expert,
+        description="An expert agent",
+    )
+
+    defs = get_registered_agent_definitions()
+    expert_def = next(d for d in defs if d.name == "expert")
+    assert expert_def.tools == ["terminal"]
+    assert expert_def.system_prompt == "You are an expert."

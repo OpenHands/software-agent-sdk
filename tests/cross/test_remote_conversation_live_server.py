@@ -17,6 +17,7 @@ from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelRespons
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -33,9 +34,12 @@ from openhands.sdk.event import (
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     get_factory_info,
+    get_registered_agent_definitions,
+    register_agent,
     register_agent_if_absent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool.spec import Tool
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -1044,69 +1048,60 @@ def test_subagent_definitions_forwarded_to_live_server(server_env, patched_llm):
     """
     _reset_registry_for_tests()
 
-    # Register two agents with full definitions (tools + system_prompt)
+    # Register via register_agent_if_absent (file/plugin-style, explicit definition)
     bash_def = AgentDefinition(
         name="test_bash",
         description="Command execution specialist",
         tools=["terminal"],
         system_prompt="You are a bash specialist.",
     )
-    explore_def = AgentDefinition(
-        name="test_explore",
-        description="Codebase exploration agent",
-        tools=["terminal", "file_editor"],
-        system_prompt="You are an exploration specialist.",
-    )
     register_agent_if_absent(lambda llm: None, bash_def)  # type: ignore[return-value]
-    register_agent_if_absent(lambda llm: None, explore_def)  # type: ignore[return-value]
 
-    # Create RemoteConversation — this POSTs to the server with
-    # subagent_definitions in the payload.
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
-    agent = Agent(llm=llm, tools=[])
-    workspace = RemoteWorkspace(
-        host=server_env["host"], working_dir="/tmp/workspace/project"
+    # Register via register_agent (programmatic factory — definition is introspected)
+    def create_reviewer(llm):
+        return Agent(
+            llm=llm,
+            tools=[Tool(name="terminal")],
+            agent_context=AgentContext(
+                system_message_suffix="You review code for correctness.",
+            ),
+        )
+
+    register_agent(
+        name="test_reviewer",
+        factory_func=create_reviewer,
+        description="Code review specialist",
     )
-    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
 
-    # Verify the conversation was created (server accepted the payload)
-    assert conv._id is not None
+    # Verify introspection captured the factory's tools and system_prompt
+    defs = get_registered_agent_definitions()
+    reviewer_def = next(d for d in defs if d.name == "test_reviewer")
+    assert reviewer_def.tools == ["terminal"]
+    assert reviewer_def.system_prompt == "You review code for correctness."
 
-    # Now reset the registry. If the server only relied on the client-side
-    # registration (shared process), everything would be gone. But the
-    # server's start_conversation() should have called
-    # register_agent_if_absent() from the HTTP payload too.
-    # This is a workaround for the fact that client and the server
-    # share the same process.
+    # Reset the registry to prove the server re-registers from the HTTP payload
+    # (not from the shared in-process client-side registration).
+    all_defs = [d.model_dump() for d in defs]
     _reset_registry_for_tests()
 
-    # Re-register from the server's perspective: hit the same endpoint
-    # with a NEW conversation to trigger the server-side registration path
-    # from the deserialized payload.
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+
+    # POST directly to the server with the serialized definitions
     payload = {
         "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
         "workspace": {"working_dir": "/tmp/workspace/project2"},
-        "subagent_definitions": [
-            bash_def.model_dump(),
-            explore_def.model_dump(),
-        ],
+        "subagent_definitions": all_defs,
     }
     with httpx.Client(base_url=server_env["host"]) as client:
         resp = client.post("/api/conversations", json=payload, timeout=10.0)
         resp.raise_for_status()
 
-    # The server should have re-registered the agents from the HTTP payload
+    # The server should have re-registered both agents from the HTTP payload
     info = get_factory_info()
-    assert "test_bash" in info, (
-        f"'test_bash' not found in factory info after server-side registration. "
-        f"get_factory_info() returned:\n{info}"
-    )
-    assert "test_explore" in info, (
-        f"'test_explore' not found in factory info after server-side registration. "
-        f"get_factory_info() returned:\n{info}"
-    )
+    assert "test_bash" in info
     assert "Command execution specialist" in info
-    assert "Codebase exploration agent" in info
+    assert "test_reviewer" in info
+    assert "Code review specialist" in info
 
-    conv.close()
     _reset_registry_for_tests()
