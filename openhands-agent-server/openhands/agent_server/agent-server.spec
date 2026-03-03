@@ -35,6 +35,7 @@ a = Analysis(
         *collect_data_files("litellm"),
         *collect_data_files("fastmcp"),
         *collect_data_files("mcp"),
+        *collect_data_files("fakeredis"),  # Required for commands.json used by fakeredis ACL
 
         # OpenHands SDK prompt templates (adjusted for shallow namespace layout)
         *collect_data_files("openhands.sdk.agent", includes=["prompts/*.j2"]),
