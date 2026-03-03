@@ -2,7 +2,9 @@
 
 This module provides an APIComplianceMonitor that detects violations of LLM API
 requirements in the event stream. Violations are currently logged for data
-gathering; future versions may support reconciliation strategies.
+This module provides an APIComplianceMonitor that detects and rejects violations of LLM API
+requirements in the event stream. Violating events are logged and rejected (not added to
+conversation). Future versions may support reconciliation strategies.
 
 The monitor enforces valid tool-call sequences:
 - When tool calls are pending, only matching observations are allowed
