@@ -183,22 +183,3 @@ def get_features(model: str) -> ModelFeatures:
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
     )
-
-
-# Default temperature mapping.
-# Each entry: (pattern, default_temperature)
-DEFAULT_TEMPERATURE_MODELS: list[tuple[str, float]] = [
-    ("kimi-k2-thinking", 1.0),
-    ("kimi-k2.5", 1.0),
-]
-
-
-def get_default_temperature(model: str) -> float:
-    """Return the default temperature for a given model pattern.
-
-    Uses case-insensitive substring matching via model_matches.
-    """
-    for pattern, value in DEFAULT_TEMPERATURE_MODELS:
-        if model_matches(model, [pattern]):
-            return value
-    return 0.0
