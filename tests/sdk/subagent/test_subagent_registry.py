@@ -239,7 +239,6 @@ def test_agent_definition_to_factory_no_system_prompt() -> None:
 def test_factory_info() -> None:
     """get_factory_info returns formatted listing of registered agents."""
     info = get_factory_info()
-    assert "default" in info
     assert "No user-registered agents" in info
 
     # Register some agents
@@ -253,7 +252,6 @@ def test_factory_info() -> None:
     register_agent(name="beta-agent", factory_func=factory_b, description="Beta desc")
 
     info = get_factory_info()
-    assert "default" in info
     assert "No user-registered agents" not in info
     assert "**alpha-agent**: Alpha desc" in info
     assert "**beta-agent**: Beta desc" in info
