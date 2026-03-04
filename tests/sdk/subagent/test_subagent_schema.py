@@ -174,6 +174,97 @@ Content.
         agent = AgentDefinition.load(agent_md)
         assert agent.metadata.get("custom_field") == "custom_value"
 
+    def test_skills_default_empty(self):
+        """Test that skills defaults to empty list."""
+        agent = AgentDefinition(name="no-skills")
+        assert agent.skills == []
+
+    def test_skills_as_list(self):
+        """Test creating AgentDefinition with skill names as list."""
+        agent = AgentDefinition(
+            name="skilled-agent",
+            skills=["code-review", "linting"],
+        )
+        assert agent.skills == ["code-review", "linting"]
+
+    def test_load_skills_comma_separated(self, tmp_path: Path):
+        """Test loading skills from comma-separated frontmatter string."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: skilled-agent
+skills: code-review, linting, testing
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == ["code-review", "linting", "testing"]
+
+    def test_load_skills_as_yaml_list(self, tmp_path: Path):
+        """Test loading skills from YAML list in frontmatter."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: skilled-agent
+skills:
+  - code-review
+  - linting
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == ["code-review", "linting"]
+
+    def test_load_skills_single_string(self, tmp_path: Path):
+        """Test loading a single skill name from frontmatter string."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: skilled-agent
+skills: code-review
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == ["code-review"]
+
+    def test_load_skills_default_empty(self, tmp_path: Path):
+        """Test that loading from file without skills gives empty list."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: file-agent
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == []
+
+    def test_load_skills_not_in_metadata(self, tmp_path: Path):
+        """Test that skills field is excluded from extra metadata."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+skills: my-skill
+custom_field: value
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert "skills" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
 
 class TestExtractExamples:
     """Tests for _extract_examples function."""
