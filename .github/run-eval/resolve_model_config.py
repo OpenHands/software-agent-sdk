@@ -127,6 +127,11 @@ MODELS = {
         "display_name": "GPT-5.2 Codex",
         "llm_config": {"model": "litellm_proxy/gpt-5.2-codex"},
     },
+    "gpt-5-3-codex": {
+        "id": "gpt-5-3-codex",
+        "display_name": "GPT-5.3 Codex",
+        "llm_config": {"model": "litellm_proxy/gpt-5-3-codex"},
+    },
     "gpt-5.2-high-reasoning": {
         "id": "gpt-5.2-high-reasoning",
         "display_name": "GPT-5.2 High Reasoning",
@@ -337,6 +342,10 @@ def check_model(
         return False, f"✗ {display_name}: Model not found - {e}"
     except Exception as e:
         return False, f"✗ {display_name}: {type(e).__name__} - {e}"
+
+
+# Alias for backward compatibility with tests
+test_model = check_model
 
 
 def run_preflight_check(models: list[dict[str, Any]]) -> bool:
