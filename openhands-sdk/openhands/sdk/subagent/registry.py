@@ -48,6 +48,7 @@ class AgentFactory(NamedTuple):
 
     factory_func: Callable[["LLM"], "Agent"]
     description: str
+    max_iteration_per_run: int | None = None
 
 
 # Global registry for user-registered agent factories

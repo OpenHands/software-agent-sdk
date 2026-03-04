@@ -17,6 +17,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "color",
     "tools",
     "skills",
+    "max_iteration_per_run",
 }
 
 
@@ -62,6 +63,16 @@ def _extract_examples(description: str) -> list[str]:
     return [m.strip() for m in matches if m.strip()]
 
 
+def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
+    """Extract max iterations per run from frontmatter file."""
+    max_iter_raw = fm.get("max_iteration_per_run")
+    if isinstance(max_iter_raw, str):
+        return int(max_iter_raw)
+    if isinstance(max_iter_raw, int):
+        return max_iter_raw
+    return None
+
+
 class AgentDefinition(BaseModel):
     """Agent definition loaded from Markdown file.
 
@@ -91,6 +102,12 @@ class AgentDefinition(BaseModel):
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
     )
+    max_iteration_per_run: int | None = Field(
+        default=None,
+        description="Maximum iterations per run. "
+        "It must be strictly positive, or None for default.",
+        gt=0,
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
@@ -106,6 +123,7 @@ class AgentDefinition(BaseModel):
         - skills (optional): Comma-separated skill names or list of skill names
         - model (optional): Model profile to use (default: 'inherit')
         - color (optional): Display color
+        - max_iterations_per_run: Max iteration per run
 
         The body of the Markdown is the system prompt.
 
@@ -128,6 +146,7 @@ class AgentDefinition(BaseModel):
         color: str | None = _extract_color(fm)
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
+        max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
@@ -142,6 +161,7 @@ class AgentDefinition(BaseModel):
             color=color,
             tools=tools,
             skills=skills,
+            max_iteration_per_run=max_iteration_per_run,
             system_prompt=content,
             source=str(agent_path),
             when_to_use_examples=when_to_use_examples,

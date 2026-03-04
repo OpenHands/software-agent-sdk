@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from openhands.sdk.subagent.schema import AgentDefinition, _extract_examples
 
 
@@ -95,6 +98,65 @@ Just content.
         assert agent.name == "minimal"  # From filename
         assert agent.model == "inherit"
         assert agent.tools == []
+
+    def test_load_agent_with_max_iteration_per_run(self, tmp_path: Path):
+        """Test loading agent with max_iteration_per_run."""
+        agent_md = tmp_path / "limited.md"
+        agent_md.write_text(
+            """---
+name: limited
+max_iteration_per_run: 10
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.max_iteration_per_run == 10
+
+    def test_load_agent_without_max_iteration_per_run(self, tmp_path: Path):
+        """Test that max_iteration_per_run defaults to None when omitted."""
+        agent_md = tmp_path / "default.md"
+        agent_md.write_text(
+            """---
+name: default-iter
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.max_iteration_per_run is None
+
+    def test_max_iteration_per_run_not_in_metadata(self, tmp_path: Path):
+        """Test that max_iteration_per_run doesn't leak into metadata."""
+        agent_md = tmp_path / "meta-check.md"
+        agent_md.write_text(
+            """---
+name: meta-check
+max_iteration_per_run: 5
+custom_field: value
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert "max_iteration_per_run" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_max_iteration_per_run_zero_raises(self):
+        """max_iteration_per_run=0 should fail Pydantic validation."""
+        with pytest.raises(ValidationError):
+            AgentDefinition(name="bad", max_iteration_per_run=0)
+
+    def test_max_iteration_per_run_negative_raises(self):
+        """Negative max_iteration_per_run should fail Pydantic validation."""
+        with pytest.raises(ValidationError):
+            AgentDefinition(name="bad", max_iteration_per_run=-1)
 
     def test_load_agent_with_metadata(self, tmp_path: Path):
         """Test loading agent with extra metadata."""
