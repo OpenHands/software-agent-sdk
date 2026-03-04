@@ -45,10 +45,10 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
-from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.tool import Tool  # noqa: TC002
+from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 
 
 logger = get_logger(__name__)
@@ -386,7 +386,8 @@ class ACPAgent(AgentBase):
     acp_command: list[str] = Field(
         ...,
         description=(
-            "Command to start the ACP server, e.g. ['npx', '-y', '@zed-industries/claude-agent-acp']"
+            "Command to start the ACP server, e.g."
+            " ['npx', '-y', '@zed-industries/claude-agent-acp']"
         ),
     )
     acp_args: list[str] = Field(
@@ -422,8 +423,12 @@ class ACPAgent(AgentBase):
     _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
     _closed: bool = PrivateAttr(default=False)
     _working_dir: str = PrivateAttr(default="")
-    _agent_name: str = PrivateAttr(default="")  # ACP server name from InitializeResponse
-    _agent_version: str = PrivateAttr(default="")  # ACP server version from InitializeResponse
+    _agent_name: str = PrivateAttr(
+        default=""
+    )  # ACP server name from InitializeResponse
+    _agent_version: str = PrivateAttr(
+        default=""
+    )  # ACP server version from InitializeResponse
 
     # -- Helpers -----------------------------------------------------------
 
@@ -608,9 +613,7 @@ class ACPAgent(AgentBase):
             if auth_methods:
                 method_id = _select_auth_method(auth_methods, env)
                 if method_id is not None:
-                    logger.info(
-                        "Authenticating with ACP method: %s", method_id
-                    )
+                    logger.info("Authenticating with ACP method: %s", method_id)
                     await conn.authenticate(method_id=method_id)
                 else:
                     logger.warning(
@@ -631,14 +634,19 @@ class ACPAgent(AgentBase):
             if mode_id is None:
                 mode_id = _resolve_bypass_mode(agent_name)
             logger.info("Setting ACP session mode: %s", mode_id)
-            await conn.set_session_mode(
-                mode_id=mode_id, session_id=session_id
-            )
+            await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
             return conn, process, filtered_reader, session_id, agent_name, agent_version
 
         result = self._executor.run_async(_init)
-        self._conn, self._process, self._filtered_reader, self._session_id, self._agent_name, self._agent_version = result
+        (
+            self._conn,
+            self._process,
+            self._filtered_reader,
+            self._session_id,
+            self._agent_name,
+            self._agent_version,
+        ) = result
         self._working_dir = working_dir
 
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])

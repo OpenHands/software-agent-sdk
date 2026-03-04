@@ -308,7 +308,8 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        # step() emits MessageEvent + ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
+        # step() emits MessageEvent + ActionEvent(FinishAction)
+        # + ObservationEvent(FinishObservation)
         assert len(events) == 3
         assert isinstance(events[0], MessageEvent)
         assert events[0].source == "agent"
@@ -975,7 +976,8 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        # Should be: 2 tool call events + 1 message event + finish action + finish observation
+        # Should be: 2 tool call events + 1 message event
+        # + finish action + finish observation
         assert len(events) == 5
         assert isinstance(events[0], ACPToolCallEvent)
         assert isinstance(events[1], ACPToolCallEvent)
@@ -1282,7 +1284,10 @@ class TestResolveBypassMode:
         assert _resolve_bypass_mode("claude-agent-acp") == "bypassPermissions"
 
     def test_claude_agent_with_scope(self):
-        assert _resolve_bypass_mode("@zed-industries/claude-agent-acp") == "bypassPermissions"
+        assert (
+            _resolve_bypass_mode("@zed-industries/claude-agent-acp")
+            == "bypassPermissions"
+        )
 
     def test_codex_acp(self):
         assert _resolve_bypass_mode("codex-acp") == "full-access"

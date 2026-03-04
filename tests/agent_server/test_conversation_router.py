@@ -1308,6 +1308,7 @@ def test_start_conversation_autotitle_defaults_to_true(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1342,6 +1343,7 @@ def test_start_conversation_autotitle_false(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
