@@ -32,6 +32,8 @@ jobs:
                   echo "github.event.pull_request.head.ref=${{ github.event.pull_request.head.ref }}"
                   echo "github.event.pull_request.head.repo.full_name=${{ github.event.pull_request.head.repo.full_name }}"
                   echo "github.event.pull_request.number=${{ github.event.pull_request.number }}"
+                  echo "startsWith(head_ref, 'rel-')=${{ startsWith(github.head_ref, 'rel-') }}"
+                  echo "continue_on_error_expr=${{ !startsWith(github.head_ref, 'rel-') }}"
 
             - name: Run SDK API breakage check
               id: api_breakage
