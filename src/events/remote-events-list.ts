@@ -1,10 +1,13 @@
 /**
- * Remote events list implementation with caching and synchronization
+ * Remote events list — thin wrapper around the events search API.
+ *
+ * Events received via WebSocket are kept in a local cache so callers can
+ * iterate them without extra network calls.  For historical events use
+ * `search()` or `getEvents()` which hit the server on demand.
  */
 
 import { HttpClient } from '../client/http-client';
 import { Event, ConversationCallbackType } from '../types/base';
-// import { EventSortOrder } from '../types/base'; // Unused for now
 import { EventPage } from '../types/base';
 
 /**
@@ -34,59 +37,15 @@ export class RemoteEventsList {
   private conversationId: string;
   private cachedEvents: Event[] = [];
   private cachedEventIds = new Set<string>();
-  private lock = new AsyncLock();
-  private syncPromise: Promise<void>;
 
   constructor(client: HttpClient, conversationId: string) {
     this.client = client;
     this.conversationId = conversationId;
-    // Perform initial sync
-    this.syncPromise = this.doFullSync();
-  }
-
-  async ensureSynced(): Promise<void> {
-    await this.syncPromise;
-  }
-
-  private async doFullSync(): Promise<void> {
-    console.debug(`Performing full sync for conversation ${this.conversationId}`);
-
-    const events: Event[] = [];
-    let pageId: string | undefined;
-
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const params: any = { limit: 100 };
-      if (pageId) {
-        params.page_id = pageId;
-      }
-
-      const response = await this.client.get<EventPage>(
-        `/api/conversations/${this.conversationId}/events/search`,
-        { params }
-      );
-
-      const data = response.data;
-      events.push(...data.items);
-
-      if (!data.next_page_id) {
-        break;
-      }
-      pageId = data.next_page_id;
-    }
-
-    await this.lock.acquire(async () => {
-      this.cachedEvents = events;
-      this.cachedEventIds.clear();
-      events.forEach((e) => this.cachedEventIds.add(e.id));
-    });
-
-    console.debug(`Full sync completed, ${events.length} events cached`);
   }
 
   /**
    * Search events with optional filters.
-   * This method queries the server directly and does not use the cache.
+   * Queries the server directly.
    */
   async search(options: EventSearchOptions = {}): Promise<EventPage> {
     const params: any = {
@@ -132,14 +91,10 @@ export class RemoteEventsList {
   }
 
   async addEvent(event: Event): Promise<void> {
-    await this.lock.acquire(async () => {
-      // Check if event already exists to avoid duplicates
-      if (!this.cachedEventIds.has(event.id)) {
-        this.cachedEvents.push(event);
-        this.cachedEventIds.add(event.id);
-        console.debug(`Added event ${event.id} to local cache`);
-      }
-    });
+    if (!this.cachedEventIds.has(event.id)) {
+      this.cachedEvents.push(event);
+      this.cachedEventIds.add(event.id);
+    }
   }
 
   // Alias for compatibility with EventLog interface
@@ -156,21 +111,46 @@ export class RemoteEventsList {
   }
 
   async length(): Promise<number> {
-    return await this.lock.acquire(async () => this.cachedEvents.length);
+    return this.cachedEvents.length;
   }
 
   async getEvent(index: number): Promise<Event | undefined> {
-    return await this.lock.acquire(async () => this.cachedEvents[index]);
+    return this.cachedEvents[index];
   }
 
+  /**
+   * Fetch all events from the server, merged with any locally cached
+   * events received via WebSocket.
+   */
   async getEvents(start?: number, end?: number): Promise<Event[]> {
-    await this.ensureSynced();
-    return await this.lock.acquire(async () => {
-      if (start === undefined && end === undefined) {
-        return [...this.cachedEvents];
-      }
-      return this.cachedEvents.slice(start, end);
-    });
+    const remote: Event[] = [];
+    let pageId: string | undefined;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const params: any = { limit: 100 };
+      if (pageId) params.page_id = pageId;
+
+      const response = await this.client.get<EventPage>(
+        `/api/conversations/${this.conversationId}/events/search`,
+        { params }
+      );
+
+      const data = response.data;
+      remote.push(...data.items);
+
+      if (!data.next_page_id) break;
+      pageId = data.next_page_id;
+    }
+
+    // Merge: remote events first, then any cached events not yet on the server
+    const remoteIds = new Set(remote.map((e) => e.id));
+    const merged = [...remote, ...this.cachedEvents.filter((e) => !remoteIds.has(e.id))];
+
+    if (start === undefined && end === undefined) {
+      return merged;
+    }
+    return merged.slice(start, end);
   }
 
   async *[Symbol.asyncIterator](): AsyncIterableIterator<Event> {
@@ -178,37 +158,5 @@ export class RemoteEventsList {
     for (const event of events) {
       yield event;
     }
-  }
-}
-
-// Simple async lock implementation
-class AsyncLock {
-  private locked = false;
-  private queue: Array<() => void> = [];
-
-  async acquire<T>(fn: () => Promise<T> | T): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const execute = async () => {
-        try {
-          const result = await fn();
-          resolve(result);
-        } catch (error) {
-          reject(error);
-        } finally {
-          this.locked = false;
-          const next = this.queue.shift();
-          if (next) {
-            next();
-          }
-        }
-      };
-
-      if (this.locked) {
-        this.queue.push(execute);
-      } else {
-        this.locked = true;
-        execute();
-      }
-    });
   }
 }
