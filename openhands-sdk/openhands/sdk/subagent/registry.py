@@ -142,7 +142,9 @@ def agent_definition_to_factory(
     if agent_def.skills:
         from openhands.sdk.context.skills import load_available_skills
 
-        available = load_available_skills(work_dir, include_public=False)
+        available = load_available_skills(
+            work_dir, include_user=True, include_project=True, include_public=False
+        )
 
         for name in agent_def.skills:
             if name not in available:

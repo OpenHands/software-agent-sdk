@@ -1019,8 +1019,8 @@ def load_public_skills(
 def load_available_skills(
     work_dir: str | Path | None = None,
     *,
-    include_user: bool = True,
-    include_project: bool = True,
+    include_user: bool = False,
+    include_project: bool = False,
     include_public: bool = False,
 ) -> dict[str, Skill]:
     """Load and merge skills from SDK-level sources with consistent precedence.
