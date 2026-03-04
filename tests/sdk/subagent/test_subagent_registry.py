@@ -348,6 +348,39 @@ def test_agent_definition_to_factory_model_profile(tmp_path: Path) -> None:
     assert agent.llm.metrics is not parent_llm.metrics
 
 
+def test_agent_definition_to_factory_model_profile_with_json_suffix(
+    tmp_path: Path,
+) -> None:
+    """Profile name with .json suffix is accepted and loads correctly."""
+    store = LLMProfileStore(base_dir=tmp_path)
+    profile_llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("profile-key"),
+        usage_id="profile-llm",
+        temperature=0.3,
+    )
+    store.save("fast-gpt", profile_llm, include_secrets=True)
+
+    agent_def = AgentDefinition(
+        name="profile-agent",
+        description="Uses a profile with .json suffix",
+        model="fast-gpt.json",
+        tools=["ReadTool"],
+        system_prompt="Profile test.",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+    with patch(
+        "openhands.sdk.subagent.registry._get_profile_store", return_value=store
+    ):
+        agent = factory(parent_llm)
+
+    assert agent.llm is not parent_llm
+    assert agent.llm.model == "claude-sonnet-4-20250514"
+    assert agent.llm.temperature == 0.3
+
+
 def test_agent_definition_to_factory_model_profile_not_found(tmp_path: Path) -> None:
     """Missing profile raises ValueError."""
     store = LLMProfileStore(base_dir=tmp_path)

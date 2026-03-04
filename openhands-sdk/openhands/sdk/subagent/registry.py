@@ -127,9 +127,7 @@ def agent_definition_to_factory(
     """Create an agent factory closure from an `AgentDefinition`.
 
     The returned callable accepts the parent agent's LLM and produces a
-    fully-configured `Agent`. Regardless of which model mode is
-    used, the resulting LLM always has streaming disabled and independent
-    metrics (via `model_copy` + `reset_metrics`).
+    fully-configured `Agent`.
 
     Model resolution (`agent_def.model`):
         - "inherit" or empty: Re-uses the parent LLM configuration as-is.
@@ -138,6 +136,9 @@ def agent_definition_to_factory(
 
     The factory also wires up tools (from `agent_def.tools`) and the
     system prompt (as `AgentContext.system_message_suffix`).
+
+    Note: Callers (e.g. DelegateTool, TaskManager) are responsible for
+    disabling streaming and resetting metrics on the resulting agent's LLM.
     """
 
     def _factory(llm: "LLM") -> "Agent":
@@ -150,13 +151,13 @@ def agent_definition_to_factory(
         if agent_def.model and agent_def.model != "inherit":
             store = _get_profile_store()
             available_profiles = [name.removesuffix(".json") for name in store.list()]
-            if agent_def.model not in available_profiles:
+            profile_name = agent_def.model.removesuffix(".json")
+            if profile_name not in available_profiles:
                 raise ValueError(
                     f"Profile {agent_def.model} not found in profile store.\n"
                     f"Available profiles: {available_profiles}"
                 )
 
-            profile_name = agent_def.model
             llm = store.load(profile_name)
 
         # the system prompt of the subagent is added as a suffix of the
