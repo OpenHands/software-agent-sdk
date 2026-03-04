@@ -136,15 +136,13 @@ def agent_definition_to_factory(
     Raises:
         ValueError: If a tool or skill is not found.
     """
-    # Resolve skills eagerly at factory creation time using existing loaders.
-    # Priority: project skills override user skills (user loaded first, project second).
+    # Resolve skills eagerly at factory creation time.
+    # Priority: project skills override user skills (handled by load_available_skills).
     resolved_skills: list = []
     if agent_def.skills:
-        from openhands.sdk.context.skills import load_project_skills, load_user_skills
+        from openhands.sdk.context.skills import load_available_skills
 
-        available = {s.name: s for s in load_user_skills()}
-        if work_dir:
-            available.update({s.name: s for s in load_project_skills(work_dir)})
+        available = load_available_skills(work_dir, include_public=False)
 
         for name in agent_def.skills:
             if name not in available:
