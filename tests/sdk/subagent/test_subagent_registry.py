@@ -323,7 +323,7 @@ def test_agent_definition_to_factory_model_profile(tmp_path: Path) -> None:
         name="profile-agent",
         description="Uses a profile",
         model="fast-gpt",
-        tools=["ReadTool"],
+        tools=[],
         system_prompt="Profile test.",
     )
 
@@ -360,7 +360,7 @@ def test_agent_definition_to_factory_model_profile_with_json_suffix(
         name="profile-agent",
         description="Uses a profile with .json suffix",
         model="fast-gpt.json",
-        tools=["ReadTool"],
+        tools=[],
         system_prompt="Profile test.",
     )
 
