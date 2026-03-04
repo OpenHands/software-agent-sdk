@@ -168,7 +168,7 @@ def agent_definition_to_factory(
         agent_context = (
             AgentContext(
                 system_message_suffix=agent_def.system_prompt or None,
-                skills=list(resolved_skills),
+                skills=resolved_skills,
             )
             if has_context
             else None
