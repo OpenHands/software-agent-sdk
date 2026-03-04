@@ -76,6 +76,15 @@ def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     return None
 
 
+def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
+    # Parse hooks configuration
+    hooks_raw = fm.get("hooks")
+    hooks: HookConfig | None = None
+    if hooks_raw is not None and isinstance(hooks_raw, dict):
+        hooks = HookConfig.model_validate(hooks_raw)
+    return hooks
+
+
 class AgentDefinition(BaseModel):
     """Agent definition loaded from Markdown file.
 
@@ -130,6 +139,7 @@ class AgentDefinition(BaseModel):
         - model (optional): Model profile to use (default: 'inherit')
         - color (optional): Display color
         - max_iterations_per_run: Max iteration per run
+        - hooks (optional): List of allowed hooks
 
         The body of the Markdown is the system prompt.
 
@@ -153,12 +163,7 @@ class AgentDefinition(BaseModel):
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
-
-        # Parse hooks configuration
-        hooks_raw = fm.get("hooks")
-        hooks: HookConfig | None = None
-        if hooks_raw is not None and isinstance(hooks_raw, dict):
-            hooks = HookConfig.model_validate(hooks_raw)
+        hooks: HookConfig | None = _extract_hooks(fm)
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
