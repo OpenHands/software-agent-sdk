@@ -1,4 +1,6 @@
 # state.py
+from __future__ import annotations
+
 import json
 from collections.abc import Sequence
 from enum import Enum
@@ -8,13 +10,20 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.compliance import APIComplianceMonitor
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
-from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
+from openhands.sdk.event import (
+    ActionEvent,
+    LLMConvertibleEvent,
+    ObservationEvent,
+    UserRejectObservation,
+)
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
@@ -177,6 +186,9 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+    _compliance_monitor: APIComplianceMonitor | None = PrivateAttr(
+        default=None
+    )  # API compliance monitor (lazy-initialized)
 
     @model_validator(mode="before")
     @classmethod
@@ -202,7 +214,12 @@ class ConversationState(OpenHandsModel):
         return data
 
     @property
-    def events(self) -> EventLog:
+    def events(self) -> EventsListBase:
+        """Read-only view of conversation events.
+
+        Returns events as EventsListBase to discourage direct mutation.
+        Use add_event() to add new events with compliance monitoring.
+        """
         return self._events
 
     @property
@@ -244,7 +261,7 @@ class ConversationState(OpenHandsModel):
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
     def create(
-        cls: type["ConversationState"],
+        cls: type[ConversationState],
         id: ConversationID,
         agent: AgentBase,
         workspace: BaseWorkspace,
@@ -252,7 +269,7 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
-    ) -> "ConversationState":
+    ) -> ConversationState:
         """Create a new conversation state or resume from persistence.
 
         This factory method handles both new conversation creation and resumption
@@ -506,3 +523,49 @@ class ConversationState(OpenHandsModel):
         Return True if the lock is currently held by the calling thread.
         """
         return self._lock.owned()
+
+    # ===== API Compliance Monitoring =====
+
+    @property
+    def compliance_monitor(self) -> APIComplianceMonitor:
+        """Get or create the API compliance monitor.
+
+        The monitor is lazily initialized on first access.
+        """
+        if self._compliance_monitor is None:
+            self._compliance_monitor = APIComplianceMonitor()
+        return self._compliance_monitor
+
+    def add_event(self, event: Event) -> bool:
+        """Add an event to the conversation, checking for API compliance.
+
+        This is the only supported way to add events to the conversation.
+        Do not mutate the events list directly (e.g., via ``state.events.append()``),
+        as this bypasses compliance monitoring and may cause silent failures.
+
+        For LLMConvertibleEvent instances, the event is checked against API
+        compliance properties. Events with violations are logged and rejected
+        (not added to the event log).
+
+        Args:
+            event: The event to add to the conversation.
+
+        Returns:
+            True if the event was added, False if rejected due to violations.
+        """
+        # Check for compliance violations only for LLM-convertible events
+        if isinstance(event, LLMConvertibleEvent):
+            try:
+                violations = self.compliance_monitor.process_event(event)
+                if violations:
+                    # Reject events with violations
+                    return False
+            except Exception as e:
+                logger.exception(
+                    "Error checking compliance for event %s: %s", event.id, e
+                )
+                # Fail-closed: reject event if compliance check crashes
+                return False
+
+        self._events.append(event)
+        return True

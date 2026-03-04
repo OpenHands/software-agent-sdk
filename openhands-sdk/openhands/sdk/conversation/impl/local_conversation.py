@@ -178,12 +178,16 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
         )
 
-        # Default callback: persist every event to state
+        # Default callback: persist every event to state with compliance checking
         def _default_callback(e):
             # This callback runs while holding the conversation state's lock
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
-            self._state.events.append(e)
+            #
+            # Use add_event() to check API compliance before appending.
+            # Events with violations are logged and rejected (not added to event log).
+            # Violations are logged but events are still processed.
+            self._state.add_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":

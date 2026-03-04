@@ -352,6 +352,14 @@ class RemoteEventsList(EventsListBase):
         """Add a new event to the list (for compatibility with EventLog interface)."""
         self.add_event(event)
 
+    def get_index(self, event_id: str) -> int:
+        """Return the integer index for a given event_id."""
+        with self._lock:
+            for idx, event in enumerate(self._cached_events):
+                if event.id == event_id:
+                    return idx
+        raise KeyError(f"Unknown event_id: {event_id}")
+
     def create_default_callback(self) -> ConversationCallbackType:
         """Create a default callback that adds events to this list."""
 
