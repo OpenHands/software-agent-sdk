@@ -37,6 +37,14 @@ def _make_test_llm() -> LLM:
     )
 
 
+def _create_skill_file(skills_dir: Path, name: str, content: str) -> None:
+    """Create a skill .md file in the given skills directory."""
+    skill_file = skills_dir / f"{name}.md"
+    skill_file.write_text(
+        f"---\nname: {name}\ntriggers:\n  - {name}\n---\n\n{content}\n"
+    )
+
+
 def test_register_file_agents_project_priority(tmp_path: Path) -> None:
     """Project-level agents take priority over user-level agents with same name."""
     # Project .agents/
@@ -96,7 +104,7 @@ def test_register_file_agents_skips_programmatic(tmp_path: Path) -> None:
     assert factory.description == "Programmatic version"
 
 
-def test_register_plugin_agents() -> None:
+def test_register_plugin_agents(tmp_path: Path) -> None:
     """Plugin agents are registered via register_agent_if_absent."""
     plugin_agent = AgentDefinition(
         name="plugin-agent",
@@ -106,14 +114,14 @@ def test_register_plugin_agents() -> None:
         system_prompt="Plugin prompt.",
     )
 
-    registered = register_plugin_agents([plugin_agent])
+    registered = register_plugin_agents([plugin_agent], work_dir=tmp_path)
 
     assert registered == ["plugin-agent"]
     factory = get_agent_factory("plugin-agent")
     assert factory.description == "From plugin"
 
 
-def test_register_plugin_agents_skips_existing() -> None:
+def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
     """Plugin agents don't overwrite programmatically registered agents."""
 
     def existing_factory(llm: LLM) -> Agent:
@@ -133,7 +141,7 @@ def test_register_plugin_agents_skips_existing() -> None:
         system_prompt="",
     )
 
-    registered = register_plugin_agents([plugin_agent])
+    registered = register_plugin_agents([plugin_agent], work_dir=tmp_path)
     assert registered == []
     # Programmatic version still there
     factory = get_agent_factory("my-agent")
@@ -237,6 +245,119 @@ def test_agent_definition_to_factory_no_system_prompt() -> None:
     agent = factory(llm)
 
     assert agent.agent_context is None
+
+
+def test_agent_definition_to_factory_with_skills(tmp_path: Path) -> None:
+    """Factory resolves skill names and passes them to AgentContext."""
+    # Create a skill file in project directory
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    _create_skill_file(skills_dir, "test-skill", "Skill content here.")
+
+    agent_def = AgentDefinition(
+        name="skilled-agent",
+        description="Agent with skills",
+        model="inherit",
+        tools=[],
+        skills=["test-skill"],
+        system_prompt="You are a skilled agent.",
+    )
+
+    factory = agent_definition_to_factory(agent_def, work_dir=tmp_path)
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.agent_context is not None
+    assert len(agent.agent_context.skills) == 1
+    assert agent.agent_context.skills[0].name == "test-skill"
+    assert "Skill content here." in agent.agent_context.skills[0].content
+    assert agent.agent_context.system_message_suffix == "You are a skilled agent."
+
+
+def test_agent_definition_to_factory_skills_only_no_prompt(tmp_path: Path) -> None:
+    """Factory with skills but no system prompt still creates AgentContext."""
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    _create_skill_file(skills_dir, "only-skill", "Only skill content.")
+
+    agent_def = AgentDefinition(
+        name="skills-only-agent",
+        description="Agent with skills but no prompt",
+        model="inherit",
+        tools=[],
+        skills=["only-skill"],
+        system_prompt="",
+    )
+
+    factory = agent_definition_to_factory(agent_def, work_dir=tmp_path)
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.agent_context is not None
+    assert len(agent.agent_context.skills) == 1
+    assert agent.agent_context.skills[0].name == "only-skill"
+    assert agent.agent_context.system_message_suffix is None
+
+
+def test_agent_definition_to_factory_no_skills_no_prompt() -> None:
+    """Factory with no skills and no prompt creates no AgentContext."""
+    agent_def = AgentDefinition(
+        name="empty-agent",
+        description="No skills no prompt",
+        model="inherit",
+        tools=[],
+        skills=[],
+        system_prompt="",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.agent_context is None
+
+
+def test_agent_definition_to_factory_skill_not_found() -> None:
+    """Factory raises ValueError when a skill name is not found."""
+    agent_def = AgentDefinition(
+        name="missing-skill-agent",
+        description="Agent with missing skill",
+        model="inherit",
+        skills=["nonexistent-skill"],
+    )
+
+    with pytest.raises(ValueError, match="Skill 'nonexistent-skill' not found"):
+        agent_definition_to_factory(agent_def)
+
+
+def test_agent_definition_to_factory_skills_project_over_user(tmp_path: Path) -> None:
+    """Project skills take priority over user skills with the same name."""
+    # Create project-level skill
+    project_skills_dir = tmp_path / ".agents" / "skills"
+    project_skills_dir.mkdir(parents=True)
+    _create_skill_file(project_skills_dir, "shared-skill", "Project version.")
+
+    # Create user-level skill with same name
+    user_home = tmp_path / "fake_home"
+    user_skills_dir = user_home / ".agents" / "skills"
+    user_skills_dir.mkdir(parents=True)
+    _create_skill_file(user_skills_dir, "shared-skill", "User version.")
+
+    agent_def = AgentDefinition(
+        name="priority-agent",
+        skills=["shared-skill"],
+    )
+
+    with patch("openhands.sdk.context.skills.skill.Path.home", return_value=user_home):
+        factory = agent_definition_to_factory(agent_def, work_dir=tmp_path)
+
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.agent_context is not None
+    assert len(agent.agent_context.skills) == 1
+    # Project version should win
+    assert "Project version." in agent.agent_context.skills[0].content
 
 
 def test_factory_info() -> None:
