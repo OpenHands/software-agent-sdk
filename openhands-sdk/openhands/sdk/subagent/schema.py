@@ -17,6 +17,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "color",
     "tools",
     "skills",
+    "max_iteration_per_run",
 }
 
 
