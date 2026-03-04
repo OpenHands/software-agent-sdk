@@ -250,12 +250,12 @@ def test_gpt_oss_20b_config():
 
 
 def test_gpt_5_3_codex_config():
-    """Test that gpt-5-3-codex has correct configuration."""
-    model = MODELS["gpt-5-3-codex"]
+    """Test that gpt-5.3-codex has correct configuration."""
+    model = MODELS["gpt-5.3-codex"]
 
-    assert model["id"] == "gpt-5-3-codex"
+    assert model["id"] == "gpt-5.3-codex"
     assert model["display_name"] == "GPT-5.3 Codex"
-    assert model["llm_config"]["model"] == "litellm_proxy/gpt-5-3-codex"
+    assert model["llm_config"]["model"] == "litellm_proxy/gpt-5.3-codex"
 
 
 def test_glm_5_config():
