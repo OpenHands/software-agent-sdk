@@ -23,6 +23,7 @@ from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import (
     get_default_agent,
     get_default_tools,
+    register_builtins_agents,
     register_default_tools,
 )
 from openhands.tools.task_tracker import TaskTrackerTool
@@ -44,4 +45,5 @@ __all__ = [
     "get_default_agent",
     "get_default_tools",
     "register_default_tools",
+    "register_builtins_agents",
 ]

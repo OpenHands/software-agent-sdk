@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING, NamedTuple
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.load import (
-    load_agents_from_dir,
     load_project_agents,
     load_user_agents,
 )
@@ -44,8 +43,6 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
 
 logger = get_logger(__name__)
-
-BUILTINS_DIR = Path(__file__).parent / "builtins"
 
 
 class AgentFactory(NamedTuple):
@@ -129,21 +126,23 @@ def agent_definition_to_factory(
     The returned callable accepts the parent agent's LLM and produces a
     fully-configured `Agent`.
 
-    Model resolution (`agent_def.model`):
-        - "inherit" or empty: Re-uses the parent LLM configuration as-is.
-        - Any other value: Treated as a profile name and loaded from `LLMProfileStore`.
-            Raises `ValueError` if the profile is not found.
-
-    The factory also wires up tools (from `agent_def.tools`) and the
-    system prompt (as `AgentContext.system_message_suffix`).
+    - Tool names from `agent_def.tools` are mapped to `Tool` objects.
+    - The system prompt is set as the `system_message_suffix` on the
+      `AgentContext`.
+    - `model: inherit` preserves the parent LLM; an explicit model name
+      creates a copy via `model_copy(update=...)`.
 
     Note: Callers (e.g. DelegateTool, TaskManager) are responsible for
     disabling streaming and resetting metrics on the resulting agent's LLM.
+    
+    Raises:
+        ValueError: If a tool provided to the agent is not registered.
     """
 
     def _factory(llm: "LLM") -> "Agent":
         from openhands.sdk.agent.agent import Agent
         from openhands.sdk.context.agent_context import AgentContext
+        from openhands.sdk.tool.registry import list_registered_tools
         from openhands.sdk.tool.spec import Tool
 
         # Load LLM profile if agent_def.model is different from
@@ -169,7 +168,15 @@ def agent_definition_to_factory(
         )
 
         # Resolve tools
-        tools = [Tool(name=tool_name) for tool_name in agent_def.tools]
+        tools: list[Tool] = []
+        registered_tools: set[str] = set(list_registered_tools())
+        for tool_name in agent_def.tools:
+            if tool_name not in registered_tools:
+                raise ValueError(
+                    f"Tool '{tool_name}' not registered"
+                    f"but was given to agent {agent_def.name}."
+                )
+            tools.append(Tool(name=tool_name))
 
         return Agent(
             llm=llm,
@@ -257,35 +264,6 @@ def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
     return registered
 
 
-def register_builtins_agents() -> list[str]:
-    """Load and register SDK builtin agents from ``subagent/builtins/*.md``.
-
-    They are registered via ``register_agent_if_absent`` and will not
-    overwrite agents already registered by programmatic calls, plugins,
-    or project/user-level file-based definitions.
-
-    Returns:
-        List of agent names that were actually registered.
-    """
-    builtins_agents_def = load_agents_from_dir(BUILTINS_DIR)
-
-    registered: list[str] = []
-    for agent_def in builtins_agents_def:
-        factory = agent_definition_to_factory(agent_def)
-        was_registered = register_agent_if_absent(
-            name=agent_def.name,
-            factory_func=factory,
-            description=agent_def.description or f"Agent: {agent_def.name}",
-        )
-        if was_registered:
-            registered.append(agent_def.name)
-            logger.info(
-                f"Registered file-based agent '{agent_def.name}'"
-                + (f" from {agent_def.source}" if agent_def.source else "")
-            )
-    return registered
-
-
 def get_agent_factory(name: str | None) -> AgentFactory:
     """
     Get a registered agent factory by name.
@@ -324,17 +302,10 @@ def get_factory_info() -> str:
     with _registry_lock:
         user_factories = dict(_agent_factories)
 
-    info_lines = []
-    info_lines.append(
-        "- **default**: Default general-purpose agent (used when no agent type is provided)"  # noqa: E501
-    )
-
     if not user_factories:
-        info_lines.append(
-            "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
-        )
-        return "\n".join(info_lines)
+        return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
+    info_lines = []
     for name, factory in sorted(user_factories.items()):
         info_lines.append(f"- **{name}**: {factory.description}")
 

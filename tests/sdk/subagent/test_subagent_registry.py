@@ -169,7 +169,7 @@ def test_agent_definition_to_factory_basic() -> None:
         name="test-agent",
         description="A test agent",
         model="inherit",
-        tools=["ReadTool", "GlobTool"],
+        tools=[],
         system_prompt="You are a test agent.",
     )
 
@@ -178,10 +178,8 @@ def test_agent_definition_to_factory_basic() -> None:
     agent = factory(llm)
 
     assert isinstance(agent, Agent)
-    # Check tools
-    tool_names = [t.name for t in agent.tools]
-    assert "ReadTool" in tool_names
-    assert "GlobTool" in tool_names
+    # Check tools are empty
+    assert agent.tools == []
     # Check skill (system prompt as always-active skill)
     assert agent.agent_context is not None
     assert agent.agent_context.system_message_suffix == "You are a test agent."
@@ -228,7 +226,6 @@ def test_agent_definition_to_factory_no_system_prompt() -> None:
         name="no-prompt-agent",
         description="No prompt",
         model="inherit",
-        tools=["ReadTool"],
         system_prompt="",
     )
 
@@ -242,7 +239,6 @@ def test_agent_definition_to_factory_no_system_prompt() -> None:
 def test_factory_info() -> None:
     """get_factory_info returns formatted listing of registered agents."""
     info = get_factory_info()
-    assert "default" in info
     assert "No user-registered agents" in info
 
     # Register some agents
@@ -256,7 +252,6 @@ def test_factory_info() -> None:
     register_agent(name="beta-agent", factory_func=factory_b, description="Beta desc")
 
     info = get_factory_info()
-    assert "default" in info
     assert "No user-registered agents" not in info
     assert "**alpha-agent**: Alpha desc" in info
     assert "**beta-agent**: Beta desc" in info
@@ -442,9 +437,6 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
         "name: e2e-test-agent\n"
         "description: End-to-end test agent\n"
         "model: inherit\n"
-        "tools:\n"
-        "  - ReadTool\n"
-        "  - GrepTool\n"
         "---\n\n"
         "You are a test agent for end-to-end testing.\n"
         "Focus on correctness and clarity.\n"
@@ -454,7 +446,6 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     agent_def = AgentDefinition.load(md_file)
     assert agent_def.name == "e2e-test-agent"
     assert agent_def.description == "End-to-end test agent"
-    assert agent_def.tools == ["ReadTool", "GrepTool"]
 
     # Convert to factory
     factory = agent_definition_to_factory(agent_def)
@@ -479,6 +470,3 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     )
     agent = retrieved.factory_func(test_llm)
     assert isinstance(agent, Agent)
-    tool_names = [t.name for t in agent.tools]
-    assert "ReadTool" in tool_names
-    assert "GrepTool" in tool_names
