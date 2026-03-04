@@ -4,7 +4,11 @@ from openhands.sdk import Agent, Conversation, LocalConversation, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible.observation import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
-from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    register_agent_if_absent,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TaskObservation
@@ -56,7 +60,8 @@ def _register_simple_agent(name: str, sub_llm: TestLLM) -> None:
     def factory(llm):
         return Agent(llm=sub_llm, tools=[])
 
-    register_agent(name=name, factory_func=factory, description=f"Test agent: {name}")
+    definition = AgentDefinition(name=name, description=f"Test agent: {name}")
+    register_agent_if_absent(factory, definition)
 
 
 def _get_task_observations(conversation: LocalConversation) -> list[TaskObservation]:

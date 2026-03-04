@@ -305,20 +305,24 @@ def test_agent_definition_to_factory_no_skills_no_prompt() -> None:
     assert agent.agent_context is None
 
 
-def test_agent_definition_to_factory_skill_not_found() -> None:
-    """Factory raises ValueError when a skill name is not found."""
+@pytest.mark.parametrize(
+    "skills, match",
+    [
+        (
+            ["nonexistent-skill"],
+            "Skills not found but given to agent "
+            "'missing-skill-agent': nonexistent-skill",
+        ),
+        (["missing-a", "missing-b", "missing-c"], "missing-a, missing-b, missing-c"),
+    ],
+)
+def test_exception_in_to_factory(skills: list[str], match: str) -> None:
     agent_def = AgentDefinition(
         name="missing-skill-agent",
         description="Agent with missing skill",
-        model="inherit",
-        skills=["nonexistent-skill"],
+        skills=skills,
     )
-
-    with pytest.raises(
-        ValueError,
-        match="Skills not found but given to agent "
-        "'missing-skill-agent': nonexistent-skill",
-    ):
+    with pytest.raises(ValueError, match=match):
         agent_def.to_factory()
 
 
