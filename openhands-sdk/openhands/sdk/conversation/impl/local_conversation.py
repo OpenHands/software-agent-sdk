@@ -51,7 +51,6 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.subagent.registry import register_builtins_agents
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -374,7 +373,10 @@ class LocalConversation(BaseConversation):
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
-            register_plugin_agents(all_plugin_agents)
+            register_plugin_agents(
+                agents=all_plugin_agents,
+                work_dir=self.workspace.working_dir,
+            )
 
         # Combine explicit hook_config with plugin hooks
         # Explicit hooks run first (before plugin hooks)
@@ -417,12 +419,9 @@ class LocalConversation(BaseConversation):
                 then `{project}/.openhands/agents/*.md`)
           4. User-level file agents (`~/.agents/agents/*.md`,
                 then `~/.openhands/agents/*.md`)
-          5. SDK builtin agents (`subagent/builtins/*.md`)
         """
         # register project-level and then user-level file-based agents
         register_file_agents(self.workspace.working_dir)
-        # register builtins agents
-        register_builtins_agents()
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
@@ -730,14 +729,20 @@ class LocalConversation(BaseConversation):
                 logger.info("Agent execution pause requested")
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
-        """Add secrets to the conversation.
+        """Add secrets to the conversation's secret registry.
+
+        Secrets are stored in the conversation's secret_registry which:
+        1. Provides environment variable injection during command execution
+        2. Is read by the agent when building its system prompt (dynamic_context)
+
+        The agent pulls secrets from the registry via get_dynamic_context() during
+        init_state(), ensuring secret names and descriptions appear in the prompt.
 
         Args:
             secrets: Dictionary mapping secret keys to values or no-arg callables.
                      SecretValue = str | Callable[[], str]. Callables are invoked lazily
                      when a command references the secret key.
         """
-
         secret_registry = self._state.secret_registry
         secret_registry.update_secrets(secrets)
         logger.info(f"Added {len(secrets)} secrets to conversation")

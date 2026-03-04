@@ -7,10 +7,11 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM
-from openhands.sdk.secret import LookupSecret, SecretSource
+from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.terminal.definition import TerminalAction
@@ -316,3 +317,150 @@ def test_masking_persists(
 
     finally:
         terminal_executor.close()
+
+
+# -----------------------
+# Tests for secrets in system prompt
+# -----------------------
+
+
+def test_update_secrets_adds_to_registry(conversation: LocalConversation):
+    """Test that update_secrets adds secrets to the secret_registry."""
+    # Add secrets
+    conversation.update_secrets(
+        {
+            "API_KEY": StaticSecret(
+                value=SecretStr("test-key"), description="API authentication key"
+            ),
+            "DB_PASSWORD": "plain-secret-value",
+        }
+    )
+
+    # Verify secrets are in secret_registry
+    secret_infos = conversation.state.secret_registry.get_secret_infos()
+    secret_names = [s["name"] for s in secret_infos]
+    assert "API_KEY" in secret_names
+    assert "DB_PASSWORD" in secret_names
+
+
+def test_update_secrets_appears_in_dynamic_context(conversation: LocalConversation):
+    """Test that secrets added via update_secrets appear in agent's dynamic context."""
+    # Add secrets with descriptions
+    conversation.update_secrets(
+        {
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("ghp_xxx"), description="GitHub authentication token"
+            ),
+            "OPENAI_API_KEY": StaticSecret(
+                value=SecretStr("sk-xxx"), description="OpenAI API key for LLM calls"
+            ),
+        }
+    )
+
+    # Agent pulls secrets from state when building dynamic context
+    agent = cast(Agent, conversation.agent)
+    dynamic_context = agent.get_dynamic_context(conversation.state)
+
+    # Verify secrets appear in the dynamic context
+    assert dynamic_context is not None
+    assert "<CUSTOM_SECRETS>" in dynamic_context
+    assert "GITHUB_TOKEN" in dynamic_context
+    assert "GitHub authentication token" in dynamic_context
+    assert "OPENAI_API_KEY" in dynamic_context
+    assert "OpenAI API key for LLM calls" in dynamic_context
+    assert "</CUSTOM_SECRETS>" in dynamic_context
+
+
+def test_secrets_merges_with_existing_context(llm: LLM, tmp_path):
+    """Test that registry secrets merge with existing agent_context secrets."""
+    # Create agent with existing context and secrets
+    existing_secrets = {
+        "EXISTING_SECRET": StaticSecret(
+            value=SecretStr("existing-value"), description="Pre-existing secret"
+        ),
+    }
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        agent_context=AgentContext(
+            secrets=existing_secrets,
+            system_message_suffix="Custom instructions here",
+        ),
+    )
+    conversation = LocalConversation(agent, workspace=str(tmp_path))
+
+    # Add new secrets via update_secrets (goes to registry)
+    conversation.update_secrets(
+        {
+            "NEW_SECRET": StaticSecret(
+                value=SecretStr("new-value"), description="Newly added secret"
+            ),
+        }
+    )
+
+    # Agent should merge secrets from agent_context and registry
+    dynamic_context = agent.get_dynamic_context(conversation.state)
+
+    # Both secrets should appear in dynamic context
+    assert dynamic_context is not None
+    assert "EXISTING_SECRET" in dynamic_context
+    assert "Pre-existing secret" in dynamic_context
+    assert "NEW_SECRET" in dynamic_context
+    assert "Newly added secret" in dynamic_context
+
+    # Verify existing context properties are preserved
+    assert "Custom instructions here" in dynamic_context
+
+    conversation.close()
+
+
+def test_update_secrets_overrides_existing_secret(conversation: LocalConversation):
+    """Test that update_secrets overrides existing secrets with the same key."""
+    # Add initial secret
+    conversation.update_secrets(
+        {
+            "API_KEY": StaticSecret(
+                value=SecretStr("old-key"), description="Old description"
+            ),
+        }
+    )
+
+    # Update with new value
+    conversation.update_secrets(
+        {
+            "API_KEY": StaticSecret(
+                value=SecretStr("new-key"), description="New description"
+            ),
+        }
+    )
+
+    # Verify the secret was updated in dynamic context
+    agent = cast(Agent, conversation.agent)
+    dynamic_context = agent.get_dynamic_context(conversation.state)
+    assert dynamic_context is not None
+    assert "New description" in dynamic_context
+
+
+def test_secrets_via_constructor_appear_in_prompt(llm: LLM, tmp_path):
+    """Test that secrets passed via constructor appear in the prompt."""
+    agent = Agent(llm=llm, tools=[])
+    secrets = {
+        "CONSTRUCTOR_SECRET": StaticSecret(
+            value=SecretStr("constructor-value"),
+            description="Secret passed via constructor",
+        ),
+    }
+    conversation = LocalConversation(agent, workspace=str(tmp_path), secrets=secrets)
+
+    # Verify secrets are in registry
+    secret_infos = conversation.state.secret_registry.get_secret_infos()
+    secret_names = [s["name"] for s in secret_infos]
+    assert "CONSTRUCTOR_SECRET" in secret_names
+
+    # Verify secrets appear in dynamic context
+    dynamic_context = agent.get_dynamic_context(conversation.state)
+    assert dynamic_context is not None
+    assert "CONSTRUCTOR_SECRET" in dynamic_context
+    assert "Secret passed via constructor" in dynamic_context
+
+    conversation.close()
