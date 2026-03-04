@@ -27,6 +27,7 @@ from openhands.sdk.plugin import (
     uninstall_plugin,
     update_plugin,
 )
+from openhands.sdk.plugin.fetch import get_cache_path, parse_plugin_source
 
 
 # ============================================================================
@@ -532,14 +533,17 @@ def test_install_document_skills_plugin(installed_dir: Path) -> None:
     (xlsx, docx, pptx, pdf) in the skills/ subdirectory.
     """
     try:
+        source = "github:anthropics/skills"
         info = install_plugin(
-            source="github:anthropics/skills",
+            source=source,
             ref="main",
             installed_dir=installed_dir,
         )
 
-        assert info.name == "anthropic-agent-skills"
-        assert info.source == "github:anthropics/skills"
+        _, url = parse_plugin_source(source)
+        expected_name = get_cache_path(url).name
+        assert info.name == expected_name
+        assert info.source == source
 
         # Verify the plugin directory has the expected structure
         install_path = Path(info.install_path)
@@ -555,9 +559,7 @@ def test_install_document_skills_plugin(installed_dir: Path) -> None:
 
         # Verify skills are loaded from the plugin
         plugins = load_installed_plugins(installed_dir=installed_dir)
-        doc_plugin = next(
-            (p for p in plugins if p.name == "anthropic-agent-skills"), None
-        )
+        doc_plugin = next((p for p in plugins if p.name == expected_name), None)
         assert doc_plugin is not None
         skills = doc_plugin.get_all_skills()
         # Should have at least the 4 document skills
