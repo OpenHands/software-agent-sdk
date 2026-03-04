@@ -134,7 +134,7 @@ def agent_definition_to_factory(
 
     Note: Callers (e.g. DelegateTool, TaskManager) are responsible for
     disabling streaming and resetting metrics on the resulting agent's LLM.
-    
+
     Raises:
         ValueError: If a tool provided to the agent is not registered.
     """
