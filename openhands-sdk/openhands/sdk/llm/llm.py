@@ -316,7 +316,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default="24h",
         description=(
             "Retention policy for prompt cache. Only sent for supported models "
-            "(GPT-5+ and openai/gpt-4.1); explicitly stripped for all others."
+            "(GPT-5+ and GPT-4.1, excluding Azure deployments); explicitly "
+            "stripped for all others."
         ),
     )
     extended_thinking_budget: int | None = Field(
