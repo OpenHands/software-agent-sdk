@@ -27,15 +27,18 @@ from openhands.sdk import (
 )
 from openhands.sdk.tool import Tool
 from openhands.tools.browser_use import BrowserToolSet
-from openhands.tools.browser_use.definition import BROWSER_RECORDING_OUTPUT_DIR
+from openhands.tools.browser_use.definition import (
+    BROWSER_RECORDING_OUTPUT_DIR,
+    BrowserNavigateAction,
+)
 
 
 logger = get_logger(__name__)
 
 # Configure LLM
-api_key = os.getenv("LLM_API_KEY")
+api_key = "sk-60szvTuYeJGFa5iM4mFKew"
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",
@@ -95,7 +98,22 @@ print("=" * 80)
 print("Browser Session Recording Example")
 print("=" * 80)
 print("\nTask: Record an agent's browser session and save it for replay")
-print("\nStarting conversation with agent...\n")
+
+# Pre-initialize the browser so CDP is ready before the agent starts.
+# This avoids wasting LLM calls if the browser fails to connect.
+print("\nInitializing browser...")
+
+init_obs = conversation.execute_tool(
+    "browser_navigate",
+    BrowserNavigateAction(url="about:blank"),
+)
+if init_obs.is_error:
+    print(f"Browser initialization failed: {init_obs.text}")
+    print("Ensure Chrome/Chromium is installed and accessible.")
+    exit(1)
+print("Browser initialized successfully.\n")
+
+print("Starting conversation with agent...\n")
 
 conversation.send_message(PROMPT)
 conversation.run()
