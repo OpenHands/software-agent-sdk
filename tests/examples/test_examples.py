@@ -51,13 +51,7 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/27_observability_laminar.py",
     "examples/01_standalone_sdk/35_subscription_login.py",
     # Requires interactive input() which fails in CI with EOFError
-    "examples/01_standalone_sdk/41_task_tool_set.py",
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
-    # Requires Claude Code ACP server (npx + claude-code-acp auth)
-    "examples/01_standalone_sdk/40_acp_agent_example.py",
-    # Multi-part delegation / browser recording — too slow for CI timeout
-    "examples/01_standalone_sdk/25_agent_delegation.py",
-    "examples/01_standalone_sdk/38_browser_session_recording.py",
 }
 
 
