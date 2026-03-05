@@ -311,12 +311,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
-    # Prompt cache retention only applies to GPT-5+ models; filtered in chat options
+    # Prompt cache retention is filtered per model features in chat options.
     prompt_cache_retention: str | None = Field(
         default="24h",
         description=(
-            "Retention policy for prompt cache. Only sent for GPT-5+ models; "
-            "explicitly stripped for all other models."
+            "Retention policy for prompt cache. Only sent for supported models "
+            "(GPT-5+ and openai/gpt-4.1); explicitly stripped for all others."
         ),
     )
     extended_thinking_budget: int | None = Field(

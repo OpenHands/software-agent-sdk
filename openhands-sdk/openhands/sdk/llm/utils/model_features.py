@@ -114,11 +114,14 @@ PROMPT_CACHE_MODELS: list[str] = [
 #   - gpt-5
 #   - gpt-5-codex
 # Note: OpenAI docs also list gpt-4.1, but Azure rejects
-# prompt_cache_retention for 4.1 deployments.
+# prompt_cache_retention for 4.1 deployments. Only the explicit
+# OpenAI-prefixed model is enabled.
 # Use ordered include/exclude rules (last wins) to naturally express exceptions.
 PROMPT_CACHE_RETENTION_MODELS: list[str] = [
     # Broad allow for GPT-5 family (covers gpt-5.2 and variants)
     "gpt-5",
+    # Allow OpenAI-hosted GPT-4.1 only (avoid Azure deployments)
+    "openai/gpt-4.1",
     # Exclude all mini variants by default
     "!mini",
     # Re-allow the explicitly documented supported mini variant

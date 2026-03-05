@@ -216,10 +216,19 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
 
     llm_41 = LLM(model="openai/gpt-4.1")
     opts_41_chat = select_chat_options(llm_41, {}, has_tools=False)
-    assert "prompt_cache_retention" not in opts_41_chat
+    assert opts_41_chat.get("prompt_cache_retention") == "24h"
 
     opts_41_resp = select_responses_options(llm_41, {}, include=None, store=None)
-    assert "prompt_cache_retention" not in opts_41_resp
+    assert opts_41_resp.get("prompt_cache_retention") == "24h"
+
+    llm_41_azure = LLM(model="azure/gpt-4.1")
+    opts_41_azure_chat = select_chat_options(llm_41_azure, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_41_azure_chat
+
+    opts_41_azure_resp = select_responses_options(
+        llm_41_azure, {}, include=None, store=None
+    )
+    assert "prompt_cache_retention" not in opts_41_azure_resp
 
     # Other non-GPT-5 models should not include it at all
     llm_other = LLM(model="gpt-4o")
