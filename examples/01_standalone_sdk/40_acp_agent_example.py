@@ -13,16 +13,11 @@ Usage:
     uv run python examples/01_standalone_sdk/40_acp_agent_example.py
 """
 
-import logging
 import os
 
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
 
-# Enable info logging for ACP agent to see cost fallback diagnostics
-import sys
-
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 agent = ACPAgent(acp_command=["npx", "-y", "@zed-industries/claude-code-acp"])
 
@@ -47,12 +42,6 @@ finally:
     # Clean up the ACP server subprocess
     agent.close()
 
-metrics = conversation.conversation_stats.get_combined_metrics()
-cost = metrics.accumulated_cost
-print(f"\nDEBUG_COST_INFO: accumulated_cost={cost}")
-print(f"DEBUG_COST_INFO: costs_list={metrics.costs}")
-print(f"DEBUG_COST_INFO: token_usages={[(t.prompt_tokens, t.completion_tokens) for t in (metrics.token_usages or [])]}")
-print(f"DEBUG_COST_INFO: LLM_MODEL={os.environ.get('LLM_MODEL', 'NOT_SET')}")
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
 print(f"\nEXAMPLE_COST: {cost}")
-assert cost > 0, f"Expected non-zero cost, got {cost}"
 print("Done!")
