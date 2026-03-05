@@ -7,7 +7,7 @@ and leaves the main conversation untouched.
 
 Prerequisites:
     - Node.js / npx available
-    - Claude Code CLI authenticated (or CLAUDE_API_KEY set)
+    - ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set (can point to LiteLLM proxy)
 
 Usage:
     uv run python examples/01_standalone_sdk/40_acp_agent_example.py
