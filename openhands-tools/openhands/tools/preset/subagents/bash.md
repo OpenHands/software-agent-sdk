@@ -2,16 +2,12 @@
 name: bash
 model: inherit
 description: >-
-   USE THIS as your FIRST action on every new task.
-   The explore agent searches files, reads code, understands architecture,
-   and returns a structured summary with file paths, line numbers, and
-   code snippets. Its results are authoritative — treat them as your own
-   exploration.
-
-  Triggers — use explore when:
-  * You need to find files related to a bug, feature, or error message
-  * You need to understand how a module, class, or function works
-  * You need to search across many files for a pattern
+   USE THIS to run tests, reproduction scripts, or installation commands.
+   
+   Triggers — use bash when:
+   * Running the test suite after implementing a fix
+   * Running a reproduction script to confirm a bug
+   * Installing dependencies
 tools:
   - terminal
 ---
