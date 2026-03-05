@@ -24,12 +24,12 @@ inputs:
             feedback focusing on data structures, simplicity, and pragmatism)"
         required: false
         default: roasted
-    sdk-repo:
-        description: GitHub repository for the SDK (owner/repo)
+    extensions-repo:
+        description: GitHub repository for extensions (owner/repo)
         required: false
-        default: OpenHands/software-agent-sdk
-    sdk-version:
-        description: Git ref to use for the SDK (tag, branch, or commit SHA, e.g., v1.0.0, main, or abc1234)
+        default: OpenHands/extensions
+    extensions-version:
+        description: Git ref to use for extensions (tag, branch, or commit SHA, e.g., v1.0.0, main, or abc1234)
         required: false
         default: main
     llm-api-key:
@@ -46,12 +46,12 @@ inputs:
 runs:
     using: composite
     steps:
-        - name: Checkout software-agent-sdk repository
+        - name: Checkout extensions repository
           uses: actions/checkout@v4
           with:
-              repository: ${{ inputs.sdk-repo }}
-              ref: ${{ inputs.sdk-version }}
-              path: software-agent-sdk
+              repository: ${{ inputs.extensions-repo }}
+              ref: ${{ inputs.extensions-version }}
+              path: extensions
 
         - name: Checkout PR repository
           uses: actions/checkout@v4
@@ -85,7 +85,8 @@ runs:
         - name: Install OpenHands dependencies
           shell: bash
           run: |
-              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr
+              # Install openhands SDK and tools from PyPI
+              uv pip install --system openhands-sdk openhands-tools lmnr
 
         - name: Check required configuration and select model
           id: select-model
@@ -111,7 +112,7 @@ runs:
               echo "PR Number: ${{ github.event.pull_request.number }}"
               echo "PR Title: ${{ github.event.pull_request.title }}"
               echo "Repository: ${{ github.repository }}"
-              echo "SDK Version: ${{ inputs.sdk-version }}"
+              echo "Extensions Version: ${{ inputs.extensions-version }}"
               echo "Available models: $MODELS_LIST"
               echo "Selected LLM model: $SELECTED_MODEL"
               if [ -n "${{ inputs.llm-base-url }}" ]; then
@@ -135,7 +136,7 @@ runs:
               REPO_NAME: ${{ github.repository }}
           run: |
               cd pr-repo
-              uv run python ../software-agent-sdk/examples/03_github_workflows/02_pr_review/agent_script.py
+              uv run python ../extensions/plugins/pr-review/scripts/agent_script.py
 
         - name: Upload logs as artifact
           uses: actions/upload-artifact@v4

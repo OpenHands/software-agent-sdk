@@ -2,12 +2,12 @@
 
 This example demonstrates how to set up a GitHub Actions workflow for automated pull request reviews using the OpenHands agent SDK. When a PR is labeled with `review-this` or when openhands-agent is added as a reviewer, OpenHands will analyze the changes and provide detailed, constructive feedback.
 
+**Note**: The actual review scripts now live in the [OpenHands/extensions](https://github.com/OpenHands/extensions/tree/main/plugins/pr-review) repository. This directory contains the GitHub Action that references those scripts.
+
 ## Files
 
-- **`action.yml`**: Symlink to the composite GitHub Action (`.github/actions/pr-review/action.yml`)
+- **`action.yml`**: Composite GitHub Action that loads scripts from the extensions repository
 - **`workflow.yml`**: Example GitHub Actions workflow file that uses the composite action
-- **`agent_script.py`**: Python script that runs the OpenHands agent for PR review
-- **`prompt.py`**: The prompt asking the agent to write the PR review
 - **`evaluate_review.py`**: Script to evaluate review effectiveness when PR is closed
 - **`README.md`**: This documentation file
 
@@ -40,7 +40,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - Potential issues and security concerns
   - Specific improvement suggestions
 - **GitHub API Integration**: Uses the GitHub API to post inline review comments directly on specific lines of code
-- **Version Control**: Use `sdk-version` to pin to a specific version tag or branch
+- **Version Control**: Use `extensions-version` to pin to a specific version tag or branch of the extensions repository
 
 ## Setup
 
@@ -75,10 +75,10 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
       llm-base-url: ''
       # Review style: roasted (other option: standard)
       review-style: roasted
-      # SDK git ref to use (tag, branch, or commit SHA, e.g., 'v1.0.0', 'main', or 'abc1234')
-      sdk-version: main
-      # Optional: override the SDK repo (owner/repo) if you forked it
-      sdk-repo: OpenHands/software-agent-sdk
+      # Extensions git ref to use (tag, branch, or commit SHA, e.g., 'v1.0.0', 'main', or 'abc1234')
+      extensions-version: main
+      # Optional: override the extensions repo (owner/repo) if you forked it
+      extensions-repo: OpenHands/extensions
       # Secrets
       llm-api-key: ${{ secrets.LLM_API_KEY }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -174,11 +174,11 @@ See the [software-agent-sdk's own code-review skill](https://github.com/OpenHand
 
 ## Composite Action
 
-This workflow uses a reusable composite action located at `.github/actions/pr-review/action.yml` in the software-agent-sdk repository. The composite action handles:
+This workflow uses a reusable composite action located in this directory (`action.yml`). The composite action handles:
 
-- Checking out the SDK at the specified version
+- Checking out the extensions repository at the specified version
 - Setting up Python and dependencies
-- Running the PR review agent
+- Running the PR review agent (from extensions repo)
 - Uploading logs as artifacts
 
 ### Action Inputs
@@ -188,8 +188,8 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `llm-model` | LLM model(s) - can be comma-separated for A/B testing | No | `anthropic/claude-sonnet-4-5-20250929` |
 | `llm-base-url` | LLM base URL (optional) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
-| `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
-| `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
+| `extensions-version` | Git ref for extensions (tag, branch, or commit SHA) | No | `main` |
+| `extensions-repo` | Extensions repository (owner/repo) | No | `OpenHands/extensions` |
 | `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |
 | `lmnr-api-key` | Laminar API key for observability (optional) | No | - |
