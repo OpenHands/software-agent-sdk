@@ -467,51 +467,65 @@ def install_skills_from_marketplace(
 
     # Load the marketplace
     marketplace = Marketplace.load(marketplace_path)
-    logger.info(
-        f"Installing skills from marketplace '{marketplace.name}' "
-        f"({len(marketplace.skills)} skills)"
-    )
 
     installed: list[InstalledSkillInfo] = []
 
-    for entry in marketplace.skills:
-        logger.info(f"Processing skill: {entry.name} (source: {entry.source})")
+    # Collect skill directories: standalone skills + skills from plugins
+    skill_dirs: list[tuple[str, Path]] = []  # (name, path)
 
-        # Skills only support string sources (local paths or GitHub URLs)
+    # 1. Standalone skills from marketplace.skills
+    for entry in marketplace.skills:
         if not isinstance(entry.source, str):
             logger.warning(f"Skill '{entry.name}' has unsupported source type")
             continue
 
-        # Resolve the source to a local path (handles GitHub URLs)
-        resolved_path = resolve_source_path(
-            entry.source,
-            base_path=marketplace_path,
-            update=True,
+        resolved = resolve_source_path(
+            entry.source, base_path=marketplace_path, update=True
         )
+        if resolved and resolved.exists():
+            skill_dirs.append((entry.name, resolved))
+        else:
+            logger.warning(f"Failed to resolve skill '{entry.name}'")
 
-        if resolved_path is None:
-            logger.warning(f"Failed to resolve source path for '{entry.name}'")
+    # 2. Skills from plugins (each plugin's skills/ directory)
+    for plugin in marketplace.plugins:
+        if isinstance(plugin.source, str):
+            source = plugin.source
+        elif plugin.source.repo:
+            source = f"https://github.com/{plugin.source.repo}.git"
+        elif plugin.source.url:
+            source = plugin.source.url
+        else:
+            logger.warning(f"Plugin '{plugin.name}' has unsupported source")
             continue
 
-        if not resolved_path.exists():
-            logger.warning(f"Path does not exist for '{entry.name}': {resolved_path}")
+        resolved = resolve_source_path(source, base_path=marketplace_path, update=True)
+        if not resolved or not resolved.exists():
+            logger.warning(f"Failed to resolve plugin '{plugin.name}'")
             continue
 
+        # Find skills/ directory in plugin
+        skills_dir = resolved / "skills"
+        if not skills_dir.exists():
+            continue
+
+        # Each subdirectory in skills/ is a skill
+        for skill_path in skills_dir.iterdir():
+            if skill_path.is_dir() and (skill_path / "SKILL.md").exists():
+                skill_dirs.append((skill_path.name, skill_path))
+
+    logger.info(f"Found {len(skill_dirs)} skills to install from marketplace")
+
+    # Install all collected skills
+    for name, path in skill_dirs:
         try:
-            # Install the skill from the resolved path
-            info = install_skill(
-                source=str(resolved_path),
-                installed_dir=installed_dir,
-                force=force,
-            )
+            info = install_skill(str(path), installed_dir=installed_dir, force=force)
             installed.append(info)
-            logger.info(f"Successfully installed skill '{info.name}'")
+            logger.info(f"Installed skill '{info.name}'")
         except FileExistsError:
-            logger.info(
-                f"Skill '{entry.name}' already installed (use force=True to overwrite)"
-            )
+            logger.info(f"Skill '{name}' already installed (use force=True)")
         except Exception as e:
-            logger.warning(f"Failed to install skill '{entry.name}': {e}")
+            logger.warning(f"Failed to install skill '{name}': {e}")
 
-    logger.info(f"Installed {len(installed)} of {len(marketplace.skills)} skills")
+    logger.info(f"Installed {len(installed)} skills")
     return installed

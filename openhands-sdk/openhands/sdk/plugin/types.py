@@ -431,10 +431,6 @@ class MarketplacePluginEntry(MarketplaceEntry):
         )
 
 
-# Skill entries use the same schema as the base entry
-MarketplaceSkillEntry = MarketplaceEntry
-
-
 class MarketplaceMetadata(BaseModel):
     """Optional metadata for a marketplace."""
 
@@ -478,10 +474,10 @@ class Marketplace(BaseModel):
         description="Brief marketplace description. Can also be in metadata.",
     )
     plugins: list[MarketplacePluginEntry] = Field(
-        default_factory=list, description="List of available plugins (local or remote)"
+        default_factory=list, description="List of available plugins"
     )
-    skills: list[MarketplaceSkillEntry] = Field(
-        default_factory=list, description="List of available skills (local or remote)"
+    skills: list[MarketplaceEntry] = Field(
+        default_factory=list, description="List of standalone skills"
     )
     metadata: MarketplaceMetadata | None = Field(
         default=None, description="Optional marketplace metadata"
