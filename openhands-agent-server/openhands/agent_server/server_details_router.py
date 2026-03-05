@@ -1,8 +1,10 @@
+import os
+import sys
 import time
 from importlib.metadata import version
 
 from fastapi import APIRouter, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
@@ -11,11 +13,37 @@ _last_event_time = time.time()
 _initialization_complete = False
 
 
+def _package_version(dist_name: str) -> str:
+    try:
+        return version(dist_name)
+    except Exception:
+        return "unknown"
+
+
 class ServerInfo(BaseModel):
     uptime: float
     idle_time: float
     title: str = "OpenHands Agent Server"
-    version: str = version("openhands-agent-server")
+
+    version: str = Field(
+        default_factory=lambda: _package_version("openhands-agent-server")
+    )
+    sdk_version: str = Field(default_factory=lambda: _package_version("openhands-sdk"))
+    tools_version: str = Field(
+        default_factory=lambda: _package_version("openhands-tools")
+    )
+    workspace_version: str = Field(
+        default_factory=lambda: _package_version("openhands-workspace")
+    )
+
+    build_git_sha: str = Field(
+        default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_SHA", "unknown")
+    )
+    build_git_ref: str = Field(
+        default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_REF", "unknown")
+    )
+    python_version: str = Field(default_factory=lambda: sys.version)
+
     docs: str = "/docs"
     redoc: str = "/redoc"
 
