@@ -145,8 +145,10 @@ class DelegateExecutor(ToolExecutor):
                     "visualizer": sub_visualizer,
                 }
 
-                if factory.max_iteration_per_run is not None:
-                    conv_kwargs["max_iteration_per_run"] = factory.max_iteration_per_run
+                if factory.definition.max_iteration_per_run is not None:
+                    conv_kwargs["max_iteration_per_run"] = (
+                        factory.definition.max_iteration_per_run
+                    )
 
                 sub_conversation = LocalConversation(**conv_kwargs)
 

@@ -68,7 +68,7 @@ def test_register_file_agents_project_priority(tmp_path: Path) -> None:
     assert "shared-agent" in registered
     # Verify the project version won
     factory = get_agent_factory("shared-agent")
-    assert factory.description == "Project version"
+    assert factory.definition.description == "Project version"
 
 
 def test_register_file_agents_skips_programmatic(tmp_path: Path) -> None:
@@ -100,7 +100,7 @@ def test_register_file_agents_skips_programmatic(tmp_path: Path) -> None:
     assert "existing-agent" not in registered
     # Verify the programmatic version is still there
     factory = get_agent_factory("existing-agent")
-    assert factory.description == "Programmatic version"
+    assert factory.definition.description == "Programmatic version"
 
 
 def test_register_plugin_agents(tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ def test_register_plugin_agents(tmp_path: Path) -> None:
 
     assert registered == ["plugin-agent"]
     factory = get_agent_factory("plugin-agent")
-    assert factory.description == "From plugin"
+    assert factory.definition.description == "From plugin"
 
 
 def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
@@ -144,7 +144,7 @@ def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
     assert registered == []
     # Programmatic version still there
     factory = get_agent_factory("my-agent")
-    assert factory.description == "Programmatic"
+    assert factory.definition.description == "Programmatic"
 
 
 def test_register_agent_if_absent_existing() -> None:
@@ -167,7 +167,7 @@ def test_register_agent_if_absent_existing() -> None:
 
     # First registration should be preserved
     factory = get_agent_factory("dup_agent")
-    assert factory.description == "First"
+    assert factory.definition.description == "First"
 
 
 def test_agent_definition_to_factory_basic() -> None:
@@ -402,7 +402,7 @@ def test_register_and_retrieve_custom_agent_factory() -> None:
     )
 
     factory = get_agent_factory("custom_agent")
-    assert factory.description == "Custom agent for testing"
+    assert factory.definition.description == "Custom agent for testing"
     assert factory.factory_func is dummy_factory
 
 
@@ -428,7 +428,7 @@ def test_register_agent_if_absent_new() -> None:
     assert result is True
 
     factory = get_agent_factory("new_agent")
-    assert factory.description == "New agent"
+    assert factory.definition.description == "New agent"
 
 
 def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
@@ -462,7 +462,7 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
 
     # Retrieve and verify
     retrieved = get_agent_factory("e2e-test-agent")
-    assert retrieved.description == "End-to-end test agent"
+    assert retrieved.definition.description == "End-to-end test agent"
 
     # Create agent from factory (with real LLM)
     test_llm = LLM(

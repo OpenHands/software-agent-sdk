@@ -48,6 +48,44 @@ def _compose_conversation_info(
     )
 
 
+def _register_agent_definitions(
+    raw_defs: list[dict],
+    *,
+    context: str,
+) -> None:
+    """Deserialize and register agent definitions into the subagent registry.
+
+    Used both when creating new conversations (definitions forwarded from the
+    client) and when resuming persisted ones (definitions stored in meta.json).
+    """
+    from openhands.sdk.subagent.registry import (
+        agent_definition_to_factory,
+        register_agent_if_absent,
+    )
+    from openhands.sdk.subagent.schema import AgentDefinition
+
+    registered = 0
+    for raw_def in raw_defs:
+        try:
+            agent_def = AgentDefinition.model_validate(raw_def)
+            factory = agent_definition_to_factory(agent_def)
+            register_agent_if_absent(
+                name=agent_def.name,
+                factory_func=factory,
+                description=agent_def.description or f"Remote agent: {agent_def.name}",
+                definition=agent_def,
+            )
+            registered += 1
+        except Exception as e:
+            logger.warning(
+                f"Failed to register agent definition "
+                f"'{raw_def.get('name', '?')}' ({context}): {e}"
+            )
+    logger.info(
+        f"Registered {registered}/{len(raw_defs)} agent definition(s) ({context})"
+    )
+
+
 @dataclass
 class ConversationService:
     """
@@ -239,6 +277,13 @@ class ConversationService:
                     f"tools for conversation {conversation_id}: "
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
+
+        # Register subagent definitions forwarded from the client
+        if request.agent_definitions:
+            _register_agent_definitions(
+                request.agent_definitions,
+                context=f"conversation {conversation_id}",
+            )
 
         # Plugin loading is now handled lazily by LocalConversation.
         # Just pass the plugin specs through to StoredConversation.
@@ -453,6 +498,12 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
+                # Register agent definitions when resuming
+                if stored.agent_definitions:
+                    _register_agent_definitions(
+                        stored.agent_definitions,
+                        context=f"resuming conversation {stored.id}",
+                    )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(

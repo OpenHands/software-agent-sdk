@@ -108,6 +108,14 @@ class StartConversationRequest(BaseModel):
             "to register the tools for this conversation."
         ),
     )
+    agent_definitions: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "List of serialized AgentDefinition objects from the client's "
+            "registry. These are registered on the server so that DelegateTool "
+            "and TaskSetTool can see user-registered subagents."
+        ),
+    )
     plugins: list[PluginSource] | None = Field(
         default=None,
         description=(
