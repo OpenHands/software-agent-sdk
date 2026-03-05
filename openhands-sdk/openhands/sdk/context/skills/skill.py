@@ -6,6 +6,7 @@ from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
+import yaml
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -640,7 +641,7 @@ def load_skills_from_dir(
             load_and_categorize(
                 skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
             )
-        except (SkillError, OSError) as e:
+        except (SkillError, OSError, yaml.YAMLError) as e:
             logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
 
     # Load regular .md files
@@ -649,7 +650,7 @@ def load_skills_from_dir(
             load_and_categorize(
                 path, skill_dir, repo_skills, knowledge_skills, agent_skills
             )
-        except (SkillError, OSError) as e:
+        except (SkillError, OSError, yaml.YAMLError) as e:
             logger.warning(f"Failed to load skill from {path}: {e}")
 
     total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)
@@ -802,7 +803,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     all_skills.append(skill)
                     seen_names.add(skill.name)
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-            except (SkillError, OSError) as e:
+            except (SkillError, OSError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load project-specific skills from .agents/skills, .openhands/skills,
