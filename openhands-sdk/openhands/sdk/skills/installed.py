@@ -70,6 +70,7 @@ class InstalledSkillInfo(BaseModel):
     allowed_tools: list[str] | None = Field(
         default=None, description="Allowed tools list for the skill"
     )
+    enabled: bool = Field(default=True, description="Whether the skill is enabled")
     source: str = Field(description="Original source (e.g., 'github:owner/repo')")
     resolved_ref: str | None = Field(
         default=None,
@@ -206,6 +207,9 @@ def install_skill(
     )
 
     metadata = InstalledSkillsMetadata.load_from_dir(installed_dir)
+    existing_info = metadata.skills.get(skill_name)
+    if existing_info is not None:
+        info.enabled = existing_info.enabled
     metadata.skills[skill_name] = info
     metadata.save_to_dir(installed_dir)
 
@@ -251,6 +255,60 @@ def uninstall_skill(
 
     logger.info(f"Successfully uninstalled skill '{name}'")
     return True
+
+
+def _set_skill_enabled(
+    name: str,
+    enabled: bool,
+    installed_dir: Path | None = None,
+) -> bool:
+    _validate_skill_name(name)
+    installed_dir = _resolve_installed_dir(installed_dir)
+
+    if not installed_dir.exists():
+        logger.warning(f"Installed skills directory does not exist: {installed_dir}")
+        return False
+
+    list_installed_skills(installed_dir)
+    metadata = InstalledSkillsMetadata.load_from_dir(installed_dir)
+    info = metadata.skills.get(name)
+    if info is None:
+        logger.warning(f"Skill '{name}' is not installed")
+        return False
+
+    skill_path = installed_dir / name
+    if not skill_path.exists():
+        logger.warning(
+            f"Skill '{name}' was tracked but its directory is missing: {skill_path}"
+        )
+        return False
+
+    if info.enabled == enabled:
+        return True
+
+    info.enabled = enabled
+    metadata.skills[name] = info
+    metadata.save_to_dir(installed_dir)
+
+    state = "enabled" if enabled else "disabled"
+    logger.info(f"Successfully {state} skill '{name}'")
+    return True
+
+
+def enable_skill(
+    name: str,
+    installed_dir: Path | None = None,
+) -> bool:
+    """Enable an installed skill by name."""
+    return _set_skill_enabled(name, True, installed_dir)
+
+
+def disable_skill(
+    name: str,
+    installed_dir: Path | None = None,
+) -> bool:
+    """Disable an installed skill by name."""
+    return _set_skill_enabled(name, False, installed_dir)
 
 
 def _validate_tracked_skills(
@@ -380,12 +438,12 @@ def load_installed_skills(
     if not installed_dir.exists():
         return []
 
+    installed_infos = list_installed_skills(installed_dir)
+    enabled_names = {info.name for info in installed_infos if info.enabled}
+
     repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(installed_dir)
-    return [
-        *repo_skills.values(),
-        *knowledge_skills.values(),
-        *agent_skills.values(),
-    ]
+    all_skills = {**repo_skills, **knowledge_skills, **agent_skills}
+    return [skill for name, skill in all_skills.items() if name in enabled_names]
 
 
 def get_installed_skill(
