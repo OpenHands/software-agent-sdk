@@ -337,6 +337,7 @@ These are enforced by `check_sdk_api_breakage.py` (runs on release PRs). Depreca
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
+- For changes to prompt templates, tool descriptions, or agent decision logic, flag the PR for human review and request lightweight integration tests to verify no unexpected impact on benchmark performance.
 
 # Behavior Tests
 
