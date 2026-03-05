@@ -3,8 +3,10 @@ Agent Delegation Example
 
 This example demonstrates the agent delegation feature where a main agent
 delegates tasks to sub-agents for parallel processing.
-Each sub-agent runs independently and returns its results to the main agent,
-which then merges both analyses into a single consolidated report.
+
+It covers two delegation patterns:
+1. Built-in agent types (explore + bash) registered via register_builtins_agents
+2. User-defined agent types with custom skills and system prompts
 """
 
 import os
@@ -24,6 +26,7 @@ from openhands.tools.delegate import (
     DelegateTool,
     DelegationVisualizer,
 )
+from openhands.tools.preset.default import register_builtins_agents
 
 
 logger = get_logger(__name__)
@@ -36,6 +39,45 @@ llm = LLM(
     usage_id="agent",
 )
 
+cwd = os.getcwd()
+total_cost = 0.0
+
+# -------- Part 1: Built-in Agent Types (Explore + Bash) --------
+
+register_builtins_agents()
+
+main_agent = Agent(
+    llm=llm,
+    tools=[Tool(name=DelegateTool.name)],
+)
+conversation = Conversation(
+    agent=main_agent,
+    workspace=cwd,
+    visualizer=DelegationVisualizer(name="Delegator (builtins)"),
+)
+
+print("=" * 100)
+print("Demonstrating built-in agent delegation (explore + bash)...")
+print("=" * 100)
+
+conversation.send_message(
+    "Demonstrate SDK built-in sub-agent types. "
+    "1) Spawn an 'explore' sub-agent and ask it to list the markdown files in "
+    "openhands-sdk/openhands/sdk/subagent/builtins/ and summarize what each "
+    "built-in agent type is for (based on the file contents). "
+    "2) Spawn a 'bash' sub-agent and ask it to run `python --version` in the "
+    "terminal and return the exact output. "
+    "3) Merge both results into a short report. "
+    "Do not use internet access."
+)
+conversation.run()
+
+cost_builtin = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+total_cost += cost_builtin
+print(f"Cost (builtin agents): {cost_builtin}")
+
+# -------- Part 2: User-Defined Agent Types --------
+
 
 def create_lodging_planner(llm: LLM) -> Agent:
     """Create a lodging planner focused on London stays."""
@@ -46,7 +88,8 @@ def create_lodging_planner(llm: LLM) -> Agent:
                 "You specialize in finding great places to stay in London. "
                 "Provide 3-4 hotel recommendations with neighborhoods, quick "
                 "pros/cons, "
-                "and notes on transit convenience. Keep options varied by budget."
+                "and notes on transit convenience. Keep options varied by "
+                "budget."
             ),
             trigger=None,
         )
@@ -56,7 +99,7 @@ def create_lodging_planner(llm: LLM) -> Agent:
         tools=[],
         agent_context=AgentContext(
             skills=skills,
-            system_message_suffix="Focus only on London lodging recommendations.",
+            system_message_suffix=("Focus only on London lodging recommendations."),
         ),
     )
 
@@ -80,7 +123,7 @@ def create_activities_planner(llm: LLM) -> Agent:
         tools=[],
         agent_context=AgentContext(
             skills=skills,
-            system_message_suffix="Plan practical, time-efficient days in London.",
+            system_message_suffix=("Plan practical, time-efficient days in London."),
         ),
     )
 
@@ -106,7 +149,7 @@ main_agent = Agent(
 )
 conversation = Conversation(
     agent=main_agent,
-    workspace=os.getcwd(),
+    workspace=cwd,
     visualizer=DelegationVisualizer(name="Delegator"),
 )
 
@@ -131,10 +174,11 @@ conversation.send_message(
 )
 conversation.run()
 
-# Report cost for user-defined agent types example
 cost_user_defined = (
     conversation.conversation_stats.get_combined_metrics().accumulated_cost
 )
-print(f"EXAMPLE_COST (user-defined agents): {cost_user_defined}")
+total_cost += cost_user_defined
+print(f"Cost (user-defined agents): {cost_user_defined}")
 
 print("All done!")
+print(f"EXAMPLE_COST: {total_cost}")
