@@ -373,7 +373,10 @@ class LocalConversation(BaseConversation):
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
-            register_plugin_agents(all_plugin_agents)
+            register_plugin_agents(
+                agents=all_plugin_agents,
+                work_dir=self.workspace.working_dir,
+            )
 
         # Combine explicit hook_config with plugin hooks
         # Explicit hooks run first (before plugin hooks)
@@ -764,23 +767,22 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        if self.delete_on_close:
+        # Always close tool executors to release OS resources (browser
+        # processes, terminal sessions, etc.), regardless of delete_on_close.
+        try:
+            tools_map = self.agent.tools_map
+        except (AttributeError, RuntimeError):
+            # Agent not initialized or partially constructed
+            return
+        for tool in tools_map.values():
             try:
-                tools_map = self.agent.tools_map
-            except (AttributeError, RuntimeError):
-                # Agent not initialized or partially constructed
-                return
-            for tool in tools_map.values():
-                try:
-                    executable_tool = tool.as_executable()
-                    executable_tool.executor.close()
-                except NotImplementedError:
-                    # Tool has no executor, skip it without erroring
-                    continue
-                except Exception as e:
-                    logger.warning(
-                        f"Error closing executor for tool '{tool.name}': {e}"
-                    )
+                executable_tool = tool.as_executable()
+                executable_tool.executor.close()
+            except NotImplementedError:
+                # Tool has no executor, skip it without erroring
+                continue
+            except Exception as e:
+                logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.

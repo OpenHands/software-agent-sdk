@@ -38,8 +38,9 @@ jobs:
               continue-on-error: ${{ !startsWith(github.head_ref, 'rel-') }}
               run: |
                   uv run --with packaging python .github/scripts/check_agent_server_rest_api_breakage.py 2>&1 | tee api-breakage.log
-                  echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
-                  exit "${PIPESTATUS[0]}"
+                  exit_code=${PIPESTATUS[0]}
+                  echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+                  exit "${exit_code}"
 
             - name: Post REST API breakage report to PR
               if: ${{ always() && github.event_name == 'pull_request' }}

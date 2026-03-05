@@ -20,14 +20,12 @@ from openhands.sdk import (
 from openhands.sdk.context import Skill
 from openhands.sdk.subagent import register_agent
 from openhands.sdk.tool import register_tool
+from openhands.tools import register_builtins_agents
 from openhands.tools.delegate import (
     DelegateTool,
     DelegationVisualizer,
 )
-from openhands.tools.preset.default import get_default_tools, register_builtins_agents
 
-
-ONLY_RUN_SIMPLE_DELEGATION = False
 
 logger = get_logger(__name__)
 
@@ -38,91 +36,6 @@ llm = LLM(
     base_url=os.environ.get("LLM_BASE_URL", None),
     usage_id="agent",
 )
-
-cwd = os.getcwd()
-
-tools = get_default_tools(enable_browser=True)
-tools.append(Tool(name=DelegateTool.name))
-register_builtins_agents()
-
-main_agent = Agent(
-    llm=llm,
-    tools=tools,
-)
-conversation = Conversation(
-    agent=main_agent,
-    workspace=cwd,
-    visualizer=DelegationVisualizer(name="Delegator"),
-)
-
-conversation.send_message(
-    "Forget about coding. Let's switch to travel planning. "
-    "Let's plan a trip to London. I have two issues I need to solve: "
-    "Lodging: what are the best areas to stay at while keeping budget in mind? "
-    "Activities: what are the top 5 must-see attractions and hidden gems? "
-    "Please use the delegation tools to handle these two tasks in parallel. "
-    "Make sure the sub-agents use their own knowledge "
-    "and dont rely on internet access. "
-    "They should keep it short. After getting the results, merge both analyses "
-    "into a single consolidated report.\n\n"
-)
-conversation.run()
-
-conversation.send_message(
-    "Ask the lodging sub-agent what it thinks about Covent Garden."
-)
-conversation.run()
-
-# Report cost for simple delegation example
-cost_simple = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (simple delegation): {cost_simple}")
-
-print("Simple delegation example done!", "\n" * 20)
-
-if ONLY_RUN_SIMPLE_DELEGATION:
-    # For CI: always emit the EXAMPLE_COST marker before exiting.
-    print(f"EXAMPLE_COST: {cost_simple}")
-    exit(0)
-
-
-# -------- Agent Delegation Second Part: Built-in Agent Types (Explore + Bash) --------
-
-main_agent = Agent(
-    llm=llm,
-    tools=[Tool(name=DelegateTool.name)],
-)
-conversation = Conversation(
-    agent=main_agent,
-    workspace=cwd,
-    visualizer=DelegationVisualizer(name="Delegator (builtins)"),
-)
-
-builtin_task_message = (
-    "Demonstrate SDK built-in sub-agent types. "
-    "1) Spawn an 'explore' sub-agent and ask it to list the markdown files in "
-    "openhands-sdk/openhands/sdk/subagent/builtins/ and summarize what each "
-    "built-in agent type is for (based on the file contents). "
-    "2) Spawn a 'bash' sub-agent and ask it to run `python --version` in the "
-    "terminal and return the exact output. "
-    "3) Merge both results into a short report. "
-    "Do not use internet access."
-)
-
-print("=" * 100)
-print("Demonstrating built-in agent delegation (explore + bash)...")
-print("=" * 100)
-
-conversation.send_message(builtin_task_message)
-conversation.run()
-
-# Report cost for builtin agent types example
-cost_builtin = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (builtin agents): {cost_builtin}")
-
-print("Built-in agent delegation example done!", "\n" * 20)
-
-
-# -------- Agent Delegation Third Part: User-Defined Agent Types --------
 
 
 def create_lodging_planner(llm: LLM) -> Agent:
@@ -184,6 +97,7 @@ register_agent(
     factory_func=create_activities_planner,
     description="Creates time-efficient London activity itineraries.",
 )
+register_builtins_agents()
 
 # Make the delegation tool available to the main agent
 register_tool("DelegateTool", DelegateTool)
@@ -194,26 +108,26 @@ main_agent = Agent(
 )
 conversation = Conversation(
     agent=main_agent,
-    workspace=cwd,
+    workspace=os.getcwd(),
     visualizer=DelegationVisualizer(name="Delegator"),
-)
-
-task_message = (
-    "Plan a 3-day London trip. "
-    "1) Spawn two sub-agents: lodging_planner (hotel options) and "
-    "activities_planner (itinerary). "
-    "2) Ask lodging_planner for 3-4 central London hotel recommendations with "
-    "neighborhoods, quick pros/cons, and transit notes by budget. "
-    "3) Ask activities_planner for a concise 3-day itinerary with nearby stops, "
-    "   food/coffee suggestions, and any ticket/reservation notes. "
-    "4) Share both sub-agent results and propose a combined plan."
 )
 
 print("=" * 100)
 print("Demonstrating London trip delegation (lodging + activities)...")
 print("=" * 100)
 
-conversation.send_message(task_message)
+conversation.send_message("""
+Let's plan a trip to London. I have two specific areas to address:
+
+Lodging: What are the best areas to stay in while keeping a budget in mind?
+Activities: What are the top five must-see attractions and hidden gems?
+
+Please use delegation tools to handle these two tasks in parallel.
+Ensure the sub-agents use their own internal knowledge and do not
+rely on internet access. Keep the responses concise.
+Once you have the results, use the bash sub-agent to write a file
+named london_trip_report.txt containing the findings in the working directory.
+""")
 conversation.run()
 
 conversation.send_message(
@@ -225,9 +139,6 @@ conversation.run()
 cost_user_defined = (
     conversation.conversation_stats.get_combined_metrics().accumulated_cost
 )
-print(f"EXAMPLE_COST (user-defined agents): {cost_user_defined}")
+print(f"EXAMPLE_COST: {cost_user_defined}")
 
 print("All done!")
-
-# Full example cost report for CI workflow
-print(f"EXAMPLE_COST: {cost_simple + cost_builtin + cost_user_defined}")
