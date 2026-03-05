@@ -373,7 +373,10 @@ class LocalConversation(BaseConversation):
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
-            register_plugin_agents(all_plugin_agents)
+            register_plugin_agents(
+                agents=all_plugin_agents,
+                work_dir=self.workspace.working_dir,
+            )
 
         # Combine explicit hook_config with plugin hooks
         # Explicit hooks run first (before plugin hooks)

@@ -144,11 +144,17 @@ class DelegateExecutor(ToolExecutor):
                 if parent_visualizer is not None:
                     sub_visualizer = parent_visualizer.create_sub_visualizer(agent_id)
 
-                sub_conversation = LocalConversation(
-                    agent=worker_agent,
-                    workspace=workspace_path,
-                    visualizer=sub_visualizer,
-                )
+                # Use max_iteration_per_run from agent definition if set
+                conv_kwargs: dict = {
+                    "agent": worker_agent,
+                    "workspace": workspace_path,
+                    "visualizer": sub_visualizer,
+                }
+
+                if factory.max_iteration_per_run is not None:
+                    conv_kwargs["max_iteration_per_run"] = factory.max_iteration_per_run
+
+                sub_conversation = LocalConversation(**conv_kwargs)
 
                 self._sub_agents[agent_id] = sub_conversation
 
