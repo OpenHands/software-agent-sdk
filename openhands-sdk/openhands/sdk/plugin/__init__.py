@@ -27,6 +27,17 @@ from openhands.sdk.plugin.installed import (
 )
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
+from openhands.sdk.plugin.source import (
+    GitHubURLComponents,
+    SourcePath,
+    get_cache_path_for_github_repo,
+    get_file_path_from_github_url,
+    is_github_url,
+    is_local_path,
+    parse_github_url,
+    resolve_source_path,
+    validate_source_path,
+)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     Marketplace,
@@ -34,6 +45,7 @@ from openhands.sdk.plugin.types import (
     MarketplaceOwner,
     MarketplacePluginEntry,
     MarketplacePluginSource,
+    MarketplaceSkillEntry,
     PluginAuthor,
     PluginManifest,
     PluginSource,
@@ -58,7 +70,18 @@ __all__ = [
     "MarketplaceOwner",
     "MarketplacePluginEntry",
     "MarketplacePluginSource",
+    "MarketplaceSkillEntry",
     "MarketplaceMetadata",
+    # Source path utilities
+    "SourcePath",
+    "GitHubURLComponents",
+    "parse_github_url",
+    "is_local_path",
+    "is_github_url",
+    "validate_source_path",
+    "get_cache_path_for_github_repo",
+    "get_file_path_from_github_url",
+    "resolve_source_path",
     # Installed plugins management
     "InstalledPluginInfo",
     "InstalledPluginsMetadata",

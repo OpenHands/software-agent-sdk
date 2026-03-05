@@ -508,16 +508,80 @@ class MarketplaceMetadata(BaseModel):
         "E.g., './plugins' allows writing 'source: formatter' "
         "instead of 'source: ./plugins/formatter'",
     )
+    skill_root: str | None = Field(
+        default=None,
+        alias="skillRoot",
+        description="Base directory prepended to relative skill source paths. "
+        "E.g., './skills' allows writing 'source: github' "
+        "instead of 'source: ./skills/github'",
+    )
 
     model_config = {"extra": "allow", "populate_by_name": True}
 
 
-class Marketplace(BaseModel):
-    """A plugin marketplace that lists available plugins.
+class MarketplaceSkillEntry(BaseModel):
+    """Skill entry in a marketplace.
 
-    Marketplaces follow the Claude Code marketplace structure for compatibility.
+    Represents a single skill available in the marketplace with its
+    metadata and source location.
+
+    The source field specifies where to find the skill and must be one of:
+    - Local path: ./path, ../path, /absolute/path, ~/path, file:///path
+    - GitHub URL: https://github.com/{owner}/{repo}/blob/{branch}/{path}
+
+    Examples:
+        Local skill:
+        ```json
+        {
+            "name": "greeting-helper",
+            "source": "./skills/greeting-helper",
+            "description": "Helps generate creative greetings"
+        }
+        ```
+
+        Remote skill from GitHub:
+        ```json
+        {
+            "name": "github",
+            "source": "https://github.com/OpenHands/extensions/blob/main/skills/github",
+            "description": "GitHub best practices"
+        }
+        ```
+    """
+
+    name: str = Field(description="Skill identifier (kebab-case, no spaces)")
+    source: str = Field(
+        description="Where to find the skill. Can be:\n"
+        "- Local path: ./path, ../path, /absolute/path, ~/path, file:///path\n"
+        "- GitHub URL: https://github.com/{owner}/{repo}/blob/{branch}/{path}"
+    )
+    description: str | None = Field(
+        default=None, description="Brief skill description"
+    )
+
+    model_config = {"extra": "allow"}
+
+    @field_validator("source")
+    @classmethod
+    def validate_source_path(cls, v: str) -> str:
+        """Validate that source follows the allowed path patterns."""
+        from openhands.sdk.plugin.source import validate_source_path
+
+        return validate_source_path(v)
+
+
+class Marketplace(BaseModel):
+    """A plugin marketplace that lists available plugins and skills.
+
+    Marketplaces follow the Claude Code marketplace structure for compatibility,
+    with an additional `skills` field for direct skill references.
+
     The marketplace.json file is located in `.plugin/` or `.claude-plugin/`
     directory at the root of the marketplace repository.
+
+    Source paths (for both plugins and skills) must be one of:
+    - Local path: ./path, ../path, /absolute/path, ~/path, file:///path
+    - GitHub URL: https://github.com/{owner}/{repo}/blob/{branch}/{path}
 
     Example marketplace.json:
     ```json
@@ -530,20 +594,26 @@ class Marketplace(BaseModel):
         "description": "Internal development tools",
         "metadata": {
             "version": "1.0.0",
-            "pluginRoot": "./plugins"
+            "pluginRoot": "./plugins",
+            "skillRoot": "./skills"
         },
         "plugins": [
             {
                 "name": "code-formatter",
                 "source": "./plugins/formatter",
                 "description": "Automatic code formatting"
+            }
+        ],
+        "skills": [
+            {
+                "name": "greeting-helper",
+                "source": "./skills/greeting-helper",
+                "description": "A local skill for greetings"
             },
             {
-                "name": "deployment-tools",
-                "source": {
-                    "source": "github",
-                    "repo": "company/deploy-plugin"
-                }
+                "name": "github",
+                "source": "https://github.com/OpenHands/extensions/blob/main/skills/github",
+                "description": "GitHub best practices from remote repository"
             }
         ]
     }
@@ -560,7 +630,10 @@ class Marketplace(BaseModel):
         description="Brief marketplace description. Can also be in metadata.",
     )
     plugins: list[MarketplacePluginEntry] = Field(
-        default_factory=list, description="List of available plugins"
+        default_factory=list, description="List of available plugins (local or remote)"
+    )
+    skills: list[MarketplaceSkillEntry] = Field(
+        default_factory=list, description="List of available skills (local or remote)"
     )
     metadata: MarketplaceMetadata | None = Field(
         default=None, description="Optional marketplace metadata"

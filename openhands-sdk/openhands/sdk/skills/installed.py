@@ -428,3 +428,101 @@ def update_skill(
         installed_dir=installed_dir,
         force=True,
     )
+
+
+def install_skills_from_marketplace(
+    marketplace_path: str | Path,
+    installed_dir: Path | None = None,
+    force: bool = False,
+) -> list[InstalledSkillInfo]:
+    """Install all skills defined in a marketplace.json file.
+
+    This function reads the marketplace.json, resolves each skill source
+    (supporting both local paths and GitHub URLs), and installs them to
+    the installed skills directory.
+
+    Args:
+        marketplace_path: Path to the directory containing .plugin/marketplace.json
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/
+        force: If True, overwrite existing installations.
+
+    Returns:
+        List of InstalledSkillInfo for successfully installed skills.
+
+    Raises:
+        FileNotFoundError: If the marketplace.json doesn't exist.
+        ValueError: If the marketplace.json is invalid.
+
+    Example:
+        >>> # Install all skills from a marketplace
+        >>> installed = install_skills_from_marketplace("./my-marketplace")
+        >>> for info in installed:
+        ...     print(f"Installed: {info.name}")
+    """
+    from openhands.sdk.plugin import Marketplace, resolve_source_path
+
+    marketplace_path = Path(marketplace_path)
+    installed_dir = _resolve_installed_dir(installed_dir)
+
+    # Load the marketplace
+    marketplace = Marketplace.load(marketplace_path)
+    logger.info(
+        f"Installing skills from marketplace '{marketplace.name}' "
+        f"({len(marketplace.skills)} skills)"
+    )
+
+    installed: list[InstalledSkillInfo] = []
+
+    # Get skill_root from metadata if defined
+    skill_root = None
+    if marketplace.metadata and marketplace.metadata.skill_root:
+        skill_root = marketplace.metadata.skill_root
+
+    for entry in marketplace.skills:
+        logger.info(f"Processing skill: {entry.name} (source: {entry.source})")
+
+        # Determine the source path, applying skill_root if needed
+        source = entry.source
+
+        # Apply skill_root to relative local paths (not absolute, not URLs)
+        if skill_root and not source.startswith(("/", "~", "file://", "http")):
+            # Strip leading ./ from source if present for cleaner concatenation
+            relative_source = source[2:] if source.startswith("./") else source
+            if skill_root.endswith("/"):
+                source = f"{skill_root}{relative_source}"
+            else:
+                source = f"{skill_root}/{relative_source}"
+            logger.debug(f"Applied skillRoot: {source}")
+
+        # Resolve the source to a local path (handles GitHub URLs)
+        resolved_path = resolve_source_path(
+            source,
+            base_path=marketplace_path,
+            update=True,
+        )
+
+        if resolved_path is None:
+            logger.warning(f"Failed to resolve source path for '{entry.name}'")
+            continue
+
+        if not resolved_path.exists():
+            logger.warning(f"Path does not exist for '{entry.name}': {resolved_path}")
+            continue
+
+        try:
+            # Install the skill from the resolved path
+            info = install_skill(
+                source=str(resolved_path),
+                installed_dir=installed_dir,
+                force=force,
+            )
+            installed.append(info)
+            logger.info(f"Successfully installed skill '{info.name}'")
+        except FileExistsError:
+            logger.info(f"Skill '{entry.name}' already installed (use force=True to overwrite)")
+        except Exception as e:
+            logger.warning(f"Failed to install skill '{entry.name}': {e}")
+
+    logger.info(f"Installed {len(installed)} of {len(marketplace.skills)} skills")
+    return installed
