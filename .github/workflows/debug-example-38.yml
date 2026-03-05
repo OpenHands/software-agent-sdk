@@ -1,0 +1,110 @@
+---
+name: Debug Example 38 (Browser Session Recording)
+
+on:
+    push:
+        branches:
+            - vasco/fix-example-38
+        paths:
+            - '.github/workflows/debug-example-38.yml'
+    workflow_dispatch:
+        inputs:
+            reason:
+                description: Reason for manual trigger
+                required: false
+                default: 'Debug example 38 browser session recording in CI'
+
+permissions:
+    contents: read
+    pull-requests: write
+    issues: write
+
+jobs:
+    debug-example-38:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '22'
+
+            - name: Setup Apptainer
+              uses: eWaterCycle/setup-apptainer@v2
+              with:
+                  apptainer-version: 1.3.6
+
+            - name: Install Chromium
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y chromium-browser
+
+            - name: Install project dependencies
+              run: uv sync --frozen --group dev
+
+            - name: Install OpenHands CLI
+              run: uv tool install openhands --python 3.12
+
+            - name: Debug example 38 with OpenHands agent
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_MODEL: litellm_proxy/claude-sonnet-4-6
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  SANDBOX_ENVIRONMENT_VARIABLES: "GITHUB_TOKEN,LLM_API_KEY,LLM_MODEL,LLM_BASE_URL"
+              run: |
+                  openhands --override-with-envs --headless -t "
+                  You are debugging a CI failure for example 38 (browser session recording) in the OpenHands software-agent-sdk repository (PR #2316 at https://github.com/OpenHands/software-agent-sdk/pull/2316).
+
+                  The workspace should contain the repo checkout. The key files are:
+                  - examples/01_standalone_sdk/38_browser_session_recording.py
+                  - openhands-tools/openhands/tools/browser_use/impl.py (the check_chromium_available and _ensure_chromium_available methods)
+
+                  The problem: Example 38 works locally but times out in GitHub Actions CI (ubuntu-24.04). We need to understand exactly why.
+
+                  IMPORTANT: The environment variables LLM_API_KEY, LLM_MODEL, LLM_BASE_URL, and GITHUB_TOKEN should be available to you.
+
+                  Please do the following steps:
+
+                  1. First, gather environment info:
+                     - Check what directory you are in and list the files
+                     - Run 'which chromium-browser' and 'chromium-browser --version' (or try chromium, google-chrome, etc.)
+                     - Check if playwright chromium is installed: find / -name 'chrome' -path '*/chromium*' 2>/dev/null
+                     - Run 'uname -a' and 'whoami'
+                     - Check if you have pip/uv available
+                     - Install chromium if not available: try 'apt-get update && apt-get install -y chromium-browser' or 'pip install playwright && playwright install chromium --with-deps'
+
+                  2. Test Chrome DevTools Protocol (CDP) connectivity:
+                     - Try starting chromium headless with CDP: chromium-browser --headless --disable-gpu --no-sandbox --remote-debugging-port=9222 about:blank &
+                     - Wait a second, then check: curl -s http://localhost:9222/json/version
+                     - This tells us if CDP works. Kill the process after.
+
+                  3. Try running the example:
+                     - First install dependencies: pip install -e openhands-sdk/ -e openhands-tools/ 2>/dev/null || uv sync 2>/dev/null || true
+                     - Run with timeout: timeout 180 python examples/01_standalone_sdk/38_browser_session_recording.py 2>&1
+                     - If it fails, capture the FULL output
+
+                  4. Read impl.py to understand the chrome detection logic:
+                     - cat openhands-tools/openhands/tools/browser_use/impl.py
+                     - Focus on check_chromium_available() and _ensure_chromium_available()
+                     - Understand what binary path it selects and whether that binary supports CDP
+
+                  5. After your investigation, post your findings as a comment on PR #2316 using:
+                     curl -X POST 'https://api.github.com/repos/OpenHands/software-agent-sdk/issues/2316/comments' -H 'Authorization: token '\"\$GITHUB_TOKEN\" -H 'Content-Type: application/json' -d '{\"body\": \"## Debug Report from CI Agent\\n\\nYOUR_FINDINGS_HERE\"}'
+
+                  Make sure the comment body is properly JSON-escaped. Include:
+                  - Environment details (OS, user, chrome binaries found)
+                  - Whether CDP works with the installed chromium
+                  - The exact error or behavior when running the example
+                  - Root cause analysis
+                  - Suggested code changes to fix the issue
+                  "
