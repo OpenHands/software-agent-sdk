@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Coroutine, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
+from urllib.error import URLError
 from urllib.request import urlopen
 
 
@@ -142,7 +143,26 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _supports_cdp(binary_path: str, timeout_seconds: float = 2.0) -> bool:
+def _wait_for_cdp_endpoint(
+    port: int,
+    timeout: float,
+    proc: subprocess.Popen[bytes] | None = None,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    url = f"http://127.0.0.1:{port}/json/version"
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
+        try:
+            with urlopen(url, timeout=0.2) as response:
+                payload = json.load(response)
+            return "webSocketDebuggerUrl" in payload
+        except (OSError, URLError, json.JSONDecodeError, TimeoutError):
+            time.sleep(0.05)
+    return False
+
+
+def _supports_cdp(binary_path: str, timeout: float = 2.0) -> bool:
     port = _find_free_port()
     with tempfile.TemporaryDirectory() as profile_dir:
         try:
@@ -164,22 +184,14 @@ def _supports_cdp(binary_path: str, timeout_seconds: float = 2.0) -> bool:
             return False
 
         try:
-            deadline = time.monotonic() + timeout_seconds
-            url = f"http://127.0.0.1:{port}/json/version"
-            while time.monotonic() < deadline:
-                try:
-                    with urlopen(url, timeout=0.2) as response:
-                        payload = json.load(response)
-                    return "webSocketDebuggerUrl" in payload
-                except Exception:
-                    time.sleep(0.05)
-            return False
+            return _wait_for_cdp_endpoint(port, timeout, proc)
         finally:
             proc.terminate()
             try:
                 proc.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait()
 
 
 def _iter_standard_chromium_paths() -> Iterable[Path]:

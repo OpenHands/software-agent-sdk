@@ -1,12 +1,49 @@
 """Tests for Chromium detection and installation functionality."""
 
+import json
 import subprocess
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from openhands.tools.browser_use import impl as browser_impl
 from openhands.tools.browser_use.impl import BrowserToolExecutor, _install_chromium
+
+
+@pytest.fixture(autouse=True)
+def _cdp_probe_stub(monkeypatch):
+    monkeypatch.setattr(browser_impl, "_supports_cdp", lambda *_: True)
+
+
+@contextmanager
+def _serve_json_version(payload: bytes) -> Iterator[int]:
+    class JsonVersionHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            if self.path != "/json/version":
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), JsonVersionHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        thread.join()
 
 
 class TestChromiumDetection:
@@ -267,3 +304,33 @@ class TestEnsureChromiumAvailable:
             assert "brew install chromium" in error_message
             assert "winget install Chromium.Chromium" in error_message
             assert "restart your application" in error_message
+
+
+def test_wait_for_cdp_endpoint_success():
+    payload = json.dumps({"webSocketDebuggerUrl": "ws://example"}).encode()
+    with _serve_json_version(payload) as port:
+        assert browser_impl._wait_for_cdp_endpoint(port, timeout=0.2)
+
+
+def test_wait_for_cdp_endpoint_invalid_json():
+    with _serve_json_version(b"not-json") as port:
+        assert browser_impl._wait_for_cdp_endpoint(port, timeout=0.1) is False
+
+
+def test_check_chromium_available_skips_non_cdp(monkeypatch, tmp_path):
+    first = tmp_path / "bad-chrome"
+    second = tmp_path / "good-chrome"
+    first.touch()
+    second.touch()
+
+    monkeypatch.setattr(
+        browser_impl, "_iter_standard_chromium_paths", lambda: [first, second]
+    )
+    monkeypatch.setattr(browser_impl, "_iter_playwright_chromium_paths", lambda: [])
+    monkeypatch.setattr(browser_impl, "_iter_path_chromium_paths", lambda: [])
+    monkeypatch.setattr(
+        browser_impl, "_supports_cdp", lambda path: path.endswith("good-chrome")
+    )
+
+    executor = BrowserToolExecutor()
+    assert executor.check_chromium_available() == str(second)
