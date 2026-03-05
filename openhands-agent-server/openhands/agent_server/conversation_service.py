@@ -75,8 +75,7 @@ def _register_agent_definitions(
             register_agent_if_absent(
                 name=agent_def.name,
                 factory_func=factory,
-                description=agent_def.description or f"Remote agent: {agent_def.name}",
-                definition=agent_def,
+                description=agent_def,
             )
             registered += 1
         except Exception as e:

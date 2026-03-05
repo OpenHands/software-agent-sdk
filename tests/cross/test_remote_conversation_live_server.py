@@ -1037,7 +1037,8 @@ def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
     was empty because register_builtins_agents() only ran on the client.
 
     Validates the full flow:
-      client register_agent(definition=...) / register_agent_if_absent(definition=...)
+      client register_agent(description=AgentDefinition(...))
+            ( or register_agent_if_absent(...))
         → get_registered_agent_definitions()
         → JSON payload in POST /api/conversations
         → server start_conversation() deserializes & re-registers
@@ -1059,8 +1060,7 @@ def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
     register_agent_if_absent(
         name="test_bash",
         factory_func=lambda llm: None,  # type: ignore[return-value]
-        description="Command execution specialist",
-        definition=bash_def,
+        description=bash_def,
     )
 
     reviewer_def = AgentDefinition(
@@ -1072,8 +1072,7 @@ def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
     register_agent(
         name="test_reviewer",
         factory_func=lambda llm: None,  # type: ignore[return-value]
-        description="Code review specialist",
-        definition=reviewer_def,
+        description=reviewer_def,
     )
 
     # Verify definitions are complete before sending
