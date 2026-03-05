@@ -24,10 +24,12 @@ Example usage:
 """
 
 from collections.abc import Callable
+from functools import cache
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, NamedTuple
 
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.load import (
     load_project_agents,
@@ -153,14 +155,19 @@ def register_agent_if_absent(
         return True
 
 
+@cache
+def _get_profile_store() -> LLMProfileStore:
+    return LLMProfileStore()
+
+
 def agent_definition_to_factory(
     agent_def: AgentDefinition,
     work_dir: str | Path | None = None,
 ) -> Callable[["LLM"], "Agent"]:
     """Create an agent factory closure from an `AgentDefinition`.
 
-    The returned callable accepts an `LLM` instance (the parent agent's LLM)
-    and builds a fully-configured `Agent` instance.
+    The returned callable accepts the parent agent's LLM and produces a
+    fully-configured `Agent`.
 
     - Tool names from `agent_def.tools` are mapped to `Tool` objects.
     - Skill names from `agent_def.skills` are resolved to `Skill` objects
@@ -169,6 +176,9 @@ def agent_definition_to_factory(
       `AgentContext`.
     - `model: inherit` preserves the parent LLM; an explicit model name
       creates a copy via `model_copy(update=...)`.
+
+    Note: Callers (e.g. DelegateTool, TaskManager) are responsible for
+    disabling streaming and resetting metrics on the resulting agent's LLM.
 
     Args:
         agent_def: The agent definition to convert.
@@ -202,9 +212,19 @@ def agent_definition_to_factory(
         from openhands.sdk.tool.registry import list_registered_tools
         from openhands.sdk.tool.spec import Tool
 
-        # Handle model override
+        # Load LLM profile if agent_def.model is different from
+        # 'inherit' and empty string
         if agent_def.model and agent_def.model != "inherit":
-            llm = llm.model_copy(update={"model": agent_def.model})
+            store = _get_profile_store()
+            available_profiles = [name.removesuffix(".json") for name in store.list()]
+            profile_name = agent_def.model.removesuffix(".json")
+            if profile_name not in available_profiles:
+                raise ValueError(
+                    f"Profile {agent_def.model} not found in profile store.\n"
+                    f"Available profiles: {available_profiles}"
+                )
+
+            llm = store.load(profile_name)
 
         # the system prompt of the subagent is added as a suffix of the
         # main system prompt
