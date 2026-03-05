@@ -214,7 +214,14 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
     )
     assert "prompt_cache_retention" not in opts_5_mini_resp
 
-    # Non-GPT-5.1 should not include it at all
+    llm_41 = LLM(model="openai/gpt-4.1")
+    opts_41_chat = select_chat_options(llm_41, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_41_chat
+
+    opts_41_resp = select_responses_options(llm_41, {}, include=None, store=None)
+    assert "prompt_cache_retention" not in opts_41_resp
+
+    # Other non-GPT-5 models should not include it at all
     llm_other = LLM(model="gpt-4o")
     opts_other_chat = select_chat_options(llm_other, {}, has_tools=False)
     assert "prompt_cache_retention" not in opts_other_chat
