@@ -48,6 +48,7 @@ class AgentFactory(NamedTuple):
 
     factory_func: Callable[["LLM"], "Agent"]
     description: str
+    max_iteration_per_run: int | None = None
 
 
 # Global registry for user-registered agent factories
@@ -113,6 +114,7 @@ def register_agent_if_absent(
 
 def agent_definition_to_factory(
     agent_def: AgentDefinition,
+    work_dir: str | Path | None = None,
 ) -> Callable[["LLM"], "Agent"]:
     """Create an agent factory closure from an `AgentDefinition`.
 
@@ -120,14 +122,38 @@ def agent_definition_to_factory(
     and builds a fully-configured `Agent` instance.
 
     - Tool names from `agent_def.tools` are mapped to `Tool` objects.
+    - Skill names from `agent_def.skills` are resolved to `Skill` objects
+      from project and user skill directories (project takes priority).
     - The system prompt is set as the `system_message_suffix` on the
       `AgentContext`.
     - `model: inherit` preserves the parent LLM; an explicit model name
       creates a copy via `model_copy(update=...)`.
 
+    Args:
+        agent_def: The agent definition to convert.
+        work_dir: Project directory for resolving skill names. If None,
+            only user-level skills are searched.
+
     Raises:
-        ValueError: If a tool provided to the agent is not registered.
+        ValueError: If a tool or skill is not found.
     """
+    # Resolve skills eagerly at factory creation time.
+    # Priority: project skills override user skills (handled by load_available_skills).
+    resolved_skills: list = []
+    if agent_def.skills:
+        from openhands.sdk.context.skills import load_available_skills
+
+        available = load_available_skills(
+            work_dir, include_user=True, include_project=True, include_public=False
+        )
+
+        for name in agent_def.skills:
+            if name not in available:
+                raise ValueError(
+                    f"Skill '{name}' not found but was given to agent "
+                    f"'{agent_def.name}'."
+                )
+            resolved_skills.append(available[name])
 
     def _factory(llm: "LLM") -> "Agent":
         from openhands.sdk.agent.agent import Agent
@@ -141,9 +167,13 @@ def agent_definition_to_factory(
 
         # the system prompt of the subagent is added as a suffix of the
         # main system prompt
+        has_context = agent_def.system_prompt or resolved_skills
         agent_context = (
-            AgentContext(system_message_suffix=agent_def.system_prompt)
-            if agent_def.system_prompt
+            AgentContext(
+                system_message_suffix=agent_def.system_prompt or None,
+                skills=resolved_skills,
+            )
+            if has_context
             else None
         )
 
@@ -199,7 +229,7 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
 
     registered: list[str] = []
     for agent_def in deduplicated:
-        factory = agent_definition_to_factory(agent_def)
+        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,
@@ -215,7 +245,10 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
     return registered
 
 
-def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
+def register_plugin_agents(
+    agents: list[AgentDefinition],
+    work_dir: str | Path | None = None,
+) -> list[str]:
     """Register plugin-provided agent definitions into the delegate registry.
 
     Plugin agents have higher priority than file-based agents but lower than
@@ -225,13 +258,15 @@ def register_plugin_agents(agents: list[AgentDefinition]) -> list[str]:
 
     Args:
         agents: Agent definitions collected from loaded plugins.
+        work_dir: Project directory for resolving skill names in agent
+            definitions. If None, only user-level skills are searched.
 
     Returns:
         List of agent names that were actually registered.
     """
     registered: list[str] = []
     for agent_def in agents:
-        factory = agent_definition_to_factory(agent_def)
+        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,
@@ -282,17 +317,10 @@ def get_factory_info() -> str:
     with _registry_lock:
         user_factories = dict(_agent_factories)
 
-    info_lines = []
-    info_lines.append(
-        "- **default**: Default general-purpose agent (used when no agent type is provided)"  # noqa: E501
-    )
-
     if not user_factories:
-        info_lines.append(
-            "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
-        )
-        return "\n".join(info_lines)
+        return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
+    info_lines = []
     for name, factory in sorted(user_factories.items()):
         info_lines.append(f"- **{name}**: {factory.description}")
 

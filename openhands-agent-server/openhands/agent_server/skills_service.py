@@ -22,9 +22,7 @@ from pathlib import Path
 
 from openhands.sdk.context.skills import (
     Skill,
-    load_project_skills,
-    load_public_skills,
-    load_user_skills,
+    load_available_skills,
 )
 from openhands.sdk.context.skills.skill import (
     PUBLIC_SKILLS_BRANCH,
@@ -322,27 +320,15 @@ def load_all_skills(
     sources["sandbox"] = len(sandbox_skills)
     skill_lists.append(sandbox_skills)
 
-    # 2. Load public skills
-    public_skills: list[Skill] = []
-    if load_public:
-        try:
-            public_skills = load_public_skills()
-            logger.info(f"Loaded {len(public_skills)} public skills")
-        except Exception as e:
-            logger.warning(f"Failed to load public skills: {e}")
-    sources["public"] = len(public_skills)
-    skill_lists.append(public_skills)
-
-    # 3. Load user skills
-    user_skills: list[Skill] = []
-    if load_user:
-        try:
-            user_skills = load_user_skills()
-            logger.info(f"Loaded {len(user_skills)} user skills")
-        except Exception as e:
-            logger.warning(f"Failed to load user skills: {e}")
-    sources["user"] = len(user_skills)
-    skill_lists.append(user_skills)
+    # 2-3. Load public + user skills via helper (no project yet — org sits between)
+    sdk_base = load_available_skills(
+        work_dir=None,
+        include_user=load_user,
+        include_project=False,
+        include_public=load_public,
+    )
+    sources["sdk_base"] = len(sdk_base)
+    skill_lists.append(list(sdk_base.values()))
 
     # 4. Load organization skills
     org_skills: list[Skill] = []
@@ -359,15 +345,14 @@ def load_all_skills(
     skill_lists.append(org_skills)
 
     # 5. Load project skills (highest precedence)
-    project_skills: list[Skill] = []
-    if load_project and project_dir:
-        try:
-            project_skills = load_project_skills(project_dir)
-            logger.info(f"Loaded {len(project_skills)} project skills")
-        except Exception as e:
-            logger.warning(f"Failed to load project skills: {e}")
+    project_skills = load_available_skills(
+        work_dir=project_dir if load_project else None,
+        include_user=False,
+        include_project=load_project,
+        include_public=False,
+    )
     sources["project"] = len(project_skills)
-    skill_lists.append(project_skills)
+    skill_lists.append(list(project_skills.values()))
 
     # Merge all skills with precedence
     all_skills = merge_skills(skill_lists)
