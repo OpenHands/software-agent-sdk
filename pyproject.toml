@@ -10,6 +10,7 @@ constraint-dependencies = [
     "urllib3>=2.6.3",  # CVE-2026-21441, CVE-2025-66471, CVE-2025-66418
     "protobuf>=6.33.5",  # CVE-2026-0994
     "pillow>=12.1.1",  # CVE-2026-25990
+    "orjson>=3.11.7",  # CVE-2025-67221
 ]
 
 # Workspace sources for intra-repo dependencies
