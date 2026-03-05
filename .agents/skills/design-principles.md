@@ -1,12 +1,6 @@
 ---
 name: design-principles
 description: Core architectural design principles of the OpenHands Software Agent SDK. Reference when making architectural decisions, reviewing PRs that change agent/tool/state boundaries, or evaluating whether a proposed change aligns with V1 design goals.
-triggers:
-- design principles
-- architecture decisions
-- stateless
-- serializable
-- composable
 ---
 
 # SDK Design Principles
