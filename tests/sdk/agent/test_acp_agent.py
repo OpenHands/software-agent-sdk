@@ -791,6 +791,179 @@ class TestACPAgentTelemetry:
         assert client._context_window == 128000
         assert client._llm_ref is not None
 
+    def test_fallback_cost_when_acp_reports_zero(self, tmp_path, monkeypatch):
+        """When ACP server reports zero cost, estimate from token counts via litellm."""
+        monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-5-20250929")
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client._context_window = 200000
+        mock_client._llm_ref = agent.llm
+        # _last_cost stays 0.0 — simulating proxy scenario
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 1000
+        mock_usage.output_tokens = 500
+        mock_usage.cached_read_tokens = 100
+        mock_usage.cached_write_tokens = 50
+        mock_usage.thought_tokens = 0
+
+        mock_response = MagicMock()
+        mock_response.usage = mock_usage
+
+        def _fake_run_async(_coro):
+            mock_client.accumulated_text.append("response text")
+            return mock_response
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        # Fallback should have estimated non-zero cost
+        assert agent.llm.metrics.accumulated_cost > 0
+
+    def test_no_fallback_when_real_cost_reported(self, tmp_path, monkeypatch):
+        """When ACP server reports real cost, fallback does not fire."""
+        monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-5-20250929")
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client._context_window = 200000
+        mock_client._llm_ref = agent.llm
+        mock_client._last_cost = 0.05  # ACP server already reported cost
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 1000
+        mock_usage.output_tokens = 500
+        mock_usage.cached_read_tokens = 0
+        mock_usage.cached_write_tokens = 0
+        mock_usage.thought_tokens = 0
+
+        mock_response = MagicMock()
+        mock_response.usage = mock_usage
+
+        def _fake_run_async(_coro):
+            mock_client.accumulated_text.append("response text")
+            return mock_response
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        # Only the real cost should be present (no fallback added)
+        assert agent.llm.metrics.accumulated_cost == 0.0
+
+    def test_fallback_no_model_env(self, tmp_path, monkeypatch):
+        """When LLM_MODEL is not set, fallback returns None and cost stays 0."""
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client._context_window = 200000
+        mock_client._llm_ref = agent.llm
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 1000
+        mock_usage.output_tokens = 500
+        mock_usage.cached_read_tokens = 0
+        mock_usage.cached_write_tokens = 0
+        mock_usage.thought_tokens = 0
+
+        mock_response = MagicMock()
+        mock_response.usage = mock_usage
+
+        def _fake_run_async(_coro):
+            mock_client.accumulated_text.append("response text")
+            return mock_response
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        # No cost should be added without LLM_MODEL
+        assert agent.llm.metrics.accumulated_cost == 0.0
+
+    def test_fallback_incremental_across_turns(self, tmp_path, monkeypatch):
+        """Fallback cost tracks deltas across turns (cumulative usage)."""
+        monkeypatch.setenv("LLM_MODEL", "claude-sonnet-4-5-20250929")
+
+        agent = _make_agent()
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client._context_window = 200000
+        mock_client._llm_ref = agent.llm
+        agent._client = mock_client
+
+        # Turn 1: cumulative 1000 input, 500 output
+        usage1 = MagicMock()
+        usage1.input_tokens = 1000
+        usage1.output_tokens = 500
+        usage1.cached_read_tokens = 0
+        usage1.cached_write_tokens = 0
+        usage1.thought_tokens = 0
+
+        resp1 = MagicMock()
+        resp1.usage = usage1
+
+        conversation1 = self._make_conversation_with_message(tmp_path, "Turn 1")
+
+        def _fake1(_coro):
+            mock_client.accumulated_text.append("turn 1")
+            return resp1
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake1
+        agent._executor = mock_executor
+        agent.step(conversation1, on_event=lambda _: None)
+        cost_after_turn1 = agent.llm.metrics.accumulated_cost
+
+        # Turn 2: cumulative 2500 input, 1200 output (larger)
+        usage2 = MagicMock()
+        usage2.input_tokens = 2500
+        usage2.output_tokens = 1200
+        usage2.cached_read_tokens = 0
+        usage2.cached_write_tokens = 0
+        usage2.thought_tokens = 0
+
+        resp2 = MagicMock()
+        resp2.usage = usage2
+
+        conversation2 = self._make_conversation_with_message(tmp_path, "Turn 2")
+
+        def _fake2(_coro):
+            mock_client.accumulated_text.append("turn 2")
+            return resp2
+
+        mock_executor.run_async = _fake2
+        agent.step(conversation2, on_event=lambda _: None)
+        cost_after_turn2 = agent.llm.metrics.accumulated_cost
+
+        assert cost_after_turn1 > 0
+        assert cost_after_turn2 > cost_after_turn1
+
 
 # ---------------------------------------------------------------------------
 # Tool call accumulation and emission

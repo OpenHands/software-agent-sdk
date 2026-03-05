@@ -115,6 +115,40 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
         dest.feed_eof()
 
 
+def _estimate_cost_from_tokens(usage: Any) -> float | None:
+    """Estimate USD cost from ACP token counts using litellm's pricing database.
+
+    Used as fallback when the ACP server reports zero cost (e.g. behind a
+    LiteLLM proxy).  Resolves model name from the ``LLM_MODEL`` env var.
+    Returns ``None`` when the model is unknown or pricing is unavailable.
+    """
+    model_name = os.environ.get("LLM_MODEL", "")
+    if not model_name:
+        return None
+    # Strip provider prefix: "openhands/claude-sonnet-4-5-..." → "claude-sonnet-4-5-..."
+    if "/" in model_name:
+        model_name = model_name.split("/", 1)[1]
+
+    try:
+        import litellm  # noqa: PLC0415
+
+        info = litellm.model_cost.get(model_name)
+        if info is None:
+            return None
+        cost = (
+            (usage.input_tokens or 0) * info.get("input_cost_per_token", 0)
+            + (usage.output_tokens or 0) * info.get("output_cost_per_token", 0)
+            + (usage.cached_read_tokens or 0)
+            * info.get("cache_read_input_token_cost", 0)
+            + (usage.cached_write_tokens or 0)
+            * info.get("cache_creation_input_token_cost", 0)
+        )
+        return cost
+    except Exception:
+        logger.debug("Fallback cost estimation failed", exc_info=True)
+        return None
+
+
 class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
@@ -128,6 +162,7 @@ class _OpenHandsACPBridge:
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
+        self._last_estimated_cost: float = 0.0  # fallback cost tracker (proxy scenario)
         self._context_window: int = 0  # context window size from ACP
         self._llm_ref: Any = None  # reference to the sentinel LLM
         # Fork session state for ask_agent() — guarded by _fork_lock to
@@ -352,6 +387,21 @@ class ACPAgent(AgentBase):
                 context_window=self._client._context_window,
                 response_id=session_id,
             )
+
+            # Fallback: estimate cost when ACP server reports zero (proxy scenario).
+            # PromptResponse.usage has cumulative tokens, so we delta-track
+            # like UsageUpdate.cost to avoid double-counting across turns.
+            if (
+                self._client._last_cost == 0
+                and (usage.input_tokens or 0) > 0
+                and self._client._llm_ref is not None
+            ):
+                estimated = _estimate_cost_from_tokens(usage)
+                if estimated is not None and estimated > 0:
+                    delta = estimated - self._client._last_estimated_cost
+                    if delta > 0:
+                        self._client._llm_ref.metrics.add_cost(delta)
+                    self._client._last_estimated_cost = estimated
 
         if self.llm.telemetry._stats_update_callback is not None:
             try:
