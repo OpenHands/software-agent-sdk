@@ -519,9 +519,16 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     async def cleanup(self):
         """Cleanup browser resources."""
         try:
-            await self.close_browser()
+            # Use _close_all_sessions instead of close_browser because it calls
+            # session.kill() which properly stops the event bus and drains
+            # pending events (including BrowserKillEvent that terminates the
+            # Chromium subprocess). close_browser() alone dispatches
+            # BrowserKillEvent fire-and-forget and returns before it's processed,
+            # which can leave the browser process alive.
             if hasattr(self._server, "_close_all_sessions"):
                 await self._server._close_all_sessions()
+            else:
+                await self.close_browser()
         except Exception as e:
             logger.warning(f"Error during browser cleanup: {e}")
 
