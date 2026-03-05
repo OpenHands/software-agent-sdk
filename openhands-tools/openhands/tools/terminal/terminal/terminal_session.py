@@ -26,6 +26,7 @@ from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
     split_bash_commands,
 )
+from openhands.tools.terminal.utils.escape_filter import filter_terminal_queries
 
 
 logger = get_logger(__name__)
@@ -120,7 +121,12 @@ class TerminalSession(TerminalSessionBase):
         metadata: CmdOutputMetadata,
         continue_prefix: str = "",
     ) -> str:
-        """Get the command output with the previous command output removed."""
+        """Get the command output with the previous command output removed.
+
+        Also filters terminal query sequences that could cause visible escape
+        code garbage when the output is displayed.
+        See: https://github.com/OpenHands/software-agent-sdk/issues/2244
+        """
         # remove the previous command output from the new output if any
         if self.prev_output:
             command_output = raw_command_output.removeprefix(self.prev_output)
@@ -129,6 +135,11 @@ class TerminalSession(TerminalSessionBase):
             command_output = raw_command_output
         self.prev_output = raw_command_output  # update current command output anyway
         command_output = _remove_command_prefix(command_output, command)
+
+        # Filter terminal query sequences that would cause the terminal to
+        # respond when displayed, producing visible garbage
+        command_output = filter_terminal_queries(command_output)
+
         return command_output.rstrip()
 
     def _handle_completed_command(
