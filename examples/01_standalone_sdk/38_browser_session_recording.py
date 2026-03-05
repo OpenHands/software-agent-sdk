@@ -187,3 +187,6 @@ print("=" * 100)
 cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
 print(f"Conversation ID: {conversation.id}")
 print(f"EXAMPLE_COST: {cost}")
+
+# Close conversation to shut down browser and other tool executors
+conversation.close()
