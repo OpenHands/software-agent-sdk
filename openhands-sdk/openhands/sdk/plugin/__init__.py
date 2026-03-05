@@ -37,6 +37,7 @@ from openhands.sdk.plugin.source import (
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     Marketplace,
+    MarketplaceEntry,
     MarketplaceMetadata,
     MarketplaceOwner,
     MarketplacePluginEntry,
@@ -63,6 +64,7 @@ __all__ = [
     "fetch_plugin_with_resolution",
     # Marketplace classes
     "Marketplace",
+    "MarketplaceEntry",
     "MarketplaceOwner",
     "MarketplacePluginEntry",
     "MarketplacePluginSource",

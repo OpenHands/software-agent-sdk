@@ -474,26 +474,9 @@ def install_skills_from_marketplace(
 
     installed: list[InstalledSkillInfo] = []
 
-    # Get skill_root from metadata if defined
-    skill_root = None
-    if marketplace.metadata and marketplace.metadata.skill_root:
-        skill_root = marketplace.metadata.skill_root
-
     for entry in marketplace.skills:
         logger.info(f"Processing skill: {entry.name} (source: {entry.source})")
-
-        # Determine the source path, applying skill_root if needed
         source = entry.source
-
-        # Apply skill_root to relative local paths (not absolute, not URLs)
-        if skill_root and not source.startswith(("/", "~", "file://", "http")):
-            # Strip leading ./ from source if present for cleaner concatenation
-            relative_source = source[2:] if source.startswith("./") else source
-            if skill_root.endswith("/"):
-                source = f"{skill_root}{relative_source}"
-            else:
-                source = f"{skill_root}/{relative_source}"
-            logger.debug(f"Applied skillRoot: {source}")
 
         # Resolve the source to a local path (handles GitHub URLs)
         resolved_path = resolve_source_path(
