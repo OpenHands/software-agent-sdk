@@ -767,22 +767,23 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        # Always close tool executors to release OS resources (browser
-        # processes, terminal sessions, etc.), regardless of delete_on_close.
-        try:
-            tools_map = self.agent.tools_map
-        except (AttributeError, RuntimeError):
-            # Agent not initialized or partially constructed
-            return
-        for tool in tools_map.values():
+        if self.delete_on_close:
             try:
-                executable_tool = tool.as_executable()
-                executable_tool.executor.close()
-            except NotImplementedError:
-                # Tool has no executor, skip it without erroring
-                continue
-            except Exception as e:
-                logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
+                tools_map = self.agent.tools_map
+            except (AttributeError, RuntimeError):
+                # Agent not initialized or partially constructed
+                return
+            for tool in tools_map.values():
+                try:
+                    executable_tool = tool.as_executable()
+                    executable_tool.executor.close()
+                except NotImplementedError:
+                    # Tool has no executor, skip it without erroring
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        f"Error closing executor for tool '{tool.name}': {e}"
+                    )
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
