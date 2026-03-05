@@ -431,18 +431,8 @@ class MarketplacePluginEntry(MarketplaceEntry):
         )
 
 
-class MarketplaceSkillEntry(BaseModel):
-    """Skill entry in a marketplace.
-
-    Points to a skill directory containing SKILL.md. Source must be a string
-    (local path or GitHub URL), not a complex source object.
-    """
-
-    name: str = Field(description="Skill identifier (kebab-case, no spaces)")
-    source: str = Field(description="Path to skill directory or GitHub URL")
-    description: str | None = Field(default=None, description="Brief description")
-
-    model_config = {"extra": "allow"}
+# Skill entries use the same schema as the base entry
+MarketplaceSkillEntry = MarketplaceEntry
 
 
 class MarketplaceMetadata(BaseModel):

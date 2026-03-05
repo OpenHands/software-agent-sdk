@@ -101,9 +101,10 @@ def main():
 
     print("\nSkills:")
     for entry in marketplace.skills:
-        source_type = "remote" if entry.source.startswith("http") else "local"
+        source = entry.source if isinstance(entry.source, str) else str(entry.source)
+        source_type = "remote" if source.startswith("http") else "local"
         print(f"  - {entry.name} ({source_type})")
-        print(f"    Source: {entry.source}")
+        print(f"    Source: {source}")
         if entry.description:
             print(f"    Description: {entry.description}")
 

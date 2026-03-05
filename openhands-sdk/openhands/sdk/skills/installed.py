@@ -476,11 +476,15 @@ def install_skills_from_marketplace(
 
     for entry in marketplace.skills:
         logger.info(f"Processing skill: {entry.name} (source: {entry.source})")
-        source = entry.source
+
+        # Skills only support string sources (local paths or GitHub URLs)
+        if not isinstance(entry.source, str):
+            logger.warning(f"Skill '{entry.name}' has unsupported source type")
+            continue
 
         # Resolve the source to a local path (handles GitHub URLs)
         resolved_path = resolve_source_path(
-            source,
+            entry.source,
             base_path=marketplace_path,
             update=True,
         )
