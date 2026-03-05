@@ -55,30 +55,62 @@ _agent_factories: dict[str, AgentFactory] = {}
 _registry_lock = RLock()
 
 
+def _resolve_agent_definition(
+    name: str,
+    description: str,
+    definition: AgentDefinition | None = None,
+) -> AgentDefinition:
+    """Build or normalise an `AgentDefinition` for registration.
+
+    When `definition` is `None` a minimal definition is created from
+    `name` and `description`.  When a full definition is provided it is
+    copied with `name` and `description` overridden so that the registry
+    key always matches the definition's own fields.
+
+    Args:
+        name: Agent name used as the registry key.
+        description: Human-readable description.
+        definition: Optional caller-provided definition. If `None`, a
+            minimal one is created automatically.
+
+    Returns:
+        A (possibly new) `AgentDefinition` ready for storage.
+    """
+    if definition is None:
+        return AgentDefinition(name=name, description=description)
+    return definition.model_copy(update={"name": name, "description": description})
+
+
 def register_agent(
     name: str,
     factory_func: Callable[["LLM"], "Agent"],
     description: str,
     definition: AgentDefinition | None = None,
 ) -> None:
-    """
-    Register a custom agent globally.
+    """Register a custom agent globally.
+
+    The factory_func is the source of truth for local execution,
+    it receives an `LLM` and must return a fully-configured `Agent`.
+
+    The definition carries declarative metadata (tools, system_prompt,
+    model, skills, …) that can be serialised and forwarded to a remote
+    agent-server.  When `definition` is `None` a minimal
+    `AgentDefinition` is created from `name` and `description`; this is
+    fine for local-only agents but means the remote server will not know
+    about tools or system prompts.  Pass a full `AgentDefinition` when
+    the agent needs to work in remote workspaces.
 
     Args:
-        name: Unique name for the agent
-        factory_func: Function that takes an LLM and returns an Agent
-        description: Human-readable description of what this agent does
-        definition: Optional full agent definition. If not provided, a minimal
-            definition is created from name and description. Pass a full
-            definition when the agent needs to work in remote workspaces,
-            as only the definition's metadata (tools, system_prompt, model,
-            etc.) is forwarded to the agent-server.
+        name: Unique name for the agent (used as the registry key).
+        factory_func: Function that takes an LLM and returns an Agent.
+        description: Human-readable description of what this agent does.
+        definition: Optional full agent definition.  If not provided, a
+            minimal definition is created from `name` and `description`.
 
     Raises:
-        ValueError: If an agent with the same name already exists
+        ValueError: If an agent with the same name already exists.
     """
-    if definition is None:
-        definition = AgentDefinition(name=name, description=description)
+    definition = _resolve_agent_definition(name, description, definition)
 
     with _registry_lock:
         if name in _agent_factories:
@@ -95,29 +127,21 @@ def register_agent_if_absent(
     description: str,
     definition: AgentDefinition | None = None,
 ) -> bool:
-    """
-    Register a custom agent if no agent with that name exists yet.
+    """Register a custom agent if no agent with that name exists yet.
 
-    Unlike register_agent(), this does not raise on duplicates. This is used
-    by file-based and plugin-based agent loading to gracefully skip conflicts
-    with programmatically registered agents.
+    Behaves identically to `register_agent` except that it silently
+    no-ops when an agent with `name` is already registered, instead of
+    raising `ValueError`.  This is used by file-based and plugin-based
+    agent loading to gracefully skip conflicts with programmatically
+    registered agents.
 
-    Args:
-        name: Unique name for the agent
-        factory_func: Function that takes an LLM and returns an Agent
-        description: Human-readable description of what this agent does
-        definition: Optional full agent definition. If not provided, a minimal
-            definition is created from name and description. Pass a full
-            definition when the agent needs to work in remote workspaces,
-            as only the definition's metadata (tools, system_prompt, model,
-            etc.) is forwarded to the agent-server.
+    See `register_agent` for full parameter documentation.
 
     Returns:
-        True if the agent was registered, False if an agent with that name
-        already existed.
+        `True` if the agent was registered, `False` if an agent with
+        that name already existed.
     """
-    if definition is None:
-        definition = AgentDefinition(name=name, description=description)
+    definition = _resolve_agent_definition(name, description, definition)
 
     with _registry_lock:
         if name in _agent_factories:
