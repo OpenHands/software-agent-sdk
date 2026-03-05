@@ -270,3 +270,17 @@ def test_normalize_openapi_preserves_boolean_exclusive():
 
     assert normalized["exclusiveMinimum"] is True
     assert normalized["minimum"] == 4
+
+
+def test_normalize_openapi_boolean_exclusive_without_minimum():
+    schema = {
+        "exclusiveMinimum": True,
+        "exclusiveMaximum": False,
+    }
+
+    normalized = _normalize_openapi_for_oasdiff(schema)
+
+    assert normalized["exclusiveMinimum"] is True
+    assert normalized["exclusiveMaximum"] is False
+    assert "minimum" not in normalized
+    assert "maximum" not in normalized

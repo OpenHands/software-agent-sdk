@@ -172,15 +172,19 @@ def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
 
     def _walk(node: object) -> None:
         if isinstance(node, dict):
-            if "exclusiveMinimum" in node and isinstance(
-                node["exclusiveMinimum"], (int, float)
+            if (
+                "exclusiveMinimum" in node
+                and isinstance(node["exclusiveMinimum"], (int, float))
+                and not isinstance(node["exclusiveMinimum"], bool)
             ):
                 value = node["exclusiveMinimum"]
                 if "minimum" not in node:
                     node["minimum"] = value
                 node["exclusiveMinimum"] = True
-            if "exclusiveMaximum" in node and isinstance(
-                node["exclusiveMaximum"], (int, float)
+            if (
+                "exclusiveMaximum" in node
+                and isinstance(node["exclusiveMaximum"], (int, float))
+                and not isinstance(node["exclusiveMaximum"], bool)
             ):
                 value = node["exclusiveMaximum"]
                 if "maximum" not in node:
