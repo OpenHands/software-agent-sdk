@@ -391,12 +391,25 @@ class ACPAgent(AgentBase):
             # Fallback: estimate cost when ACP server reports zero (proxy scenario).
             # PromptResponse.usage has cumulative tokens, so we delta-track
             # like UsageUpdate.cost to avoid double-counting across turns.
+            logger.info(
+                "ACP cost fallback check: _last_cost=%s, input_tokens=%s, "
+                "_llm_ref=%s, LLM_MODEL=%s",
+                self._client._last_cost,
+                usage.input_tokens,
+                self._client._llm_ref is not None,
+                os.environ.get("LLM_MODEL", ""),
+            )
             if (
                 self._client._last_cost == 0
                 and (usage.input_tokens or 0) > 0
                 and self._client._llm_ref is not None
             ):
                 estimated = _estimate_cost_from_tokens(usage)
+                logger.info(
+                    "ACP cost fallback: estimated=%s, _last_estimated_cost=%s",
+                    estimated,
+                    self._client._last_estimated_cost,
+                )
                 if estimated is not None and estimated > 0:
                     delta = estimated - self._client._last_estimated_cost
                     if delta > 0:
