@@ -475,10 +475,6 @@ def install_skills_from_marketplace(
 
     # 1. Standalone skills from marketplace.skills
     for entry in marketplace.skills:
-        if not isinstance(entry.source, str):
-            logger.warning(f"Skill '{entry.name}' has unsupported source type")
-            continue
-
         resolved = resolve_source_path(
             entry.source, base_path=marketplace_path, update=True
         )

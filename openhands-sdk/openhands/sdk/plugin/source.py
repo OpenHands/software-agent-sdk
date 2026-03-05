@@ -66,9 +66,20 @@ def resolve_source_path(
 ) -> Path | None:
     """Resolve source path to absolute local path.
 
-    - Local paths: resolved relative to base_path
-    - file:// URLs: converted to local path
-    - GitHub URLs: cloned/cached and path returned
+    Args:
+        source: Source path string (local path, file:// URL, or GitHub URL).
+        base_path: Base directory for resolving relative paths.
+        cache_dir: Directory for caching cloned GitHub repos.
+        update: Whether to update cached repos (git pull).
+
+    Returns:
+        Resolved absolute Path, or None if GitHub clone/update fails.
+        Callers should handle None gracefully (e.g., skip with warning).
+
+    Supported source formats:
+        - Local paths: ./path, ../path, /absolute, ~/home
+        - file:// URLs: file:///absolute/path
+        - GitHub URLs: https://github.com/{owner}/{repo}/blob/{branch}/{path}
     """
     # Handle file:// URLs
     if source.startswith("file://"):

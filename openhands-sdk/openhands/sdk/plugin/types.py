@@ -362,13 +362,11 @@ class MarketplaceEntry(BaseModel):
     - Plugin directories contain: plugin.json, skills/, commands/, agents/, etc.
     - Skill directories contain: SKILL.md and optionally scripts/, references/, assets/
 
-    Source can be a local path or a source object for GitHub/git URLs.
+    Source is a string path (local path or GitHub URL).
     """
 
     name: str = Field(description="Identifier (kebab-case, no spaces)")
-    source: str | MarketplacePluginSource = Field(
-        description="Path to directory or source object for GitHub/git URLs"
-    )
+    source: str = Field(description="Path to directory (local path or GitHub URL)")
     description: str | None = Field(default=None, description="Brief description")
     version: str | None = Field(default=None, description="Version")
     author: PluginAuthor | None = Field(default=None, description="Author information")
@@ -386,20 +384,21 @@ class MarketplaceEntry(BaseModel):
             return PluginAuthor.from_string(v)
         return v
 
-    @field_validator("source", mode="before")
-    @classmethod
-    def _parse_source(cls, v: Any) -> Any:
-        if isinstance(v, dict):
-            return MarketplacePluginSource.model_validate(v)
-        return v
-
 
 class MarketplacePluginEntry(MarketplaceEntry):
     """Plugin entry in a marketplace.
 
     Extends MarketplaceEntry with Claude Code compatibility fields for
     inline plugin definitions (when strict=False).
+
+    Plugins support both string sources and complex source objects
+    (MarketplacePluginSource) for GitHub/git URLs with ref and path.
     """
+
+    # Override source to allow complex source objects for plugins
+    source: str | MarketplacePluginSource = Field(  # type: ignore[assignment]
+        description="Path to plugin directory or source object for GitHub/git"
+    )
 
     # Claude Code compatibility fields
     strict: bool = Field(
@@ -420,6 +419,13 @@ class MarketplacePluginEntry(MarketplaceEntry):
     repository: str | None = Field(
         default=None, description="Source code repository URL"
     )
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _parse_source(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            return MarketplacePluginSource.model_validate(v)
+        return v
 
     def to_plugin_manifest(self) -> PluginManifest:
         """Convert to PluginManifest (for strict=False entries)."""

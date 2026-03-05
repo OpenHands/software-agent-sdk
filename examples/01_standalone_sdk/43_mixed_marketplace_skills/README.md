@@ -33,17 +33,11 @@ The `marketplace.json` file supports both plugins and skills:
 ```json
 {
     "name": "my-marketplace",
-    "owner": {
-        "name": "Team Name",
-        "email": "team@example.com"
-    },
-    "metadata": {
-        "skillRoot": "./skills"
-    },
+    "owner": {"name": "Team Name"},
     "skills": [
         {
             "name": "local-skill",
-            "source": "./my-skill",
+            "source": "./skills/my-skill",
             "description": "A local skill"
         },
         {
@@ -59,15 +53,11 @@ The `marketplace.json` file supports both plugins and skills:
 
 Skills can be sourced from:
 
-1. **Relative local paths**: `./path` or `../path`
+1. **Relative local paths**: `./path` or `../path` (relative to marketplace directory)
 2. **Absolute paths**: `/absolute/path`
 3. **Home directory**: `~/path`
 4. **File URLs**: `file:///path`
 5. **GitHub URLs**: `https://github.com/{owner}/{repo}/blob/{branch}/{path}`
-
-### Metadata Options
-
-- `skillRoot`: Base directory prepended to relative skill paths
 
 ## Usage
 
