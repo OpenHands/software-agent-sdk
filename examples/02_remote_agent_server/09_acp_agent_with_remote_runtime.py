@@ -72,5 +72,9 @@ with APIRemoteWorkspace(
 
         while time.time() - last_event_time["ts"] < 2.0:
             time.sleep(0.1)
+
+        # Report cost
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost:.4f}")
     finally:
         conversation.close()

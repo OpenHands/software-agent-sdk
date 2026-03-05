@@ -38,6 +38,9 @@ try:
         "Based on what you just saw, which agent class is the newest addition?"
     )
     print(f"ask_agent response: {response}")
+    # Report cost (ACP server reports usage via session_update notifications)
+    cost = agent.llm.metrics.accumulated_cost
+    print(f"EXAMPLE_COST: {cost:.4f}")
 finally:
     # Clean up the ACP server subprocess
     agent.close()
