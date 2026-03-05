@@ -58,7 +58,6 @@ def test_system_prompt_includes_repo_root_agents_md_when_workdir_is_subdir(
         agent=agent,
         workspace=subdir,
         persistence_dir=tmp_path / "conversation",
-        delete_on_close=True,
     )
     conversation.send_message("hi")
 

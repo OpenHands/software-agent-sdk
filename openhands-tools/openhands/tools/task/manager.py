@@ -167,7 +167,6 @@ class TaskManager:
             workspace=self.parent_conversation.state.workspace.working_dir,
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
-            delete_on_close=False,
         )
 
         self._tasks[resume] = self._tasks[resume].model_copy(
@@ -247,7 +246,6 @@ class TaskManager:
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
-            delete_on_close=False,
         )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:

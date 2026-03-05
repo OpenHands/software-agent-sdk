@@ -53,6 +53,7 @@ from openhands.sdk.subagent import (
 )
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -71,7 +72,6 @@ class LocalConversation(BaseConversation):
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
-    delete_on_close: bool = True
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -97,7 +97,6 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
-        delete_on_close: bool = True,
         cipher: Cipher | None = None,
         **_: object,
     ):
@@ -139,6 +138,17 @@ class LocalConversation(BaseConversation):
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
         """
+        if "delete_on_close" in _:
+            warn_deprecated(
+                "LocalConversation(delete_on_close=...)",
+                deprecated_in="1.11.5",
+                removed_in="1.14.0",
+                details=(
+                    "delete_on_close has no effect on LocalConversation. "
+                    "Tool executors are now always cleaned up on close()."
+                ),
+            )
+
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
@@ -259,7 +269,6 @@ class LocalConversation(BaseConversation):
 
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
-        self.delete_on_close = delete_on_close
 
     @property
     def id(self) -> ConversationID:
@@ -767,8 +776,8 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        # Always close tool executors to release OS resources (browser
-        # processes, terminal sessions, etc.), regardless of delete_on_close.
+        # Close tool executors to release OS resources (browser
+        # processes, terminal sessions, etc.).
         try:
             tools_map = self.agent.tools_map
         except (AttributeError, RuntimeError):

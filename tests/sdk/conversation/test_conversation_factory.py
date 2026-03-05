@@ -1,9 +1,11 @@
 """Tests for Conversation factory functionality."""
 
 import uuid
+import warnings
 from unittest.mock import Mock, patch
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 from openhands.sdk import Agent, Conversation
@@ -117,3 +119,29 @@ def test_conversation_factory_type_inference(mock_ws_client, agent, remote_works
 
     assert isinstance(local_conv, LocalConversation)
     assert isinstance(remote_conv, RemoteConversation)
+
+
+def test_local_conversation_delete_on_close_emits_deprecation(agent):
+    """Passing delete_on_close to LocalConversation emits a deprecation warning."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        conv = LocalConversation(agent=agent, workspace="", delete_on_close=True)
+
+    deprecation_warnings = [
+        w for w in caught if issubclass(w.category, DeprecatedWarning)
+    ]
+    assert len(deprecation_warnings) == 1
+    assert "delete_on_close" in str(deprecation_warnings[0].message)
+    assert not hasattr(conv, "delete_on_close")
+
+
+def test_local_conversation_no_deprecation_without_delete_on_close(agent):
+    """No deprecation warning when delete_on_close is not passed."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        LocalConversation(agent=agent, workspace="")
+
+    deprecation_warnings = [
+        w for w in caught if issubclass(w.category, DeprecatedWarning)
+    ]
+    assert len(deprecation_warnings) == 0

@@ -35,7 +35,6 @@ def _make_parent_conversation(tmp_path: Path) -> LocalConversation:
         agent=agent,
         workspace=str(tmp_path),
         visualizer=None,
-        delete_on_close=False,
     )
 
 
