@@ -74,24 +74,17 @@ conversation = Conversation(
 
 # The prompt instructs the agent to:
 # 1. Start recording the browser session
-# 2. Browse to a website and perform some actions
+# 2. Navigate to a page and get its content
 # 3. Stop recording (auto-saves to file)
 PROMPT = """
 Please complete the following task to demonstrate browser session recording:
 
-1. First, use `browser_start_recording` to begin recording the browser session.
-
-2. Then navigate to https://docs.openhands.dev/ and:
-   - Get the page content
-   - Scroll down the page
-   - Get the browser state to see interactive elements
-
-3. Next, navigate to https://docs.openhands.dev/openhands/usage/cli/installation and:
-   - Get the page content
-   - Scroll down to see more content
-
-4. Finally, use `browser_stop_recording` to stop the recording.
-   Events are automatically saved.
+1. Use `browser_start_recording` to begin recording.
+2. Navigate to https://docs.openhands.dev/ and:
+    - Get the page content
+    - Scroll down the page
+    - Get the browser state to see interactive elements
+3. Use `browser_stop_recording` to stop and save the recording.
 """
 
 print("=" * 80)
