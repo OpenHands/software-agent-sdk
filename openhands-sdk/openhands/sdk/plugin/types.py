@@ -555,9 +555,7 @@ class MarketplaceSkillEntry(BaseModel):
         "- Local path: ./path, ../path, /absolute/path, ~/path, file:///path\n"
         "- GitHub URL: https://github.com/{owner}/{repo}/blob/{branch}/{path}"
     )
-    description: str | None = Field(
-        default=None, description="Brief skill description"
-    )
+    description: str | None = Field(default=None, description="Brief skill description")
 
     model_config = {"extra": "allow"}
 

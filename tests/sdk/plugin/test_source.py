@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.plugin.source import (
-    GitHubURLComponents,
     SourcePath,
     get_cache_path_for_github_repo,
     is_github_url,
@@ -160,7 +159,16 @@ class TestGetCachePathForGitHubRepo:
     def test_default_cache_dir(self):
         """Test cache path with default directory."""
         path = get_cache_path_for_github_repo("OpenHands", "extensions")
-        assert path == Path.home() / ".openhands" / "cache" / "git" / "github.com" / "openhands" / "extensions"
+        assert (
+            path
+            == Path.home()
+            / ".openhands"
+            / "cache"
+            / "git"
+            / "github.com"
+            / "openhands"
+            / "extensions"
+        )
 
     def test_custom_cache_dir(self):
         """Test cache path with custom directory."""

@@ -41,7 +41,6 @@ from openhands.sdk.plugin import Marketplace
 from openhands.sdk.skills import (
     install_skills_from_marketplace,
     list_installed_skills,
-    load_installed_skills,
 )
 
 

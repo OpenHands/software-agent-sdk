@@ -23,6 +23,7 @@ from pydantic_core import CoreSchema, core_schema
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 
+
 logger = get_logger(__name__)
 
 # Pattern for GitHub blob URLs
@@ -56,8 +57,9 @@ def parse_github_url(url: str) -> GitHubURLComponents | None:
         GitHubURLComponents if the URL matches, None otherwise.
 
     Examples:
-        >>> parse_github_url("https://github.com/OpenHands/extensions/blob/main/skills/github/SKILL.md")
-        GitHubURLComponents(owner='OpenHands', repo='extensions', branch='main', path='skills/github/SKILL.md')
+        >>> url = "https://github.com/OpenHands/extensions/blob/main/skills/github"
+        >>> parse_github_url(url)
+        GitHubURLComponents(owner='OpenHands', repo='extensions', ...)
 
         >>> parse_github_url("./local/path")
         None
@@ -272,7 +274,8 @@ def get_file_path_from_github_url(
 
     # Clone or update the repository
     logger.debug(
-        f"Resolving GitHub URL: {url} -> {repo_cache_path} (branch: {components.branch})"
+        f"Resolving GitHub URL: {url} -> {repo_cache_path} "
+        f"(branch: {components.branch})"
     )
 
     result = try_cached_clone_or_update(

@@ -520,7 +520,9 @@ def install_skills_from_marketplace(
             installed.append(info)
             logger.info(f"Successfully installed skill '{info.name}'")
         except FileExistsError:
-            logger.info(f"Skill '{entry.name}' already installed (use force=True to overwrite)")
+            logger.info(
+                f"Skill '{entry.name}' already installed (use force=True to overwrite)"
+            )
         except Exception as e:
             logger.warning(f"Failed to install skill '{entry.name}': {e}")
 
