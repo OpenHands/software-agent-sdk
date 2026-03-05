@@ -165,6 +165,8 @@ def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
     oasdiff expects OpenAPI 3.0-style exclusiveMinimum/exclusiveMaximum booleans,
     while OpenAPI 3.1 emits numeric values. Convert numeric exclusives into
     minimum/maximum + exclusive boolean flags so oasdiff can parse the schema.
+
+    Mutates the schema in place and returns it for convenience.
     """
 
     def _walk(node: object) -> None:
@@ -173,13 +175,15 @@ def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
                 node["exclusiveMinimum"], (int, float)
             ):
                 value = node["exclusiveMinimum"]
-                node["minimum"] = value
+                if "minimum" not in node:
+                    node["minimum"] = value
                 node["exclusiveMinimum"] = True
             if "exclusiveMaximum" in node and isinstance(
                 node["exclusiveMaximum"], (int, float)
             ):
                 value = node["exclusiveMaximum"]
-                node["maximum"] = value
+                if "maximum" not in node:
+                    node["maximum"] = value
                 node["exclusiveMaximum"] = True
 
             for child in node.values():

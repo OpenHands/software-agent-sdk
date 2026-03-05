@@ -32,6 +32,7 @@ OperationKey = _prod.OperationKey
 _compute_breakages = _prod._compute_breakages
 _get_previous_version = _prod._get_previous_version
 _is_minor_or_major_bump = _prod._is_minor_or_major_bump
+_normalize_openapi_for_oasdiff = _prod._normalize_openapi_for_oasdiff
 _resolve_ref = _prod._resolve_ref
 
 
@@ -216,3 +217,56 @@ def test_is_minor_or_major_bump():
     assert _is_minor_or_major_bump("1.0.1", "1.0.0") is False
     assert _is_minor_or_major_bump("1.1.0", "1.0.0") is True
     assert _is_minor_or_major_bump("2.0.0", "1.9.9") is True
+
+
+def test_normalize_openapi_converts_numeric_exclusive_bounds():
+    schema = {
+        "components": {
+            "schemas": {
+                "Foo": {
+                    "type": "number",
+                    "exclusiveMinimum": 3,
+                    "exclusiveMaximum": 8,
+                },
+                "Bar": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": 2,
+                },
+            }
+        },
+        "paths": [
+            {
+                "schema": {
+                    "exclusiveMinimum": 1.5,
+                }
+            }
+        ],
+    }
+
+    normalized = _normalize_openapi_for_oasdiff(schema)
+
+    foo = normalized["components"]["schemas"]["Foo"]
+    assert foo["minimum"] == 3
+    assert foo["exclusiveMinimum"] is True
+    assert foo["maximum"] == 8
+    assert foo["exclusiveMaximum"] is True
+
+    bar = normalized["components"]["schemas"]["Bar"]
+    assert bar["minimum"] == 0
+    assert bar["exclusiveMinimum"] is True
+
+    assert normalized["paths"][0]["schema"]["minimum"] == 1.5
+    assert normalized["paths"][0]["schema"]["exclusiveMinimum"] is True
+
+
+def test_normalize_openapi_preserves_boolean_exclusive():
+    schema = {
+        "exclusiveMinimum": True,
+        "minimum": 4,
+    }
+
+    normalized = _normalize_openapi_for_oasdiff(schema)
+
+    assert normalized["exclusiveMinimum"] is True
+    assert normalized["minimum"] == 4
