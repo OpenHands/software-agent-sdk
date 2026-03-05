@@ -162,9 +162,10 @@ def _generate_openapi_for_version(version: str) -> dict | None:
 def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
     """Normalize OpenAPI 3.1 schema for oasdiff compatibility.
 
-    oasdiff expects OpenAPI 3.0-style exclusiveMinimum/exclusiveMaximum booleans,
-    while OpenAPI 3.1 emits numeric values. Convert numeric exclusives into
-    minimum/maximum + exclusive boolean flags so oasdiff can parse the schema.
+    oasdiff expects OpenAPI 3.0-style exclusiveMinimum/exclusiveMaximum booleans
+    (https://spec.openapis.org/oas/v3.0.3.html#schema-object), while OpenAPI 3.1
+    emits numeric values. Convert numeric exclusives into minimum/maximum +
+    exclusive boolean flags so oasdiff can parse the schema.
 
     Mutates the schema in place and returns it for convenience.
     """
