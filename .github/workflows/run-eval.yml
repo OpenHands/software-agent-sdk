@@ -103,7 +103,7 @@ env:
     SPLIT: test
 
 jobs:
-    build-and-evaluate:
+    print-parameters:
         if: >
             github.event_name == 'release' ||
             github.event_name == 'workflow_dispatch' ||
@@ -112,6 +112,42 @@ jobs:
               github.event.label.name == 'run-eval-50' ||
               github.event.label.name == 'run-eval-200' ||
               github.event.label.name == 'run-eval-500'))
+        runs-on: ubuntu-latest
+        steps:
+            - name: Print all parameters
+              run: |
+                  echo "=== Workflow Parameters ==="
+                  echo "Event: ${{ github.event_name }}"
+                  echo "Actor: ${{ github.actor }}"
+                  echo "Ref: ${{ github.ref }}"
+                  echo ""
+                  echo "=== Input Parameters ==="
+                  echo "benchmark: ${{ github.event.inputs.benchmark || 'swebench' }}"
+                  echo "sdk_ref: ${{ github.event.inputs.sdk_ref || 'N/A' }}"
+                  echo "allow_unreleased_branches: ${{ github.event.inputs.allow_unreleased_branches || 'false' }}"
+                  echo "eval_limit: ${{ github.event.inputs.eval_limit || '1' }}"
+                  echo "model_ids: ${{ github.event.inputs.model_ids || '(default)' }}"
+                  echo "reason: ${{ github.event.inputs.reason || 'N/A' }}"
+                  echo "eval_branch: ${{ github.event.inputs.eval_branch || 'main' }}"
+                  echo "benchmarks_branch: ${{ github.event.inputs.benchmarks_branch || 'main' }}"
+                  echo "instance_ids: ${{ github.event.inputs.instance_ids || 'N/A' }}"
+                  echo "num_infer_workers: ${{ github.event.inputs.num_infer_workers || '(default)' }}"
+                  echo "num_eval_workers: ${{ github.event.inputs.num_eval_workers || '(default)' }}"
+                  echo "enable_conversation_event_logging: ${{ github.event.inputs.enable_conversation_event_logging || 'true' }}"
+                  echo "max_retries: ${{ github.event.inputs.max_retries || '3' }}"
+                  echo "tool_preset: ${{ github.event.inputs.tool_preset || 'default' }}"
+                  echo ""
+                  echo "=== Environment Variables ==="
+                  echo "EVAL_REPO: ${{ env.EVAL_REPO }}"
+                  echo "EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}"
+                  echo "DATASET: ${{ env.DATASET }}"
+                  echo "SPLIT: ${{ env.SPLIT }}"
+                  echo ""
+                  echo "=== Label (for PR events) ==="
+                  echo "Label: ${{ github.event.label.name || 'N/A' }}"
+
+    build-and-evaluate:
+        needs: print-parameters
         runs-on: ubuntu-latest
         permissions:
             contents: read
