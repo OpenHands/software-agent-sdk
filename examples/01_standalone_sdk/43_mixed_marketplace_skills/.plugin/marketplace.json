@@ -1,0 +1,25 @@
+{
+    "name": "mixed-skills-marketplace",
+    "owner": {
+        "name": "OpenHands Team",
+        "email": "contact@all-hands.dev"
+    },
+    "description": "Example marketplace with both local and remote skills",
+    "metadata": {
+        "version": "1.0.0",
+        "skillRoot": "./skills"
+    },
+    "plugins": [],
+    "skills": [
+        {
+            "name": "greeting-helper",
+            "source": "./greeting-helper",
+            "description": "A local skill that helps generate creative greetings"
+        },
+        {
+            "name": "github",
+            "source": "https://github.com/OpenHands/extensions/blob/main/skills/github",
+            "description": "GitHub best practices from the OpenHands extensions repository"
+        }
+    ]
+}
