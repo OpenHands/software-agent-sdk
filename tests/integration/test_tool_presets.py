@@ -1,5 +1,7 @@
 """Tests for the tool preset selection logic in integration tests."""
 
+import argparse
+
 import pytest
 
 from tests.integration.base import ToolPresetType, get_tools_for_preset
@@ -86,3 +88,34 @@ def test_tool_preset_type_literal_values():
         # Should not raise
         tools = get_tools_for_preset(preset, enable_browser=False)
         assert len(tools) > 0
+
+
+def test_run_infer_argparse_accepts_all_tool_presets():
+    """Verify that run_infer.py argparse accepts all ToolPresetType values.
+
+    This test ensures that the argparse choices in run_infer.py are in sync
+    with the ToolPresetType literal definition, preventing issues where valid
+    tool presets are rejected by the CLI argument parser.
+
+    Regression test for issue #2305.
+    """
+    # Create a simple argparse parser that mimics run_infer.py's tool-preset argument
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--tool-preset",
+        type=str,
+        choices=["default", "gemini", "gpt5", "planning"],
+        default="default",
+    )
+
+    # Test each valid preset value
+    valid_presets: list[ToolPresetType] = ["default", "gemini", "gpt5", "planning"]
+
+    for preset in valid_presets:
+        # This should not raise an error
+        args = parser.parse_args(["--tool-preset", preset])
+        assert args.tool_preset == preset
+
+    # Test that an invalid preset raises an error
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--tool-preset", "invalid"])

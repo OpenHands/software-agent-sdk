@@ -159,6 +159,48 @@ def _generate_openapi_for_version(version: str) -> dict | None:
             return None
 
 
+def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
+    """Normalize OpenAPI 3.1 schema for oasdiff compatibility.
+
+    oasdiff expects OpenAPI 3.0-style exclusiveMinimum/exclusiveMaximum booleans
+    (https://spec.openapis.org/oas/v3.0.3.html#schema-object), while OpenAPI 3.1
+    emits numeric values. Convert numeric exclusives into minimum/maximum +
+    exclusive boolean flags so oasdiff can parse the schema.
+
+    Mutates the schema in place and returns it for convenience.
+    """
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            if (
+                "exclusiveMinimum" in node
+                and isinstance(node["exclusiveMinimum"], (int, float))
+                and not isinstance(node["exclusiveMinimum"], bool)
+            ):
+                value = node["exclusiveMinimum"]
+                if "minimum" not in node:
+                    node["minimum"] = value
+                node["exclusiveMinimum"] = True
+            if (
+                "exclusiveMaximum" in node
+                and isinstance(node["exclusiveMaximum"], (int, float))
+                and not isinstance(node["exclusiveMaximum"], bool)
+            ):
+                value = node["exclusiveMaximum"]
+                if "maximum" not in node:
+                    node["maximum"] = value
+                node["exclusiveMaximum"] = True
+
+            for child in node.values():
+                _walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(schema)
+    return schema
+
+
 def _run_oasdiff_breakage_check(
     prev_spec: Path, cur_spec: Path
 ) -> tuple[list[dict], int]:
@@ -222,6 +264,9 @@ def main() -> int:
         return 0
 
     current_schema = _generate_current_openapi()
+
+    prev_schema = _normalize_openapi_for_oasdiff(prev_schema)
+    current_schema = _normalize_openapi_for_oasdiff(current_schema)
 
     with tempfile.TemporaryDirectory(prefix="oasdiff-specs-") as tmp:
         tmp_path = Path(tmp)

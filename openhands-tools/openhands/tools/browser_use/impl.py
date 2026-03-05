@@ -149,14 +149,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         Returns:
             Path to Chromium binary if found, None otherwise
         """
-        for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
-            if path := shutil.which(binary):
-                return path
-
-        # Check standard installation paths
+        # Check standard installation paths (prefer full Chrome installs)
         standard_paths = [
             # Linux
             "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser",
             # macOS
@@ -168,7 +165,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             if p.exists():
                 return str(p)
 
-        # Check Playwright-installed Chromium
+        # Check Playwright-installed Chromium (preferred over PATH lookups
+        # because PATH binaries like homebrew chromium may lack CDP support)
         playwright_cache_candidates = [
             Path.home() / ".cache" / "ms-playwright",  # Linux
             Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
@@ -187,11 +185,29 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                         / "Chromium.app"
                         / "Contents"
                         / "MacOS"
-                        / "Chromium",  # macOS
+                        / "Chromium",  # macOS (old)
+                        chromium_dir
+                        / "chrome-mac-arm64"
+                        / "Google Chrome for Testing.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "Google Chrome for Testing",  # macOS arm64
+                        chromium_dir
+                        / "chrome-mac"
+                        / "Google Chrome for Testing.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "Google Chrome for Testing",  # macOS x64
                     ]
                     for p in possible_paths:
                         if p.exists():
                             return str(p)
+
+        # Fallback: check PATH for any chromium-based binary
+        for binary in ("google-chrome", "chrome", "chromium", "chromium-browser"):
+            if path := shutil.which(binary):
+                return path
+
         return None
 
     def _ensure_chromium_available(self) -> str:
@@ -503,9 +519,16 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     async def cleanup(self):
         """Cleanup browser resources."""
         try:
-            await self.close_browser()
+            # Use _close_all_sessions instead of close_browser because it calls
+            # session.kill() which properly stops the event bus and drains
+            # pending events (including BrowserKillEvent that terminates the
+            # Chromium subprocess). close_browser() alone dispatches
+            # BrowserKillEvent fire-and-forget and returns before it's processed,
+            # which can leave the browser process alive.
             if hasattr(self._server, "_close_all_sessions"):
                 await self._server._close_all_sessions()
+            else:
+                await self.close_browser()
         except Exception as e:
             logger.warning(f"Error during browser cleanup: {e}")
 
