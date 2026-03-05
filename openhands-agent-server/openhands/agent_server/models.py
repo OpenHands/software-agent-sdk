@@ -21,6 +21,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.models import DiscriminatedUnionMixin, OpenHandsModel
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -108,12 +109,12 @@ class StartConversationRequest(BaseModel):
             "to register the tools for this conversation."
         ),
     )
-    agent_definitions: list[dict] = Field(
+    agent_definitions: list[AgentDefinition] = Field(
         default_factory=list,
         description=(
-            "List of serialized AgentDefinition objects from the client's "
-            "registry. These are registered on the server so that DelegateTool "
-            "and TaskSetTool can see user-registered subagents."
+            "Agent definitions from the client's registry. These are "
+            "registered on the server so that DelegateTool and TaskSetTool "
+            "can see user-registered subagents."
         ),
     )
     plugins: list[PluginSource] | None = Field(

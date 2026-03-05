@@ -69,7 +69,10 @@ def register_agent(
         factory_func: Function that takes an LLM and returns an Agent
         description: Human-readable description of what this agent does
         definition: Optional full agent definition. If not provided, a minimal
-            definition is created from name and description.
+            definition is created from name and description. Pass a full
+            definition when the agent needs to work in remote workspaces,
+            as only the definition's metadata (tools, system_prompt, model,
+            etc.) is forwarded to the agent-server.
 
     Raises:
         ValueError: If an agent with the same name already exists
@@ -104,7 +107,10 @@ def register_agent_if_absent(
         factory_func: Function that takes an LLM and returns an Agent
         description: Human-readable description of what this agent does
         definition: Optional full agent definition. If not provided, a minimal
-            definition is created from name and description.
+            definition is created from name and description. Pass a full
+            definition when the agent needs to work in remote workspaces,
+            as only the definition's metadata (tools, system_prompt, model,
+            etc.) is forwarded to the agent-server.
 
     Returns:
         True if the agent was registered, False if an agent with that name

@@ -3,6 +3,7 @@ import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import httpx
@@ -30,6 +31,10 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
 
 
+if TYPE_CHECKING:
+    from openhands.sdk.subagent.schema import AgentDefinition
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,11 +54,11 @@ def _compose_conversation_info(
 
 
 def _register_agent_definitions(
-    raw_defs: list[dict],
+    agent_defs: list["AgentDefinition"],
     *,
     context: str,
 ) -> None:
-    """Deserialize and register agent definitions into the subagent registry.
+    """Register agent definitions into the subagent registry.
 
     Used both when creating new conversations (definitions forwarded from the
     client) and when resuming persisted ones (definitions stored in meta.json).
@@ -62,12 +67,10 @@ def _register_agent_definitions(
         agent_definition_to_factory,
         register_agent_if_absent,
     )
-    from openhands.sdk.subagent.schema import AgentDefinition
 
     registered = 0
-    for raw_def in raw_defs:
+    for agent_def in agent_defs:
         try:
-            agent_def = AgentDefinition.model_validate(raw_def)
             factory = agent_definition_to_factory(agent_def)
             register_agent_if_absent(
                 name=agent_def.name,
@@ -79,10 +82,10 @@ def _register_agent_definitions(
         except Exception as e:
             logger.warning(
                 f"Failed to register agent definition "
-                f"'{raw_def.get('name', '?')}' ({context}): {e}"
+                f"'{agent_def.name}' ({context}): {e}"
             )
     logger.info(
-        f"Registered {registered}/{len(raw_defs)} agent definition(s) ({context})"
+        f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
     )
 
 
