@@ -2,7 +2,7 @@ import io
 import json
 import re
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -1150,3 +1150,20 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
 
     lines.append("</available_skills>")
     return "\n".join(lines)
+
+
+def collect_mcp_config(skills: list[Skill]) -> dict[str, Any]:
+    """Collect and merge MCP configs from skills that have mcp_tools.
+
+    Later skills override earlier ones by server name, consistent with
+    plugin merge semantics.
+    """
+    merged: dict[str, Any] = {}
+    for skill in skills:
+        if not skill.mcp_tools:
+            continue
+        servers = skill.mcp_tools.get("mcpServers", {})
+        if not servers:
+            continue
+        merged.setdefault("mcpServers", {}).update(servers)
+    return merged

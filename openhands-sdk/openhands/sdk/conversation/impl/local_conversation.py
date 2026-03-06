@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.context.skills import collect_mcp_config
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -455,6 +456,25 @@ class LocalConversation(BaseConversation):
 
             # Load plugins first (merges skills, MCP config, hooks)
             self._ensure_plugins_loaded()
+
+            # Merge MCP configs from already-loaded skills into the agent.
+            # Skills are loaded into agent_context by AgentContext._load_auto_skills
+            # and by _ensure_plugins_loaded, so we reuse them rather than re-reading
+            # the filesystem. Skill MCP has lower priority than the agent's existing
+            # mcp_config (which already includes plugin overrides).
+            if self.agent.agent_context:
+                skill_mcp = collect_mcp_config(self.agent.agent_context.skills)
+                if skill_mcp:
+                    skill_servers = skill_mcp.get("mcpServers", {})
+                    agent_servers = self.agent.mcp_config.get("mcpServers", {})
+                    merged_mcp = dict(self.agent.mcp_config)
+                    merged_mcp["mcpServers"] = {
+                        **skill_servers,
+                        **agent_servers,
+                    }
+                    self.agent = self.agent.model_copy(
+                        update={"mcp_config": merged_mcp}
+                    )
 
             # register file-based agents
             self._register_file_based_agents()
