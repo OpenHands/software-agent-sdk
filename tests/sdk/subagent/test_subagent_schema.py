@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from openhands.sdk.subagent.schema import AgentDefinition, _extract_examples
+from openhands.sdk.subagent.schema import (
+    _CONDENSER_VALID_KEYS,
+    AgentDefinition,
+    _extract_examples,
+)
 
 
 class TestAgentDefinition:
@@ -318,6 +322,113 @@ Content.
         """Test that profile_store_dir defaults to None on direct construction."""
         agent = AgentDefinition(name="test")
         assert agent.profile_store_dir is None
+
+    def test_condenser_default_none(self):
+        """Test that condenser defaults to None on direct construction."""
+        agent = AgentDefinition(name="test")
+        assert agent.condenser is None
+
+    def test_condenser_as_dict(self):
+        """Test creating AgentDefinition with condenser as dict."""
+        config = {"max_size": 100, "keep_first": 2}
+        agent = AgentDefinition(name="condensed-agent", condenser=config)
+        assert agent.condenser == config
+
+    def test_load_condenser_from_frontmatter(self, tmp_path: Path):
+        """Test loading condenser from YAML frontmatter."""
+        agent_md = tmp_path / "condensed.md"
+        agent_md.write_text(
+            """---
+name: condensed-agent
+condenser:
+  max_size: 100
+  keep_first: 3
+---
+
+You are an agent with condensation.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.condenser is not None
+        assert agent.condenser["max_size"] == 100
+        assert agent.condenser["keep_first"] == 3
+
+    def test_load_condenser_not_in_metadata(self, tmp_path: Path):
+        """Test that condenser doesn't leak into metadata."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+condenser:
+  max_size: 50
+custom_field: value
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert "condenser" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_load_condenser_non_dict_raises(self, tmp_path: Path):
+        """Test that non-dict condenser value raises ValueError."""
+        agent_md = tmp_path / "bad-condenser.md"
+        agent_md.write_text(
+            """---
+name: bad-condenser
+condenser: true
+---
+
+Prompt.
+"""
+        )
+        with pytest.raises(ValueError, match="must be a mapping"):
+            AgentDefinition.load(agent_md)
+
+    def test_load_condenser_unknown_key_raises(self, tmp_path: Path):
+        """Test that unknown condenser parameters raise ValueError."""
+        agent_md = tmp_path / "bad-condenser.md"
+        agent_md.write_text(
+            """---
+name: bad-condenser
+condenser:
+  max_size: 100
+  bogus_param: 42
+---
+
+Prompt.
+"""
+        )
+        with pytest.raises(ValueError, match="Unknown condenser parameter"):
+            AgentDefinition.load(agent_md)
+
+    def test_load_without_condenser(self, tmp_path: Path):
+        """Test that loading from file without condenser gives None."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: no-condenser
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.condenser is None
+
+    def test_condenser_valid_keys_match_llm_summarizing_condenser(self):
+        """Ensure _CONDENSER_VALID_KEYS stays in sync with LLMSummarizingCondenser."""
+        from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+        # Get all user-configurable fields (exclude 'llm' which is inherited)
+        condenser_fields = set(LLMSummarizingCondenser.model_fields.keys()) - {"llm"}
+        assert _CONDENSER_VALID_KEYS == condenser_fields, (
+            f"_CONDENSER_VALID_KEYS is out of sync with LLMSummarizingCondenser. "
+            f"Missing: {condenser_fields - _CONDENSER_VALID_KEYS}, "
+            f"Extra: {_CONDENSER_VALID_KEYS - condenser_fields}"
+        )
 
 
 class TestExtractExamples:
