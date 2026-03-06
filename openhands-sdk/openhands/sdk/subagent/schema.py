@@ -19,6 +19,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "skills",
     "max_iteration_per_run",
     "profile_store_dir",
+    "mcp_servers",
 }
 
 
@@ -55,6 +56,19 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     else:
         skills = []
     return skills
+
+
+def _extract_mcp_servers(fm: dict[str, object]) -> dict[str, Any] | None:
+    """Extract MCP servers configuration from frontmatter."""
+    mcp_servers_raw = fm.get("mcp_servers")
+    if mcp_servers_raw is None:
+        return None
+    if isinstance(mcp_servers_raw, dict):
+        return mcp_servers_raw
+    raise ValueError(
+        f"mcp_servers must be a mapping of server names to configs, "
+        f"got {type(mcp_servers_raw)}"
+    )
 
 
 def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
@@ -121,6 +135,12 @@ class AgentDefinition(BaseModel):
         "It must be strictly positive, or None for default.",
         gt=0,
     )
+    mcp_servers: dict[str, Any] | None = Field(
+        default=None,
+        description="MCP server configurations for this agent. "
+        "Keys are server names, values are server configs with 'command', 'args', etc.",
+        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
+    )
     profile_store_dir: str | None = Field(
         default=None,
         description="Path to the directory where LLM profiles are stored. "
@@ -139,6 +159,7 @@ class AgentDefinition(BaseModel):
         - description: Description with optional <example> tags for triggering
         - tools (optional): List of allowed tools
         - skills (optional): Comma-separated skill names or list of skill names
+        - mcp_servers (optional): MCP server configurations mapping
         - model (optional): Model profile to use (default: 'inherit')
         - color (optional): Display color
         - max_iterations_per_run: Max iteration per run
@@ -165,6 +186,7 @@ class AgentDefinition(BaseModel):
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
+        mcp_servers: dict[str, Any] | None = _extract_mcp_servers(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
 
         # Extract whenToUse examples from description
@@ -181,6 +203,7 @@ class AgentDefinition(BaseModel):
             tools=tools,
             skills=skills,
             max_iteration_per_run=max_iteration_per_run,
+            mcp_servers=mcp_servers,
             profile_store_dir=profile_store_dir,
             system_prompt=content,
             source=str(agent_path),

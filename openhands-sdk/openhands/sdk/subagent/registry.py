@@ -27,7 +27,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
@@ -245,10 +245,16 @@ def agent_definition_to_factory(
                 )
             tools.append(Tool(name=tool_name))
 
+        # Build MCP config if servers are defined
+        mcp_config: dict[str, Any] = {}
+        if agent_def.mcp_servers:
+            mcp_config = {"mcpServers": agent_def.mcp_servers}
+
         return Agent(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
+            mcp_config=mcp_config,
         )
 
     return _factory

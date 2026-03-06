@@ -319,6 +319,81 @@ Content.
         agent = AgentDefinition(name="test")
         assert agent.profile_store_dir is None
 
+    def test_mcp_servers_default_none(self):
+        """Test that mcp_servers defaults to None on direct construction."""
+        agent = AgentDefinition(name="test")
+        assert agent.mcp_servers is None
+
+    def test_mcp_servers_as_dict(self):
+        """Test creating AgentDefinition with mcp_servers as dict."""
+        servers = {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+        agent = AgentDefinition(name="mcp-agent", mcp_servers=servers)
+        assert agent.mcp_servers == servers
+
+    def test_load_mcp_servers_from_frontmatter(self, tmp_path: Path):
+        """Test loading mcp_servers from YAML frontmatter."""
+        agent_md = tmp_path / "mcp-agent.md"
+        agent_md.write_text(
+            """---
+name: mcp-agent
+mcp_servers:
+  fetch:
+    command: uvx
+    args:
+      - mcp-server-fetch
+  filesystem:
+    command: npx
+    args:
+      - -y
+      - "@modelcontextprotocol/server-filesystem"
+---
+
+You are an agent with MCP tools.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.mcp_servers is not None
+        assert "fetch" in agent.mcp_servers
+        assert agent.mcp_servers["fetch"]["command"] == "uvx"
+        assert agent.mcp_servers["fetch"]["args"] == ["mcp-server-fetch"]
+        assert "filesystem" in agent.mcp_servers
+
+    def test_load_mcp_servers_not_in_metadata(self, tmp_path: Path):
+        """Test that mcp_servers doesn't leak into metadata."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+mcp_servers:
+  fetch:
+    command: uvx
+    args:
+      - mcp-server-fetch
+custom_field: value
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert "mcp_servers" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_load_without_mcp_servers(self, tmp_path: Path):
+        """Test that loading from file without mcp_servers gives None."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: no-mcp
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.mcp_servers is None
+
 
 class TestExtractExamples:
     """Tests for _extract_examples function."""
