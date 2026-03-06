@@ -38,9 +38,8 @@ inputs:
         required: false
         default: main
     llm-api-key:
-        description: LLM API key (required in local mode)
-        required: false
-        default: ''
+        description: LLM API key (required in both local and cloud modes)
+        required: true
     github-token:
         description: GitHub token for API access (required)
         required: true
@@ -94,8 +93,14 @@ runs:
 
         - name: Install OpenHands dependencies
           shell: bash
+          env:
+              MODE: ${{ inputs.mode }}
           run: |
-              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr
+              PACKAGES="./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr"
+              if [ "$MODE" = "cloud" ]; then
+                PACKAGES="$PACKAGES ./software-agent-sdk/openhands-workspace"
+              fi
+              uv pip install --system $PACKAGES
 
         - name: Check required configuration and select model
           id: select-model
@@ -111,6 +116,11 @@ runs:
                 exit 1
               fi
 
+              if [ -z "$LLM_API_KEY" ]; then
+                echo "Error: llm-api-key is required."
+                exit 1
+              fi
+
               if [ "$MODE" = "cloud" ]; then
                 if [ -z "$OPENHANDS_API_KEY" ]; then
                   echo "Error: openhands-api-key is required in cloud mode."
@@ -118,10 +128,6 @@ runs:
                 fi
                 echo "Mode: cloud (agent runs on OpenHands Cloud)"
               else
-                if [ -z "$LLM_API_KEY" ]; then
-                  echo "Error: llm-api-key is required in local mode."
-                  exit 1
-                fi
                 echo "Mode: local (agent runs in GitHub Actions)"
               fi
 

@@ -24,9 +24,10 @@ from agent_script import (  # noqa: E402  # type: ignore[import-not-found]
 )
 
 
-# Minimal env vars shared by both modes (everything except mode-specific keys)
+# Minimal env vars shared by both modes
 _BASE_ENV = {
     "GITHUB_TOKEN": "ghp_test",
+    "LLM_API_KEY": "sk-test",
     "PR_NUMBER": "42",
     "PR_TITLE": "Test PR",
     "PR_BASE_BRANCH": "main",
@@ -38,15 +39,16 @@ _BASE_ENV = {
 
 def test_main_rejects_unknown_mode():
     """main() exits with error on unknown MODE."""
-    env = {**_BASE_ENV, "MODE": "invalid", "LLM_API_KEY": "key"}
+    env = {**_BASE_ENV, "MODE": "invalid"}
     with patch.dict(os.environ, env, clear=True):
         with pytest.raises(SystemExit):
             main()
 
 
-def test_main_local_mode_requires_llm_api_key():
-    """Local mode requires LLM_API_KEY."""
+def test_main_requires_llm_api_key():
+    """Both modes require LLM_API_KEY."""
     env = {**_BASE_ENV, "MODE": "local"}
+    del env["LLM_API_KEY"]
     with patch.dict(os.environ, env, clear=True):
         with pytest.raises(SystemExit):
             main()
@@ -60,8 +62,17 @@ def test_main_cloud_mode_requires_openhands_api_key():
             main()
 
 
-def test_main_cloud_mode_does_not_require_llm_api_key():
-    """Cloud mode should NOT require LLM_API_KEY."""
+def test_main_cloud_mode_requires_llm_api_key():
+    """Cloud mode also requires LLM_API_KEY (limitation pending OpenHands#13268)."""
+    env = {**_BASE_ENV, "MODE": "cloud", "OPENHANDS_API_KEY": "oh-key"}
+    del env["LLM_API_KEY"]
+    with patch.dict(os.environ, env, clear=True):
+        with pytest.raises(SystemExit):
+            main()
+
+
+def test_main_cloud_mode_dispatches_with_github_token():
+    """Cloud mode dispatches to _run_cloud_mode with github_token."""
     env = {**_BASE_ENV, "MODE": "cloud", "OPENHANDS_API_KEY": "oh-key"}
     with (
         patch.dict(os.environ, env, clear=True),
@@ -74,14 +85,12 @@ def test_main_cloud_mode_does_not_require_llm_api_key():
         mock_cloud.assert_called_once()
         call_kwargs = mock_cloud.call_args[1]
         assert "prompt" in call_kwargs
-        assert "pr_info" in call_kwargs
-        # GITHUB_TOKEN is NOT forwarded to cloud mode
-        assert "github_token" not in call_kwargs
+        assert call_kwargs["github_token"] == "ghp_test"
 
 
 def test_main_local_mode_dispatches_to_local():
     """Local mode dispatches to _run_local_mode."""
-    env = {**_BASE_ENV, "MODE": "local", "LLM_API_KEY": "key"}
+    env = {**_BASE_ENV, "MODE": "local"}
     with (
         patch.dict(os.environ, env, clear=True),
         patch("agent_script.get_truncated_pr_diff", return_value="diff"),
@@ -95,8 +104,7 @@ def test_main_local_mode_dispatches_to_local():
 
 def test_main_default_mode_is_local():
     """When MODE is not set, default to local mode."""
-    env = {**_BASE_ENV, "LLM_API_KEY": "key"}
-    # Ensure MODE is not set
+    env = {**_BASE_ENV}
     env.pop("MODE", None)
     with (
         patch.dict(os.environ, env, clear=True),

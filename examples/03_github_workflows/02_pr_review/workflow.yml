@@ -12,8 +12,8 @@
 #
 # Mode options:
 #  - local (default): Runs the agent in GitHub Actions. Requires LLM_API_KEY.
-#  - cloud: Runs the agent on OpenHands Cloud. Requires OPENHANDS_API_KEY.
-#    The LLM is configured on the Cloud side, and the agent runs asynchronously.
+#  - cloud: Runs the agent on OpenHands Cloud. Requires OPENHANDS_API_KEY + LLM_API_KEY.
+#    The agent runs asynchronously on Cloud infrastructure.
 #
 # For more information, see:
 # https://github.com/OpenHands/software-agent-sdk/tree/main/examples/03_github_workflows/02_pr_review
@@ -64,12 +64,13 @@ jobs:
 
             # --- Option B: Cloud mode ---
             # Uncomment below (and comment out Option A) to use OpenHands Cloud.
-            # Agent runs asynchronously on OpenHands Cloud. Requires OPENHANDS_API_KEY.
+            # Agent runs asynchronously on Cloud infrastructure. Requires OPENHANDS_API_KEY + LLM_API_KEY.
             # - name: Run PR Review (Cloud)
             #   uses: ./.github/actions/pr-review
             #   with:
             #       mode: cloud
             #       review-style: roasted
             #       sdk-version: main
+            #       llm-api-key: ${{ secrets.LLM_API_KEY }}
             #       openhands-api-key: ${{ secrets.OPENHANDS_API_KEY }}
             #       github-token: ${{ secrets.GITHUB_TOKEN }}

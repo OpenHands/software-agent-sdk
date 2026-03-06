@@ -69,12 +69,16 @@ Set the following secrets in your GitHub repository settings:
 
 #### Cloud mode
 
-The agent runs asynchronously on [OpenHands Cloud](https://app.all-hands.dev). The LLM is configured on the Cloud side, so you only need an OpenHands API key. Reviews are posted by the OpenHands Cloud GitHub App.
+The agent runs asynchronously on [OpenHands Cloud](https://app.all-hands.dev) infrastructure, freeing up GitHub Actions minutes. The workflow exits quickly after triggering the review.
 
 Set the following secrets in your GitHub repository settings:
 
 - **`OPENHANDS_API_KEY`** (required): Your OpenHands Cloud API key
   - Go to [app.all-hands.dev](https://app.all-hands.dev) → Settings → API Keys
+- **`LLM_API_KEY`** (required): Your LLM API key
+  - Get one from the [OpenHands LLM Provider](https://docs.all-hands.dev/openhands/usage/llms/openhands-llms)
+
+> **Note**: Cloud mode currently requires user-provided `LLM_API_KEY` and `GITHUB_TOKEN` because the Cloud sandbox API does not yet inject repository context or the Cloud's GitHub App token. Reviews are posted under the `GITHUB_TOKEN` owner's identity. See [OpenHands/OpenHands#13268](https://github.com/OpenHands/OpenHands/issues/13268) for progress on native Cloud integration that would remove these requirements.
 
 ### 3. Customize the workflow (optional)
 
@@ -100,6 +104,7 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
       mode: cloud
       review-style: roasted
       sdk-version: main
+      llm-api-key: ${{ secrets.LLM_API_KEY }}
       openhands-api-key: ${{ secrets.OPENHANDS_API_KEY }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -211,7 +216,7 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
-| `llm-api-key` | LLM API key (required in local mode) | Local mode | - |
+| `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |
 | `openhands-api-key` | OpenHands Cloud API key (required in cloud mode) | Cloud mode | - |
 | `lmnr-api-key` | Laminar API key for observability (optional) | No | - |

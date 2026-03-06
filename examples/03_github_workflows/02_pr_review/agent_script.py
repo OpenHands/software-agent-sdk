@@ -24,14 +24,19 @@ Designed for use with GitHub Actions workflows triggered by PR labels.
 Modes:
     local (default): Runs the agent locally in GitHub Actions. Requires
         LLM_API_KEY and GITHUB_TOKEN.
-    cloud: Runs the agent on OpenHands Cloud. Requires OPENHANDS_API_KEY
-        and GITHUB_TOKEN. The LLM is configured on the Cloud side, so no
-        LLM_API_KEY is needed. The agent runs asynchronously and posts
-        review comments via the OpenHands Cloud GitHub App.
+    cloud: Runs the agent on OpenHands Cloud via OpenHandsCloudWorkspace.
+        Requires OPENHANDS_API_KEY, LLM_API_KEY, and GITHUB_TOKEN.
+        The agent runs asynchronously on Cloud infrastructure.
+
+    Note: Cloud mode currently requires user-provided LLM_API_KEY and
+    GITHUB_TOKEN because the Cloud sandbox API (POST /api/v1/sandboxes)
+    does not inject repository context or the Cloud's GitHub App token.
+    See https://github.com/OpenHands/OpenHands/issues/13268 for progress
+    on native Cloud integration that would remove these requirements.
 
 Environment Variables:
     MODE: Execution mode - 'local' or 'cloud' (default: 'local')
-    LLM_API_KEY: API key for the LLM (required in local mode)
+    LLM_API_KEY: API key for the LLM (required)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for API access (required)
@@ -732,101 +737,55 @@ def _build_secrets(github_token: str | None) -> dict[str, str]:
 def _run_cloud_mode(
     prompt: str,
     skill_trigger: str,
-    pr_info: dict[str, Any],
+    github_token: str | None,
 ) -> None:
-    """Run the PR review agent on OpenHands Cloud.
+    """Run the PR review agent on OpenHands Cloud via OpenHandsCloudWorkspace.
 
-    Uses the ``POST /api/v1/app-conversations`` Cloud endpoint which
-    handles GitHub authentication via the OpenHands Cloud GitHub App.
-    The review is posted by the Cloud bot, not the workflow token owner.
+    Creates a sandbox on OpenHands Cloud, configures the agent with the
+    caller's LLM and GitHub credentials, and triggers an asynchronous run.
 
-    GITHUB_TOKEN is intentionally NOT forwarded.  The Cloud provisions
-    its own token through the installed GitHub App so that reviews appear
-    under the bot identity.
+    Note: Currently requires user-provided LLM_API_KEY and GITHUB_TOKEN
+    because the Cloud sandbox API does not inject repository context or
+    the Cloud's GitHub App token. Reviews are posted under the token
+    owner's identity. See OpenHands/OpenHands#13268 for progress on
+    native Cloud integration.
     """
-    import httpx
+    from openhands.workspace import OpenHandsCloudWorkspace
 
     openhands_api_key = _get_required_env("OPENHANDS_API_KEY")
-    cloud_api_url = os.getenv(
-        "OPENHANDS_CLOUD_URL", "https://app.all-hands.dev"
-    ).rstrip("/")
+    cloud_api_url = os.getenv("OPENHANDS_CLOUD_URL", "https://app.all-hands.dev")
 
     logger.info(f"Using OpenHands Cloud: {cloud_api_url}")
     logger.info(f"Using skill trigger: {skill_trigger}")
 
-    repo_name = pr_info.get("repo_name", "")
-    branch = pr_info.get("head_branch", "")
-    pr_number_str = pr_info.get("number", "")
-    pr_number = int(pr_number_str) if pr_number_str else 0
+    llm = _build_llm()
+    workspace = OpenHandsCloudWorkspace(
+        cloud_api_url=cloud_api_url,
+        cloud_api_key=openhands_api_key,
+        keep_alive=True,
+    )
 
-    payload: dict[str, Any] = {
-        "selected_repository": repo_name,
-        "selected_branch": branch,
-        "git_provider": "github",
-        "pr_number": [pr_number] if pr_number else [],
-        "trigger": "openhands_api",
-        "title": f"PR Review: {pr_info.get('title', 'N/A')}",
-        "initial_message": {
-            "role": "user",
-            "content": [{"type": "text", "text": prompt}],
-            "run": True,
-        },
-    }
+    try:
+        cwd = workspace.working_dir
+        agent = _build_agent(llm, cwd)
+        secrets = _build_secrets(github_token)
 
-    headers = {
-        "Authorization": f"Bearer {openhands_api_key}",
-        "Content-Type": "application/json",
-    }
-
-    # 1. Create the app-conversation (async — returns a start-task)
-    with httpx.Client(timeout=60.0) as client:
-        resp = client.post(
-            f"{cloud_api_url}/api/v1/app-conversations",
-            json=payload,
-            headers=headers,
+        conversation = Conversation(
+            agent=agent,
+            workspace=workspace,
+            secrets=secrets,
         )
-        resp.raise_for_status()
-        task = resp.json()
 
-    task_id = task["id"]
-    logger.info(f"Cloud start-task created: {task_id}")
+        logger.info("Starting PR review on OpenHands Cloud...")
+        conversation.send_message(prompt)
+        conversation.run(blocking=False)
 
-    # 2. Poll until the conversation is READY (or ERROR)
-    poll_interval = 5.0
-    max_wait = 300.0
-    waited = 0.0
-    with httpx.Client(timeout=30.0) as client:
-        while waited < max_wait:
-            resp = client.get(
-                f"{cloud_api_url}/api/v1/app-conversations/start-tasks/search",
-                headers=headers,
-            )
-            resp.raise_for_status()
-            for t in resp.json().get("items", []):
-                if t["id"] == task_id:
-                    task = t
-                    break
-
-            task_status = task.get("status", "UNKNOWN")
-            if task_status == "READY":
-                logger.info(
-                    "PR review triggered on OpenHands Cloud "
-                    "(agent running asynchronously)"
-                )
-                conv_id = task.get("app_conversation_id", "N/A")
-                logger.info(f"Cloud conversation: {conv_id}")
-                return
-            if task_status in ("ERROR", "FAILED"):
-                detail = task.get("detail", "no details")
-                raise RuntimeError(
-                    f"Cloud conversation failed: {task_status} — {detail}"
-                )
-
-            logger.debug(f"Start-task status: {task_status}")
-            time.sleep(poll_interval)
-            waited += poll_interval
-
-    raise TimeoutError(f"Cloud conversation did not become READY within {max_wait}s")
+        logger.info(
+            "PR review triggered on OpenHands Cloud (agent running asynchronously)"
+        )
+    except Exception:
+        workspace.cleanup()
+        raise
 
 
 def _run_local_mode(
@@ -938,15 +897,14 @@ def main():
     # Validate required environment variables based on mode
     required_vars = [
         "GITHUB_TOKEN",
+        "LLM_API_KEY",
         "PR_NUMBER",
         "PR_TITLE",
         "PR_BASE_BRANCH",
         "PR_HEAD_BRANCH",
         "REPO_NAME",
     ]
-    if mode == "local":
-        required_vars.append("LLM_API_KEY")
-    else:
+    if mode == "cloud":
         required_vars.append("OPENHANDS_API_KEY")
 
     missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -1013,7 +971,7 @@ def main():
             _run_cloud_mode(
                 prompt=prompt,
                 skill_trigger=skill_trigger,
-                pr_info=pr_info,
+                github_token=github_token,
             )
         else:
             _run_local_mode(
