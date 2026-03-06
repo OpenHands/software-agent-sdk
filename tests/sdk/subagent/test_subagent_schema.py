@@ -328,17 +328,17 @@ Content.
         assert agent.permission_mode is None
 
     @pytest.mark.parametrize(
-        "confirmation_policy",
+        "mode",
         [
             "never_confirm",
             "confirm_risky",
             "always_confirm",
         ],
     )
-    def test_permission_mode_always_confirm(self, confirmation_policy: str):
-        """Test setting permission_mode to always_confirm."""
-        agent = AgentDefinition(name="test", permission_mode=confirmation_policy)
-        assert agent.permission_mode == confirmation_policy
+    def test_permission_mode_valid_values(self, mode: str):
+        """Test setting permission_mode to each valid value."""
+        agent = AgentDefinition(name="test", permission_mode=mode)
+        assert agent.permission_mode == mode
 
     def test_load_permission_mode_from_frontmatter(self, tmp_path: Path):
         """Test loading permission_mode from frontmatter."""
@@ -392,21 +392,21 @@ Prompt.
         assert agent.get_confirmation_policy() is None
 
     @pytest.mark.parametrize(
-        "permission_mode, permission_policy",
+        "permission_mode, expected_class_name",
         [
             ("always_confirm", "AlwaysConfirm"),
             ("never_confirm", "NeverConfirm"),
             ("confirm_risky", "ConfirmRisky"),
         ],
     )
-    def test_get_confirmation_policy_always_confirm(
-        self, permission_mode: str, permission_policy: str
+    def test_get_confirmation_policy_returns_instance(
+        self, permission_mode: str, expected_class_name: str
     ):
-        """Test that always_confirm returns AlwaysConfirm policy."""
+        """Test that each permission_mode returns the correct policy instance."""
         agent = AgentDefinition(name="test", permission_mode=permission_mode)
         policy = agent.get_confirmation_policy()
         assert policy is not None
-        assert policy.__name__ == permission_policy
+        assert type(policy).__name__ == expected_class_name
 
     def test_load_permission_mode_invalid_raises(self, tmp_path: Path):
         """Test that an invalid permission_mode raises ValueError."""

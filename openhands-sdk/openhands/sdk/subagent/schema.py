@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import frontmatter
 from pydantic import BaseModel, Field
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 
 
 KNOWN_FIELDS: Final[set[str]] = {
@@ -158,7 +162,7 @@ class AgentDefinition(BaseModel):
         default_factory=dict, description="Additional metadata from frontmatter"
     )
 
-    def get_confirmation_policy(self):
+    def get_confirmation_policy(self) -> ConfirmationPolicyBase | None:
         """Convert permission_mode to a ConfirmationPolicyBase instance.
 
         Returns None when permission_mode is None (inherit parent policy).
