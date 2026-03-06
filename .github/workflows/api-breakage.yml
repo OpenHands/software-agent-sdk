@@ -28,6 +28,10 @@ jobs:
               # Release PRs (rel-*) must block on breakage.
               # Other PRs should still report failures via PR comment, but not gate merges.
               continue-on-error: ${{ !startsWith(github.head_ref, 'rel-') }}
+              env:
+                  SDK_INCLUDE_PATHS: openhands.sdk
+                  ACP_VERSION_CHECK_BASE_REF: ${{ github.base_ref }}
+                  ACP_VERSION_CHECK_SKIP: ${{ contains(github.event.pull_request.body, 'skip-acp-check') }}
               run: |
                   uv run python .github/scripts/check_sdk_api_breakage.py 2>&1 | tee api-breakage.log
                   exit_code=${PIPESTATUS[0]}
