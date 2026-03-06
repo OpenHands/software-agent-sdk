@@ -120,6 +120,16 @@ When reviewing code, provide constructive feedback:
 
 When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
 
+# Bedrock + LiteLLM note
+
+- LiteLLM interprets the `api_key` parameter for Bedrock models as an **AWS bearer token**.
+  When using IAM/SigV4 auth (AWS credentials / profiles), do **not** forward `LLM.api_key`
+  to LiteLLM for Bedrock models, or Bedrock may return:
+  `Invalid API Key format: Must start with pre-defined prefix`.
+- If you need Bedrock bearer-token auth, set `AWS_BEARER_TOKEN_BEDROCK` in the environment
+  (instead of using `LLM_API_KEY`).
+
+
 </DEV_SETUP>
 
 <PR_ARTIFACTS>

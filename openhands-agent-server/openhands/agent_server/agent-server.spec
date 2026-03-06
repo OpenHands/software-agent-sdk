@@ -5,6 +5,7 @@ PyInstaller spec for OpenHands Agent Server with PEP 420 (implicit namespace) la
 
 from pathlib import Path
 import os
+import site
 from PyInstaller.utils.hooks import (
     collect_submodules,
     collect_data_files,
@@ -24,6 +25,37 @@ PATHEX = [
 # Entry script for the agent server package (namespace: openhands/agent_server/__main__.py)
 ENTRY = str(project_root / "openhands-agent-server" / "openhands" / "agent_server" / "__main__.py")
 
+# Find fakeredis package location to get commands.json with correct path
+def get_fakeredis_data():
+    """Get fakeredis data files with correct directory structure.
+    
+    fakeredis/model/_command_info.py uses Path(__file__).parent.parent / "commands.json"
+    which means it expects commands.json to be at fakeredis/commands.json when accessed
+    from fakeredis/model/. We need to ensure the model/ subdirectory exists in the bundle.
+    """
+    import fakeredis
+    fakeredis_dir = Path(fakeredis.__file__).parent
+    commands_json = fakeredis_dir / "commands.json"
+    
+    data_files = []
+    if commands_json.exists():
+        # Add commands.json to fakeredis/ directory
+        data_files.append((str(commands_json), "fakeredis"))
+    
+    # Add a placeholder file to create the model/ subdirectory structure
+    # This ensures Path(__file__).parent.parent works correctly for model/ modules
+    model_dir = fakeredis_dir / "model"
+    if model_dir.exists():
+        # Find any .py file in model/ to include (PyInstaller needs at least one file)
+        for py_file in model_dir.glob("*.py"):
+            # We don't actually need the .py files (they're compiled), but we need
+            # the __init__.py to create the directory structure
+            if py_file.name == "__init__.py":
+                data_files.append((str(py_file), "fakeredis/model"))
+                break
+    
+    return data_files
+
 a = Analysis(
     [ENTRY],
     pathex=PATHEX,
@@ -35,6 +67,8 @@ a = Analysis(
         *collect_data_files("litellm"),
         *collect_data_files("fastmcp"),
         *collect_data_files("mcp"),
+        *collect_data_files("fakeredis"),  # Required for commands.json used by fakeredis ACL
+        *get_fakeredis_data(),  # Ensure fakeredis/model/ directory structure exists
 
         # OpenHands SDK prompt templates (adjusted for shallow namespace layout)
         *collect_data_files("openhands.sdk.agent", includes=["prompts/*.j2"]),
@@ -66,6 +100,8 @@ a = Analysis(
         *collect_submodules("tiktoken_ext"),
         *collect_submodules("litellm"),
         *collect_submodules("fastmcp"),
+        *collect_submodules("fakeredis"),
+        *collect_submodules("lupa"),  # Required for fakeredis[lua] Lua scripting support
 
         # mcp subpackages used at runtime (avoid CLI)
         "mcp.types",

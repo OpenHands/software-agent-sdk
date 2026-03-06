@@ -91,8 +91,9 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
+from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -120,6 +121,12 @@ MIN_CONTEXT_WINDOW_TOKENS: Final[int] = 16384
 
 # Environment variable to override the minimum context window check
 ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
+
+# Default max output tokens when model info only provides 'max_tokens' (ambiguous).
+# Some providers use 'max_tokens' for the total context window, not output limit.
+# This cap prevents requesting output that exceeds the context window.
+# 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
+DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -181,10 +188,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description=(
             "Sampling temperature for response generation. "
-            "Defaults to 0 for most models and provider default for reasoning models."
+            "Defaults to None (uses provider default temperature). "
+            "Set to 0.0 for deterministic outputs, "
+            "or higher values (0.7-1.0) for more creative responses."
         ),
     )
-    top_p: float | None = Field(default=1.0, ge=0, le=1)
+    top_p: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Nucleus sampling parameter. "
+            "Defaults to None (uses provider default). "
+            "Set to a value between 0 and 1 to control diversity of outputs."
+        ),
+    )
     top_k: float | None = Field(default=None, ge=0)
 
     max_input_tokens: int | None = Field(
@@ -293,12 +311,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
-    # Prompt cache retention only applies to GPT-5+ models; filtered in chat options
+    # Prompt cache retention is filtered per model features in chat options.
     prompt_cache_retention: str | None = Field(
         default="24h",
         description=(
-            "Retention policy for prompt cache. Only sent for GPT-5+ models; "
-            "explicitly stripped for all other models."
+            "Retention policy for prompt cache. Only sent for supported models "
+            "(GPT-5+ and GPT-4.1, excluding Azure deployments); explicitly "
+            "stripped for all others."
         ),
     )
     extended_thinking_budget: int | None = Field(
@@ -371,6 +390,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
+    _litellm_provider: str | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -427,11 +447,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
-        # HF doesn't support the OpenAI default value for top_p (1)
-        if model_val.startswith("huggingface"):
-            if d.get("top_p", 1.0) == 1.0:
-                d["top_p"] = 0.9
-
         return d
 
     @model_validator(mode="after")
@@ -470,9 +485,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Capabilities + model info
         self._init_model_info_and_caps()
-
-        if self.temperature is None:
-            self.temperature = get_default_temperature(self.model)
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
@@ -856,11 +868,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     typed_input: ResponseInputParam | str = (
                         cast(ResponseInputParam, input_items) if input_items else ""
                     )
-                    # Extract api_key value with type assertion for type checker
-                    api_key_value: str | None = None
-                    if self.api_key:
-                        assert isinstance(self.api_key, SecretStr)
-                        api_key_value = self.api_key.get_secret_value()
+                    api_key_value = self._get_litellm_api_key_value()
 
                     ret = litellm_responses(
                         model=self.model,
@@ -973,6 +981,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Transport + helpers
     # =========================================================================
+
+    def _infer_litellm_provider(self) -> str | None:
+        if self._litellm_provider is not None:
+            return self._litellm_provider
+
+        provider = infer_litellm_provider(model=self.model, api_base=self.base_url)
+        self._litellm_provider = provider
+        return provider
+
+    def _get_litellm_api_key_value(self) -> str | None:
+        api_key_value: str | None = None
+        if self.api_key:
+            assert isinstance(self.api_key, SecretStr)
+            api_key_value = self.api_key.get_secret_value()
+
+        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
+        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
+        # to reject the request with an "Invalid API Key format" error.
+        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
+        if api_key_value is not None and self._infer_litellm_provider() == "bedrock":
+            return None
+
+        return api_key_value
+
     def _transport_call(
         self,
         *,
@@ -1006,11 +1038,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     category=DeprecationWarning,
                     message="Accessing the 'model_fields' attribute.*",
                 )
-                # Extract api_key value with type assertion for type checker
-                api_key_value: str | None = None
-                if self.api_key:
-                    assert isinstance(self.api_key, SecretStr)
-                    api_key_value = self.api_key.get_secret_value()
+                api_key_value = self._get_litellm_api_key_value()
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
@@ -1091,7 +1119,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
                 elif isinstance(self._model_info.get("max_tokens"), int):
-                    self.max_output_tokens = self._model_info.get("max_tokens")
+                    # 'max_tokens' is ambiguous: some providers use it for total
+                    # context window, not output limit. Cap it to avoid requesting
+                    # output that exceeds the context window.
+                    max_tokens_value = self._model_info.get("max_tokens")
+                    assert isinstance(max_tokens_value, int)  # for type checker
+                    self.max_output_tokens = min(
+                        max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                    )
+                    if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s for %s "
+                            "(max_tokens may be context window, not output)",
+                            max_tokens_value,
+                            self.max_output_tokens,
+                            self.model,
+                        )
 
         if "o3" in self.model:
             o3_limit = 100000

@@ -1,6 +1,6 @@
 """Example: Using ACPAgent with Claude Code ACP server.
 
-This example shows how to use an ACP-compatible server (claude-code-acp)
+This example shows how to use an ACP-compatible server (claude-agent-acp)
 as the agent backend instead of direct LLM calls.  It also demonstrates
 ``ask_agent()`` — a stateless side-question that forks the ACP session
 and leaves the main conversation untouched.
@@ -42,4 +42,6 @@ finally:
     # Clean up the ACP server subprocess
     agent.close()
 
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"\nEXAMPLE_COST: {cost}")
 print("Done!")

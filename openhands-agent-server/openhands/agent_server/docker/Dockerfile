@@ -30,7 +30,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.12 && uv venv --python 3.12 .venv && uv sync --frozen --no-editable --managed-python
+    uv python install 3.12 && uv venv --python 3.12 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -41,7 +41,7 @@ ARG USERNAME UID GID
 
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable
+    uv sync --frozen --dev --no-editable --extra boto3
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
@@ -56,6 +56,12 @@ RUN test -x /agent-server/dist/openhands-agent-server
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
+
+
+ARG OPENHANDS_BUILD_GIT_SHA=unknown
+ARG OPENHANDS_BUILD_GIT_REF=unknown
+ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
+ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 
 # Install base packages and create user
 RUN set -eux; \

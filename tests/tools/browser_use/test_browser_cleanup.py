@@ -62,44 +62,29 @@ class TestBrowserCleanup:
             or not mock_executor._server._close_browser.called
         )
 
-    async def test_cleanup_with_initialized_browser(self, mock_executor):
-        """Test cleanup with initialized browser."""
-        mock_executor._initialized = True
-        mock_executor._server._close_browser = AsyncMock(return_value="Browser closed")
+    async def test_cleanup_calls_close_all_sessions(self, mock_executor):
+        """Test cleanup calls _close_all_sessions to properly kill browser."""
         mock_executor._server._close_all_sessions = AsyncMock()
 
         await mock_executor.cleanup()
 
-        mock_executor._server._close_browser.assert_called_once()
         mock_executor._server._close_all_sessions.assert_called_once()
 
-    async def test_cleanup_without_close_all_sessions_method(self, mock_executor):
-        """Test cleanup when server doesn't have _close_all_sessions method."""
+    async def test_cleanup_falls_back_to_close_browser(self, mock_executor):
+        """
+        Test cleanup falls back to close_browser when _close_all_sessions is missing.
+        """
         mock_executor._initialized = True
         mock_executor._server._close_browser = AsyncMock(return_value="Browser closed")
-        # Don't add _close_all_sessions method
+        # Remove _close_all_sessions so hasattr returns False
+        del mock_executor._server._close_all_sessions
 
-        await mock_executor.cleanup()
-
-        mock_executor._server._close_browser.assert_called_once()
-        # Should not raise an error even without _close_all_sessions
-
-    async def test_cleanup_with_close_browser_exception(self, mock_executor):
-        """Test cleanup when close_browser raises an exception."""
-        mock_executor._initialized = True
-        mock_executor._server._close_browser = AsyncMock(
-            side_effect=Exception("Close failed")
-        )
-
-        # Should not raise exception, just log warning
         await mock_executor.cleanup()
 
         mock_executor._server._close_browser.assert_called_once()
 
     async def test_cleanup_with_close_all_sessions_exception(self, mock_executor):
-        """Test cleanup when _close_all_sessions raises an exception."""
-        mock_executor._initialized = True
-        mock_executor._server._close_browser = AsyncMock(return_value="Browser closed")
+        """Test cleanup handles _close_all_sessions exception gracefully."""
         mock_executor._server._close_all_sessions = AsyncMock(
             side_effect=Exception("Close sessions failed")
         )
@@ -107,7 +92,6 @@ class TestBrowserCleanup:
         # Should not raise exception, just log warning
         await mock_executor.cleanup()
 
-        mock_executor._server._close_browser.assert_called_once()
         mock_executor._server._close_all_sessions.assert_called_once()
 
     def test_close_method_calls_cleanup(self, mock_executor):
@@ -171,11 +155,9 @@ class TestBrowserCleanup:
     async def test_cleanup_not_initialized_browser(self, mock_executor):
         """Test cleanup when browser is not initialized."""
         mock_executor._initialized = False
+        mock_executor._server._close_all_sessions = AsyncMock()
 
         await mock_executor.cleanup()
 
-        # Should complete without errors and without calling server methods
-        assert (
-            not hasattr(mock_executor._server, "_close_browser")
-            or not mock_executor._server._close_browser.called
-        )
+        # _close_all_sessions is still called (it's a no-op if no sessions exist)
+        mock_executor._server._close_all_sessions.assert_called_once()

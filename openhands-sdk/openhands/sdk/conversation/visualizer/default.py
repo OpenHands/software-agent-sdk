@@ -11,6 +11,7 @@ from openhands.sdk.conversation.visualizer.base import (
     ConversationVisualizerBase,
 )
 from openhands.sdk.event import (
+    ACPToolCallEvent,
     ActionEvent,
     AgentErrorEvent,
     ConversationStateUpdateEvent,
@@ -163,6 +164,10 @@ def _get_message_color(event: Event) -> str:
 # Event type to visualization configuration mapping
 # This replaces the large isinstance chain with a cleaner lookup approach
 EVENT_VISUALIZATION_CONFIG: dict[type[Event], EventVisualizationConfig] = {
+    ACPToolCallEvent: EventVisualizationConfig(
+        title="ACP Tool Call",
+        color=_ACTION_COLOR,
+    ),
     SystemPromptEvent: EventVisualizationConfig(
         title="System Prompt",
         color=_SYSTEM_COLOR,

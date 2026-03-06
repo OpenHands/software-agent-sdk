@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
+from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
-from openhands.tools.delegate.registration import get_agent_factory
 
 
 if TYPE_CHECKING:
@@ -117,17 +117,25 @@ class DelegateExecutor(ToolExecutor):
             parent_visualizer = parent_conversation._visualizer
             workspace_path = parent_conversation.state.workspace.working_dir
 
-            # Disable streaming for sub-agents since they run in
-            # separate threads without token callbacks
-            sub_agent_llm = parent_llm.model_copy(update={"stream": False})
-
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
-                factory = get_agent_factory(agent_type)
+                sub_agent_llm = parent_llm.model_copy()
+                # resetting metrics such that the sub-agent has its own
+                # Metrics object
+                sub_agent_llm.reset_metrics()
+
+                factory = get_agent_factory(name=agent_type)
                 worker_agent = factory.factory_func(sub_agent_llm)
+
+                # ensuring that the sub-agent LLM has stream deactivated
+                worker_agent = worker_agent.model_copy(
+                    update={
+                        "llm": worker_agent.llm.model_copy(update={"stream": False})
+                    }
+                )
 
                 # Use parent visualizer's create_sub_visualizer method if available
                 # This allows custom visualizers (e.g., TUI-based) to create
@@ -136,11 +144,19 @@ class DelegateExecutor(ToolExecutor):
                 if parent_visualizer is not None:
                     sub_visualizer = parent_visualizer.create_sub_visualizer(agent_id)
 
-                sub_conversation = LocalConversation(
-                    agent=worker_agent,
-                    workspace=workspace_path,
-                    visualizer=sub_visualizer,
-                )
+                # Use max_iteration_per_run from agent definition if set
+                conv_kwargs: dict = {
+                    "agent": worker_agent,
+                    "workspace": workspace_path,
+                    "visualizer": sub_visualizer,
+                }
+
+                if factory.definition.max_iteration_per_run is not None:
+                    conv_kwargs["max_iteration_per_run"] = (
+                        factory.definition.max_iteration_per_run
+                    )
+
+                sub_conversation = LocalConversation(**conv_kwargs)
 
                 self._sub_agents[agent_id] = sub_conversation
 
@@ -259,6 +275,17 @@ class DelegateExecutor(ToolExecutor):
             # Wait for all threads to complete
             for thread in threads:
                 thread.join()
+
+            # Sync sub-agent metrics into parent conversation.
+            # Sub-agent metrics are cumulative, so replace (not merge)
+            # to avoid double-counting on repeated delegations.
+            parent_stats = parent_conversation.conversation_stats
+            for agent_id in action.tasks:
+                if agent_id in self._sub_agents:
+                    sub_conv = self._sub_agents[agent_id]
+                    parent_stats.usage_to_metrics[f"delegate:{agent_id}"] = (
+                        sub_conv.conversation_stats.get_combined_metrics()
+                    )
 
             # Collect results in the same order as the input tasks
             all_results = []
