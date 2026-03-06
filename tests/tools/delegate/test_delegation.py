@@ -452,8 +452,7 @@ def test_spawn_passes_hook_config_to_sub_conversation():
     register_agent(
         name="hooked-agent",
         factory_func=factory_func,
-        description=agent_def.description,
-        hook_config=agent_def.hooks,
+        description=agent_def,
     )
 
     parent_llm = LLM(

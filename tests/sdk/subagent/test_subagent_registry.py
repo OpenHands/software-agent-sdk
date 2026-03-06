@@ -7,6 +7,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     agent_definition_to_factory,
@@ -69,7 +70,7 @@ def test_register_file_agents_project_priority(tmp_path: Path) -> None:
     assert "shared-agent" in registered
     # Verify the project version won
     factory = get_agent_factory("shared-agent")
-    assert factory.description == "Project version"
+    assert factory.definition.description == "Project version"
 
 
 def test_register_file_agents_skips_programmatic(tmp_path: Path) -> None:
@@ -101,7 +102,7 @@ def test_register_file_agents_skips_programmatic(tmp_path: Path) -> None:
     assert "existing-agent" not in registered
     # Verify the programmatic version is still there
     factory = get_agent_factory("existing-agent")
-    assert factory.description == "Programmatic version"
+    assert factory.definition.description == "Programmatic version"
 
 
 def test_register_plugin_agents(tmp_path: Path) -> None:
@@ -118,7 +119,7 @@ def test_register_plugin_agents(tmp_path: Path) -> None:
 
     assert registered == ["plugin-agent"]
     factory = get_agent_factory("plugin-agent")
-    assert factory.description == "From plugin"
+    assert factory.definition.description == "From plugin"
 
 
 def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
@@ -145,7 +146,7 @@ def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
     assert registered == []
     # Programmatic version still there
     factory = get_agent_factory("my-agent")
-    assert factory.description == "Programmatic"
+    assert factory.definition.description == "Programmatic"
 
 
 def test_register_agent_if_absent_existing() -> None:
@@ -168,7 +169,7 @@ def test_register_agent_if_absent_existing() -> None:
 
     # First registration should be preserved
     factory = get_agent_factory("dup_agent")
-    assert factory.description == "First"
+    assert factory.definition.description == "First"
 
 
 def test_agent_definition_to_factory_basic() -> None:
@@ -194,7 +195,7 @@ def test_agent_definition_to_factory_basic() -> None:
 
 
 def test_agent_definition_to_factory_model_inherit() -> None:
-    """Model 'inherit' preserves the parent LLM without modification."""
+    """Model 'inherit' preserves the parent LLM."""
     agent_def = AgentDefinition(
         name="inherit-agent",
         description="Uses parent model",
@@ -207,13 +208,12 @@ def test_agent_definition_to_factory_model_inherit() -> None:
     llm = _make_test_llm()
     agent = factory(llm)
 
-    # LLM should be the same instance (not copied)
     assert agent.llm is llm
     assert agent.llm.model == "gpt-4o"
 
 
 def test_agent_definition_to_factory_model_override() -> None:
-    """Non-inherit model creates a copy with the new model name."""
+    """Non-inherit model that isn't a stored profile raises ValueError."""
     agent_def = AgentDefinition(
         name="override-agent",
         description="Uses specific model",
@@ -224,11 +224,9 @@ def test_agent_definition_to_factory_model_override() -> None:
 
     factory = agent_definition_to_factory(agent_def)
     llm = _make_test_llm()
-    agent = factory(llm)
 
-    # LLM should be a different instance with the overridden model
-    assert agent.llm is not llm
-    assert agent.llm.model == "claude-sonnet-4-20250514"
+    with pytest.raises(ValueError, match="not found in profile store"):
+        factory(llm)
 
 
 def test_agent_definition_to_factory_no_system_prompt() -> None:
@@ -403,7 +401,7 @@ def test_register_and_retrieve_custom_agent_factory() -> None:
     )
 
     factory = get_agent_factory("custom_agent")
-    assert factory.description == "Custom agent for testing"
+    assert factory.definition.description == "Custom agent for testing"
     assert factory.factory_func is dummy_factory
 
 
@@ -429,11 +427,132 @@ def test_register_agent_if_absent_new() -> None:
     assert result is True
 
     factory = get_agent_factory("new_agent")
-    assert factory.description == "New agent"
+    assert factory.definition.description == "New agent"
+
+
+def test_agent_definition_to_factory_model_profile(tmp_path: Path) -> None:
+    """Profile name loads a complete LLM from the profile store."""
+    store = LLMProfileStore(base_dir=tmp_path)
+    profile_llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("profile-key"),
+        usage_id="profile-llm",
+        temperature=0.3,
+    )
+    store.save("fast-gpt", profile_llm, include_secrets=True)
+
+    agent_def = AgentDefinition(
+        name="profile-agent",
+        description="Uses a profile",
+        model="fast-gpt",
+        tools=[],
+        system_prompt="Profile test.",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+    with patch(
+        "openhands.sdk.subagent.registry._get_profile_store", return_value=store
+    ):
+        agent = factory(parent_llm)
+
+    # The agent's LLM should come from the profile, not the parent
+    assert agent.llm is not parent_llm
+    assert agent.llm.model == "claude-sonnet-4-20250514"
+    assert agent.llm.temperature == 0.3
+    assert agent.llm.stream is False
+    # Metrics must be independent from the parent LLM
+    assert agent.llm.metrics is not parent_llm.metrics
+
+
+def test_agent_definition_to_factory_model_profile_with_json_suffix(
+    tmp_path: Path,
+) -> None:
+    """Profile name with .json suffix is accepted and loads correctly."""
+    store = LLMProfileStore(base_dir=tmp_path)
+    profile_llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("profile-key"),
+        usage_id="profile-llm",
+        temperature=0.3,
+    )
+    store.save("fast-gpt", profile_llm, include_secrets=True)
+
+    agent_def = AgentDefinition(
+        name="profile-agent",
+        description="Uses a profile with .json suffix",
+        model="fast-gpt.json",
+        tools=[],
+        system_prompt="Profile test.",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+    with patch(
+        "openhands.sdk.subagent.registry._get_profile_store", return_value=store
+    ):
+        agent = factory(parent_llm)
+
+    assert agent.llm is not parent_llm
+    assert agent.llm.model == "claude-sonnet-4-20250514"
+    assert agent.llm.temperature == 0.3
+
+
+def test_agent_definition_to_factory_model_profile_not_found(tmp_path: Path) -> None:
+    """Missing profile raises ValueError."""
+    store = LLMProfileStore(base_dir=tmp_path)
+
+    agent_def = AgentDefinition(
+        name="missing-profile-agent",
+        description="Profile does not exist",
+        model="nonexistent.json",
+        tools=[],
+        system_prompt="",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+
+    with patch(
+        "openhands.sdk.subagent.registry._get_profile_store", return_value=store
+    ):
+        with pytest.raises(ValueError, match="nonexistent"):
+            factory(parent_llm)
+
+
+def test_agent_definition_to_factory_model_profile_custom_store(tmp_path: Path) -> None:
+    """Patched profile store is used by the factory."""
+    custom_store = LLMProfileStore(base_dir=tmp_path)
+    profile_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("custom-store-key"),
+        usage_id="custom-store-llm",
+    )
+    custom_store.save("my-profile", profile_llm, include_secrets=True)
+
+    agent_def = AgentDefinition(
+        name="custom-store-agent",
+        description="Uses custom store",
+        model="my-profile",
+        tools=[],
+        system_prompt="",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+    with patch(
+        "openhands.sdk.subagent.registry._get_profile_store", return_value=custom_store
+    ):
+        agent = factory(parent_llm)
+
+    assert agent.llm.model == "gpt-4o-mini"
+    assert agent.llm.stream is False
+    # Metrics must be independent from the parent LLM
+    assert agent.llm.metrics is not parent_llm.metrics
 
 
 def test_register_agent_with_hook_config() -> None:
-    """register_agent stores hook_config in the AgentFactory."""
+    """register_agent stores hook_config in the AgentFactory via AgentDefinition."""
     hook_config = HookConfig(
         pre_tool_use=[
             HookMatcher(
@@ -446,17 +565,22 @@ def test_register_agent_with_hook_config() -> None:
     def dummy_factory(llm: LLM) -> Agent:  # type: ignore[unused-argument]
         return cast(Agent, MagicMock())
 
+    agent_def = AgentDefinition(
+        name="hooked-agent",
+        description="Agent with hooks",
+        hooks=hook_config,
+    )
+
     register_agent(
         name="hooked-agent",
         factory_func=dummy_factory,
-        description="Agent with hooks",
-        hook_config=hook_config,
+        description=agent_def,
     )
 
     factory = get_agent_factory("hooked-agent")
-    assert factory.hook_config is not None
-    assert len(factory.hook_config.pre_tool_use) == 1
-    assert factory.hook_config.pre_tool_use[0].matcher == "terminal"
+    assert factory.definition.hooks is not None
+    assert len(factory.definition.hooks.pre_tool_use) == 1
+    assert factory.definition.hooks.pre_tool_use[0].matcher == "terminal"
 
 
 def test_register_agent_hook_config_defaults_to_none() -> None:
@@ -472,7 +596,7 @@ def test_register_agent_hook_config_defaults_to_none() -> None:
     )
 
     factory = get_agent_factory("no-hooks-agent")
-    assert factory.hook_config is None
+    assert factory.definition.hooks is None
 
 
 def test_register_file_agents_with_hooks(tmp_path: Path) -> None:
@@ -499,8 +623,8 @@ def test_register_file_agents_with_hooks(tmp_path: Path) -> None:
 
     assert "hooked-file-agent" in registered
     factory = get_agent_factory("hooked-file-agent")
-    assert factory.hook_config is not None
-    assert len(factory.hook_config.pre_tool_use) == 1
+    assert factory.definition.hooks is not None
+    assert len(factory.definition.hooks.pre_tool_use) == 1
 
 
 def test_register_plugin_agents_with_hooks() -> None:
@@ -526,8 +650,8 @@ def test_register_plugin_agents_with_hooks() -> None:
     assert "plugin-hooked" in registered
 
     factory = get_agent_factory("plugin-hooked")
-    assert factory.hook_config is not None
-    assert len(factory.hook_config.stop) == 1
+    assert factory.definition.hooks is not None
+    assert len(factory.definition.hooks.stop) == 1
 
 
 def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
@@ -561,7 +685,7 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
 
     # Retrieve and verify
     retrieved = get_agent_factory("e2e-test-agent")
-    assert retrieved.description == "End-to-end test agent"
+    assert retrieved.definition.description == "End-to-end test agent"
 
     # Create agent from factory (with real LLM)
     test_llm = LLM(

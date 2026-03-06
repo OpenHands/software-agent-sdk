@@ -188,7 +188,7 @@ class TaskManager:
         """Create a fresh task.
 
         The iteration limit is resolved with the following precedence:
-        1. ``factory.max_iteration_per_run`` (from the agent definition)
+        1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. ``max_turns`` (explicit caller override)
         3. Hard-coded default of 500
         """
@@ -198,11 +198,11 @@ class TaskManager:
         worker_agent = self._get_sub_agent_from_factory(factory)
 
         # Priority:
-        # 1. factory.max_iteration_per_run (agent def)
+        # 1. factory.definition.max_iteration_per_run (agent def)
         # 2. max_turns (caller)
         # 3. default to 500
-        if factory.max_iteration_per_run:
-            effective_max_iter = factory.max_iteration_per_run
+        if factory.definition.max_iteration_per_run:
+            effective_max_iter = factory.definition.max_iteration_per_run
         elif max_turns:
             effective_max_iter = max_turns
         else:
@@ -270,7 +270,13 @@ class TaskManager:
         # Metrics object
         sub_agent_llm.reset_metrics()
 
-        return factory.factory_func(sub_agent_llm)
+        sub_agent = factory.factory_func(sub_agent_llm)
+
+        # ensuring that the sub-agent LLM has stream deactivated
+        sub_agent = sub_agent.model_copy(
+            update={"llm": sub_agent.llm.model_copy(update={"stream": False})}
+        )
+        return sub_agent
 
     def _run_task(self, task: Task, prompt: str) -> Task:
         """Run a task synchronously."""

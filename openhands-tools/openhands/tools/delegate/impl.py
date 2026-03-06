@@ -122,14 +122,20 @@ class DelegateExecutor(ToolExecutor):
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
-                # Each sub-agent gets its own LLM copy with independent metrics.
-                # model_copy() shallow-copies private attrs, so reset_metrics()
-                # is needed to break the shared Metrics reference with the parent.
-                sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+                sub_agent_llm = parent_llm.model_copy()
+                # resetting metrics such that the sub-agent has its own
+                # Metrics object
                 sub_agent_llm.reset_metrics()
 
                 factory = get_agent_factory(name=agent_type)
                 worker_agent = factory.factory_func(sub_agent_llm)
+
+                # ensuring that the sub-agent LLM has stream deactivated
+                worker_agent = worker_agent.model_copy(
+                    update={
+                        "llm": worker_agent.llm.model_copy(update={"stream": False})
+                    }
+                )
 
                 # Use parent visualizer's create_sub_visualizer method if available
                 # This allows custom visualizers (e.g., TUI-based) to create
@@ -143,11 +149,13 @@ class DelegateExecutor(ToolExecutor):
                     "agent": worker_agent,
                     "workspace": workspace_path,
                     "visualizer": sub_visualizer,
-                    "hook_config": factory.hook_config,
+                    "hook_config": factory.definition.hooks,
                 }
 
-                if factory.max_iteration_per_run is not None:
-                    conv_kwargs["max_iteration_per_run"] = factory.max_iteration_per_run
+                if factory.definition.max_iteration_per_run is not None:
+                    conv_kwargs["max_iteration_per_run"] = (
+                        factory.definition.max_iteration_per_run
+                    )
 
                 sub_conversation = LocalConversation(**conv_kwargs)
 
