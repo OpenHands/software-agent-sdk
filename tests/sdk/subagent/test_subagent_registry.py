@@ -551,6 +551,81 @@ def test_agent_definition_to_factory_model_profile_custom_store(tmp_path: Path) 
     assert agent.llm.metrics is not parent_llm.metrics
 
 
+def test_agent_definition_to_factory_profile_store_dir(tmp_path: Path) -> None:
+    """profile_store_dir on AgentDefinition is used by the factory."""
+    store = LLMProfileStore(base_dir=tmp_path)
+    profile_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("dir-key"),
+        usage_id="dir-llm",
+    )
+    store.save("my-profile", profile_llm, include_secrets=True)
+    agent_def = AgentDefinition(
+        name="dir-agent",
+        description="Uses profile_store_dir",
+        model="my-profile",
+        tools=[],
+        system_prompt="",
+        profile_store_dir=str(tmp_path),
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+    agent = factory(parent_llm)
+
+    assert agent.llm.model == "gpt-4o-mini"
+
+
+def test_agent_definition_to_factory_profile_store_dir_not_found(
+    tmp_path: Path,
+) -> None:
+    """Missing profile in custom profile_store_dir raises ValueError."""
+    agent_def = AgentDefinition(
+        name="missing-dir-agent",
+        model="nonexistent",
+        tools=[],
+        system_prompt="",
+        profile_store_dir=str(tmp_path),
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+
+    with pytest.raises(ValueError, match="nonexistent"):
+        factory(parent_llm)
+
+
+def test_agent_definition_to_factory_profile_store_dir_none_uses_default(
+    tmp_path: Path,
+) -> None:
+    """When profile_store_dir is None, the default cached store is used."""
+    store = LLMProfileStore(base_dir=tmp_path)
+    profile_llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("default-key"),
+        usage_id="default-llm",
+    )
+    store.save("default-profile", profile_llm, include_secrets=True)
+
+    agent_def = AgentDefinition(
+        name="default-store-agent",
+        model="default-profile",
+        tools=[],
+        system_prompt="",
+        profile_store_dir=None,
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    parent_llm = _make_test_llm()
+
+    with patch(
+        "openhands.sdk.subagent.registry._get_profile_store", return_value=store
+    ):
+        agent = factory(parent_llm)
+
+    assert agent.llm.model == "claude-sonnet-4-20250514"
+
+
 def test_register_agent_with_hook_config() -> None:
     """register_agent stores hook_config in the AgentFactory via AgentDefinition."""
     hook_config = HookConfig(
