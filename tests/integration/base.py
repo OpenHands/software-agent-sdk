@@ -390,3 +390,8 @@ class BaseIntegrationTest(ABC):
         The workspace directory is torn down externally.
         Add any additional cleanup (git, server, ...) here if needed.
         """
+        # Close the conversation to ensure all tool executors (including the
+        # browser / Chrome process) are shut down.  Without this, worker
+        # processes in ProcessPoolExecutor hang indefinitely because the
+        # browser's background threads keep them alive.
+        self.conversation.close()
