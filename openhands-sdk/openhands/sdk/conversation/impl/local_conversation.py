@@ -25,6 +25,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
+    ActionEvent,
     CondensationRequest,
     MessageEvent,
     PauseEvent,
@@ -99,6 +100,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        rerun: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -138,7 +140,14 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            rerun: If True, re-execute all actions from a resumed conversation.
+                   This is useful for replaying a conversation to reproduce its
+                   environment state. WARNING: Many tool operations are not
+                   idempotent (e.g., file creation, API calls). Use only when you
+                   understand that results may differ from the original run.
+                   Original observations are preserved in the event log.
         """
+        self._rerun_requested = rerun
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
@@ -260,6 +269,10 @@ class LocalConversation(BaseConversation):
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
         self.delete_on_close = delete_on_close
+
+        # Execute rerun if requested (must be after full initialization)
+        if self._rerun_requested:
+            self.rerun_actions()
 
     @property
     def id(self) -> ConversationID:
@@ -927,6 +940,89 @@ class LocalConversation(BaseConversation):
             self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
 
         logger.info("Condensation request processed")
+
+    def rerun_actions(self) -> list[Observation]:
+        """Re-execute all actions from the conversation's event history.
+
+        This method iterates through all ActionEvents in the conversation and
+        re-executes them using their original action parameters. The original
+        observations in the event log are preserved; new observations from
+        the rerun are returned but not persisted.
+
+        WARNING: This is an advanced feature intended for specific use cases
+        such as reproducing environment state from a saved conversation. Many
+        tool operations are NOT idempotent:
+
+        - File operations may fail if files already exist or were deleted
+        - Terminal commands may have different effects on changed state
+        - API calls may have side effects or return different results
+        - Browser state may differ from the original session
+
+        Use this method only when you understand that:
+        1. Results may differ from the original conversation
+        2. Some actions may fail due to changed environment state
+        3. The workspace should typically be reset before rerunning
+
+        Returns:
+            List of Observations from re-executing each action. The list
+            corresponds to ActionEvents in chronological order. Actions that
+            fail during rerun will have error observations.
+
+        Raises:
+            KeyError: If a tool from the original conversation is not available
+        """
+        # Ensure agent is initialized (loads plugins and initializes tools)
+        self._ensure_agent_ready()
+
+        observations: list[Observation] = []
+        action_count = 0
+        error_count = 0
+
+        for event in self._state.events:
+            if not isinstance(event, ActionEvent):
+                continue
+            if event.action is None:
+                # Skip actions that failed validation during original run
+                continue
+
+            action_count += 1
+            tool_name = event.tool_name
+
+            # Get the tool from the agent's tools_map
+            tool = self.agent.tools_map.get(tool_name)
+            if tool is None:
+                available_tools = list(self.agent.tools_map.keys())
+                raise KeyError(
+                    f"Tool '{tool_name}' not found during rerun. "
+                    f"Available tools: {available_tools}. "
+                    f"Ensure the agent is configured with the same tools as the "
+                    f"original conversation."
+                )
+
+            if not tool.executor:
+                logger.warning(
+                    f"Skipping action {action_count}: "
+                    f"tool '{tool_name}' has no executor"
+                )
+                continue
+
+            # Execute the tool with the original action
+            try:
+                logger.info(f"Rerunning action {action_count}: {tool_name}")
+                observation = tool(event.action, self)
+                observations.append(observation)
+            except Exception as e:
+                error_count += 1
+                logger.warning(
+                    f"Action {action_count} ({tool_name}) failed during rerun: {e}"
+                )
+                # Continue with remaining actions even if one fails
+
+        logger.info(
+            f"Rerun complete: {action_count} actions processed, "
+            f"{error_count} errors, {len(observations)} observations returned"
+        )
+        return observations
 
     def execute_tool(self, tool_name: str, action: Action) -> Observation:
         """Execute a tool directly without going through the agent loop.

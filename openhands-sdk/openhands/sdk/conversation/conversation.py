@@ -75,6 +75,7 @@ class Conversation:
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
+        rerun: bool = False,
     ) -> "LocalConversation": ...
 
     @overload
@@ -121,6 +122,7 @@ class Conversation:
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
+        rerun: bool = False,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -128,11 +130,13 @@ class Conversation:
         )
 
         if isinstance(workspace, RemoteWorkspace):
-            # For RemoteConversation, persistence_dir should not be used.
+            # For RemoteConversation, persistence_dir and rerun should not be used.
             if persistence_dir is not None:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
                 )
+            if rerun:
+                raise ValueError("rerun is not supported for RemoteConversation")
             return RemoteConversation(
                 agent=agent,
                 plugins=plugins,
@@ -164,4 +168,5 @@ class Conversation:
             persistence_dir=persistence_dir,
             secrets=secrets,
             delete_on_close=delete_on_close,
+            rerun=rerun,
         )
