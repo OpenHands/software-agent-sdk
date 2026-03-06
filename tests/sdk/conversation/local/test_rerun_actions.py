@@ -481,7 +481,9 @@ def test_rerun_non_idempotent_with_log(tmp_path: Path, monkeypatch: pytest.Monke
     will fail if the file already exists. The rerun still "succeeds"
     (tool executed correctly) but the observation shows is_error=True.
     """
-    import json
+    from openhands.sdk.conversation.event_store import EventLog
+    from openhands.sdk.event import ObservationEvent
+    from openhands.sdk.io import LocalFileStore
 
     # Register the file create tool (non-idempotent)
     register_tool_public(FileCreateTool.name, FileCreateTool)
@@ -495,32 +497,36 @@ def test_rerun_non_idempotent_with_log(tmp_path: Path, monkeypatch: pytest.Monke
     action_event = _make_action_event("file_create", action, "tc1")
     conversation._state.events.append(action_event)
 
-    log_file = tmp_path / "rerun_log.jsonl"
+    log_dir = tmp_path / "rerun_log"
 
     # First rerun creates the file successfully
-    result = conversation.rerun_actions(rerun_log_path=log_file)
+    result = conversation.rerun_actions(rerun_log_path=log_dir)
     assert result is True
     assert test_file.exists()
 
-    # Check the log
-    log_entries = [
-        json.loads(line) for line in log_file.read_text().strip().split("\n")
-    ]
-    assert len(log_entries) == 1
-    assert log_entries[0]["observation"]["created"] is True
+    # Check the log using EventLog
+    file_store = LocalFileStore(str(log_dir))
+    event_log = EventLog(file_store, dir_path="events")
+    assert len(event_log) == 2  # ActionEvent + ObservationEvent
+    obs_event = event_log[1]
+    assert isinstance(obs_event, ObservationEvent)
+    assert isinstance(obs_event.observation, FileCreateObservation)
+    assert obs_event.observation.created is True
 
     # Second rerun - file already exists, returns error observation but still succeeds
-    log_file2 = tmp_path / "rerun_log2.jsonl"
-    result2 = conversation.rerun_actions(rerun_log_path=log_file2)
+    log_dir2 = tmp_path / "rerun_log2"
+    result2 = conversation.rerun_actions(rerun_log_path=log_dir2)
     assert result2 is True  # Tool executed correctly, just returned error
 
     # Check the second log shows the error observation
-    log_entries2 = [
-        json.loads(line) for line in log_file2.read_text().strip().split("\n")
-    ]
-    assert len(log_entries2) == 1
-    assert log_entries2[0]["observation"]["created"] is False
-    assert log_entries2[0]["observation"]["is_error"] is True
+    file_store2 = LocalFileStore(str(log_dir2))
+    event_log2 = EventLog(file_store2, dir_path="events")
+    assert len(event_log2) == 2
+    obs_event2 = event_log2[1]
+    assert isinstance(obs_event2, ObservationEvent)
+    assert isinstance(obs_event2.observation, FileCreateObservation)
+    assert obs_event2.observation.created is False
+    assert obs_event2.observation.is_error is True
 
 
 def test_rerun_early_exit_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -529,7 +535,9 @@ def test_rerun_early_exit_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     This verifies that rerun stops at the first failure and saves
     partial progress to the log.
     """
-    import json
+    from openhands.sdk.conversation.event_store import EventLog
+    from openhands.sdk.event import ObservationEvent
+    from openhands.sdk.io import LocalFileStore
 
     # Register both tools
     register_tool_public(FileWriteTool.name, FileWriteTool)
@@ -558,10 +566,10 @@ def test_rerun_early_exit_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     action3 = FileWriteAction(filepath=str(test_file2), content="second")
     conversation._state.events.append(_make_action_event("file_write", action3, "tc3"))
 
-    log_file = tmp_path / "rerun_log.jsonl"
+    log_dir = tmp_path / "rerun_log"
 
     # Rerun - should fail at the second action and exit early
-    result = conversation.rerun_actions(rerun_log_path=log_file)
+    result = conversation.rerun_actions(rerun_log_path=log_dir)
 
     # Should return False due to failure
     assert result is False
@@ -574,11 +582,13 @@ def test_rerun_early_exit_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert not test_file2.exists()
 
     # Log should contain only the successful action before failure
-    log_entries = [
-        json.loads(line) for line in log_file.read_text().strip().split("\n")
-    ]
-    assert len(log_entries) == 1
-    assert log_entries[0]["tool_name"] == "file_write"
+    # (ActionEvent + ObservationEvent for first action = 2 events)
+    file_store = LocalFileStore(str(log_dir))
+    event_log = EventLog(file_store, dir_path="events")
+    assert len(event_log) == 2  # ActionEvent + ObservationEvent for first action
+    obs_event = event_log[1]
+    assert isinstance(obs_event, ObservationEvent)
+    assert obs_event.tool_name == "file_write"
 
 
 def test_rerun_multiple_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

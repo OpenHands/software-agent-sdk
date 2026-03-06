@@ -2,11 +2,11 @@ import atexit
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -29,11 +29,13 @@ from openhands.sdk.event import (
     ActionEvent,
     CondensationRequest,
     MessageEvent,
+    ObservationEvent,
     PauseEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
+from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -955,9 +957,9 @@ class LocalConversation(BaseConversation):
         3. The workspace should typically be reset before rerunning
 
         Args:
-            rerun_log_path: Optional path to save a rerun event log. If provided,
-                the log will contain the actions and their new observations in
-                chronological order (as JSONL format).
+            rerun_log_path: Optional directory path to save a rerun event log.
+                If provided, events will be written incrementally to disk using
+                EventLog, avoiding memory buildup for large conversations.
 
         Returns:
             True if all actions executed successfully, False if any action failed.
@@ -969,7 +971,14 @@ class LocalConversation(BaseConversation):
         # Ensure agent is initialized (loads plugins and initializes tools)
         self._ensure_agent_ready()
 
-        rerun_log: list[dict[str, Any]] = []
+        # Set up rerun log if path provided
+        rerun_log: EventLog | None = None
+        if rerun_log_path is not None:
+            log_dir = Path(rerun_log_path)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_store = LocalFileStore(str(log_dir))
+            rerun_log = EventLog(file_store, dir_path="events")
+
         action_count = 0
 
         for event in self._state.events:
@@ -1005,45 +1014,28 @@ class LocalConversation(BaseConversation):
                 logger.info(f"Rerunning action {action_count}: {tool_name}")
                 observation = tool(event.action, self)
 
-                # Log the action and observation
-                rerun_log.append(
-                    {
-                        "action_index": action_count,
-                        "tool_name": tool_name,
-                        "action": event.action.model_dump(),
-                        "observation": observation.model_dump(),
-                    }
-                )
+                # Log the action and observation incrementally
+                if rerun_log is not None:
+                    # Append action event (copy from original)
+                    rerun_log.append(event)
+                    # Append observation event
+                    obs_event = ObservationEvent(
+                        source="environment",
+                        tool_name=tool_name,
+                        tool_call_id=event.tool_call_id,
+                        observation=observation,
+                        action_id=event.id,
+                    )
+                    rerun_log.append(obs_event)
             except Exception as e:
                 logger.error(
                     f"Action {action_count} ({tool_name}) failed during rerun: {e}"
                 )
-                # Save partial log before returning failure
-                if rerun_log_path is not None:
-                    self._save_rerun_log(rerun_log_path, rerun_log)
+                # Log is already written incrementally, just return failure
                 return False
 
         logger.info(f"Rerun complete: {action_count} actions processed successfully")
-
-        # Save the complete rerun log
-        if rerun_log_path is not None:
-            self._save_rerun_log(rerun_log_path, rerun_log)
-
         return True
-
-    def _save_rerun_log(
-        self,
-        path: str | Path,
-        rerun_log: list[dict[str, Any]],
-    ) -> None:
-        """Save the rerun log to a file in JSONL format."""
-        import json
-
-        log_path = Path(path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("w") as f:
-            for entry in rerun_log:
-                f.write(json.dumps(entry) + "\n")
 
     def execute_tool(self, tool_name: str, action: Action) -> Observation:
         """Execute a tool directly without going through the agent loop.
