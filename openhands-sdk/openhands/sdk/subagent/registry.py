@@ -152,8 +152,8 @@ def register_agent_if_absent(
 
 
 @cache
-def _get_profile_store() -> LLMProfileStore:
-    return LLMProfileStore()
+def _get_profile_store(profile_store_dir: str | None) -> LLMProfileStore:
+    return LLMProfileStore(profile_store_dir)
 
 
 def agent_definition_to_factory(
@@ -211,7 +211,7 @@ def agent_definition_to_factory(
         # Load LLM profile if agent_def.model is different from
         # 'inherit' and empty string
         if agent_def.model and agent_def.model != "inherit":
-            store = _get_profile_store()
+            store = _get_profile_store(agent_def.profile_store_dir)
             available_profiles = [name.removesuffix(".json") for name in store.list()]
             profile_name = agent_def.model.removesuffix(".json")
             if profile_name not in available_profiles:
