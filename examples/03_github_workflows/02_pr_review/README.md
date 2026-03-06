@@ -52,7 +52,13 @@ Copy `workflow.yml` to `.github/workflows/pr-review-by-openhands.yml` in your re
 cp examples/03_github_workflows/02_pr_review/workflow.yml .github/workflows/pr-review-by-openhands.yml
 ```
 
-### 2. Configure secrets
+### 2. Choose a mode
+
+The PR review workflow supports two execution modes:
+
+#### Local mode (default)
+
+The agent runs directly in GitHub Actions. You need an LLM API key.
 
 Set the following secrets in your GitHub repository settings:
 
@@ -61,26 +67,40 @@ Set the following secrets in your GitHub repository settings:
 
 **Note**: The workflow automatically uses the `GITHUB_TOKEN` secret that's available in all GitHub Actions workflows.
 
+#### Cloud mode
+
+The agent runs asynchronously on [OpenHands Cloud](https://app.all-hands.dev). The LLM is configured on the Cloud side, so you only need an OpenHands API key. Reviews are posted by the OpenHands Cloud GitHub App.
+
+Set the following secrets in your GitHub repository settings:
+
+- **`OPENHANDS_API_KEY`** (required): Your OpenHands Cloud API key
+  - Go to [app.all-hands.dev](https://app.all-hands.dev) → Settings → API Keys
+
 ### 3. Customize the workflow (optional)
 
 Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
 
+**Local mode** (default):
 ```yaml
 - name: Run PR Review
   uses: ./.github/actions/pr-review
   with:
-      # LLM model(s) to use. Can be comma-separated for A/B testing
-      # - one model will be randomly selected per review
       llm-model: anthropic/claude-sonnet-4-5-20250929
-      llm-base-url: ''
-      # Review style: roasted (other option: standard)
       review-style: roasted
-      # SDK git ref to use (tag, branch, or commit SHA, e.g., 'v1.0.0', 'main', or 'abc1234')
       sdk-version: main
-      # Optional: override the SDK repo (owner/repo) if you forked it
-      sdk-repo: OpenHands/software-agent-sdk
-      # Secrets
       llm-api-key: ${{ secrets.LLM_API_KEY }}
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Cloud mode**:
+```yaml
+- name: Run PR Review (Cloud)
+  uses: ./.github/actions/pr-review
+  with:
+      mode: cloud
+      review-style: roasted
+      sdk-version: main
+      openhands-api-key: ${{ secrets.OPENHANDS_API_KEY }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
@@ -185,13 +205,15 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
+| `mode` | Execution mode: `local` or `cloud` | No | `local` |
 | `llm-model` | LLM model(s) - can be comma-separated for A/B testing | No | `anthropic/claude-sonnet-4-5-20250929` |
 | `llm-base-url` | LLM base URL (optional) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
-| `llm-api-key` | LLM API key | Yes | - |
+| `llm-api-key` | LLM API key (required in local mode) | Local mode | - |
 | `github-token` | GitHub token for API access | Yes | - |
+| `openhands-api-key` | OpenHands Cloud API key (required in cloud mode) | Cloud mode | - |
 | `lmnr-api-key` | Laminar API key for observability (optional) | No | - |
 
 ## A/B Testing with Multiple Models

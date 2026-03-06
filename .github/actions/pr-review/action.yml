@@ -8,6 +8,11 @@ branding:
     color: blue
 
 inputs:
+    mode:
+        description: "Execution mode: 'local' (run agent in GitHub Actions) or 'cloud' (run agent on OpenHands Cloud). Cloud mode requires openhands-api-key
+            instead of llm-api-key."
+        required: false
+        default: local
     llm-model:
         description: >
             LLM model to use for the review. Can be a comma-separated list
@@ -33,11 +38,16 @@ inputs:
         required: false
         default: main
     llm-api-key:
-        description: LLM API key (required)
-        required: true
+        description: LLM API key (required in local mode)
+        required: false
+        default: ''
     github-token:
         description: GitHub token for API access (required)
         required: true
+    openhands-api-key:
+        description: OpenHands Cloud API key (required in cloud mode)
+        required: false
+        default: ''
     lmnr-api-key:
         description: Laminar API key for observability (optional)
         required: false
@@ -84,23 +94,41 @@ runs:
 
         - name: Install OpenHands dependencies
           shell: bash
+          env:
+              MODE: ${{ inputs.mode }}
           run: |
-              uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr
+              PACKAGES="./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools lmnr"
+              if [ "$MODE" = "cloud" ]; then
+                PACKAGES="$PACKAGES ./software-agent-sdk/openhands-workspace"
+              fi
+              uv pip install --system $PACKAGES
 
         - name: Check required configuration and select model
           id: select-model
           shell: bash
           env:
+              MODE: ${{ inputs.mode }}
               LLM_API_KEY: ${{ inputs.llm-api-key }}
               GITHUB_TOKEN: ${{ inputs.github-token }}
+              OPENHANDS_API_KEY: ${{ inputs.openhands-api-key }}
           run: |
-              if [ -z "$LLM_API_KEY" ]; then
-                echo "Error: llm-api-key is required."
-                exit 1
-              fi
               if [ -z "$GITHUB_TOKEN" ]; then
                 echo "Error: github-token is required."
                 exit 1
+              fi
+
+              if [ "$MODE" = "cloud" ]; then
+                if [ -z "$OPENHANDS_API_KEY" ]; then
+                  echo "Error: openhands-api-key is required in cloud mode."
+                  exit 1
+                fi
+                echo "Mode: cloud (agent runs on OpenHands Cloud)"
+              else
+                if [ -z "$LLM_API_KEY" ]; then
+                  echo "Error: llm-api-key is required in local mode."
+                  exit 1
+                fi
+                echo "Mode: local (agent runs in GitHub Actions)"
               fi
 
               # Select one model randomly from the comma-separated list
@@ -121,11 +149,13 @@ runs:
         - name: Run PR review
           shell: bash
           env:
+              MODE: ${{ inputs.mode }}
               LLM_MODEL: ${{ steps.select-model.outputs.selected_model }}
               LLM_BASE_URL: ${{ inputs.llm-base-url }}
               REVIEW_STYLE: ${{ inputs.review-style }}
               LLM_API_KEY: ${{ inputs.llm-api-key }}
               GITHUB_TOKEN: ${{ inputs.github-token }}
+              OPENHANDS_API_KEY: ${{ inputs.openhands-api-key }}
               LMNR_PROJECT_API_KEY: ${{ inputs.lmnr-api-key }}
               PR_NUMBER: ${{ github.event.pull_request.number }}
               PR_TITLE: ${{ github.event.pull_request.title }}

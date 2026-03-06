@@ -21,11 +21,22 @@ The agent also considers previous review context including:
 
 Designed for use with GitHub Actions workflows triggered by PR labels.
 
+Modes:
+    local (default): Runs the agent locally in GitHub Actions. Requires
+        LLM_API_KEY and GITHUB_TOKEN.
+    cloud: Runs the agent on OpenHands Cloud. Requires OPENHANDS_API_KEY
+        and GITHUB_TOKEN. The LLM is configured on the Cloud side, so no
+        LLM_API_KEY is needed. The agent runs asynchronously and posts
+        review comments via the OpenHands Cloud GitHub App.
+
 Environment Variables:
-    LLM_API_KEY: API key for the LLM (required)
+    MODE: Execution mode - 'local' or 'cloud' (default: 'local')
+    LLM_API_KEY: API key for the LLM (required in local mode)
     LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for API access (required)
+    OPENHANDS_API_KEY: OpenHands Cloud API key (required in cloud mode)
+    OPENHANDS_CLOUD_URL: OpenHands Cloud URL (default: https://app.all-hands.dev)
     PR_NUMBER: Pull request number (required)
     PR_TITLE: Pull request title (required)
     PR_BODY: Pull request body (optional)
@@ -656,13 +667,220 @@ def get_head_commit_sha(repo_dir: Path | None = None) -> str:
     return run_git_command(["git", "rev-parse", "HEAD"], repo_dir).strip()
 
 
+def _build_agent(
+    llm: LLM,
+    cwd: str,
+) -> Agent:
+    """Build the review agent with skills and tools."""
+    project_skills = load_project_skills(cwd)
+    logger.info(
+        f"Loaded {len(project_skills)} project skills: "
+        f"{[s.name for s in project_skills]}"
+    )
+
+    agent_context = AgentContext(
+        load_public_skills=True,
+        skills=project_skills,
+    )
+
+    return Agent(
+        llm=llm,
+        tools=get_default_tools(enable_browser=False),
+        agent_context=agent_context,
+        system_prompt_kwargs={"cli_mode": True},
+        condenser=get_default_condenser(
+            llm=llm.model_copy(update={"usage_id": "condenser"})
+        ),
+    )
+
+
+def _run_cloud_mode(
+    prompt: str,
+    skill_trigger: str,
+    github_token: str | None,
+) -> None:
+    """Run the PR review agent on OpenHands Cloud.
+
+    In cloud mode, the agent runs asynchronously on OpenHands Cloud.
+    The LLM is configured on the Cloud side, so no LLM_API_KEY is needed.
+    Once the run is triggered, this function returns immediately.
+    """
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    openhands_api_key = _get_required_env("OPENHANDS_API_KEY")
+    cloud_api_url = os.getenv("OPENHANDS_CLOUD_URL", "https://app.all-hands.dev")
+
+    logger.info(f"Using OpenHands Cloud: {cloud_api_url}")
+
+    # In cloud mode, LLM is configured on the Cloud side.
+    # We provide a model name but no API key.
+    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+    llm = LLM(model=model, usage_id="pr_review_agent", drop_params=True)
+
+    workspace = OpenHandsCloudWorkspace(
+        cloud_api_url=cloud_api_url,
+        cloud_api_key=openhands_api_key,
+        keep_alive=True,
+    )
+
+    try:
+        cwd = workspace.working_dir
+        agent = _build_agent(llm, cwd)
+
+        secrets: dict[str, str] = {}
+        if github_token:
+            secrets["GITHUB_TOKEN"] = github_token
+
+        conversation = Conversation(
+            agent=agent,
+            workspace=workspace,
+            secrets=secrets,
+        )
+
+        logger.info("Starting PR review on OpenHands Cloud...")
+        logger.info(f"Using skill trigger: {skill_trigger}")
+
+        conversation.send_message(prompt)
+        conversation.run(blocking=False)
+
+        logger.info(
+            "PR review triggered on OpenHands Cloud (agent running asynchronously)"
+        )
+        logger.info("PR review completed successfully")
+    except Exception:
+        workspace.cleanup()
+        raise
+
+
+def _run_local_mode(
+    prompt: str,
+    skill_trigger: str,
+    pr_info: dict[str, Any],
+    review_style: str,
+    commit_id: str,
+    github_token: str | None,
+) -> None:
+    """Run the PR review agent locally."""
+    api_key = os.getenv("LLM_API_KEY")
+    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+    base_url = os.getenv("LLM_BASE_URL")
+
+    llm_config: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "usage_id": "pr_review_agent",
+        "drop_params": True,
+    }
+
+    if base_url:
+        llm_config["base_url"] = base_url
+
+    llm = LLM(**llm_config)
+
+    cwd = os.getcwd()
+    agent = _build_agent(llm, cwd)
+
+    secrets: dict[str, str] = {}
+    if api_key:
+        secrets["LLM_API_KEY"] = api_key
+    if github_token:
+        secrets["GITHUB_TOKEN"] = github_token
+
+    conversation = Conversation(
+        agent=agent,
+        workspace=cwd,
+        secrets=secrets,
+    )
+
+    logger.info("Starting PR review analysis...")
+    logger.info("Agent received the PR diff in the initial message")
+    logger.info(f"Using skill trigger: {skill_trigger}")
+    logger.info("Agent will post inline review comments directly via GitHub API")
+
+    conversation.send_message(prompt)
+    conversation.run()
+
+    review_content = get_agent_final_response(conversation.state.events)
+    if review_content:
+        logger.info(f"Agent final response: {len(review_content)} characters")
+
+    # Print cost information for CI output
+    metrics = conversation.conversation_stats.get_combined_metrics()
+    print("\n=== PR Review Cost Summary ===")
+    print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
+    if metrics.accumulated_token_usage:
+        token_usage = metrics.accumulated_token_usage
+        print(f"Prompt Tokens: {token_usage.prompt_tokens}")
+        print(f"Completion Tokens: {token_usage.completion_tokens}")
+        if token_usage.cache_read_tokens > 0:
+            print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
+        if token_usage.cache_write_tokens > 0:
+            print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
+
+    # Capture and store trace context for delayed evaluation
+    trace_id = Laminar.get_trace_id()
+    laminar_span_context = Laminar.get_laminar_span_context()
+    span_context = (
+        laminar_span_context.model_dump(mode="json") if laminar_span_context else None
+    )
+
+    if trace_id and laminar_span_context:
+        with Laminar.start_as_current_span(
+            name="pr-review-metadata",
+            parent_span_context=laminar_span_context,
+        ) as _:
+            pr_url = (
+                f"https://github.com/{pr_info['repo_name']}/pull/{pr_info['number']}"
+            )
+            Laminar.set_trace_metadata(
+                {
+                    "pr_number": pr_info["number"],
+                    "repo_name": pr_info["repo_name"],
+                    "pr_url": pr_url,
+                    "workflow_phase": "review",
+                    "review_style": review_style,
+                    "model": model,
+                }
+            )
+
+        trace_data = {
+            "trace_id": str(trace_id),
+            "span_context": span_context,
+            "pr_number": pr_info["number"],
+            "repo_name": pr_info["repo_name"],
+            "commit_id": commit_id,
+            "review_style": review_style,
+            "model": model,
+        }
+        with open("laminar_trace_info.json", "w") as f:
+            json.dump(trace_data, f, indent=2)
+        logger.info(f"Laminar trace ID: {trace_id}")
+        logger.info(f"Model used: {model}")
+        if span_context:
+            logger.info("Laminar span context captured for trace continuation")
+        print("\n=== Laminar Trace ===")
+        print(f"Trace ID: {trace_id}")
+
+        Laminar.flush()
+    else:
+        logger.warning("No Laminar trace ID found - observability may not be enabled")
+
+    logger.info("PR review completed successfully")
+
+
 def main():
     """Run the PR review agent."""
     logger.info("Starting PR review process...")
 
-    # Validate required environment variables
+    # Determine execution mode
+    mode = os.getenv("MODE", "local").lower()
+    if mode not in ("local", "cloud"):
+        logger.error(f"Unknown MODE '{mode}', must be 'local' or 'cloud'")
+        sys.exit(1)
+    logger.info(f"Execution mode: {mode}")
+
+    # Validate required environment variables based on mode
     required_vars = [
-        "LLM_API_KEY",
         "GITHUB_TOKEN",
         "PR_NUMBER",
         "PR_TITLE",
@@ -670,6 +888,10 @@ def main():
         "PR_HEAD_BRANCH",
         "REPO_NAME",
     ]
+    if mode == "local":
+        required_vars.append("LLM_API_KEY")
+    else:
+        required_vars.append("OPENHANDS_API_KEY")
 
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     if missing_vars:
@@ -731,168 +953,21 @@ def main():
             review_context=review_context,
         )
 
-        # Configure LLM
-        api_key = os.getenv("LLM_API_KEY")
-        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-        base_url = os.getenv("LLM_BASE_URL")
-
-        llm_config = {
-            "model": model,
-            "api_key": api_key,
-            "usage_id": "pr_review_agent",
-            "drop_params": True,
-        }
-
-        if base_url:
-            llm_config["base_url"] = base_url
-
-        llm = LLM(**llm_config)
-
-        # Get the current working directory as workspace
-        cwd = os.getcwd()
-
-        # Load project-specific skills from the repository being reviewed
-        # This includes AGENTS.md, .cursorrules, and skills from .agents/skills/
-        project_skills = load_project_skills(cwd)
-        logger.info(
-            f"Loaded {len(project_skills)} project skills: "
-            f"{[s.name for s in project_skills]}"
-        )
-
-        # Create AgentContext with public skills enabled and project skills
-        # Public skills from https://github.com/OpenHands/extensions include:
-        # - /codereview: Standard code review skill
-        # - /codereview-roasted: Linus Torvalds style brutally honest review
-        # Project skills include repo-specific guidance (AGENTS.md, etc.)
-        agent_context = AgentContext(
-            load_public_skills=True,
-            skills=project_skills,
-        )
-
-        # Create agent with default tools and agent context
-        # Note: agent_context must be passed at initialization since Agent is frozen
-        agent = Agent(
-            llm=llm,
-            tools=get_default_tools(enable_browser=False),  # CLI mode - no browser
-            agent_context=agent_context,
-            system_prompt_kwargs={"cli_mode": True},
-            condenser=get_default_condenser(
-                llm=llm.model_copy(update={"usage_id": "condenser"})
-            ),
-        )
-
-        # Create conversation with secrets for masking
-        # These secrets will be masked in agent output to prevent accidental exposure
-        secrets = {}
-        if api_key:
-            secrets["LLM_API_KEY"] = api_key
-        if github_token:
-            secrets["GITHUB_TOKEN"] = github_token
-
-        conversation = Conversation(
-            agent=agent,
-            workspace=cwd,
-            secrets=secrets,
-        )
-
-        logger.info("Starting PR review analysis...")
-        logger.info("Agent received the PR diff in the initial message")
-        logger.info(f"Using skill trigger: {skill_trigger}")
-        logger.info("Agent will post inline review comments directly via GitHub API")
-
-        # Send the prompt and run the agent
-        # The agent will analyze the code and post inline review comments
-        # directly to the PR using the GitHub API
-        conversation.send_message(prompt)
-        conversation.run()
-
-        # The agent should have posted review comments via GitHub API
-        # Log the final response for debugging purposes
-        review_content = get_agent_final_response(conversation.state.events)
-        if review_content:
-            logger.info(f"Agent final response: {len(review_content)} characters")
-
-        # Print cost information for CI output
-        metrics = conversation.conversation_stats.get_combined_metrics()
-        print("\n=== PR Review Cost Summary ===")
-        print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
-        if metrics.accumulated_token_usage:
-            token_usage = metrics.accumulated_token_usage
-            print(f"Prompt Tokens: {token_usage.prompt_tokens}")
-            print(f"Completion Tokens: {token_usage.completion_tokens}")
-            if token_usage.cache_read_tokens > 0:
-                print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
-            if token_usage.cache_write_tokens > 0:
-                print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
-
-        # Capture and store trace context for delayed evaluation
-        # When the PR is merged/closed, we can use this context to add the
-        # evaluation span to the same trace, enabling signals to analyze both
-        # the original review and evaluation together.
-        # Note: Laminar methods gracefully handle the uninitialized case by
-        # returning None or early-returning, so no try/except needed.
-        trace_id = Laminar.get_trace_id()
-        # Use model_dump(mode='json') to ensure UUIDs are serialized as strings
-        # for JSON compatibility. get_laminar_span_context_dict() returns UUID
-        # objects which are not JSON serializable.
-        laminar_span_context = Laminar.get_laminar_span_context()
-        span_context = (
-            laminar_span_context.model_dump(mode="json")
-            if laminar_span_context
-            else None
-        )
-
-        if trace_id and laminar_span_context:
-            # Set trace metadata within an active span context
-            # Using start_as_current_span with parent_span_context to continue the trace
-            with Laminar.start_as_current_span(
-                name="pr-review-metadata",
-                parent_span_context=laminar_span_context,
-            ) as _:
-                # Set trace metadata within this active span context
-                # Include model for A/B testing analysis
-                pr_url = f"https://github.com/{pr_info['repo_name']}/pull/{pr_info['number']}"
-                Laminar.set_trace_metadata(
-                    {
-                        "pr_number": pr_info["number"],
-                        "repo_name": pr_info["repo_name"],
-                        "pr_url": pr_url,
-                        "workflow_phase": "review",
-                        "review_style": review_style,
-                        "model": model,
-                    }
-                )
-
-            # Store trace context in file for GitHub artifact upload
-            # This allows the evaluation workflow to add its span to this trace
-            # The span_context includes trace_id, span_id, and span_path needed
-            # to continue the trace across separate workflow runs.
-            trace_data = {
-                "trace_id": str(trace_id),
-                "span_context": span_context,
-                "pr_number": pr_info["number"],
-                "repo_name": pr_info["repo_name"],
-                "commit_id": commit_id,
-                "review_style": review_style,
-                "model": model,
-            }
-            with open("laminar_trace_info.json", "w") as f:
-                json.dump(trace_data, f, indent=2)
-            logger.info(f"Laminar trace ID: {trace_id}")
-            logger.info(f"Model used: {model}")
-            if span_context:
-                logger.info("Laminar span context captured for trace continuation")
-            print("\n=== Laminar Trace ===")
-            print(f"Trace ID: {trace_id}")
-
-            # Ensure trace is flushed to Laminar before workflow ends
-            Laminar.flush()
-        else:
-            logger.warning(
-                "No Laminar trace ID found - observability may not be enabled"
+        if mode == "cloud":
+            _run_cloud_mode(
+                prompt=prompt,
+                skill_trigger=skill_trigger,
+                github_token=github_token,
             )
-
-        logger.info("PR review completed successfully")
+        else:
+            _run_local_mode(
+                prompt=prompt,
+                skill_trigger=skill_trigger,
+                pr_info=pr_info,
+                review_style=review_style,
+                commit_id=commit_id,
+                github_token=github_token,
+            )
 
     except Exception as e:
         logger.error(f"PR review failed: {e}")

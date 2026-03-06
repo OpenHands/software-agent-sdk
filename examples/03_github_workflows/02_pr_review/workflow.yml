@@ -3,12 +3,17 @@
 #
 # To set this up:
 #  1. Copy this file to .github/workflows/pr-review.yml in your repository
-#  2. Add LLM_API_KEY to repository secrets
+#  2. Add secrets to your repository (see below for local vs cloud mode)
 #  3. Customize the inputs below as needed
 #  4. Commit this file to your repository
 #  5. Trigger the review by either:
 #     - Adding the "review-this" label to any PR, OR
 #     - Requesting openhands-agent as a reviewer
+#
+# Mode options:
+#  - local (default): Runs the agent in GitHub Actions. Requires LLM_API_KEY.
+#  - cloud: Runs the agent on OpenHands Cloud. Requires OPENHANDS_API_KEY.
+#    The LLM is configured on the Cloud side, and the agent runs asynchronously.
 #
 # For more information, see:
 # https://github.com/OpenHands/software-agent-sdk/tree/main/examples/03_github_workflows/02_pr_review
@@ -40,6 +45,8 @@ jobs:
                   ref: main
                   sparse-checkout: .github/actions/pr-review
 
+            # --- Option A: Local mode (default) ---
+            # Agent runs in GitHub Actions. Requires LLM_API_KEY secret.
             - name: Run PR Review
               uses: ./.github/actions/pr-review
               with:
@@ -54,3 +61,15 @@ jobs:
                   # Secrets
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.GITHUB_TOKEN }}
+
+            # --- Option B: Cloud mode ---
+            # Uncomment below (and comment out Option A) to use OpenHands Cloud.
+            # Agent runs asynchronously on OpenHands Cloud. Requires OPENHANDS_API_KEY.
+            # - name: Run PR Review (Cloud)
+            #   uses: ./.github/actions/pr-review
+            #   with:
+            #       mode: cloud
+            #       review-style: roasted
+            #       sdk-version: main
+            #       openhands-api-key: ${{ secrets.OPENHANDS_API_KEY }}
+            #       github-token: ${{ secrets.GITHUB_TOKEN }}
