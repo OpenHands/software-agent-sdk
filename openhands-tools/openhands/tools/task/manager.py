@@ -22,6 +22,7 @@ from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 
 
@@ -160,7 +161,8 @@ class TaskManager:
                 f"Available tasks: {', '.join(sorted(self._tasks))}"
             )
 
-        worker_agent = self._get_sub_agent(subagent_type)
+        factory = get_agent_factory(subagent_type)
+        worker_agent = self._get_sub_agent_from_factory(factory)
         conversation_id = self._tasks[resume].conversation_id
         conversation = LocalConversation(
             agent=worker_agent,
@@ -168,6 +170,11 @@ class TaskManager:
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
             delete_on_close=False,
+        )
+
+        self._set_confirmation_policy(
+            conversation,
+            factory.definition.get_confirmation_policy(),
         )
 
         self._tasks[resume] = self._tasks[resume].model_copy(
@@ -214,6 +221,11 @@ class TaskManager:
             task_id=task_id,
             worker_agent=worker_agent,
             conversation_id=conversation_id,
+        )
+
+        self._set_confirmation_policy(
+            sub_conversation,
+            factory.definition.get_confirmation_policy(),
         )
 
         self._tasks[task_id] = Task(
@@ -302,6 +314,22 @@ class TaskManager:
             self._evict_task(task)
 
         return task
+
+    def _set_confirmation_policy(
+        self,
+        conversation: LocalConversation,
+        confirmation_policy: ConfirmationPolicyBase | None,
+    ) -> None:
+        """
+        Apply permission_mode: explicit mode from definition
+        or inherit the parent's policy when None.
+        """
+        if confirmation_policy is None:
+            conversation.set_confirmation_policy(
+                self.parent_conversation.state.confirmation_policy
+            )
+        else:
+            conversation.set_confirmation_policy(confirmation_policy)
 
     def _update_parent_metrics(self, parent: LocalConversation, task: Task) -> None:
         """

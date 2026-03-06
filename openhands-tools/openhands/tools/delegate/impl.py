@@ -158,6 +158,16 @@ class DelegateExecutor(ToolExecutor):
 
                 sub_conversation = LocalConversation(**conv_kwargs)
 
+                # Apply permission_mode: explicit mode from definition,
+                # or inherit the parent's policy when None.
+                confirmation_policy = factory.definition.get_confirmation_policy()
+                if confirmation_policy is None:
+                    sub_conversation.set_confirmation_policy(
+                        parent_conversation.state.confirmation_policy
+                    )
+                else:
+                    sub_conversation.set_confirmation_policy(confirmation_policy)
+
                 self._sub_agents[agent_id] = sub_conversation
 
                 # Log what type of agent was created
