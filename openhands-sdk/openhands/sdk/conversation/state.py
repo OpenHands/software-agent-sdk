@@ -14,7 +14,12 @@ from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
-from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
+from openhands.sdk.event import (
+    ActionEvent,
+    AgentErrorEvent,
+    ObservationEvent,
+    UserRejectObservation,
+)
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
@@ -449,8 +454,12 @@ class ConversationState(OpenHandsModel):
         """Find actions in the event history that don't have matching observations.
 
         This method identifies ActionEvents that don't have corresponding
-        ObservationEvents or UserRejectObservations, which typically indicates
-        actions that are pending confirmation or execution.
+        ObservationEvents, UserRejectObservations, or AgentErrorEvents,
+        which typically indicates actions that are pending confirmation or execution.
+
+        Note: AgentErrorEvent is matched by tool_call_id (not action_id) because
+        it doesn't have an action_id field. This is important for crash recovery
+        scenarios where an error event is emitted after a server restart.
 
         Args:
             events: List of events to search through
@@ -459,15 +468,24 @@ class ConversationState(OpenHandsModel):
             List of ActionEvent objects that don't have corresponding observations,
             in chronological order
         """
-        observed_action_ids = set()
+        observed_action_ids: set[EventID] = set()
+        observed_tool_call_ids: set[str] = set()
         unmatched_actions = []
         # Search in reverse - recent events are more likely to be unmatched
         for event in reversed(events):
             if isinstance(event, (ObservationEvent, UserRejectObservation)):
                 observed_action_ids.add(event.action_id)
+            elif isinstance(event, AgentErrorEvent):
+                # AgentErrorEvent doesn't have action_id, match by tool_call_id
+                observed_tool_call_ids.add(event.tool_call_id)
             elif isinstance(event, ActionEvent):
                 # Only executable actions (validated) are considered pending
-                if event.action is not None and event.id not in observed_action_ids:
+                # Check both action_id and tool_call_id for matching
+                if (
+                    event.action is not None
+                    and event.id not in observed_action_ids
+                    and event.tool_call_id not in observed_tool_call_ids
+                ):
                     # Insert at beginning to maintain chronological order in result
                     unmatched_actions.insert(0, event)
 

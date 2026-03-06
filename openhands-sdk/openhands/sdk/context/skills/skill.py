@@ -6,6 +6,7 @@ from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
+import yaml
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -640,7 +641,7 @@ def load_skills_from_dir(
             load_and_categorize(
                 skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
             )
-        except (SkillError, OSError) as e:
+        except (SkillError, OSError, yaml.YAMLError) as e:
             logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
 
     # Load regular .md files
@@ -649,7 +650,7 @@ def load_skills_from_dir(
             load_and_categorize(
                 path, skill_dir, repo_skills, knowledge_skills, agent_skills
             )
-        except (SkillError, OSError) as e:
+        except (SkillError, OSError, yaml.YAMLError) as e:
             logger.warning(f"Failed to load skill from {path}: {e}")
 
     total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)
@@ -802,7 +803,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                     all_skills.append(skill)
                     seen_names.add(skill.name)
                     logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
-            except (SkillError, OSError) as e:
+            except (SkillError, OSError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load project-specific skills from .agents/skills, .openhands/skills,
@@ -1014,6 +1015,59 @@ def load_public_skills(
         f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
     )
     return all_skills
+
+
+def load_available_skills(
+    work_dir: str | Path | None = None,
+    *,
+    include_user: bool = False,
+    include_project: bool = False,
+    include_public: bool = False,
+) -> dict[str, Skill]:
+    """Load and merge skills from SDK-level sources with consistent precedence.
+
+    Precedence (later overrides earlier via dict updates):
+        public (lowest) → user → project (highest)
+
+    This is the single entry-point for building a merged skill catalog from
+    the three SDK-shipped sources. Server-only sources (sandbox, org) are
+    layered on top by the caller.
+
+    Args:
+        work_dir: Project/working directory for project skills. When None,
+            project skills are skipped regardless of *include_project*.
+        include_user: Load user-level skills (~/.agents/skills, etc.).
+        include_project: Load project-level skills (requires *work_dir*).
+        include_public: Load public skills from the OpenHands extensions repo.
+
+    Returns:
+        Dict mapping skill name → Skill, with higher-precedence sources
+        overriding lower ones.
+    """
+    available: dict[str, Skill] = {}
+
+    if include_public:
+        try:
+            for s in load_public_skills():
+                available[s.name] = s
+        except Exception as e:
+            logger.warning(f"Failed to load public skills: {e}")
+
+    if include_user:
+        try:
+            for s in load_user_skills():
+                available[s.name] = s
+        except Exception as e:
+            logger.warning(f"Failed to load user skills: {e}")
+
+    if include_project and work_dir:
+        try:
+            for s in load_project_skills(work_dir):
+                available[s.name] = s
+        except Exception as e:
+            logger.warning(f"Failed to load project skills: {e}")
+
+    return available
 
 
 def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:

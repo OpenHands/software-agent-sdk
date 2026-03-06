@@ -32,6 +32,14 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.subagent import AgentDefinition
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    get_factory_info,
+    get_registered_agent_definitions,
+    register_agent,
+    register_agent_if_absent,
+)
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -1194,3 +1202,82 @@ def test_hook_config_sent_to_server(
     assert state.execution_status.value in {"finished", "idle", "running"}
 
     conv.close()
+
+
+def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
+    """Agent definitions registered on the client survive the HTTP roundtrip.
+
+    This is a regression test for the bug where the server's delegate registry
+    was empty because register_builtins_agents() only ran on the client.
+
+    Validates the full flow:
+      client register_agent(description=AgentDefinition(...))
+            ( or register_agent_if_absent(...))
+        → get_registered_agent_definitions()
+        → JSON payload in POST /api/conversations
+        → server start_conversation() deserializes & re-registers
+
+    Because client and server share a process in this test, we reset the
+    global registry *after* building the payload, then POST directly to the
+    server. The server re-populates the registry from the HTTP payload (not
+    from any shared in-process state).
+    """
+    _reset_registry_for_tests()
+
+    # Register two agents with explicit definitions (file/plugin-style)
+    bash_def = AgentDefinition(
+        name="test_bash",
+        description="Command execution specialist",
+        tools=["terminal"],
+        system_prompt="You are a bash specialist.",
+    )
+    register_agent_if_absent(
+        name="test_bash",
+        factory_func=lambda llm: None,  # type: ignore[return-value]
+        description=bash_def,
+    )
+
+    reviewer_def = AgentDefinition(
+        name="test_reviewer",
+        description="Code review specialist",
+        tools=["terminal"],
+        system_prompt="You review code for correctness.",
+    )
+    register_agent(
+        name="test_reviewer",
+        factory_func=lambda llm: None,  # type: ignore[return-value]
+        description=reviewer_def,
+    )
+
+    # Verify definitions are complete before sending
+    defs = get_registered_agent_definitions()
+    reviewer = next(d for d in defs if d.name == "test_reviewer")
+    assert reviewer.tools == ["terminal"]
+    assert reviewer.system_prompt == "You review code for correctness."
+
+    # Capture serialized definitions, then reset to prove the server
+    # re-registers from the HTTP payload (not from shared in-process state).
+    all_defs = [d.model_dump(mode="json") for d in defs]
+    _reset_registry_for_tests()
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+
+    # POST directly to the server with the serialized definitions
+    payload = {
+        "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+        "workspace": {"working_dir": "/tmp/workspace/project"},
+        "agent_definitions": all_defs,
+    }
+    with httpx.Client(base_url=server_env["host"]) as client:
+        resp = client.post("/api/conversations", json=payload, timeout=10.0)
+        resp.raise_for_status()
+
+    # The server should have re-registered both agents from the HTTP payload
+    info = get_factory_info()
+    assert "test_bash" in info
+    assert "Command execution specialist" in info
+    assert "test_reviewer" in info
+    assert "Code review specialist" in info
+
+    _reset_registry_for_tests()

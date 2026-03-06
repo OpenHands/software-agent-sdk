@@ -64,10 +64,7 @@ class SystemPromptEvent(LLMConvertibleEvent):
         content.append(self.system_prompt.text)
         if self.dynamic_context:
             content.append("\n\nDynamic Context:\n", style="bold italic")
-            context_preview = self.dynamic_context.text[:500]
-            if len(self.dynamic_context.text) > 500:
-                context_preview += "..."
-            content.append(context_preview)
+            content.append(self.dynamic_context.text)
         content.append(f"\n\nTools Available: {len(self.tools)}")
         for tool in self.tools:
             # Use ToolDefinition properties directly
