@@ -265,6 +265,60 @@ Prompt.
         assert "skills" not in agent.metadata
         assert agent.metadata.get("custom_field") == "value"
 
+    def test_load_agent_with_profile_store_dir(self, tmp_path: Path):
+        """Test loading agent with profile_store_dir from frontmatter."""
+        agent_md = tmp_path / "profiled.md"
+        agent_md.write_text(
+            """---
+name: profiled
+profile_store_dir: /custom/profiles
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.profile_store_dir == "/custom/profiles"
+
+    def test_load_agent_without_profile_store_dir(self, tmp_path: Path):
+        """Test that profile_store_dir defaults to None when omitted."""
+        agent_md = tmp_path / "default.md"
+        agent_md.write_text(
+            """---
+name: no-profile-dir
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.profile_store_dir is None
+
+    def test_profile_store_dir_not_in_metadata(self, tmp_path: Path):
+        """Test that profile_store_dir doesn't leak into metadata."""
+        agent_md = tmp_path / "meta-check.md"
+        agent_md.write_text(
+            """---
+name: meta-check
+profile_store_dir: /some/path
+custom_field: value
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert "profile_store_dir" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_profile_store_dir_default_none(self):
+        """Test that profile_store_dir defaults to None on direct construction."""
+        agent = AgentDefinition(name="test")
+        assert agent.profile_store_dir is None
+
 
 class TestExtractExamples:
     """Tests for _extract_examples function."""
