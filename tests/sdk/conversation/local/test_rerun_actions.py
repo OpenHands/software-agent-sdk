@@ -162,9 +162,9 @@ def test_rerun_actions_empty_conversation():
     agent = RerunDummyAgent(tools=[Tool(name="rerun_test", params={})])
     conversation = Conversation(agent=agent)
 
-    # Rerun on empty conversation should return empty list
-    observations = conversation.rerun_actions()
-    assert observations == []
+    # Rerun on empty conversation should return True (nothing to do = success)
+    result = conversation.rerun_actions()
+    assert result is True
 
 
 def test_rerun_actions_basic():
@@ -185,17 +185,10 @@ def test_rerun_actions_basic():
     conversation._state.events.append(action_event2)
 
     # Now rerun all actions
-    observations = conversation.rerun_actions()
+    result = conversation.rerun_actions()
 
-    # Should have executed both actions
-    assert len(observations) == 2
-    # Cast to our specific observation type to access result
-    obs1 = observations[0]
-    obs2 = observations[1]
-    assert isinstance(obs1, RerunTestObservation)
-    assert isinstance(obs2, RerunTestObservation)
-    assert obs1.result == "result_first"
-    assert obs2.result == "result_second"
+    # Should have executed both actions successfully
+    assert result is True
     assert execution_counts["first"] == 1
     assert execution_counts["second"] == 1
 
@@ -215,13 +208,13 @@ def test_rerun_actions_preserves_original_observations():
     events_before = len(list(conversation._state.events))
 
     # Rerun actions
-    observations = conversation.rerun_actions()
+    result = conversation.rerun_actions()
 
     # Count events after rerun - should be the same
     events_after = len(list(conversation._state.events))
 
     assert events_before == events_after
-    assert len(observations) == 1
+    assert result is True
 
 
 def test_rerun_actions_skips_none_actions():
@@ -250,13 +243,11 @@ def test_rerun_actions_skips_none_actions():
     action_event_valid = _make_action_event("rerun_test", action, "tc2")
     conversation._state.events.append(action_event_valid)
 
-    # Rerun should only execute the valid action
-    observations = conversation.rerun_actions()
+    # Rerun should only execute the valid action and succeed
+    result = conversation.rerun_actions()
 
-    assert len(observations) == 1
-    obs = observations[0]
-    assert isinstance(obs, RerunTestObservation)
-    assert obs.result == "result_valid"
+    assert result is True
+    assert execution_counts["valid"] == 1
 
 
 def test_rerun_actions_missing_tool_raises():
@@ -289,15 +280,15 @@ def test_rerun_can_be_called_manually():
     conversation._state.events.append(action_event)
 
     # Call rerun manually (not during init)
-    observations = conversation.rerun_actions()
+    result = conversation.rerun_actions()
 
-    assert len(observations) == 1
+    assert result is True
     assert execution_counts["manual"] == 1
 
     # Can call again
-    observations2 = conversation.rerun_actions()
+    result2 = conversation.rerun_actions()
 
-    assert len(observations2) == 1
+    assert result2 is True
     assert execution_counts["manual"] == 2  # Executed twice now
 
 
@@ -467,8 +458,8 @@ def test_rerun_reproduces_file_state(tmp_path: Path, monkeypatch: pytest.MonkeyP
     conversation._state.events.append(action_event)
 
     # First rerun creates the file
-    observations = conversation.rerun_actions()
-    assert len(observations) == 1
+    result = conversation.rerun_actions()
+    assert result is True
     assert test_file.exists()
     assert test_file.read_text() == "hello world"
 
@@ -477,18 +468,21 @@ def test_rerun_reproduces_file_state(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert not test_file.exists()
 
     # Rerun again - file should be recreated
-    observations2 = conversation.rerun_actions()
-    assert len(observations2) == 1
+    result2 = conversation.rerun_actions()
+    assert result2 is True
     assert test_file.exists()
     assert test_file.read_text() == "hello world"
 
 
-def test_rerun_non_idempotent_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Test that non-idempotent operations fail on rerun when state exists.
+def test_rerun_non_idempotent_with_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that non-idempotent operations are tracked in the rerun log.
 
     This verifies the documented non-idempotency warning: file creation
-    will fail if the file already exists.
+    will fail if the file already exists. The rerun still "succeeds"
+    (tool executed correctly) but the observation shows is_error=True.
     """
+    import json
+
     # Register the file create tool (non-idempotent)
     register_tool_public(FileCreateTool.name, FileCreateTool)
 
@@ -501,30 +495,42 @@ def test_rerun_non_idempotent_failure(tmp_path: Path, monkeypatch: pytest.Monkey
     action_event = _make_action_event("file_create", action, "tc1")
     conversation._state.events.append(action_event)
 
+    log_file = tmp_path / "rerun_log.jsonl"
+
     # First rerun creates the file successfully
-    observations = conversation.rerun_actions()
-    assert len(observations) == 1
-    obs = observations[0]
-    assert isinstance(obs, FileCreateObservation)
-    assert obs.created is True
+    result = conversation.rerun_actions(rerun_log_path=log_file)
+    assert result is True
     assert test_file.exists()
 
-    # Second rerun - file already exists, should return error observation
-    observations2 = conversation.rerun_actions()
-    assert len(observations2) == 1
-    obs2 = observations2[0]
-    assert isinstance(obs2, FileCreateObservation)
-    assert obs2.created is False
-    assert obs2.is_error is True
-    assert "already exists" in obs2.text
+    # Check the log
+    log_entries = [
+        json.loads(line) for line in log_file.read_text().strip().split("\n")
+    ]
+    assert len(log_entries) == 1
+    assert log_entries[0]["observation"]["created"] is True
+
+    # Second rerun - file already exists, returns error observation but still succeeds
+    log_file2 = tmp_path / "rerun_log2.jsonl"
+    result2 = conversation.rerun_actions(rerun_log_path=log_file2)
+    assert result2 is True  # Tool executed correctly, just returned error
+
+    # Check the second log shows the error observation
+    log_entries2 = [
+        json.loads(line) for line in log_file2.read_text().strip().split("\n")
+    ]
+    assert len(log_entries2) == 1
+    assert log_entries2[0]["observation"]["created"] is False
+    assert log_entries2[0]["observation"]["is_error"] is True
 
 
-def test_rerun_partial_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Test rerun with a mix of successful and failing actions.
+def test_rerun_early_exit_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test that rerun exits immediately when a tool raises an exception.
 
-    This verifies that rerun continues processing even when some actions fail,
-    and returns observations only for successful executions.
+    This verifies that rerun stops at the first failure and saves
+    partial progress to the log.
     """
+    import json
+
     # Register both tools
     register_tool_public(FileWriteTool.name, FileWriteTool)
     register_tool_public(FailingTool.name, FailingTool)
@@ -543,26 +549,36 @@ def test_rerun_partial_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     action1 = FileWriteAction(filepath=str(test_file1), content="first")
     conversation._state.events.append(_make_action_event("file_write", action1, "tc1"))
 
-    # Add a failing action
+    # Add a failing action (raises exception)
     action2 = FailingAction(message="intentional")
     conversation._state.events.append(_make_action_event("failing", action2, "tc2"))
 
-    # Add another successful action
+    # Add another successful action (should NOT be executed due to early exit)
     test_file2 = tmp_path / "file2.txt"
     action3 = FileWriteAction(filepath=str(test_file2), content="second")
     conversation._state.events.append(_make_action_event("file_write", action3, "tc3"))
 
-    # Rerun - should process all actions, returning observations for successes
-    observations = conversation.rerun_actions()
+    log_file = tmp_path / "rerun_log.jsonl"
 
-    # Should have 2 observations (the failing one doesn't add to the list)
-    assert len(observations) == 2
+    # Rerun - should fail at the second action and exit early
+    result = conversation.rerun_actions(rerun_log_path=log_file)
 
-    # Both files should be created despite the middle failure
+    # Should return False due to failure
+    assert result is False
+
+    # First file should be created (before failure)
     assert test_file1.exists()
     assert test_file1.read_text() == "first"
-    assert test_file2.exists()
-    assert test_file2.read_text() == "second"
+
+    # Second file should NOT exist (action not executed due to early exit)
+    assert not test_file2.exists()
+
+    # Log should contain only the successful action before failure
+    log_entries = [
+        json.loads(line) for line in log_file.read_text().strip().split("\n")
+    ]
+    assert len(log_entries) == 1
+    assert log_entries[0]["tool_name"] == "file_write"
 
 
 def test_rerun_multiple_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -590,10 +606,12 @@ def test_rerun_multiple_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
 
     # Rerun all actions
-    observations = conversation.rerun_actions()
+    result = conversation.rerun_actions()
+
+    # All actions should succeed
+    assert result is True
 
     # All files should be created
-    assert len(observations) == 3
     for filename, expected_content in files_content:
         file_path = tmp_path / filename
         assert file_path.exists(), f"File {filename} should exist"

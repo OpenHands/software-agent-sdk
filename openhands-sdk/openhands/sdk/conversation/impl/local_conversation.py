@@ -2,6 +2,7 @@ import atexit
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
@@ -929,13 +930,15 @@ class LocalConversation(BaseConversation):
 
         logger.info("Condensation request processed")
 
-    def rerun_actions(self) -> list[Observation]:
+    def rerun_actions(
+        self,
+        rerun_log_path: str | Path | None = None,
+    ) -> bool:
         """Re-execute all actions from the conversation's event history.
 
         This method iterates through all ActionEvents in the conversation and
-        re-executes them using their original action parameters. The original
-        observations in the event log are preserved; new observations from
-        the rerun are returned but not persisted.
+        re-executes them using their original action parameters. Execution
+        stops immediately if any tool call fails.
 
         WARNING: This is an advanced feature intended for specific use cases
         such as reproducing environment state from a saved conversation. Many
@@ -951,20 +954,23 @@ class LocalConversation(BaseConversation):
         2. Some actions may fail due to changed environment state
         3. The workspace should typically be reset before rerunning
 
+        Args:
+            rerun_log_path: Optional path to save a rerun event log. If provided,
+                the log will contain the actions and their new observations in
+                chronological order (as JSONL format).
+
         Returns:
-            List of Observations from re-executing each action. The list
-            corresponds to ActionEvents in chronological order. Actions that
-            fail during rerun will have error observations.
+            True if all actions executed successfully, False if any action failed.
 
         Raises:
-            KeyError: If a tool from the original conversation is not available
+            KeyError: If a tool from the original conversation is not available.
+                This is a configuration error (different from execution failure).
         """
         # Ensure agent is initialized (loads plugins and initializes tools)
         self._ensure_agent_ready()
 
-        observations: list[Observation] = []
+        rerun_log: list[dict[str, Any]] = []
         action_count = 0
-        error_count = 0
 
         for event in self._state.events:
             if not isinstance(event, ActionEvent):
@@ -998,19 +1004,46 @@ class LocalConversation(BaseConversation):
             try:
                 logger.info(f"Rerunning action {action_count}: {tool_name}")
                 observation = tool(event.action, self)
-                observations.append(observation)
+
+                # Log the action and observation
+                rerun_log.append(
+                    {
+                        "action_index": action_count,
+                        "tool_name": tool_name,
+                        "action": event.action.model_dump(),
+                        "observation": observation.model_dump(),
+                    }
+                )
             except Exception as e:
-                error_count += 1
-                logger.warning(
+                logger.error(
                     f"Action {action_count} ({tool_name}) failed during rerun: {e}"
                 )
-                # Continue with remaining actions even if one fails
+                # Save partial log before returning failure
+                if rerun_log_path is not None:
+                    self._save_rerun_log(rerun_log_path, rerun_log)
+                return False
 
-        logger.info(
-            f"Rerun complete: {action_count} actions processed, "
-            f"{error_count} errors, {len(observations)} observations returned"
-        )
-        return observations
+        logger.info(f"Rerun complete: {action_count} actions processed successfully")
+
+        # Save the complete rerun log
+        if rerun_log_path is not None:
+            self._save_rerun_log(rerun_log_path, rerun_log)
+
+        return True
+
+    def _save_rerun_log(
+        self,
+        path: str | Path,
+        rerun_log: list[dict[str, Any]],
+    ) -> None:
+        """Save the rerun log to a file in JSONL format."""
+        import json
+
+        log_path = Path(path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w") as f:
+            for entry in rerun_log:
+                f.write(json.dumps(entry) + "\n")
 
     def execute_tool(self, tool_name: str, action: Action) -> Observation:
         """Execute a tool directly without going through the agent loop.
