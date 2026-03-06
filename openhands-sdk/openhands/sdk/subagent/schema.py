@@ -184,7 +184,11 @@ class AgentDefinition(BaseModel):
 
                 return ConfirmRisky()
             case _:
-                raise RuntimeError
+                # Should never reach here due to validation
+                # in _extract_permission_mode()
+                raise AssertionError(
+                    f"Unexpected permission_mode: {self.permission_mode}"
+                )
 
     @classmethod
     def load(cls, agent_path: Path) -> AgentDefinition:
