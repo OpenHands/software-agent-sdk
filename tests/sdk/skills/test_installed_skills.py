@@ -237,3 +237,191 @@ def test_metadata_invalid_json_returns_empty(tmp_path: Path) -> None:
     metadata = InstalledSkillsMetadata.load_from_dir(installed)
 
     assert metadata.skills == {}
+
+
+# --- Tests for install_skills_from_marketplace ---
+
+
+def _create_marketplace(
+    base_dir: Path,
+    skills: list[dict[str, str]],
+    plugins: list[dict[str, str]] | None = None,
+) -> Path:
+    """Helper to create a marketplace directory with skills and optional plugins."""
+    marketplace_dir = base_dir / "marketplace"
+    marketplace_dir.mkdir(parents=True)
+
+    plugin_dir = marketplace_dir / ".plugin"
+    plugin_dir.mkdir()
+
+    import json
+
+    manifest = {
+        "name": "test-marketplace",
+        "owner": {"name": "Test"},
+        "skills": skills,
+        "plugins": plugins or [],
+    }
+    (plugin_dir / "marketplace.json").write_text(json.dumps(manifest))
+
+    return marketplace_dir
+
+
+class TestInstallSkillsFromMarketplace:
+    """Tests for install_skills_from_marketplace function."""
+
+    def test_install_local_skills(self, tmp_path: Path) -> None:
+        """Test installing local skills from marketplace."""
+        from openhands.sdk.skills import install_skills_from_marketplace
+
+        # Create marketplace with local skill
+        marketplace_dir = _create_marketplace(
+            tmp_path,
+            skills=[{"name": "my-skill", "source": "./skills/my-skill"}],
+        )
+
+        # Create the local skill
+        skill_dir = marketplace_dir / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Test\n---\n# my-skill"
+        )
+
+        installed_dir = tmp_path / "installed"
+        installed_dir.mkdir()
+
+        installed = install_skills_from_marketplace(
+            marketplace_dir, installed_dir=installed_dir
+        )
+
+        assert len(installed) == 1
+        assert installed[0].name == "my-skill"
+        assert (installed_dir / "my-skill" / "SKILL.md").exists()
+
+    def test_install_skills_force_overwrite(self, tmp_path: Path) -> None:
+        """Test force reinstalling existing skills."""
+        from openhands.sdk.skills import install_skills_from_marketplace
+
+        marketplace_dir = _create_marketplace(
+            tmp_path,
+            skills=[{"name": "my-skill", "source": "./skills/my-skill"}],
+        )
+
+        skill_dir = marketplace_dir / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Original\n---\n# my-skill"
+        )
+
+        installed_dir = tmp_path / "installed"
+        installed_dir.mkdir()
+
+        # First install
+        install_skills_from_marketplace(marketplace_dir, installed_dir=installed_dir)
+
+        # Update skill content
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Updated\n---\n# my-skill"
+        )
+
+        # Reinstall without force - should not update
+        installed = install_skills_from_marketplace(
+            marketplace_dir, installed_dir=installed_dir, force=False
+        )
+        assert len(installed) == 0  # Already exists, not reinstalled
+
+        # Reinstall with force
+        installed = install_skills_from_marketplace(
+            marketplace_dir, installed_dir=installed_dir, force=True
+        )
+        assert len(installed) == 1
+        content = (installed_dir / "my-skill" / "SKILL.md").read_text()
+        assert "Updated" in content
+
+    def test_install_handles_missing_skill_source(self, tmp_path: Path) -> None:
+        """Test that missing skill sources are skipped gracefully."""
+        from openhands.sdk.skills import install_skills_from_marketplace
+
+        marketplace_dir = _create_marketplace(
+            tmp_path,
+            skills=[{"name": "missing", "source": "./does-not-exist"}],
+        )
+
+        installed_dir = tmp_path / "installed"
+        installed_dir.mkdir()
+
+        # Should not raise, just skip
+        installed = install_skills_from_marketplace(
+            marketplace_dir, installed_dir=installed_dir
+        )
+
+        assert len(installed) == 0
+
+    def test_install_skills_from_plugin_directories(self, tmp_path: Path) -> None:
+        """Test that skills inside plugin directories are also installed."""
+        from openhands.sdk.skills import install_skills_from_marketplace
+
+        marketplace_dir = _create_marketplace(
+            tmp_path,
+            skills=[],  # No standalone skills
+            plugins=[{"name": "my-plugin", "source": "./plugins/my-plugin"}],
+        )
+
+        # Create plugin with skills inside
+        plugin_dir = marketplace_dir / "plugins" / "my-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text('{"name": "my-plugin"}')
+
+        skill_dir = plugin_dir / "skills" / "plugin-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: plugin-skill\ndescription: From plugin\n---\n# plugin-skill"
+        )
+
+        installed_dir = tmp_path / "installed"
+        installed_dir.mkdir()
+
+        installed = install_skills_from_marketplace(
+            marketplace_dir, installed_dir=installed_dir
+        )
+
+        assert len(installed) == 1
+        assert installed[0].name == "plugin-skill"
+
+    def test_install_both_standalone_and_plugin_skills(self, tmp_path: Path) -> None:
+        """Test installing skills from both standalone entries and plugins."""
+        from openhands.sdk.skills import install_skills_from_marketplace
+
+        marketplace_dir = _create_marketplace(
+            tmp_path,
+            skills=[{"name": "standalone", "source": "./skills/standalone"}],
+            plugins=[{"name": "my-plugin", "source": "./plugins/my-plugin"}],
+        )
+
+        # Create standalone skill
+        standalone_dir = marketplace_dir / "skills" / "standalone"
+        standalone_dir.mkdir(parents=True)
+        (standalone_dir / "SKILL.md").write_text(
+            "---\nname: standalone\ndescription: Standalone\n---\n# standalone"
+        )
+
+        # Create plugin with skill
+        plugin_dir = marketplace_dir / "plugins" / "my-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text('{"name": "my-plugin"}')
+
+        plugin_skill_dir = plugin_dir / "skills" / "from-plugin"
+        plugin_skill_dir.mkdir(parents=True)
+        (plugin_skill_dir / "SKILL.md").write_text(
+            "---\nname: from-plugin\ndescription: From plugin\n---\n# from-plugin"
+        )
+
+        installed_dir = tmp_path / "installed"
+        installed_dir.mkdir()
+
+        installed = install_skills_from_marketplace(
+            marketplace_dir, installed_dir=installed_dir
+        )
+
+        names = {s.name for s in installed}
+        assert names == {"standalone", "from-plugin"}
