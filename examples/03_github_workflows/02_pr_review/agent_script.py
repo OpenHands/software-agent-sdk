@@ -667,6 +667,30 @@ def get_head_commit_sha(repo_dir: Path | None = None) -> str:
     return run_git_command(["git", "rev-parse", "HEAD"], repo_dir).strip()
 
 
+def _build_llm() -> LLM:
+    """Build the LLM from environment variables.
+
+    In local mode, api_key and base_url are read from environment.
+    In cloud mode, the LLM is configured on the Cloud side so only the
+    model name is needed.
+    """
+    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+    api_key = os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL")
+
+    llm_config: dict[str, Any] = {
+        "model": model,
+        "usage_id": "pr_review_agent",
+        "drop_params": True,
+    }
+    if api_key:
+        llm_config["api_key"] = api_key
+    if base_url:
+        llm_config["base_url"] = base_url
+
+    return LLM(**llm_config)
+
+
 def _build_agent(
     llm: LLM,
     cwd: str,
@@ -694,6 +718,17 @@ def _build_agent(
     )
 
 
+def _build_secrets(github_token: str | None) -> dict[str, str]:
+    """Build the secrets dict for a conversation."""
+    secrets: dict[str, str] = {}
+    api_key = os.getenv("LLM_API_KEY")
+    if api_key:
+        secrets["LLM_API_KEY"] = api_key
+    if github_token:
+        secrets["GITHUB_TOKEN"] = github_token
+    return secrets
+
+
 def _run_cloud_mode(
     prompt: str,
     skill_trigger: str,
@@ -712,11 +747,7 @@ def _run_cloud_mode(
 
     logger.info(f"Using OpenHands Cloud: {cloud_api_url}")
 
-    # In cloud mode, LLM is configured on the Cloud side.
-    # We provide a model name but no API key.
-    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-    llm = LLM(model=model, usage_id="pr_review_agent", drop_params=True)
-
+    llm = _build_llm()
     workspace = OpenHandsCloudWorkspace(
         cloud_api_url=cloud_api_url,
         cloud_api_key=openhands_api_key,
@@ -724,17 +755,11 @@ def _run_cloud_mode(
     )
 
     try:
-        cwd = workspace.working_dir
-        agent = _build_agent(llm, cwd)
-
-        secrets: dict[str, str] = {}
-        if github_token:
-            secrets["GITHUB_TOKEN"] = github_token
-
+        agent = _build_agent(llm, workspace.working_dir)
         conversation = Conversation(
             agent=agent,
             workspace=workspace,
-            secrets=secrets,
+            secrets=_build_secrets(github_token),
         )
 
         logger.info("Starting PR review on OpenHands Cloud...")
@@ -761,35 +786,13 @@ def _run_local_mode(
     github_token: str | None,
 ) -> None:
     """Run the PR review agent locally."""
-    api_key = os.getenv("LLM_API_KEY")
-    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-    base_url = os.getenv("LLM_BASE_URL")
-
-    llm_config: dict[str, Any] = {
-        "model": model,
-        "api_key": api_key,
-        "usage_id": "pr_review_agent",
-        "drop_params": True,
-    }
-
-    if base_url:
-        llm_config["base_url"] = base_url
-
-    llm = LLM(**llm_config)
-
+    llm = _build_llm()
     cwd = os.getcwd()
     agent = _build_agent(llm, cwd)
-
-    secrets: dict[str, str] = {}
-    if api_key:
-        secrets["LLM_API_KEY"] = api_key
-    if github_token:
-        secrets["GITHUB_TOKEN"] = github_token
-
     conversation = Conversation(
         agent=agent,
         workspace=cwd,
-        secrets=secrets,
+        secrets=_build_secrets(github_token),
     )
 
     logger.info("Starting PR review analysis...")
@@ -805,6 +808,7 @@ def _run_local_mode(
         logger.info(f"Agent final response: {len(review_content)} characters")
 
     # Print cost information for CI output
+    model = llm.model
     metrics = conversation.conversation_stats.get_combined_metrics()
     print("\n=== PR Review Cost Summary ===")
     print(f"Total Cost: ${metrics.accumulated_cost:.6f}")

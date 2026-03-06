@@ -18,6 +18,8 @@ pr_review_path = (
 sys.path.insert(0, str(pr_review_path))
 from agent_script import (  # noqa: E402  # type: ignore[import-not-found]
     _build_agent,
+    _build_llm,
+    _build_secrets,
     main,
 )
 
@@ -117,3 +119,49 @@ def test_build_agent_returns_agent():
 
     assert agent.llm.model == "test-model"
     assert len(agent.tools) > 0  # Default tools loaded
+
+
+def test_build_llm_defaults():
+    """_build_llm uses defaults when no env vars are set."""
+    with patch.dict(os.environ, {}, clear=True):
+        llm = _build_llm()
+
+    assert llm.model == "anthropic/claude-sonnet-4-5-20250929"
+    assert llm.api_key is None
+    assert llm.base_url is None
+
+
+def test_build_llm_with_api_key_and_base_url():
+    """_build_llm picks up LLM_API_KEY and LLM_BASE_URL."""
+    env = {
+        "LLM_MODEL": "anthropic/claude-sonnet-4-5-20250929",
+        "LLM_API_KEY": "sk-test",
+        "LLM_BASE_URL": "https://custom.llm",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        llm = _build_llm()
+
+    assert llm.model == "anthropic/claude-sonnet-4-5-20250929"
+    assert llm.api_key is not None
+    assert llm.api_key.get_secret_value() == "sk-test"
+    assert llm.base_url == "https://custom.llm"
+
+
+def test_build_secrets_with_all_keys():
+    """_build_secrets includes GITHUB_TOKEN and LLM_API_KEY when present."""
+    env = {"LLM_API_KEY": "sk-key"}
+    with patch.dict(os.environ, env, clear=True):
+        secrets = _build_secrets("ghp_token")
+
+    assert secrets == {
+        "LLM_API_KEY": "sk-key",
+        "GITHUB_TOKEN": "ghp_token",
+    }
+
+
+def test_build_secrets_without_optional_keys():
+    """_build_secrets returns empty dict without LLM_API_KEY or github_token."""
+    with patch.dict(os.environ, {}, clear=True):
+        secrets = _build_secrets(None)
+
+    assert secrets == {}
