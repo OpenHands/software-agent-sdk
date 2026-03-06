@@ -193,29 +193,6 @@ def test_rerun_actions_basic():
     assert execution_counts["second"] == 1
 
 
-def test_rerun_actions_called_during_init():
-    """Test that rerun=True triggers rerun_actions during initialization."""
-    agent = RerunDummyAgent(tools=[Tool(name="rerun_test", params={})])
-
-    # Create conversation without rerun flag
-    conversation = Conversation(agent=agent, rerun=False)
-
-    # Manually add action event
-    conversation._ensure_agent_ready()
-    action = RerunTestAction(value="init_test")
-    action_event = _make_action_event("rerun_test", action, "tc1")
-    conversation._state.events.append(action_event)
-
-    # Execution count should be 0 since we didn't run the tool
-    assert execution_counts.get("init_test", 0) == 0
-
-    # Now manually call rerun to verify it works
-    observations = conversation.rerun_actions()
-
-    assert len(observations) == 1
-    assert execution_counts["init_test"] == 1
-
-
 def test_rerun_actions_preserves_original_observations():
     """Test that rerun_actions doesn't modify the original event log."""
     agent = RerunDummyAgent(tools=[Tool(name="rerun_test", params={})])
@@ -292,20 +269,6 @@ def test_rerun_actions_missing_tool_raises():
 
     assert "rerun_test" in str(exc_info.value)
     assert "not found during rerun" in str(exc_info.value)
-
-
-def test_rerun_flag_accepted_by_conversation_factory():
-    """Test that rerun flag is accepted by the Conversation factory."""
-    agent = RerunDummyAgent(tools=[Tool(name="rerun_test", params={})])
-
-    # Just verify the flag is accepted without error
-    # Full persistence-based testing requires proper agent serialization
-    conversation = Conversation(agent=agent, rerun=False)
-    assert conversation is not None
-
-    # Verify rerun=True is also accepted (on empty conversation, does nothing)
-    conversation2 = Conversation(agent=agent, rerun=True)
-    assert conversation2 is not None
 
 
 def test_rerun_can_be_called_manually():

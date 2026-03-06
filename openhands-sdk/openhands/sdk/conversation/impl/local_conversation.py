@@ -100,7 +100,6 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
-        rerun: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -140,14 +139,7 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
-            rerun: If True, re-execute all actions from a resumed conversation.
-                   This is useful for replaying a conversation to reproduce its
-                   environment state. WARNING: Many tool operations are not
-                   idempotent (e.g., file creation, API calls). Use only when you
-                   understand that results may differ from the original run.
-                   Original observations are preserved in the event log.
         """
-        self._rerun_requested = rerun
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
@@ -269,10 +261,6 @@ class LocalConversation(BaseConversation):
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
         self.delete_on_close = delete_on_close
-
-        # Execute rerun if requested (must be after full initialization)
-        if self._rerun_requested:
-            self.rerun_actions()
 
     @property
     def id(self) -> ConversationID:
