@@ -24,7 +24,7 @@ Example usage:
 """
 
 from collections.abc import Callable
-from functools import cache
+from functools import lru_cache
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, NamedTuple
@@ -151,7 +151,7 @@ def register_agent_if_absent(
         return True
 
 
-@cache
+@lru_cache(maxsize=32)
 def _get_profile_store(profile_store_dir: str | None) -> LLMProfileStore:
     return LLMProfileStore(profile_store_dir)
 
