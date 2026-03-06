@@ -188,7 +188,7 @@ with ManagedAPIServer(port=8001) as server:
                 matcher="*",  # Match all stop reasons
                 hooks=[
                     HookDefinition(
-                        command=str(HOOK_SCRIPTS_DIR / "pre_commit_check.sh"),
+                        command=str(HOOK_SCRIPTS_DIR / "pycompile_check.sh"),
                         timeout=60,
                     )
                 ],
