@@ -667,3 +667,41 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     )
     agent = retrieved.factory_func(test_llm)
     assert isinstance(agent, Agent)
+
+
+def test_agent_definition_to_factory_mcp_servers() -> None:
+    """Factory passes mcp_servers as mcp_config to the Agent."""
+    agent_def = AgentDefinition(
+        name="mcp-agent",
+        description="Agent with MCP servers",
+        model="inherit",
+        tools=[],
+        system_prompt="",
+        mcp_servers={
+            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
+        },
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.mcp_config == {
+        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    }
+
+
+def test_agent_definition_to_factory_no_mcp_servers() -> None:
+    """Factory without mcp_servers passes empty mcp_config."""
+    agent_def = AgentDefinition(
+        name="no-mcp-agent",
+        model="inherit",
+        tools=[],
+        system_prompt="",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.mcp_config == {}
