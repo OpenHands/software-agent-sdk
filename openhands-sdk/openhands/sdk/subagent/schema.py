@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Final
 
 import frontmatter
 from pydantic import BaseModel, Field
 
-
-PermissionMode = Literal["always_confirm", "never_confirm", "confirm_risky"]
 
 KNOWN_FIELDS: Final[set[str]] = {
     "name",
@@ -21,6 +19,12 @@ KNOWN_FIELDS: Final[set[str]] = {
     "skills",
     "max_iteration_per_run",
     "permission_mode",
+}
+
+_VALID_PERMISSION_MODES: Final[set[str]] = {
+    "always_confirm",
+    "never_confirm",
+    "confirm_risky",
 }
 
 
@@ -64,13 +68,6 @@ def _extract_examples(description: str) -> list[str]:
     pattern = r"<example>(.*?)</example>"
     matches = re.findall(pattern, description, re.DOTALL | re.IGNORECASE)
     return [m.strip() for m in matches if m.strip()]
-
-
-_VALID_PERMISSION_MODES: Final[set[str]] = {
-    "always_confirm",
-    "never_confirm",
-    "confirm_risky",
-}
 
 
 def _extract_permission_mode(fm: dict[str, object]) -> str | None:

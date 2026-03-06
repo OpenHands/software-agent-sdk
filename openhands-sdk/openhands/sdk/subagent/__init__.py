@@ -13,7 +13,7 @@ from openhands.sdk.subagent.registry import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.subagent.schema import AgentDefinition, PermissionMode
+from openhands.sdk.subagent.schema import AgentDefinition
 
 
 __all__ = [
@@ -31,6 +31,5 @@ __all__ = [
     "get_registered_agent_definitions",
     # Agent def and factory
     "AgentDefinition",
-    "PermissionMode",
     "agent_definition_to_factory",
 ]
