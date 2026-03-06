@@ -18,6 +18,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "tools",
     "skills",
     "max_iteration_per_run",
+    "profile_store_dir",
     "permission_mode",
 }
 
@@ -61,6 +62,18 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     else:
         skills = []
     return skills
+
+
+def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
+    """Extract profile store directory from frontmatter."""
+    profile_store_dir_raw = fm.get("profile_store_dir")
+    if profile_store_dir_raw is None:
+        return None
+    if isinstance(profile_store_dir_raw, str):
+        return profile_store_dir_raw
+    raise ValueError(
+        f"profile_store_dir must be a scalar value, got {type(profile_store_dir_raw)}"
+    )
 
 
 def _extract_examples(description: str) -> list[str]:
@@ -136,6 +149,11 @@ class AgentDefinition(BaseModel):
         "It must be strictly positive, or None for default.",
         gt=0,
     )
+    profile_store_dir: str | None = Field(
+        default=None,
+        description="Path to the directory where LLM profiles are stored. "
+        "If None, the default profile store directory is used.",
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
@@ -202,6 +220,7 @@ class AgentDefinition(BaseModel):
         skills: list[str] = _extract_skills(fm)
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
+        profile_store_dir: str | None = _extract_profile_store_dir(fm)
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
@@ -218,6 +237,7 @@ class AgentDefinition(BaseModel):
             skills=skills,
             permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
+            profile_store_dir=profile_store_dir,
             system_prompt=content,
             source=str(agent_path),
             when_to_use_examples=when_to_use_examples,
