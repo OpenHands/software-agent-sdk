@@ -303,8 +303,7 @@ def _set_plugin_enabled(
         logger.warning(f"Installed plugins directory does not exist: {installed_dir}")
         return False
 
-    list_installed_plugins(installed_dir)
-    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
+    metadata, _ = _sync_installed_plugins_metadata(installed_dir)
     info = metadata.plugins.get(name)
     if info is None:
         logger.warning(f"Plugin '{name}' is not installed")
@@ -428,6 +427,22 @@ def _discover_untracked_plugins(
     return discovered, changed
 
 
+def _sync_installed_plugins_metadata(
+    installed_dir: Path,
+) -> tuple[InstalledPluginsMetadata, list[InstalledPluginInfo]]:
+    """Sync installed plugins metadata with on-disk plugin directories."""
+    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
+    valid_plugins, tracked_changed = _validate_tracked_plugins(metadata, installed_dir)
+    discovered, discovered_changed = _discover_untracked_plugins(
+        metadata, installed_dir
+    )
+
+    if tracked_changed or discovered_changed:
+        metadata.save_to_dir(installed_dir)
+
+    return metadata, valid_plugins + discovered
+
+
 def list_installed_plugins(
     installed_dir: Path | None = None,
 ) -> list[InstalledPluginInfo]:
@@ -453,18 +468,8 @@ def list_installed_plugins(
     if not installed_dir.exists():
         return []
 
-    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
-
-    # Validate tracked plugins and discover untracked ones
-    valid_plugins, tracked_changed = _validate_tracked_plugins(metadata, installed_dir)
-    discovered, discovered_changed = _discover_untracked_plugins(
-        metadata, installed_dir
-    )
-
-    if tracked_changed or discovered_changed:
-        metadata.save_to_dir(installed_dir)
-
-    return valid_plugins + discovered
+    _, plugins = _sync_installed_plugins_metadata(installed_dir)
+    return plugins
 
 
 def load_installed_plugins(
