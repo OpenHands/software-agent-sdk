@@ -79,6 +79,7 @@ class InstalledPluginInfo(BaseModel):
     name: str = Field(description="Plugin name (from manifest)")
     version: str = Field(default="1.0.0", description="Plugin version")
     description: str = Field(default="", description="Plugin description")
+    enabled: bool = Field(default=True, description="Whether the plugin is enabled")
     source: str = Field(description="Original source (e.g., 'github:owner/repo')")
     resolved_ref: str | None = Field(
         default=None,
@@ -233,6 +234,9 @@ def install_plugin(
 
     # Update metadata
     metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
+    existing_info = metadata.plugins.get(plugin_name)
+    if existing_info is not None:
+        info.enabled = existing_info.enabled
     metadata.plugins[plugin_name] = info
     metadata.save_to_dir(installed_dir)
 
@@ -285,6 +289,60 @@ def uninstall_plugin(
 
     logger.info(f"Successfully uninstalled plugin '{name}'")
     return True
+
+
+def _set_plugin_enabled(
+    name: str,
+    enabled: bool,
+    installed_dir: Path | None = None,
+) -> bool:
+    _validate_plugin_name(name)
+    installed_dir = _resolve_installed_dir(installed_dir)
+
+    if not installed_dir.exists():
+        logger.warning(f"Installed plugins directory does not exist: {installed_dir}")
+        return False
+
+    list_installed_plugins(installed_dir)
+    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
+    info = metadata.plugins.get(name)
+    if info is None:
+        logger.warning(f"Plugin '{name}' is not installed")
+        return False
+
+    plugin_path = installed_dir / name
+    if not plugin_path.exists():
+        logger.warning(
+            f"Plugin '{name}' was tracked but its directory is missing: {plugin_path}"
+        )
+        return False
+
+    if info.enabled == enabled:
+        return True
+
+    info.enabled = enabled
+    metadata.plugins[name] = info
+    metadata.save_to_dir(installed_dir)
+
+    state = "enabled" if enabled else "disabled"
+    logger.info(f"Successfully {state} plugin '{name}'")
+    return True
+
+
+def enable_plugin(
+    name: str,
+    installed_dir: Path | None = None,
+) -> bool:
+    """Enable an installed plugin by name."""
+    return _set_plugin_enabled(name, True, installed_dir)
+
+
+def disable_plugin(
+    name: str,
+    installed_dir: Path | None = None,
+) -> bool:
+    """Disable an installed plugin by name."""
+    return _set_plugin_enabled(name, False, installed_dir)
 
 
 def _validate_tracked_plugins(
@@ -434,7 +492,15 @@ def load_installed_plugins(
     if not installed_dir.exists():
         return []
 
-    return Plugin.load_all(installed_dir)
+    installed_infos = list_installed_plugins(installed_dir)
+    plugins: list[Plugin] = []
+    for info in installed_infos:
+        if not info.enabled:
+            continue
+        plugin_path = installed_dir / info.name
+        if plugin_path.exists():
+            plugins.append(Plugin.load(plugin_path))
+    return plugins
 
 
 def get_installed_plugin(
