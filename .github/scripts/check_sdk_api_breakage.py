@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """API breakage detection for published OpenHands packages using Griffe.
 
-This script compares current workspace packages against their previous PyPI
-releases to detect breaking changes in the public API.
+This script compares current workspace packages against the most recent PyPI
+release (or the matching release if the current version is already published)
+to detect breaking changes in the public API.
 
 It focuses on the curated public surface:
 - symbols exported via ``__all__``
@@ -97,15 +98,20 @@ def _parse_version(v: str) -> pkg_version.Version:
     return pkg_version.parse(v)
 
 
-def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
-    """Fetch the previous release version from PyPI.
+def get_pypi_baseline_version(pkg: str, current: str | None) -> str | None:
+    """Fetch the baseline release version from PyPI.
+
+    The baseline is the most recent published release to compare against the
+    current workspace. If the current version already exists on PyPI, compare
+    against that same release. Otherwise, fall back to the newest release older
+    than the current version. If ``current`` is None, use the latest release.
 
     Args:
         pkg: Package name on PyPI (e.g., "openhands-sdk")
-        current: Current version to find the predecessor of, or None for latest
+        current: Current version from the workspace, or None for latest
 
     Returns:
-        Previous version string, or None if not found or on network error
+        Baseline version string, or None if not found or on network error
     """
     req = urllib.request.Request(
         url=f"https://pypi.org/pypi/{pkg}/json",
@@ -126,9 +132,12 @@ def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
     def _sort_key(s: str):
         return _parse_version(s)
 
+    releases_sorted = sorted(releases, key=_sort_key, reverse=True)
     if current is None:
-        releases_sorted = sorted(releases, key=_sort_key, reverse=True)
         return releases_sorted[0]
+
+    if current in releases:
+        return current
 
     cur_parsed = _parse_version(current)
     older = [rv for rv in releases if _parse_version(rv) < cur_parsed]
@@ -556,12 +565,12 @@ def _compute_breakages(old_root, new_root, cfg: PackageConfig) -> tuple[int, int
         old_exports = _extract_exported_names(old_mod)
     except ValueError as e:
         # The API breakage check relies on a curated public surface defined via
-        # __all__. If the previous release didn't define (or couldn't statically
+        # __all__. If the baseline release didn't define (or couldn't statically
         # evaluate) __all__, we can't compute meaningful breakages.
         #
         # In this situation, skip rather than failing the entire workflow.
         print(
-            f"::notice title={title}::Skipping breakage check; previous release "
+            f"::notice title={title}::Skipping breakage check; baseline release "
             f"has no statically-evaluable {pkg}.__all__: {e}"
         )
         return 0, 0
@@ -610,21 +619,21 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
     new_version = read_version_from_pyproject(pyproj)
 
     title = f"{cfg.distribution} API"
-    prev = get_prev_pypi_version(cfg.distribution, new_version)
-    if not prev:
+    baseline = get_pypi_baseline_version(cfg.distribution, new_version)
+    if not baseline:
         print(
-            f"::warning title={title}::No previous {cfg.distribution} "
+            f"::warning title={title}::No baseline {cfg.distribution} "
             f"release found; skipping breakage check",
         )
         return 0
 
-    print(f"Comparing {cfg.distribution} {new_version} against {prev}")
+    print(f"Comparing {cfg.distribution} {new_version} against {baseline}")
 
     new_root = _load_current(griffe_module, repo_root, cfg)
     if not new_root:
         return 1
 
-    old_root = _load_prev_from_pypi(griffe_module, prev, cfg)
+    old_root = _load_prev_from_pypi(griffe_module, baseline, cfg)
     if not old_root:
         return 1
 
@@ -641,7 +650,7 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
             f"see errors above"
         )
 
-    bump_rc = _check_version_bump(prev, new_version, total_breaks)
+    bump_rc = _check_version_bump(baseline, new_version, total_breaks)
 
     return 1 if (undeprecated or bump_rc) else 0
 

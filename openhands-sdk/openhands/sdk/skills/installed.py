@@ -428,3 +428,100 @@ def update_skill(
         installed_dir=installed_dir,
         force=True,
     )
+
+
+def install_skills_from_marketplace(
+    marketplace_path: str | Path,
+    installed_dir: Path | None = None,
+    force: bool = False,
+) -> list[InstalledSkillInfo]:
+    """Install all skills defined in a marketplace.json file.
+
+    This function reads the marketplace.json, resolves each skill source
+    (supporting both local paths and GitHub URLs), and installs them to
+    the installed skills directory.
+
+    Args:
+        marketplace_path: Path to the directory containing .plugin/marketplace.json
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/
+        force: If True, overwrite existing installations.
+
+    Returns:
+        List of InstalledSkillInfo for successfully installed skills.
+
+    Raises:
+        FileNotFoundError: If the marketplace.json doesn't exist.
+        ValueError: If the marketplace.json is invalid.
+
+    Example:
+        >>> # Install all skills from a marketplace
+        >>> installed = install_skills_from_marketplace("./my-marketplace")
+        >>> for info in installed:
+        ...     print(f"Installed: {info.name}")
+    """
+    from openhands.sdk.plugin import Marketplace, resolve_source_path
+
+    marketplace_path = Path(marketplace_path)
+    installed_dir = _resolve_installed_dir(installed_dir)
+
+    # Load the marketplace
+    marketplace = Marketplace.load(marketplace_path)
+
+    installed: list[InstalledSkillInfo] = []
+
+    # Collect skill directories: standalone skills + skills from plugins
+    skill_dirs: list[tuple[str, Path]] = []  # (name, path)
+
+    # 1. Standalone skills from marketplace.skills
+    for entry in marketplace.skills:
+        resolved = resolve_source_path(
+            entry.source, base_path=marketplace_path, update=True
+        )
+        if resolved and resolved.exists():
+            skill_dirs.append((entry.name, resolved))
+        else:
+            logger.warning(f"Failed to resolve skill '{entry.name}'")
+
+    # 2. Skills from plugins (each plugin's skills/ directory)
+    for plugin in marketplace.plugins:
+        if isinstance(plugin.source, str):
+            source = plugin.source
+        elif plugin.source.repo:
+            source = f"https://github.com/{plugin.source.repo}.git"
+        elif plugin.source.url:
+            source = plugin.source.url
+        else:
+            logger.warning(f"Plugin '{plugin.name}' has unsupported source")
+            continue
+
+        resolved = resolve_source_path(source, base_path=marketplace_path, update=True)
+        if not resolved or not resolved.exists():
+            logger.warning(f"Failed to resolve plugin '{plugin.name}'")
+            continue
+
+        # Find skills/ directory in plugin
+        skills_dir = resolved / "skills"
+        if not skills_dir.exists():
+            continue
+
+        # Each subdirectory in skills/ is a skill
+        for skill_path in skills_dir.iterdir():
+            if skill_path.is_dir() and (skill_path / "SKILL.md").exists():
+                skill_dirs.append((skill_path.name, skill_path))
+
+    logger.info(f"Found {len(skill_dirs)} skills to install from marketplace")
+
+    # Install all collected skills
+    for name, path in skill_dirs:
+        try:
+            info = install_skill(str(path), installed_dir=installed_dir, force=force)
+            installed.append(info)
+            logger.info(f"Installed skill '{info.name}'")
+        except FileExistsError:
+            logger.info(f"Skill '{name}' already installed (use force=True)")
+        except Exception as e:
+            logger.warning(f"Failed to install skill '{name}': {e}")
+
+    logger.info(f"Installed {len(installed)} skills")
+    return installed
