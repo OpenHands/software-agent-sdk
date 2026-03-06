@@ -60,7 +60,13 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
 def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
     """Extract profile store directory from frontmatter."""
     profile_store_dir_raw = fm.get("profile_store_dir")
-    return str(profile_store_dir_raw) if profile_store_dir_raw is not None else None
+    if profile_store_dir_raw is None:
+        return None
+    if isinstance(profile_store_dir_raw, str):
+        return profile_store_dir_raw
+    raise ValueError(
+        f"profile_store_dir must be a scalar value, got {type(profile_store_dir_raw)}"
+    )
 
 
 def _extract_examples(description: str) -> list[str]:
