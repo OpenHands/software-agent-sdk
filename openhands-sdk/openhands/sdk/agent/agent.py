@@ -759,10 +759,7 @@ class Agent(CriticMixin, AgentBase):
                 "The LLM's context window has been exceeded, but no condenser is "
                 "configured."
             )
-            config = (
-                f"  • Condenser: None\n"
-                f"  • LLM Model: {self.llm.model}"
-            )
+            config = f"  • Condenser: None\n  • LLM Model: {self.llm.model}"
             advice = (
                 "To prevent this error, configure a condenser to automatically "
                 "summarize\n"
