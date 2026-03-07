@@ -820,7 +820,7 @@ class Agent(CriticMixin, AgentBase):
             "      condenser=LLMSummarizingCondenser(\n"
             "          llm=LLM(model='your-model'),\n"
             "          max_size=120,\n"
-            "          keep_first=4\n"
+            "          keep_first=2\n"
             "      )\n"
             "  )\n"
             "\n"
