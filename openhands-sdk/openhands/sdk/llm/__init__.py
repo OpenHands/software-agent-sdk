@@ -4,6 +4,7 @@ from openhands.sdk.llm.auth import (
     OAuthCredentials,
     OpenAISubscriptionAuth,
 )
+from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
@@ -35,6 +36,7 @@ __all__ = [
     "OpenAISubscriptionAuth",
     "OPENAI_CODEX_MODELS",
     # Core
+    "FallbackStrategy",
     "LLMResponse",
     "LLM",
     "LLMRegistry",
