@@ -121,7 +121,9 @@ def test_sdk_settings_export_schema_groups_sections() -> None:
     ]
 
     llm_fields = {field.key: field for field in schema.sections[0].fields}
+    assert llm_fields["llm_model"].required is True
     assert llm_fields["llm_api_key"].widget == "password"
+    assert llm_fields["llm_api_key"].required is False
     assert llm_fields["llm_api_key"].secret is True
 
     critic_fields = {field.key: field for field in schema.sections[2].fields}

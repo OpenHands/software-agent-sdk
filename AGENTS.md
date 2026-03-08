@@ -103,6 +103,8 @@ When reviewing code, provide constructive feedback:
 
 ## Repository Memory
 - Programmatic settings live in `openhands-sdk/openhands/sdk/settings.py`. Treat `SDKSettings` and `SDKSettings.export_schema()` as the single source of truth for settings fields, UI metadata, and slash-command metadata consumed by downstream clients.
+- `SettingsFieldSchema.required` is derived from field nullability, not from whether Pydantic has a default. This keeps generated UIs from treating required settings like `llm_model` as optional just because the SDK provides a default.
+
 
 
 ## Package-specific guidance

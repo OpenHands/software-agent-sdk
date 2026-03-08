@@ -431,7 +431,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 default=_normalize_default(
                     field.get_default(call_default_factory=True)
                 ),
-                required=field.is_required(),
+                required=not _is_optional(field.annotation),
                 advanced=metadata.advanced,
                 depends_on=list(metadata.depends_on),
                 help_text=metadata.help_text,
@@ -450,6 +450,13 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     )
 
     return SettingsSchema(model_name=model.__name__, sections=ordered_sections)
+
+
+def _is_optional(annotation: Any) -> bool:
+    origin = get_origin(annotation)
+    if origin in (None,):
+        return False
+    return any(arg is type(None) for arg in get_args(annotation))
 
 
 def _strip_optional(annotation: Any) -> Any:
