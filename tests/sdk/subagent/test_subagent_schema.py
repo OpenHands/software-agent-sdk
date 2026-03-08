@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from openhands.sdk.subagent.schema import AgentDefinition, _extract_examples
 
 
@@ -96,6 +99,65 @@ Just content.
         assert agent.model == "inherit"
         assert agent.tools == []
 
+    def test_load_agent_with_max_iteration_per_run(self, tmp_path: Path):
+        """Test loading agent with max_iteration_per_run."""
+        agent_md = tmp_path / "limited.md"
+        agent_md.write_text(
+            """---
+name: limited
+max_iteration_per_run: 10
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.max_iteration_per_run == 10
+
+    def test_load_agent_without_max_iteration_per_run(self, tmp_path: Path):
+        """Test that max_iteration_per_run defaults to None when omitted."""
+        agent_md = tmp_path / "default.md"
+        agent_md.write_text(
+            """---
+name: default-iter
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.max_iteration_per_run is None
+
+    def test_max_iteration_per_run_not_in_metadata(self, tmp_path: Path):
+        """Test that max_iteration_per_run doesn't leak into metadata."""
+        agent_md = tmp_path / "meta-check.md"
+        agent_md.write_text(
+            """---
+name: meta-check
+max_iteration_per_run: 5
+custom_field: value
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert "max_iteration_per_run" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_max_iteration_per_run_zero_raises(self):
+        """max_iteration_per_run=0 should fail Pydantic validation."""
+        with pytest.raises(ValidationError):
+            AgentDefinition(name="bad", max_iteration_per_run=0)
+
+    def test_max_iteration_per_run_negative_raises(self):
+        """Negative max_iteration_per_run should fail Pydantic validation."""
+        with pytest.raises(ValidationError):
+            AgentDefinition(name="bad", max_iteration_per_run=-1)
+
     def test_load_agent_with_metadata(self, tmp_path: Path):
         """Test loading agent with extra metadata."""
         agent_md = tmp_path / "meta.md"
@@ -111,6 +173,151 @@ Content.
 
         agent = AgentDefinition.load(agent_md)
         assert agent.metadata.get("custom_field") == "custom_value"
+
+    def test_skills_default_empty(self):
+        """Test that skills defaults to empty list."""
+        agent = AgentDefinition(name="no-skills")
+        assert agent.skills == []
+
+    def test_skills_as_list(self):
+        """Test creating AgentDefinition with skill names as list."""
+        agent = AgentDefinition(
+            name="skilled-agent",
+            skills=["code-review", "linting"],
+        )
+        assert agent.skills == ["code-review", "linting"]
+
+    def test_load_skills_comma_separated(self, tmp_path: Path):
+        """Test loading skills from comma-separated frontmatter string."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: skilled-agent
+skills: code-review, linting, testing
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == ["code-review", "linting", "testing"]
+
+    def test_load_skills_as_yaml_list(self, tmp_path: Path):
+        """Test loading skills from YAML list in frontmatter."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: skilled-agent
+skills:
+  - code-review
+  - linting
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == ["code-review", "linting"]
+
+    def test_load_skills_single_string(self, tmp_path: Path):
+        """Test loading a single skill name from frontmatter string."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: skilled-agent
+skills: code-review
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == ["code-review"]
+
+    def test_load_skills_default_empty(self, tmp_path: Path):
+        """Test that loading from file without skills gives empty list."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: file-agent
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.skills == []
+
+    def test_load_skills_not_in_metadata(self, tmp_path: Path):
+        """Test that skills field is excluded from extra metadata."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+skills: my-skill
+custom_field: value
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert "skills" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_load_agent_with_profile_store_dir(self, tmp_path: Path):
+        """Test loading agent with profile_store_dir from frontmatter."""
+        agent_md = tmp_path / "profiled.md"
+        agent_md.write_text(
+            """---
+name: profiled
+profile_store_dir: /custom/profiles
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.profile_store_dir == "/custom/profiles"
+
+    def test_load_agent_without_profile_store_dir(self, tmp_path: Path):
+        """Test that profile_store_dir defaults to None when omitted."""
+        agent_md = tmp_path / "default.md"
+        agent_md.write_text(
+            """---
+name: no-profile-dir
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.profile_store_dir is None
+
+    def test_profile_store_dir_not_in_metadata(self, tmp_path: Path):
+        """Test that profile_store_dir doesn't leak into metadata."""
+        agent_md = tmp_path / "meta-check.md"
+        agent_md.write_text(
+            """---
+name: meta-check
+profile_store_dir: /some/path
+custom_field: value
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert "profile_store_dir" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_profile_store_dir_default_none(self):
+        """Test that profile_store_dir defaults to None on direct construction."""
+        agent = AgentDefinition(name="test")
+        assert agent.profile_store_dir is None
 
 
 class TestExtractExamples:

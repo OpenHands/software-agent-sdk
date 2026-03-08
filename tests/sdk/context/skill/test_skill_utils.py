@@ -681,3 +681,63 @@ This is a repo skill with invalid MCP tools configuration.
     # Check that the error message contains helpful information
     error_msg = str(excinfo.value)
     assert "mcp_tools must be a dictionary or None" in error_msg
+
+
+def test_malformed_yaml_frontmatter_does_not_block_siblings(temp_skills_dir, caplog):
+    """A SKILL.md with invalid YAML frontmatter should be skipped, not abort
+    the entire directory scan.
+
+    Before the fix, `frontmatter.load()` raised `yaml.scanner.ScannerError`
+    which was not caught by the `(SkillError, OSError)` handler, causing all
+    remaining skills in the directory to be lost.
+    """
+    # Create an AgentSkills-format skill with broken YAML (unmatched quote)
+    bad_skill_dir = temp_skills_dir / "bad-yaml"
+    bad_skill_dir.mkdir()
+    (bad_skill_dir / "SKILL.md").write_text(
+        "---\nname: bad-yaml\ndescription: 'unclosed quote\n---\nBroken skill.\n"
+    )
+
+    # Create a valid AgentSkills-format skill
+    good_skill_dir = temp_skills_dir / "good-skill"
+    good_skill_dir.mkdir()
+    (good_skill_dir / "SKILL.md").write_text(
+        "---\nname: good-skill\ndescription: A valid skill\n---\nGood content.\n"
+    )
+
+    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(temp_skills_dir)
+
+    all_names = (
+        list(repo_skills.keys())
+        + list(knowledge_skills.keys())
+        + list(agent_skills.keys())
+    )
+
+    # The valid skill must still be loaded
+    assert "good-skill" in all_names
+    # The broken skill must be skipped
+    assert "bad-yaml" not in all_names
+    # A warning was logged for the bad skill
+    assert any("Failed to load skill" in r.message for r in caplog.records)
+
+
+def test_malformed_yaml_regular_md_does_not_block_siblings(temp_skills_dir, caplog):
+    """A regular .md file with invalid YAML frontmatter should be skipped
+    without aborting the scan for remaining .md files."""
+    # Write a regular .md with broken YAML frontmatter
+    (temp_skills_dir / "broken.md").write_text(
+        "---\nname: broken\ntriggers: [unclosed\n---\nBroken.\n"
+    )
+
+    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(temp_skills_dir)
+
+    all_names = (
+        list(repo_skills.keys())
+        + list(knowledge_skills.keys())
+        + list(agent_skills.keys())
+    )
+
+    # The pre-existing valid skills from `temp_skills_dir` fixture must survive
+    assert len(all_names) >= 2  # knowledge + repo from fixture
+    assert "broken" not in all_names
+    assert any("Failed to load skill" in r.message for r in caplog.records)

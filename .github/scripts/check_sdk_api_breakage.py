@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """API breakage detection for published OpenHands packages using Griffe.
 
-This script compares current workspace packages against their previous PyPI
-releases to detect breaking changes in the public API.
+This script compares current workspace packages against the most recent PyPI
+release (or the matching release if the current version is already published)
+to detect breaking changes in the public API.
 
 It focuses on the curated public surface:
 - symbols exported via ``__all__``
@@ -31,6 +32,7 @@ import ast
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.request
@@ -39,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from packaging import version as pkg_version
+from packaging.requirements import Requirement
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,11 @@ PACKAGES: tuple[PackageConfig, ...] = (
     ),
 )
 
+ACP_DEPENDENCY = "agent-client-protocol"
+ACP_SKIP_ENV = "ACP_VERSION_CHECK_SKIP"
+ACP_SKIP_TOKEN = "skip-acp-check"
+ACP_BASE_REF_ENV = "ACP_VERSION_CHECK_BASE_REF"
+
 
 def read_version_from_pyproject(path: str) -> str:
     """Read the version string from a pyproject.toml file."""
@@ -92,20 +100,159 @@ def read_version_from_pyproject(path: str) -> str:
     return str(v)
 
 
+def _read_pyproject(path: str) -> dict:
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _bool_env(name: str) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _get_dependency_spec(project_data: dict, dependency: str) -> str | None:
+    deps = project_data.get("project", {}).get("dependencies", [])
+    for dep in deps:
+        if dep.startswith(dependency):
+            return dep
+    return None
+
+
+def _min_version_from_requirement(req_str: str) -> pkg_version.Version | None:
+    try:
+        req = Requirement(req_str)
+    except Exception as exc:
+        print(
+            f"::warning title=ACP version::Unable to parse requirement "
+            f"'{req_str}': {exc}"
+        )
+        return None
+
+    lower_bounds: list[pkg_version.Version] = []
+    for spec in req.specifier:
+        if spec.operator in {">=", ">", "==", "~="}:
+            try:
+                lower_bounds.append(_parse_version(spec.version))
+            except Exception as exc:
+                print(
+                    f"::warning title=ACP version::Unable to parse version "
+                    f"'{spec.version}' from '{req_str}': {exc}"
+                )
+
+    if not lower_bounds:
+        return None
+
+    return max(lower_bounds)
+
+
+def _git_show_file(ref: str, rel_path: str) -> str | None:
+    for candidate in (f"origin/{ref}", ref):
+        result = subprocess.run(
+            ["git", "show", f"{candidate}:{rel_path}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    return None
+
+
+def _load_base_pyproject(base_ref: str) -> dict | None:
+    rel_path = "openhands-sdk/pyproject.toml"
+    content = _git_show_file(base_ref, rel_path)
+    if content is None:
+        print(
+            f"::warning title=ACP version::Unable to read {rel_path} from "
+            f"{base_ref}; skipping ACP version check"
+        )
+        return None
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        print(
+            f"::warning title=ACP version::Failed to parse {rel_path} from "
+            f"{base_ref}: {exc}"
+        )
+        return None
+
+
+def _check_acp_version_bump(repo_root: str) -> int:
+    if _bool_env(ACP_SKIP_ENV):
+        print(
+            f"::notice title=ACP version::Skipping ACP version check because "
+            f"{ACP_SKIP_ENV} is set (token: [{ACP_SKIP_TOKEN}])."
+        )
+        return 0
+
+    base_ref = os.environ.get(ACP_BASE_REF_ENV) or os.environ.get("GITHUB_BASE_REF")
+    if not base_ref:
+        print(
+            "::warning title=ACP version::No base ref found; skipping ACP version check"
+        )
+        return 0
+
+    base_data = _load_base_pyproject(base_ref)
+    if base_data is None:
+        return 0
+
+    current_data = _read_pyproject(
+        os.path.join(repo_root, "openhands-sdk", "pyproject.toml")
+    )
+    old_req = _get_dependency_spec(base_data, ACP_DEPENDENCY)
+    new_req = _get_dependency_spec(current_data, ACP_DEPENDENCY)
+
+    if not old_req or not new_req:
+        print(
+            f"::warning title=ACP version::Unable to locate {ACP_DEPENDENCY} "
+            "dependency in pyproject.toml; skipping ACP version check"
+        )
+        return 0
+
+    old_min = _min_version_from_requirement(old_req)
+    new_min = _min_version_from_requirement(new_req)
+
+    if old_min is None or new_min is None:
+        print(
+            f"::warning title=ACP version::Unable to parse {ACP_DEPENDENCY} "
+            "minimum version; skipping ACP version check"
+        )
+        return 0
+
+    if new_min <= old_min:
+        return 0
+
+    if new_min.major != old_min.major or new_min.minor != old_min.minor:
+        print(
+            "::error title=ACP version::Detected "
+            f"{ACP_DEPENDENCY} minor/major version bump "
+            f"({old_req} -> {new_req}). If intentional, add "
+            f"[{ACP_SKIP_TOKEN}] to the PR description to bypass."
+        )
+        return 1
+
+    return 0
+
+
 def _parse_version(v: str) -> pkg_version.Version:
     """Parse a version string using packaging."""
     return pkg_version.parse(v)
 
 
-def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
-    """Fetch the previous release version from PyPI.
+def get_pypi_baseline_version(pkg: str, current: str | None) -> str | None:
+    """Fetch the baseline release version from PyPI.
+
+    The baseline is the most recent published release to compare against the
+    current workspace. If the current version already exists on PyPI, compare
+    against that same release. Otherwise, fall back to the newest release older
+    than the current version. If ``current`` is None, use the latest release.
 
     Args:
         pkg: Package name on PyPI (e.g., "openhands-sdk")
-        current: Current version to find the predecessor of, or None for latest
+        current: Current version from the workspace, or None for latest
 
     Returns:
-        Previous version string, or None if not found or on network error
+        Baseline version string, or None if not found or on network error
     """
     req = urllib.request.Request(
         url=f"https://pypi.org/pypi/{pkg}/json",
@@ -126,9 +273,12 @@ def get_prev_pypi_version(pkg: str, current: str | None) -> str | None:
     def _sort_key(s: str):
         return _parse_version(s)
 
+    releases_sorted = sorted(releases, key=_sort_key, reverse=True)
     if current is None:
-        releases_sorted = sorted(releases, key=_sort_key, reverse=True)
         return releases_sorted[0]
+
+    if current in releases:
+        return current
 
     cur_parsed = _parse_version(current)
     older = [rv for rv in releases if _parse_version(rv) < cur_parsed]
@@ -556,12 +706,12 @@ def _compute_breakages(old_root, new_root, cfg: PackageConfig) -> tuple[int, int
         old_exports = _extract_exported_names(old_mod)
     except ValueError as e:
         # The API breakage check relies on a curated public surface defined via
-        # __all__. If the previous release didn't define (or couldn't statically
+        # __all__. If the baseline release didn't define (or couldn't statically
         # evaluate) __all__, we can't compute meaningful breakages.
         #
         # In this situation, skip rather than failing the entire workflow.
         print(
-            f"::notice title={title}::Skipping breakage check; previous release "
+            f"::notice title={title}::Skipping breakage check; baseline release "
             f"has no statically-evaluable {pkg}.__all__: {e}"
         )
         return 0, 0
@@ -610,21 +760,21 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
     new_version = read_version_from_pyproject(pyproj)
 
     title = f"{cfg.distribution} API"
-    prev = get_prev_pypi_version(cfg.distribution, new_version)
-    if not prev:
+    baseline = get_pypi_baseline_version(cfg.distribution, new_version)
+    if not baseline:
         print(
-            f"::warning title={title}::No previous {cfg.distribution} "
+            f"::warning title={title}::No baseline {cfg.distribution} "
             f"release found; skipping breakage check",
         )
         return 0
 
-    print(f"Comparing {cfg.distribution} {new_version} against {prev}")
+    print(f"Comparing {cfg.distribution} {new_version} against {baseline}")
 
     new_root = _load_current(griffe_module, repo_root, cfg)
     if not new_root:
         return 1
 
-    old_root = _load_prev_from_pypi(griffe_module, prev, cfg)
+    old_root = _load_prev_from_pypi(griffe_module, baseline, cfg)
     if not old_root:
         return 1
 
@@ -641,18 +791,19 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
             f"see errors above"
         )
 
-    bump_rc = _check_version_bump(prev, new_version, total_breaks)
+    bump_rc = _check_version_bump(baseline, new_version, total_breaks)
 
     return 1 if (undeprecated or bump_rc) else 0
 
 
 def main() -> int:
     """Main entry point for API breakage detection."""
+    repo_root = os.getcwd()
+    rc = _check_acp_version_bump(repo_root)
+
     ensure_griffe()
     import griffe
 
-    repo_root = os.getcwd()
-    rc = 0
     for cfg in PACKAGES:
         print(f"\n{'=' * 60}")
         print(f"Checking {cfg.distribution} ({cfg.package})")
