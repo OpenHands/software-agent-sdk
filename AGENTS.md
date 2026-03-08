@@ -101,6 +101,10 @@ When reviewing code, provide constructive feedback:
 **Next Steps**: [Clear action items]
 </ROLE>
 
+## Repository Memory
+- Programmatic settings live in `openhands-sdk/openhands/sdk/settings.py`. Treat `SDKSettings` and `SDKSettings.export_schema()` as the single source of truth for settings fields, UI metadata, and slash-command metadata consumed by downstream clients.
+
+
 ## Package-specific guidance
 When working inside a package or domain, read the closest AGENTS file.
 

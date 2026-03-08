@@ -47,6 +47,15 @@ from openhands.sdk.mcp import (
     create_mcp_tools,
 )
 from openhands.sdk.plugin import Plugin
+from openhands.sdk.settings import (
+    SDKSettings,
+    SettingsChoice,
+    SettingsFieldMetadata,
+    SettingsFieldSchema,
+    SettingsSchema,
+    SettingsSectionSchema,
+    export_settings_schema,
+)
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
     load_agents_from_dir,
@@ -111,6 +120,13 @@ __all__ = [
     "LLMConvertibleEvent",
     "AgentContext",
     "LLMSummarizingCondenser",
+    "SDKSettings",
+    "SettingsChoice",
+    "SettingsFieldMetadata",
+    "SettingsFieldSchema",
+    "SettingsSchema",
+    "SettingsSectionSchema",
+    "export_settings_schema",
     "FileStore",
     "LocalFileStore",
     "Plugin",
