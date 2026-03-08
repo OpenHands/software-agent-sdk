@@ -32,6 +32,7 @@ import ast
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.request
@@ -40,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from packaging import version as pkg_version
+from packaging.requirements import Requirement
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,11 @@ PACKAGES: tuple[PackageConfig, ...] = (
     ),
 )
 
+ACP_DEPENDENCY = "agent-client-protocol"
+ACP_SKIP_ENV = "ACP_VERSION_CHECK_SKIP"
+ACP_SKIP_TOKEN = "skip-acp-check"
+ACP_BASE_REF_ENV = "ACP_VERSION_CHECK_BASE_REF"
+
 
 def read_version_from_pyproject(path: str) -> str:
     """Read the version string from a pyproject.toml file."""
@@ -91,6 +98,140 @@ def read_version_from_pyproject(path: str) -> str:
     if not v:
         raise SystemExit(f"Could not read version from {path}")
     return str(v)
+
+
+def _read_pyproject(path: str) -> dict:
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _bool_env(name: str) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _get_dependency_spec(project_data: dict, dependency: str) -> str | None:
+    deps = project_data.get("project", {}).get("dependencies", [])
+    for dep in deps:
+        if dep.startswith(dependency):
+            return dep
+    return None
+
+
+def _min_version_from_requirement(req_str: str) -> pkg_version.Version | None:
+    try:
+        req = Requirement(req_str)
+    except Exception as exc:
+        print(
+            f"::warning title=ACP version::Unable to parse requirement "
+            f"'{req_str}': {exc}"
+        )
+        return None
+
+    lower_bounds: list[pkg_version.Version] = []
+    for spec in req.specifier:
+        if spec.operator in {">=", ">", "==", "~="}:
+            try:
+                lower_bounds.append(_parse_version(spec.version))
+            except Exception as exc:
+                print(
+                    f"::warning title=ACP version::Unable to parse version "
+                    f"'{spec.version}' from '{req_str}': {exc}"
+                )
+
+    if not lower_bounds:
+        return None
+
+    return max(lower_bounds)
+
+
+def _git_show_file(ref: str, rel_path: str) -> str | None:
+    for candidate in (f"origin/{ref}", ref):
+        result = subprocess.run(
+            ["git", "show", f"{candidate}:{rel_path}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    return None
+
+
+def _load_base_pyproject(base_ref: str) -> dict | None:
+    rel_path = "openhands-sdk/pyproject.toml"
+    content = _git_show_file(base_ref, rel_path)
+    if content is None:
+        print(
+            f"::warning title=ACP version::Unable to read {rel_path} from "
+            f"{base_ref}; skipping ACP version check"
+        )
+        return None
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        print(
+            f"::warning title=ACP version::Failed to parse {rel_path} from "
+            f"{base_ref}: {exc}"
+        )
+        return None
+
+
+def _check_acp_version_bump(repo_root: str) -> int:
+    if _bool_env(ACP_SKIP_ENV):
+        print(
+            f"::notice title=ACP version::Skipping ACP version check because "
+            f"{ACP_SKIP_ENV} is set (token: [{ACP_SKIP_TOKEN}])."
+        )
+        return 0
+
+    base_ref = os.environ.get(ACP_BASE_REF_ENV) or os.environ.get("GITHUB_BASE_REF")
+    if not base_ref:
+        print(
+            "::warning title=ACP version::No base ref found; skipping ACP version check"
+        )
+        return 0
+
+    base_data = _load_base_pyproject(base_ref)
+    if base_data is None:
+        return 0
+
+    current_data = _read_pyproject(
+        os.path.join(repo_root, "openhands-sdk", "pyproject.toml")
+    )
+    old_req = _get_dependency_spec(base_data, ACP_DEPENDENCY)
+    new_req = _get_dependency_spec(current_data, ACP_DEPENDENCY)
+
+    if not old_req or not new_req:
+        print(
+            f"::warning title=ACP version::Unable to locate {ACP_DEPENDENCY} "
+            "dependency in pyproject.toml; skipping ACP version check"
+        )
+        return 0
+
+    old_min = _min_version_from_requirement(old_req)
+    new_min = _min_version_from_requirement(new_req)
+
+    if old_min is None or new_min is None:
+        print(
+            f"::warning title=ACP version::Unable to parse {ACP_DEPENDENCY} "
+            "minimum version; skipping ACP version check"
+        )
+        return 0
+
+    if new_min <= old_min:
+        return 0
+
+    if new_min.major != old_min.major or new_min.minor != old_min.minor:
+        print(
+            "::error title=ACP version::Detected "
+            f"{ACP_DEPENDENCY} minor/major version bump "
+            f"({old_req} -> {new_req}). If intentional, add "
+            f"[{ACP_SKIP_TOKEN}] to the PR description to bypass."
+        )
+        return 1
+
+    return 0
 
 
 def _parse_version(v: str) -> pkg_version.Version:
@@ -657,11 +798,12 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
 
 def main() -> int:
     """Main entry point for API breakage detection."""
+    repo_root = os.getcwd()
+    rc = _check_acp_version_bump(repo_root)
+
     ensure_griffe()
     import griffe
 
-    repo_root = os.getcwd()
-    rc = 0
     for cfg in PACKAGES:
         print(f"\n{'=' * 60}")
         print(f"Checking {cfg.distribution} ({cfg.package})")
