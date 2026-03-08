@@ -19,6 +19,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "skills",
     "max_iteration_per_run",
     "profile_store_dir",
+    "condenser",
 }
 
 
@@ -55,6 +56,35 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     else:
         skills = []
     return skills
+
+
+_CONDENSER_VALID_KEYS: Final[set[str]] = {
+    "max_size",
+    "max_tokens",
+    "keep_first",
+    "minimum_progress",
+    "hard_context_reset_max_retries",
+    "hard_context_reset_context_scaling",
+}
+
+
+def _extract_condenser(fm: dict[str, object]) -> dict[str, Any] | None:
+    """Extract condenser configuration from frontmatter."""
+    condenser_raw = fm.get("condenser")
+    if condenser_raw is None:
+        return None
+    if not isinstance(condenser_raw, dict):
+        raise ValueError(
+            f"condenser must be a mapping of configuration parameters, "
+            f"got {type(condenser_raw)}"
+        )
+    unknown_keys = set(condenser_raw.keys()) - _CONDENSER_VALID_KEYS
+    if unknown_keys:
+        raise ValueError(
+            f"Unknown condenser parameter(s): {sorted(unknown_keys)}. "
+            f"Valid parameters are: {sorted(_CONDENSER_VALID_KEYS)}"
+        )
+    return condenser_raw
 
 
 def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
@@ -121,6 +151,13 @@ class AgentDefinition(BaseModel):
         "It must be strictly positive, or None for default.",
         gt=0,
     )
+    condenser: dict[str, Any] | None = Field(
+        default=None,
+        description="Condenser configuration for this agent. "
+        "Parameters are passed to LLMSummarizingCondenser (e.g., max_size, ...). "
+        "The condenser LLM is inherited from the agent's LLM.",
+        examples=[{"max_size": 100, "keep_first": 2}],
+    )
     profile_store_dir: str | None = Field(
         default=None,
         description="Path to the directory where LLM profiles are stored. "
@@ -139,6 +176,7 @@ class AgentDefinition(BaseModel):
         - description: Description with optional <example> tags for triggering
         - tools (optional): List of allowed tools
         - skills (optional): Comma-separated skill names or list of skill names
+        - condenser (optional): Condenser configuration (e.g., max_size, keep_first)
         - model (optional): Model profile to use (default: 'inherit')
         - color (optional): Display color
         - max_iterations_per_run: Max iteration per run
@@ -165,6 +203,7 @@ class AgentDefinition(BaseModel):
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
+        condenser: dict[str, Any] | None = _extract_condenser(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
 
         # Extract whenToUse examples from description
@@ -181,6 +220,7 @@ class AgentDefinition(BaseModel):
             tools=tools,
             skills=skills,
             max_iteration_per_run=max_iteration_per_run,
+            condenser=condenser,
             profile_store_dir=profile_store_dir,
             system_prompt=content,
             source=str(agent_path),

@@ -245,10 +245,21 @@ def agent_definition_to_factory(
                 )
             tools.append(Tool(name=tool_name))
 
+        # Build condenser if configured
+        condenser = None
+        if agent_def.condenser:
+            from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+            condenser = LLMSummarizingCondenser(
+                llm=llm.model_copy(update={"usage_id": "condenser"}),
+                **agent_def.condenser,
+            )
+
         return Agent(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
+            condenser=condenser,
         )
 
     return _factory
