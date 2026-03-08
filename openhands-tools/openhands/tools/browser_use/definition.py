@@ -31,6 +31,18 @@ if TYPE_CHECKING:
 BROWSER_RECORDING_OUTPUT_DIR = os.path.join(".agent_tmp", "browser_observations")
 PROMPT_DIR = Path(__file__).parent / "templates"
 
+
+def _render_description(template_name: str, **ctx: object) -> str:
+    return (
+        render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name=template_name,
+            **ctx,
+        )
+        + "\n"
+    )
+
+
 # Mapping of base64 prefixes to MIME types for image detection
 BASE64_IMAGE_PREFIXES = {
     "/9j/": "image/jpeg",
@@ -156,9 +168,8 @@ class BrowserNavigateAction(BrowserAction):
     )
 
 
-BROWSER_NAVIGATE_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_navigate_description.j2",
+BROWSER_NAVIGATE_DESCRIPTION = _render_description(
+    "browser_navigate_description.j2",
 )
 
 
@@ -199,9 +210,8 @@ class BrowserClickAction(BrowserAction):
     )
 
 
-BROWSER_CLICK_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_click_description.j2",
+BROWSER_CLICK_DESCRIPTION = _render_description(
+    "browser_click_description.j2",
 )
 
 
@@ -239,9 +249,8 @@ class BrowserTypeAction(BrowserAction):
     text: str = Field(description="The text to type")
 
 
-BROWSER_TYPE_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_type_description.j2",
+BROWSER_TYPE_DESCRIPTION = _render_description(
+    "browser_type_description.j2",
 )
 
 
@@ -279,9 +288,8 @@ class BrowserGetStateAction(BrowserAction):
     )
 
 
-BROWSER_GET_STATE_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_get_state_description.j2",
+BROWSER_GET_STATE_DESCRIPTION = _render_description(
+    "browser_get_state_description.j2",
 )
 
 
@@ -324,9 +332,8 @@ class BrowserGetContentAction(BrowserAction):
     )
 
 
-BROWSER_GET_CONTENT_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_get_content_description.j2",
+BROWSER_GET_CONTENT_DESCRIPTION = _render_description(
+    "browser_get_content_description.j2",
 )
 
 
@@ -366,9 +373,8 @@ class BrowserScrollAction(BrowserAction):
     )
 
 
-BROWSER_SCROLL_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_scroll_description.j2",
+BROWSER_SCROLL_DESCRIPTION = _render_description(
+    "browser_scroll_description.j2",
 )
 
 
@@ -403,9 +409,8 @@ class BrowserGoBackAction(BrowserAction):
     pass
 
 
-BROWSER_GO_BACK_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_go_back_description.j2",
+BROWSER_GO_BACK_DESCRIPTION = _render_description(
+    "browser_go_back_description.j2",
 )
 
 
@@ -440,9 +445,8 @@ class BrowserListTabsAction(BrowserAction):
     pass
 
 
-BROWSER_LIST_TABS_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_list_tabs_description.j2",
+BROWSER_LIST_TABS_DESCRIPTION = _render_description(
+    "browser_list_tabs_description.j2",
 )
 
 
@@ -480,9 +484,8 @@ class BrowserSwitchTabAction(BrowserAction):
     )
 
 
-BROWSER_SWITCH_TAB_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_switch_tab_description.j2",
+BROWSER_SWITCH_TAB_DESCRIPTION = _render_description(
+    "browser_switch_tab_description.j2",
 )
 
 
@@ -519,9 +522,8 @@ class BrowserCloseTabAction(BrowserAction):
     )
 
 
-BROWSER_CLOSE_TAB_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_close_tab_description.j2",
+BROWSER_CLOSE_TAB_DESCRIPTION = _render_description(
+    "browser_close_tab_description.j2",
 )
 
 
@@ -556,9 +558,8 @@ class BrowserGetStorageAction(BrowserAction):
     pass
 
 
-BROWSER_GET_STORAGE_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_get_storage_description.j2",
+BROWSER_GET_STORAGE_DESCRIPTION = _render_description(
+    "browser_get_storage_description.j2",
 )
 
 
@@ -597,9 +598,8 @@ class BrowserSetStorageAction(BrowserAction):
     )
 
 
-BROWSER_SET_STORAGE_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_set_storage_description.j2",
+BROWSER_SET_STORAGE_DESCRIPTION = _render_description(
+    "browser_set_storage_description.j2",
 )
 
 
@@ -636,9 +636,8 @@ class BrowserStartRecordingAction(BrowserAction):
     pass
 
 
-BROWSER_START_RECORDING_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_start_recording_description.j2",
+BROWSER_START_RECORDING_DESCRIPTION = _render_description(
+    "browser_start_recording_description.j2",
     recording_output_dir=BROWSER_RECORDING_OUTPUT_DIR,
 )
 
@@ -676,9 +675,8 @@ class BrowserStopRecordingAction(BrowserAction):
     pass
 
 
-BROWSER_STOP_RECORDING_DESCRIPTION = render_template(
-    prompt_dir=str(PROMPT_DIR),
-    template_name="browser_stop_recording_description.j2",
+BROWSER_STOP_RECORDING_DESCRIPTION = _render_description(
+    "browser_stop_recording_description.j2",
     recording_output_dir=BROWSER_RECORDING_OUTPUT_DIR,
 )
 

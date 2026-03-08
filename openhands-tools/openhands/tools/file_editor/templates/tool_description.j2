@@ -1,9 +1,6 @@
 Custom editing tool for viewing, creating and editing files in plain-text format
-* State is persistent across command calls and discussions with the user
+* State is persistent across command calls and discussions with the user{{ "\n* If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp), `view` displays the image content" if vision_enabled else "" }}
 * If `path` is a text file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep
-{% if vision_enabled %}
-* If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp), `view` displays the image content
-{% endif %}
 * The `create` command cannot be used if the specified `path` already exists as a file
 * If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
 * The `undo_edit` command will revert the last edit made to the file at `path`
@@ -31,6 +28,7 @@ CRITICAL REQUIREMENTS FOR USING THIS TOOL:
 3. REPLACEMENT: The `new_str` parameter should contain the edited lines that replace the `old_str`. Both strings must be different.
 
 Remember: when making multiple file edits in a row to the same file, you should prefer to send all edits in a single message with multiple calls to this tool, rather than multiple messages with a single call each.
+
 
 Your current working directory is: {{ working_dir }}
 When exploring project structure, start with this directory instead of the root filesystem.

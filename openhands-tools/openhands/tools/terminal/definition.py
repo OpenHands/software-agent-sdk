@@ -253,9 +253,12 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
             )
 
         # Initialize the parent ToolDefinition with the executor
-        tool_description = render_template(
-            prompt_dir=str(PROMPT_DIR),
-            template_name="tool_description.j2",
+        tool_description = (
+            render_template(
+                prompt_dir=str(PROMPT_DIR),
+                template_name="tool_description.j2",
+            )
+            + "\n"
         )
         return [
             cls(
