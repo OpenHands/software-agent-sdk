@@ -1,5 +1,7 @@
 # Subagent loader (file-based agents): design + invariants
 
+See the [project root AGENTS.md](../../../../AGENTS.md) for repository-wide policies and workflows.
+
 This package (`openhands.sdk.subagent`) centralizes **subagent discovery** and **registration**.
 It exists so that contributors (human or agentic) can answer:
 

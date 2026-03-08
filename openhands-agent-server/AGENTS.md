@@ -1,11 +1,18 @@
 # openhands-agent-server
 
+See the [project root AGENTS.md](../AGENTS.md) for repository-wide policies and workflows.
+
 ## Development
 
 This package lives in the monorepo root. Typical commands (run from repo root):
 
 - Install deps: `make build`
 - Run agent-server tests: `uv run pytest tests/agent_server`
+
+## PyInstaller data files
+
+When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
+
 
 ## REST API compatibility & deprecation policy
 
