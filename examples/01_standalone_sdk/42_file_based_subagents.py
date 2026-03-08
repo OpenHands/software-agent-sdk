@@ -33,7 +33,7 @@ grammar_checker = AgentDefinition(
 register_agent(
     name=grammar_checker.name,
     factory_func=agent_definition_to_factory(grammar_checker),
-    description=grammar_checker.description,
+    description=grammar_checker,
 )
 
 # 3. Set up the orchestrator agent with the DelegateTool

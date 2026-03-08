@@ -2,19 +2,19 @@
 """REST API breakage detection for openhands-agent-server using oasdiff.
 
 This script compares the current OpenAPI schema for the agent-server REST API against
-the previous published version on PyPI, using oasdiff for breaking change detection.
+the most recent published version on PyPI, using oasdiff for breaking change detection.
 
 Policies enforced (mirrors the SDK's Griffe checks, but for REST):
 
 1) Deprecation-before-removal
    - If a REST operation (path + HTTP method) is removed, it must have been marked
-     `deprecated: true` in the previous release.
+     `deprecated: true` in the baseline release.
 
 2) MINOR version bump
    - If a breaking REST change is detected, the current version must be at least a
-     MINOR bump compared to the previous release.
+     MINOR bump compared to the baseline release.
 
-If the previous release schema can't be fetched (e.g., network / PyPI issues), the
+If the baseline release schema can't be fetched (e.g., network / PyPI issues), the
 script emits a warning and exits successfully to avoid flaky CI.
 """
 
@@ -56,7 +56,7 @@ def _fetch_pypi_metadata(distribution: str) -> dict:
         return json.load(response)
 
 
-def _get_previous_version(distribution: str, current: str) -> str | None:
+def _get_baseline_version(distribution: str, current: str) -> str | None:
     try:
         meta = _fetch_pypi_metadata(distribution)
     except Exception as exc:  # pragma: no cover
@@ -69,6 +69,9 @@ def _get_previous_version(distribution: str, current: str) -> str | None:
     releases = list(meta.get("releases", {}).keys())
     if not releases:
         return None
+
+    if current in releases:
+        return current
 
     current_parsed = pkg_version.parse(current)
     older = [rv for rv in releases if pkg_version.parse(rv) < current_parsed]
@@ -159,6 +162,48 @@ def _generate_openapi_for_version(version: str) -> dict | None:
             return None
 
 
+def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
+    """Normalize OpenAPI 3.1 schema for oasdiff compatibility.
+
+    oasdiff expects OpenAPI 3.0-style exclusiveMinimum/exclusiveMaximum booleans
+    (https://spec.openapis.org/oas/v3.0.3.html#schema-object), while OpenAPI 3.1
+    emits numeric values. Convert numeric exclusives into minimum/maximum +
+    exclusive boolean flags so oasdiff can parse the schema.
+
+    Mutates the schema in place and returns it for convenience.
+    """
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            if (
+                "exclusiveMinimum" in node
+                and isinstance(node["exclusiveMinimum"], (int, float))
+                and not isinstance(node["exclusiveMinimum"], bool)
+            ):
+                value = node["exclusiveMinimum"]
+                if "minimum" not in node:
+                    node["minimum"] = value
+                node["exclusiveMinimum"] = True
+            if (
+                "exclusiveMaximum" in node
+                and isinstance(node["exclusiveMaximum"], (int, float))
+                and not isinstance(node["exclusiveMaximum"], bool)
+            ):
+                value = node["exclusiveMaximum"]
+                if "maximum" not in node:
+                    node["maximum"] = value
+                node["exclusiveMaximum"] = True
+
+            for child in node.values():
+                _walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    _walk(schema)
+    return schema
+
+
 def _run_oasdiff_breakage_check(
     prev_spec: Path, cur_spec: Path
 ) -> tuple[list[dict], int]:
@@ -208,20 +253,23 @@ def _is_minor_or_major_bump(current: str, previous: str) -> bool:
 
 def main() -> int:
     current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
-    prev_version = _get_previous_version(PYPI_DISTRIBUTION, current_version)
+    baseline_version = _get_baseline_version(PYPI_DISTRIBUTION, current_version)
 
-    if prev_version is None:
+    if baseline_version is None:
         print(
-            f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to find previous "
+            f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to find baseline "
             f"version for {current_version}; skipping breakage checks."
         )
         return 0
 
-    prev_schema = _generate_openapi_for_version(prev_version)
+    prev_schema = _generate_openapi_for_version(baseline_version)
     if prev_schema is None:
         return 0
 
     current_schema = _generate_current_openapi()
+
+    prev_schema = _normalize_openapi_for_oasdiff(prev_schema)
+    current_schema = _normalize_openapi_for_oasdiff(current_schema)
 
     with tempfile.TemporaryDirectory(prefix="oasdiff-specs-") as tmp:
         tmp_path = Path(tmp)
@@ -284,20 +332,20 @@ def main() -> int:
 
     has_breaking = bool(breaking_changes)
 
-    if has_breaking and not _is_minor_or_major_bump(current_version, prev_version):
+    if has_breaking and not _is_minor_or_major_bump(current_version, baseline_version):
         print(
             "::error "
             f"title={PYPI_DISTRIBUTION} REST API::Breaking REST API change detected "
-            f"without MINOR version bump ({prev_version} -> {current_version})."
+            f"without MINOR version bump ({baseline_version} -> {current_version})."
         )
 
     if has_breaking:
-        print("\nBreaking REST API changes detected compared to previous release:")
+        print("\nBreaking REST API changes detected compared to baseline release:")
         for text in breaking_changes:
             print(f"- {text.get('text', str(text))}")
 
     errors = bool(undeprecated_removals) or (
-        has_breaking and not _is_minor_or_major_bump(current_version, prev_version)
+        has_breaking and not _is_minor_or_major_bump(current_version, baseline_version)
     )
     return 1 if errors else 0
 
