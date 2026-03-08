@@ -302,3 +302,49 @@ def test_load_project_skills_with_string_path(tmp_path):
     skills = load_project_skills(str(tmp_path))
     assert len(skills) == 1
     assert skills[0].name == "test_skill"
+
+
+def test_load_project_skills_loads_from_git_root_when_called_from_subdir(tmp_path):
+    """Running from a subdir should still load repo-level skills (git root)."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "AGENTS.md").write_text("# Project Guidelines\n\nFrom root")
+
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+
+    skills = load_project_skills(subdir)
+    assert any(s.name == "agents" and "From root" in s.content for s in skills)
+
+
+def test_load_project_skills_workdir_takes_precedence_over_git_root(tmp_path):
+    """More local (work dir) skills should override repo root skills."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "AGENTS.md").write_text("# Project Guidelines\n\nFrom root")
+
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    (subdir / "AGENTS.md").write_text("# Project Guidelines\n\nFrom subdir")
+
+    skills = load_project_skills(subdir)
+    agents = [s for s in skills if s.name == "agents"]
+    assert len(agents) == 1
+    assert agents[0].content.strip() == "# Project Guidelines\n\nFrom subdir"
+
+
+def test_load_project_skills_loads_skills_directories_from_git_root(tmp_path):
+    """Skills directories (.agents/skills etc.) should be loaded from git root."""
+    (tmp_path / ".git").mkdir()
+
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "root_skill.md").write_text(
+        "---\nname: root_skill\ntriggers:\n  - root\n---\nLoaded from root"
+    )
+
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+
+    skills = load_project_skills(subdir)
+    assert any(
+        s.name == "root_skill" and "Loaded from root" in s.content for s in skills
+    )

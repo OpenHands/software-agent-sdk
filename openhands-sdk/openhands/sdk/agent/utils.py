@@ -99,7 +99,10 @@ def fix_malformed_tool_arguments(
         if any(exp in (list, dict) for exp in expected_origins):
             # Try to parse the string as JSON
             try:
-                parsed_value = json.loads(value)
+                # `strict=False` allows control characters (e.g. newlines) that
+                # the outer json.loads decoded from escape sequences.
+                # https://docs.python.org/3/library/json.html#json.JSONDecoder
+                parsed_value = json.loads(value, strict=False)
                 # json.loads() returns dict, list, str, int, float, bool, or None
                 # Only use parsed value if it matches expected collection types
                 if isinstance(parsed_value, (list, dict)):

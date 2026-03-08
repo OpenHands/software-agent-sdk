@@ -26,6 +26,7 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk",
     EXAMPLES_ROOT / "02_remote_agent_server",
     # These examples live under subdirectories (each with a single `main.py`).
+    EXAMPLES_ROOT / "01_standalone_sdk" / "43_mixed_marketplace_skills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
 )
