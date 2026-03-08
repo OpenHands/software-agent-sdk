@@ -20,6 +20,7 @@ from openhands.sdk.conversation.types import (
     ConversationTokenCallbackType,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
+from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
@@ -1274,3 +1275,47 @@ def test_agent_verify_fails_when_builtin_tool_removed():
     # Should fail because builtin tools don't match
     with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
         runtime_agent.verify(persisted_agent)
+
+
+def test_conversation_state_fs_cache():
+    """Test that conversation state is properly persisted and loaded from file system
+    (FS) cache, with verification of cache memory behavior."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789011")
+        persist_path_for_state = LocalConversation.get_persistence_dir(
+            temp_dir, conv_id
+        )
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path_for_state,
+            agent=agent,
+            id=conv_id,
+        )
+
+        state.stats.register_llm(RegistryEvent(llm=llm))
+
+        # Set various flags
+        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.confirmation_policy = AlwaysConfirm()
+
+        # Create a new ConversationState that loads from the same persistence
+        # directory
+        loaded_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path_for_state,
+            agent=agent,
+            id=conv_id,
+        )
+
+        # Verify key fields are preserved
+        assert loaded_state.id == state.id
+        assert loaded_state.agent.llm.model == state.agent.llm.model
+        # Verify flags are preserved
+        assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
+        assert loaded_state.confirmation_policy == AlwaysConfirm()
+        assert isinstance(loaded_state._fs, LocalFileStore)
+        assert len(loaded_state._fs.cache) == 0

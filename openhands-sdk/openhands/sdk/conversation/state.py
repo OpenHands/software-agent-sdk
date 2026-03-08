@@ -294,7 +294,7 @@ class ConversationState(OpenHandsModel):
         )
 
         try:
-            base_text = file_store.read(BASE_STATE)
+            base_text = file_store.read(BASE_STATE, cache=False)
         except FileNotFoundError:
             base_text = None
 
