@@ -21,6 +21,7 @@ on:
                     - commit0
                     - multiswebench
                     - swebenchmultimodal
+                    - terminalbench
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
