@@ -157,7 +157,7 @@ class AgentDefinition(BaseModel):
         - model (optional): Model profile to use (default: 'inherit')
         - color (optional): Display color
         - max_iterations_per_run: Max iteration per run
-        - hooks (optional): List of allowed hooks
+        - hooks (optional): List of applicable hooks
 
         The body of the Markdown is the system prompt.
 
