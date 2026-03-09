@@ -55,6 +55,7 @@ class TerminalSession(TerminalSessionBase):
     terminal: TerminalInterface
     prev_status: TerminalCommandStatus | None
     prev_output: str
+    _interrupt_requested: bool
 
     def __init__(
         self,
@@ -79,6 +80,8 @@ class TerminalSession(TerminalSessionBase):
         # Store the last command for interactive input handling
         self.prev_status = None
         self.prev_output = ""
+        # Flag for external interruption (e.g., from conversation.interrupt())
+        self._interrupt_requested = False
 
     def initialize(self) -> None:
         """Initialize the terminal backend."""
@@ -96,6 +99,20 @@ class TerminalSession(TerminalSessionBase):
     def interrupt(self) -> bool:
         """Interrupt the currently running command (equivalent to Ctrl+C)."""
         return self.terminal.interrupt()
+
+    def request_interrupt(self) -> None:
+        """Request interruption of the current command execution.
+
+        This sets an internal flag that the execute loop checks. When set,
+        the execute loop will terminate early and also send Ctrl+C to the
+        underlying terminal process.
+
+        This method is thread-safe and can be called from any thread
+        (e.g., from a conversation interrupt callback).
+        """
+        self._interrupt_requested = True
+        # Also send Ctrl+C to the process to stop it
+        self.terminal.interrupt()
 
     def is_running(self) -> bool:
         """Check if a command is currently running."""
@@ -276,6 +293,43 @@ class TerminalSession(TerminalSessionBase):
             metadata=metadata,
         )
 
+    def _handle_interrupted_command(
+        self,
+        command: str,
+        terminal_content: str,
+        ps1_matches: list[re.Match],
+    ) -> TerminalObservation:
+        """Handle a command that was interrupted by an external request."""
+        self.prev_status = TerminalCommandStatus.INTERRUPTED
+        if len(ps1_matches) < 1:
+            logger.warning(
+                "Expected at least one PS1 metadata block, but got none.\n"
+                f"---\n{terminal_content!r}\n---"
+            )
+        raw_command_output = self._combine_outputs_between_matches(
+            terminal_content, ps1_matches
+        )
+        metadata = CmdOutputMetadata()  # No metadata available
+        metadata.suffix = (
+            "\n[The command was interrupted by user request. "
+            "The process received SIGINT (Ctrl+C).]"
+        )
+        command_output = self._get_command_output(
+            command,
+            raw_command_output,
+            metadata,
+            continue_prefix="[Below is the partial output before interruption.]\n",
+        )
+        command_output = maybe_truncate(
+            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+        )
+        return TerminalObservation.from_text(
+            command=command,
+            exit_code=-1,  # Convention for interrupted commands
+            text=command_output,
+            metadata=metadata,
+        )
+
     def _ready_for_next_command(self) -> None:
         """Reset the content buffer for a new command."""
         # Clear the current content
@@ -313,6 +367,9 @@ class TerminalSession(TerminalSessionBase):
         """Execute a command using the terminal backend."""
         if not self._initialized:
             raise RuntimeError("Unified session is not initialized")
+
+        # Reset interrupt flag at the start of each execution
+        self._interrupt_requested = False
 
         # Strip the command of any leading/trailing whitespace
         logger.debug(f"RECEIVED ACTION: {action}")
@@ -516,6 +573,17 @@ class TerminalSession(TerminalSessionBase):
                     )
                     logger.debug(f"RETURNING OBSERVATION (hard-timeout): {obs}")
                     return obs
+
+            # 4) Check for external interrupt request (from conversation.interrupt())
+            if self._interrupt_requested:
+                logger.info(f"Interrupt requested for command: {command}")
+                obs = self._handle_interrupted_command(
+                    command,
+                    terminal_content=cur_terminal_output,
+                    ps1_matches=ps1_matches,
+                )
+                logger.debug(f"RETURNING OBSERVATION (interrupted): {obs}")
+                return obs
 
             # Sleep before next check
             time.sleep(POLL_INTERVAL)

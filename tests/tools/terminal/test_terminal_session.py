@@ -1093,3 +1093,48 @@ def test_bash_remove_prefix(terminal_type):
             assert "git remote -v" not in obs.text
         finally:
             session.close()
+
+
+@parametrize_terminal_types
+def test_request_interrupt_sets_flag(terminal_type):
+    """Test that request_interrupt sets the interrupt flag and sends Ctrl+C."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            # Initially, the interrupt flag should be False
+            assert session._interrupt_requested is False
+
+            # Call request_interrupt
+            session.request_interrupt()
+
+            # The interrupt flag should now be True
+            assert session._interrupt_requested is True
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+def test_execute_resets_interrupt_flag(terminal_type):
+    """Test that execute() resets the interrupt flag at the start."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            # Set the interrupt flag manually
+            session._interrupt_requested = True
+
+            # Execute a command
+            obs = session.execute(TerminalAction(command="echo test"))
+
+            # The interrupt flag should be reset
+            assert session._interrupt_requested is False
+            # The command should complete normally since the flag was reset
+            # before the loop started
+            assert obs.metadata.exit_code == 0
+        finally:
+            session.close()
