@@ -29,6 +29,7 @@ from openhands.sdk.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.task.impl import TaskExecutor
+    from openhands.tools.task.manager import ConfirmationHandler
 
 
 class TaskAction(Action):
@@ -182,11 +183,16 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
     def create(
         cls,
         conv_state: "ConversationState",  # noqa: ARG003
+        confirmation_handler: "ConfirmationHandler | None" = None,
     ) -> list[ToolDefinition]:
         """Create the task tool.
 
         Args:
             conv_state: Conversation state for workspace info.
+            confirmation_handler: Optional callback invoked when a sub-agent's
+                confirmation policy requires user approval.  Receives
+                `(task_id, pending_actions)` and must return `True` to
+                approve or `False` to reject.
 
         Returns:
             List containing a single TaskTool.
@@ -199,7 +205,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             agent_types_info=agent_types_info
         )
 
-        manager = TaskManager()
+        manager = TaskManager(confirmation_handler=confirmation_handler)
         task_executor = TaskExecutor(manager=manager)
 
         tools: list[ToolDefinition] = []

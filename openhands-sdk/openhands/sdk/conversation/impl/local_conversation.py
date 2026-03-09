@@ -33,6 +33,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -250,6 +251,7 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
+        self._profile_store = LLMProfileStore()
 
         # Initialize secrets if provided
         if secrets:
@@ -467,10 +469,36 @@ class LocalConversation(BaseConversation):
 
             # Register LLMs in the registry (still holding lock)
             self.llm_registry.subscribe(self._state.stats.register_llm)
+            registered = set(self.llm_registry.list_usage_ids())
             for llm in list(self.agent.get_all_llms()):
-                self.llm_registry.add(llm)
+                if llm.usage_id not in registered:
+                    self.llm_registry.add(llm)
 
             self._agent_ready = True
+
+    def switch_profile(self, profile_name: str) -> None:
+        """Switch the agent's LLM to a named profile.
+
+        Loads the profile from the LLMProfileStore (cached in the registry
+        after the first load) and updates the agent and conversation state.
+
+        Args:
+            profile_name: Name of a profile previously saved via LLMProfileStore.
+
+        Raises:
+            FileNotFoundError: If the profile does not exist.
+            ValueError: If the profile is corrupted or invalid.
+        """
+        usage_id = f"profile:{profile_name}"
+        try:
+            new_llm = self.llm_registry.get(usage_id)
+        except KeyError:
+            new_llm = self._profile_store.load(profile_name)
+            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
+            self.llm_registry.add(new_llm)
+        with self._state:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            self._state.agent = self.agent
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
@@ -487,7 +515,6 @@ class LocalConversation(BaseConversation):
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
 
-        # Convert string to Message if needed
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
 

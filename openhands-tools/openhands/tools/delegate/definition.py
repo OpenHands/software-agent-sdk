@@ -18,6 +18,7 @@ from openhands.sdk.tool.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.tools.delegate.impl import ConfirmationHandler
 
 
 PROMPT_DIR = pathlib.Path(__file__).parent / "templates"
@@ -67,12 +68,18 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         cls,
         conv_state: "ConversationState",
         max_children: int = 5,
+        confirmation_handler: "ConfirmationHandler | None" = None,
     ) -> Sequence["DelegateTool"]:
         """Initialize DelegateTool with a DelegateExecutor.
 
         Args:
             conv_state: Conversation state (used to get workspace location)
             max_children: Maximum number of concurrent sub-agents (default: 5)
+            confirmation_handler: Optional callback invoked when a sub-agent's
+                confirmation policy requires user approval.  Receives
+                `(agent_id, pending_actions)` and must return `True` to
+                approve or `False` to reject.  When `None`, pending actions
+                are auto-approved.
 
         Returns:
             List containing a single delegate tool definition
@@ -95,7 +102,10 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
 
         # Initialize the executor without parent conversation
         # (will be set on first call)
-        executor = DelegateExecutor(max_children=max_children)
+        executor = DelegateExecutor(
+            max_children=max_children,
+            confirmation_handler=confirmation_handler,
+        )
 
         # Initialize the parent Tool with the executor
         return [
