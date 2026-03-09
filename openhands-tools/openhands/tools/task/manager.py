@@ -13,18 +13,30 @@ if the task is resumed for further work later.
 import shutil
 import tempfile
 import uuid
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.event import ActionEvent
+
+ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 
 
 logger = get_logger(__name__)
@@ -77,8 +89,12 @@ class Task(BaseModel):
 class TaskManager:
     """Manage sub-agent tasks."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        confirmation_handler: ConfirmationHandler | None = None,
+    ):
         self._parent_conversation: LocalConversation | None = None
+        self._confirmation_handler = confirmation_handler
 
         self._tasks: dict[str, Task] = {}
 
@@ -307,7 +323,7 @@ class TaskManager:
 
         try:
             task.conversation.send_message(prompt, sender=parent_name)
-            task.conversation.run()
+            self._run_until_finished(task.id, task.conversation)
             result = get_agent_final_response(task.conversation.state.events)
             task.set_result(result)
             logger.info(f"Task '{task.id}' completed.")
@@ -319,6 +335,27 @@ class TaskManager:
             self._evict_task(task)
 
         return task
+
+    def _run_until_finished(
+        self, task_id: str, conversation: LocalConversation
+    ) -> None:
+        """Run a sub-agent conversation to completion, handling confirmations."""
+        conversation.run()
+        while (
+            conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        ):
+            pending = ConversationState.get_unmatched_actions(conversation.state.events)
+            if not pending:
+                break
+
+            if self._confirmation_handler is None or self._confirmation_handler(
+                task_id, pending
+            ):
+                conversation.run()
+            else:
+                conversation.reject_pending_actions("User rejected the actions")
+                conversation.run()
 
     def _set_confirmation_policy(
         self,
