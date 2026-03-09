@@ -149,6 +149,7 @@ class DelegateExecutor(ToolExecutor):
                     "agent": worker_agent,
                     "workspace": workspace_path,
                     "visualizer": sub_visualizer,
+                    "hook_config": factory.definition.hooks,
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

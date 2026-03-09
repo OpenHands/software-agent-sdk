@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 
@@ -160,13 +161,15 @@ class TaskManager:
                 f"Available tasks: {', '.join(sorted(self._tasks))}"
             )
 
-        worker_agent = self._get_sub_agent(subagent_type)
+        factory = get_agent_factory(subagent_type)
+        worker_agent = self._get_sub_agent_from_factory(factory)
         conversation_id = self._tasks[resume].conversation_id
         conversation = LocalConversation(
             agent=worker_agent,
             workspace=self.parent_conversation.state.workspace.working_dir,
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
+            hook_config=factory.definition.hooks,
             delete_on_close=False,
         )
 
@@ -214,6 +217,7 @@ class TaskManager:
             task_id=task_id,
             worker_agent=worker_agent,
             conversation_id=conversation_id,
+            hook_config=factory.definition.hooks,
         )
 
         self._tasks[task_id] = Task(
@@ -231,6 +235,7 @@ class TaskManager:
         task_id: str,
         conversation_id: uuid.UUID,
         worker_agent: Agent,
+        hook_config: HookConfig | None = None,
     ) -> LocalConversation:
         parent = self.parent_conversation
         parent_visualizer = parent._visualizer
@@ -247,6 +252,7 @@ class TaskManager:
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
+            hook_config=hook_config,
             delete_on_close=False,
         )
 
