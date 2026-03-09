@@ -37,6 +37,7 @@ def create_test_executor_and_parent():
     parent_conversation.agent.llm = llm
     parent_conversation.agent.cli_mode = True
     parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
     parent_conversation.visualize = False
 
     executor = DelegateExecutor()
@@ -199,6 +200,7 @@ def test_spawn_disables_streaming_for_sub_agents():
     parent_conversation.agent.llm = parent_llm
     parent_conversation.agent.cli_mode = True
     parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
     parent_conversation._visualizer = None
 
     executor = DelegateExecutor()
@@ -233,6 +235,7 @@ def test_spawn_gives_sub_agents_independent_metrics():
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
     parent_conversation._visualizer = None
 
     executor = DelegateExecutor()
@@ -270,6 +273,7 @@ def test_delegate_merges_metrics_into_parent():
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
     parent_conversation._visualizer = None
     parent_conversation.conversation_stats = parent_stats
 
@@ -348,6 +352,7 @@ def test_repeated_delegation_does_not_double_count():
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
     parent_conversation._visualizer = None
     parent_conversation.conversation_stats = parent_stats
 
@@ -465,6 +470,7 @@ def test_spawn_passes_hook_config_to_sub_conversation():
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
     parent_conversation._visualizer = None
 
     executor = DelegateExecutor()
@@ -481,3 +487,61 @@ def test_spawn_passes_hook_config_to_sub_conversation():
     assert sub_conv._pending_hook_config.pre_tool_use[0].matcher == "terminal"
 
     _reset_registry_for_tests()
+
+
+def test_spawn_inherits_persistence_dir_from_parent():
+    """
+    When the parent conversation persists,
+    subagents persist under a subagents/ subdirectory.
+    """
+    register_builtins_agents()
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+    )
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent.llm = parent_llm
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = "/tmp/conversations/abc123"
+    parent_conversation._visualizer = None
+
+    executor = DelegateExecutor()
+    spawn_action = DelegateAction(command="spawn", ids=["sub1"])
+    observation = executor(spawn_action, parent_conversation)
+
+    assert "Successfully spawned" in observation.text
+    sub_conv = executor._sub_agents["sub1"]
+    # The sub-conversation should have a persistence_dir under the parent's
+    # persistence_dir + "subagents"
+    sub_persistence_dir = sub_conv._state.persistence_dir
+    assert sub_persistence_dir is not None
+    assert "/tmp/conversations/abc123/subagents" in sub_persistence_dir
+
+
+def test_spawn_no_persistence_when_parent_has_none():
+    """When the parent doesn't persist, subagents don't persist either."""
+    register_builtins_agents()
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+    )
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent.llm = parent_llm
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation.state.persistence_dir = None
+    parent_conversation._visualizer = None
+
+    executor = DelegateExecutor()
+    spawn_action = DelegateAction(command="spawn", ids=["sub1"])
+    observation = executor(spawn_action, parent_conversation)
+
+    assert "Successfully spawned" in observation.text
+    sub_conv = executor._sub_agents["sub1"]
+    # The sub-conversation should have no persistence_dir
+    assert sub_conv._state.persistence_dir is None

@@ -2,7 +2,8 @@
 
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from openhands.tools.delegate.definition import DelegateAction
 
 logger = get_logger(__name__)
+
+_SUBAGENTS_DIR: Final[str] = "subagents"
 
 # Called when a sub-agent hits WAITING_FOR_CONFIRMATION.
 # Receives (agent_id, pending_actions) and returns True to approve, False to reject.
@@ -180,12 +183,24 @@ class DelegateExecutor(ToolExecutor):
                 if parent_visualizer is not None:
                     sub_visualizer = parent_visualizer.create_sub_visualizer(agent_id)
 
+                # Inherit persistence from the parent conversation:
+                # if the parent persists its conversation, subagents persist
+                # theirs under a "subagents" subdirectory.
+                parent_persistence_dir = parent_conversation.state.persistence_dir
+                if parent_persistence_dir is not None:
+                    subagents_persistence_dir: str | None = str(
+                        Path(parent_persistence_dir) / _SUBAGENTS_DIR
+                    )
+                else:
+                    subagents_persistence_dir = None
+
                 # Use max_iteration_per_run from agent definition if set
                 conv_kwargs: dict = {
                     "agent": worker_agent,
                     "workspace": workspace_path,
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,
+                    "persistence_dir": subagents_persistence_dir,
                 }
 
                 if factory.definition.max_iteration_per_run is not None:
