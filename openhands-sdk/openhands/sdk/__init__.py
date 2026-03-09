@@ -48,11 +48,15 @@ from openhands.sdk.mcp import (
 )
 from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
-    SDKSettings,
+    AgentSettings,
+    CondenserSettings,
+    CriticSettings,
+    LLMSettings,
     SettingsChoice,
     SettingsFieldMetadata,
     SettingsFieldSchema,
     SettingsSchema,
+    SettingsSectionMetadata,
     SettingsSectionSchema,
     export_settings_schema,
 )
@@ -120,11 +124,15 @@ __all__ = [
     "LLMConvertibleEvent",
     "AgentContext",
     "LLMSummarizingCondenser",
-    "SDKSettings",
+    "LLMSettings",
+    "CondenserSettings",
+    "CriticSettings",
+    "AgentSettings",
     "SettingsChoice",
     "SettingsFieldMetadata",
     "SettingsFieldSchema",
     "SettingsSchema",
+    "SettingsSectionMetadata",
     "SettingsSectionSchema",
     "export_settings_schema",
     "FileStore",

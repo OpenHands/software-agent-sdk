@@ -15,12 +15,17 @@ from openhands.sdk.llm import LLM
 
 
 SETTINGS_METADATA_KEY = "openhands_settings"
+SETTINGS_SECTION_METADATA_KEY = "openhands_settings_section"
+
+
+class SettingsSectionMetadata(BaseModel):
+    key: str
+    label: str
+    order: int
 
 
 class SettingsFieldMetadata(BaseModel):
     label: str
-    section: str
-    section_label: str
     order: int
     widget: Literal["text", "password", "number", "boolean", "select"] | None = None
     placeholder: str | None = None
@@ -65,47 +70,39 @@ class SettingsSchema(BaseModel):
 
 
 CriticMode = Literal["finish_and_message", "all_actions"]
-CriticFactory = Callable[[LLM, "SDKSettings", Agent | None], APIBasedCritic | None]
-AgentFactory = Callable[[LLM], Agent]
 
 
-class SDKSettings(BaseModel):
-    llm_model: str = Field(
+class LLMSettings(BaseModel):
+    model: str = Field(
         default="claude-sonnet-4-20250514",
         description="Model name for the primary LLM.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Model",
-                section="llm",
-                section_label="LLM",
                 order=10,
                 placeholder="anthropic/claude-sonnet-4-5-20250929",
                 slash_command="llm-model",
             ).model_dump()
         },
     )
-    llm_api_key: SecretStr | None = Field(
+    api_key: SecretStr | None = Field(
         default=None,
         description="API key used to authenticate the primary LLM.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="API key",
-                section="llm",
-                section_label="LLM",
                 order=20,
                 widget="password",
                 slash_command="llm-api-key",
             ).model_dump()
         },
     )
-    llm_base_url: str | None = Field(
+    base_url: str | None = Field(
         default=None,
         description="Optional custom base URL for the primary LLM.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Base URL",
-                section="llm",
-                section_label="LLM",
                 order=30,
                 placeholder="https://api.openai.com/v1",
                 advanced=True,
@@ -113,15 +110,13 @@ class SDKSettings(BaseModel):
             ).model_dump()
         },
     )
-    llm_timeout: int | None = Field(
+    timeout: int | None = Field(
         default=300,
         ge=0,
         description="HTTP timeout in seconds for LLM requests.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Timeout (seconds)",
-                section="llm",
-                section_label="LLM",
                 order=40,
                 widget="number",
                 advanced=True,
@@ -129,15 +124,13 @@ class SDKSettings(BaseModel):
             ).model_dump()
         },
     )
-    llm_max_input_tokens: int | None = Field(
+    max_input_tokens: int | None = Field(
         default=None,
         ge=1,
         description="Optional maximum number of input tokens for the primary LLM.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Max input tokens",
-                section="llm",
-                section_label="LLM",
                 order=50,
                 widget="number",
                 advanced=True,
@@ -145,63 +138,61 @@ class SDKSettings(BaseModel):
             ).model_dump()
         },
     )
-    enable_default_condenser: bool = Field(
+
+
+class CondenserSettings(BaseModel):
+    enabled: bool = Field(
         default=True,
         description="Enable the default LLM summarizing condenser.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable memory condensation",
-                section="condenser",
-                section_label="Condenser",
                 order=10,
                 widget="boolean",
                 slash_command="condenser",
             ).model_dump()
         },
     )
-    condenser_max_size: int = Field(
+    max_size: int = Field(
         default=240,
         ge=20,
         description="Maximum number of events kept before the condenser runs.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Condenser max size",
-                section="condenser",
-                section_label="Condenser",
                 order=20,
                 widget="number",
-                depends_on=("enable_default_condenser",),
+                depends_on=("enabled",),
                 help_text="Minimum value is 20.",
                 advanced=True,
                 slash_command="condenser-max-size",
             ).model_dump()
         },
     )
-    enable_critic: bool = Field(
+
+
+class CriticSettings(BaseModel):
+    enabled: bool = Field(
         default=False,
         description="Enable critic evaluation for the agent.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable critic",
-                section="critic",
-                section_label="Critic",
                 order=10,
                 widget="boolean",
                 slash_command="critic",
             ).model_dump()
         },
     )
-    critic_mode: CriticMode = Field(
+    mode: CriticMode = Field(
         default="finish_and_message",
         description="When critic evaluation should run.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Critic mode",
-                section="critic",
-                section_label="Critic",
                 order=20,
                 widget="select",
-                depends_on=("enable_critic",),
+                depends_on=("enabled",),
                 advanced=True,
                 slash_command="critic-mode",
             ).model_dump()
@@ -215,16 +206,14 @@ class SDKSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable iterative refinement",
-                section="critic",
-                section_label="Critic",
                 order=30,
                 widget="boolean",
-                depends_on=("enable_critic",),
+                depends_on=("enabled",),
                 slash_command="iterative-refinement",
             ).model_dump()
         },
     )
-    critic_threshold: float = Field(
+    threshold: float = Field(
         default=0.6,
         ge=0.0,
         le=1.0,
@@ -232,11 +221,9 @@ class SDKSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Critic threshold",
-                section="critic",
-                section_label="Critic",
                 order=40,
                 widget="number",
-                depends_on=("enable_critic", "enable_iterative_refinement"),
+                depends_on=("enabled", "enable_iterative_refinement"),
                 slash_command="critic-threshold",
             ).model_dump()
         },
@@ -248,12 +235,50 @@ class SDKSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Max refinement iterations",
-                section="critic",
-                section_label="Critic",
                 order=50,
                 widget="number",
-                depends_on=("enable_critic", "enable_iterative_refinement"),
+                depends_on=("enabled", "enable_iterative_refinement"),
                 slash_command="max-refinement-iterations",
+            ).model_dump()
+        },
+    )
+
+
+CriticFactory = Callable[[LLM, "AgentSettings", Agent | None], APIBasedCritic | None]
+AgentFactory = Callable[[LLM], Agent]
+
+
+class AgentSettings(BaseModel):
+    llm: LLMSettings = Field(
+        default_factory=LLMSettings,
+        description="LLM settings for the agent.",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="llm",
+                label="LLM",
+                order=10,
+            ).model_dump()
+        },
+    )
+    condenser: CondenserSettings = Field(
+        default_factory=CondenserSettings,
+        description="Condenser settings for the agent.",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="condenser",
+                label="Condenser",
+                order=20,
+            ).model_dump()
+        },
+    )
+    critic: CriticSettings = Field(
+        default_factory=CriticSettings,
+        description="Critic settings for the agent.",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="critic",
+                label="Critic",
+                order=30,
             ).model_dump()
         },
     )
@@ -264,23 +289,27 @@ class SDKSettings(BaseModel):
         agent: Agent,
         *,
         enable_critic: bool | None = None,
-    ) -> SDKSettings:
-        condenser_max_size = cls.model_fields["condenser_max_size"].default
-        enable_default_condenser = False
+    ) -> AgentSettings:
+        condenser_defaults = cls.model_fields["condenser"].get_default(
+            call_default_factory=True
+        )
+        condenser_max_size = condenser_defaults.max_size
+        condenser_enabled = False
         if isinstance(agent.condenser, LLMSummarizingCondenser):
-            enable_default_condenser = True
+            condenser_enabled = True
             condenser_max_size = agent.condenser.max_size
 
         critic = agent.critic
         critic_enabled = (
             enable_critic if enable_critic is not None else critic is not None
         )
-        critic_mode: CriticMode = cls.model_fields["critic_mode"].default
-        enable_iterative_refinement = False
-        critic_threshold = cls.model_fields["critic_threshold"].default
-        max_refinement_iterations = cls.model_fields[
-            "max_refinement_iterations"
-        ].default
+        critic_defaults = cls.model_fields["critic"].get_default(
+            call_default_factory=True
+        )
+        critic_mode: CriticMode = critic_defaults.mode
+        enable_iterative_refinement = critic_defaults.enable_iterative_refinement
+        critic_threshold = critic_defaults.threshold
+        max_refinement_iterations = critic_defaults.max_refinement_iterations
         if critic is not None:
             critic_mode = critic.mode
             if critic.iterative_refinement is not None:
@@ -288,19 +317,27 @@ class SDKSettings(BaseModel):
                 critic_threshold = critic.iterative_refinement.success_threshold
                 max_refinement_iterations = critic.iterative_refinement.max_iterations
 
-        return cls(
-            llm_model=agent.llm.model,
-            llm_api_key=_to_secret(agent.llm.api_key),
-            llm_base_url=agent.llm.base_url,
-            llm_timeout=agent.llm.timeout,
-            llm_max_input_tokens=agent.llm.max_input_tokens,
-            enable_default_condenser=enable_default_condenser,
-            condenser_max_size=condenser_max_size,
-            enable_critic=critic_enabled,
-            critic_mode=critic_mode,
-            enable_iterative_refinement=enable_iterative_refinement,
-            critic_threshold=critic_threshold,
-            max_refinement_iterations=max_refinement_iterations,
+        return cls.model_validate(
+            {
+                "llm": {
+                    "model": agent.llm.model,
+                    "api_key": _to_secret(agent.llm.api_key),
+                    "base_url": agent.llm.base_url,
+                    "timeout": agent.llm.timeout,
+                    "max_input_tokens": agent.llm.max_input_tokens,
+                },
+                "condenser": {
+                    "enabled": condenser_enabled,
+                    "max_size": condenser_max_size,
+                },
+                "critic": {
+                    "enabled": critic_enabled,
+                    "mode": critic_mode,
+                    "enable_iterative_refinement": enable_iterative_refinement,
+                    "threshold": critic_threshold,
+                    "max_refinement_iterations": max_refinement_iterations,
+                },
+            }
         )
 
     def apply_to_agent(
@@ -311,11 +348,11 @@ class SDKSettings(BaseModel):
         critic_factory: CriticFactory | None = None,
     ) -> Agent:
         llm_update = {
-            "model": self.llm_model,
-            "api_key": self.llm_api_key,
-            "base_url": self.llm_base_url,
-            "timeout": self.llm_timeout,
-            "max_input_tokens": self.llm_max_input_tokens,
+            "model": self.llm.model,
+            "api_key": self.llm.api_key,
+            "base_url": self.llm.base_url,
+            "timeout": self.llm.timeout,
+            "max_input_tokens": self.llm.max_input_tokens,
         }
 
         base_agent = agent
@@ -329,27 +366,27 @@ class SDKSettings(BaseModel):
             base_agent = base_agent.model_copy(update={"llm": llm})
 
         condenser = base_agent.condenser
-        if self.enable_default_condenser:
+        if self.condenser.enabled:
             condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
             if isinstance(condenser, LLMSummarizingCondenser):
                 condenser = condenser.model_copy(
-                    update={"llm": condenser_llm, "max_size": self.condenser_max_size}
+                    update={"llm": condenser_llm, "max_size": self.condenser.max_size}
                 )
             else:
                 condenser = LLMSummarizingCondenser(
                     llm=condenser_llm,
-                    max_size=self.condenser_max_size,
+                    max_size=self.condenser.max_size,
                 )
         else:
             condenser = None
 
         critic = base_agent.critic
-        if self.enable_critic:
+        if self.critic.enabled:
             iterative_refinement = None
-            if self.enable_iterative_refinement:
+            if self.critic.enable_iterative_refinement:
                 iterative_refinement = IterativeRefinementConfig(
-                    success_threshold=self.critic_threshold,
-                    max_iterations=self.max_refinement_iterations,
+                    success_threshold=self.critic.threshold,
+                    max_iterations=self.critic.max_refinement_iterations,
                 )
 
             if critic_factory is not None:
@@ -357,14 +394,14 @@ class SDKSettings(BaseModel):
                 if critic is not None:
                     critic = critic.model_copy(
                         update={
-                            "mode": self.critic_mode,
+                            "mode": self.critic.mode,
                             "iterative_refinement": iterative_refinement,
                         }
                     )
             elif isinstance(critic, APIBasedCritic):
                 critic = critic.model_copy(
                     update={
-                        "mode": self.critic_mode,
+                        "mode": self.critic.mode,
                         "iterative_refinement": iterative_refinement,
                     }
                 )
@@ -395,6 +432,17 @@ class SDKSettings(BaseModel):
         return export_settings_schema(cls)
 
 
+def settings_section_metadata(field: FieldInfo) -> SettingsSectionMetadata | None:
+    extra = field.json_schema_extra
+    if not isinstance(extra, dict):
+        return None
+
+    metadata = extra.get(SETTINGS_SECTION_METADATA_KEY)
+    if metadata is None:
+        return None
+    return SettingsSectionMetadata.model_validate(metadata)
+
+
 def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
     extra = field.json_schema_extra
     if not isinstance(extra, dict):
@@ -407,61 +455,81 @@ def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
 
 
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
-    sections: dict[str, SettingsSectionSchema] = {}
-    for key, field in model.model_fields.items():
-        metadata = settings_metadata(field)
-        if metadata is None:
+    sections: list[tuple[int, SettingsSectionSchema]] = []
+    for field in model.model_fields.values():
+        section_metadata = settings_section_metadata(field)
+        if section_metadata is None:
             continue
-        widget = metadata.widget or _infer_widget(field.annotation)
-        section = sections.setdefault(
-            metadata.section,
-            SettingsSectionSchema(
-                key=metadata.section, label=metadata.section_label, fields=[]
-            ),
-        )
-        section.fields.append(
-            SettingsFieldSchema(
-                key=key,
-                label=metadata.label,
-                description=field.description,
-                section=metadata.section,
-                section_label=metadata.section_label,
-                order=metadata.order,
-                widget=widget,
-                default=_normalize_default(
-                    field.get_default(call_default_factory=True)
-                ),
-                required=not _is_optional(field.annotation),
-                advanced=metadata.advanced,
-                depends_on=list(metadata.depends_on),
-                help_text=metadata.help_text,
-                slash_command=metadata.slash_command,
-                secret=widget == "password",
-                choices=_extract_choices(field.annotation),
-            )
-        )
 
-    ordered_sections = []
-    for section in sections.values():
+        nested_model = _nested_model_type(field.annotation)
+        if nested_model is None:
+            continue
+
+        section_default = field.get_default(call_default_factory=True)
+        section = SettingsSectionSchema(
+            key=section_metadata.key,
+            label=section_metadata.label,
+            fields=[],
+        )
+        for nested_key, nested_field in nested_model.model_fields.items():
+            metadata = settings_metadata(nested_field)
+            if metadata is None:
+                continue
+
+            widget = metadata.widget or _infer_widget(nested_field.annotation)
+            default_value = None
+            if isinstance(section_default, BaseModel):
+                default_value = getattr(section_default, nested_key)
+            section.fields.append(
+                SettingsFieldSchema(
+                    key=f"{section_metadata.key}.{nested_key}",
+                    label=metadata.label,
+                    description=nested_field.description,
+                    section=section_metadata.key,
+                    section_label=section_metadata.label,
+                    order=metadata.order,
+                    widget=widget,
+                    default=_normalize_default(default_value),
+                    required=not _is_optional(nested_field.annotation),
+                    advanced=metadata.advanced,
+                    depends_on=[
+                        f"{section_metadata.key}.{dependency}"
+                        for dependency in metadata.depends_on
+                    ],
+                    help_text=metadata.help_text,
+                    slash_command=metadata.slash_command,
+                    secret=widget == "password",
+                    choices=_extract_choices(nested_field.annotation),
+                )
+            )
+
         section.fields.sort(key=lambda field_schema: field_schema.order)
-        ordered_sections.append(section)
-    ordered_sections.sort(
-        key=lambda section: section.fields[0].order if section.fields else 0
+        sections.append((section_metadata.order, section))
+
+    sections.sort(key=lambda item: item[0])
+    return SettingsSchema(
+        model_name=model.__name__,
+        sections=[section for _, section in sections],
     )
 
-    return SettingsSchema(model_name=model.__name__, sections=ordered_sections)
+
+def _nested_model_type(annotation: Any) -> type[BaseModel] | None:
+    inner = _strip_optional(annotation)
+    if isinstance(inner, type) and issubclass(inner, BaseModel):
+        return inner
+    return None
 
 
 def _is_optional(annotation: Any) -> bool:
     origin = get_origin(annotation)
-    if origin in (None,):
+    if origin is None:
         return False
     return any(arg is type(None) for arg in get_args(annotation))
 
 
 def _strip_optional(annotation: Any) -> Any:
     origin = get_origin(annotation)
-    if origin in (None,):
+    if origin is None:
         return annotation
     args = [arg for arg in get_args(annotation) if arg is not type(None)]
     if len(args) == 1:
@@ -498,7 +566,8 @@ def _extract_choices(annotation: Any) -> list[SettingsChoice]:
     if isinstance(inner, type) and issubclass(inner, Enum):
         return [
             SettingsChoice(
-                value=str(member.value), label=member.name.replace("_", " ").title()
+                value=str(member.value),
+                label=member.name.replace("_", " ").title(),
             )
             for member in inner
         ]

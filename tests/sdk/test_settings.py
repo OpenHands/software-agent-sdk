@@ -1,12 +1,19 @@
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, LLMSummarizingCondenser
+from openhands.sdk import (
+    LLM,
+    Agent,
+    AgentSettings,
+    CondenserSettings,
+    CriticSettings,
+    LLMSettings,
+    LLMSummarizingCondenser,
+)
 from openhands.sdk.critic import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
-from openhands.sdk.settings import SDKSettings
 
 
-def test_sdk_settings_from_agent_and_apply_to_agent(monkeypatch) -> None:
+def test_agent_settings_from_agent_and_apply_to_agent(monkeypatch) -> None:
     monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
 
     agent = Agent(
@@ -35,26 +42,27 @@ def test_sdk_settings_from_agent_and_apply_to_agent(monkeypatch) -> None:
         ),
     )
 
-    settings = SDKSettings.from_agent(agent)
+    settings = AgentSettings.from_agent(agent)
 
-    assert settings.llm_model == "openai/gpt-4o"
-    assert settings.llm_base_url == "https://llm.example"
-    assert settings.llm_timeout == 180
-    assert settings.llm_max_input_tokens == 4096
-    assert settings.enable_default_condenser is True
-    assert settings.condenser_max_size == 320
-    assert settings.enable_critic is True
-    assert settings.critic_mode == "all_actions"
-    assert settings.enable_iterative_refinement is True
-    assert settings.critic_threshold == 0.7
-    assert settings.max_refinement_iterations == 5
+    assert settings.llm.model == "openai/gpt-4o"
+    assert settings.llm.base_url == "https://llm.example"
+    assert settings.llm.timeout == 180
+    assert settings.llm.max_input_tokens == 4096
+    assert settings.condenser.enabled is True
+    assert settings.condenser.max_size == 320
+    assert settings.critic.enabled is True
+    assert settings.critic.mode == "all_actions"
+    assert settings.critic.enable_iterative_refinement is True
+    assert settings.critic.threshold == 0.7
+    assert settings.critic.max_refinement_iterations == 5
 
     updated_settings = settings.model_copy(
         update={
-            "condenser_max_size": 256,
-            "critic_threshold": 0.8,
-            "max_refinement_iterations": 2,
-            "llm_timeout": 90,
+            "condenser": settings.condenser.model_copy(update={"max_size": 256}),
+            "critic": settings.critic.model_copy(
+                update={"threshold": 0.8, "max_refinement_iterations": 2}
+            ),
+            "llm": settings.llm.model_copy(update={"timeout": 90}),
         }
     )
     updated_agent = updated_settings.apply_to_agent(agent)
@@ -69,17 +77,20 @@ def test_sdk_settings_from_agent_and_apply_to_agent(monkeypatch) -> None:
     assert updated_agent.critic.iterative_refinement.max_iterations == 2
 
 
-def test_sdk_settings_to_agent_uses_factories() -> None:
-    settings = SDKSettings(
-        llm_model="openai/gpt-4o",
-        llm_api_key=SecretStr("llm-key"),
-        llm_base_url="https://llm.example",
-        enable_default_condenser=True,
-        condenser_max_size=300,
-        enable_critic=True,
-        enable_iterative_refinement=True,
-        critic_threshold=0.65,
-        max_refinement_iterations=4,
+def test_agent_settings_to_agent_uses_factories() -> None:
+    settings = AgentSettings(
+        llm=LLMSettings(
+            model="openai/gpt-4o",
+            api_key=SecretStr("llm-key"),
+            base_url="https://llm.example",
+        ),
+        condenser=CondenserSettings(enabled=True, max_size=300),
+        critic=CriticSettings(
+            enabled=True,
+            enable_iterative_refinement=True,
+            threshold=0.65,
+            max_refinement_iterations=4,
+        ),
     )
 
     def build_agent(llm: LLM) -> Agent:
@@ -87,10 +98,11 @@ def test_sdk_settings_to_agent_uses_factories() -> None:
 
     def build_critic(
         llm: LLM,
-        sdk_settings: SDKSettings,
+        agent_settings: AgentSettings,
         agent: Agent | None,
     ) -> APIBasedCritic:
         assert agent is not None
+        assert agent_settings.critic.enabled is True
         return APIBasedCritic(
             server_url=f"{llm.base_url}/critic",
             api_key=llm.api_key or SecretStr("fallback-key"),
@@ -111,9 +123,10 @@ def test_sdk_settings_to_agent_uses_factories() -> None:
     assert agent.critic.iterative_refinement.max_iterations == 4
 
 
-def test_sdk_settings_export_schema_groups_sections() -> None:
-    schema = SDKSettings.export_schema()
+def test_agent_settings_export_schema_groups_sections() -> None:
+    schema = AgentSettings.export_schema()
 
+    assert schema.model_name == "AgentSettings"
     assert [section.key for section in schema.sections] == [
         "llm",
         "condenser",
@@ -121,18 +134,18 @@ def test_sdk_settings_export_schema_groups_sections() -> None:
     ]
 
     llm_fields = {field.key: field for field in schema.sections[0].fields}
-    assert llm_fields["llm_model"].required is True
-    assert llm_fields["llm_api_key"].widget == "password"
-    assert llm_fields["llm_api_key"].required is False
-    assert llm_fields["llm_api_key"].secret is True
+    assert llm_fields["llm.model"].required is True
+    assert llm_fields["llm.api_key"].widget == "password"
+    assert llm_fields["llm.api_key"].required is False
+    assert llm_fields["llm.api_key"].secret is True
 
     critic_fields = {field.key: field for field in schema.sections[2].fields}
-    assert critic_fields["critic_mode"].widget == "select"
-    assert [choice.value for choice in critic_fields["critic_mode"].choices] == [
+    assert critic_fields["critic.mode"].widget == "select"
+    assert [choice.value for choice in critic_fields["critic.mode"].choices] == [
         "finish_and_message",
         "all_actions",
     ]
-    assert critic_fields["critic_threshold"].depends_on == [
-        "enable_critic",
-        "enable_iterative_refinement",
+    assert critic_fields["critic.threshold"].depends_on == [
+        "critic.enabled",
+        "critic.enable_iterative_refinement",
     ]
