@@ -203,8 +203,6 @@ class Agent(CriticMixin, AgentBase):
             dynamic_context=TextContent(text=dynamic_context)
             if dynamic_context
             else None,
-            # Include hook_config from state for observability
-            hook_config=state.hook_config,
         )
         on_event(event)
 
