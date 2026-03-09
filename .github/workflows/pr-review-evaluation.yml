@@ -57,22 +57,22 @@ jobs:
                     echo "This PR may not have been reviewed by the agent, skipping evaluation"
                   fi
 
-            - name: Checkout software-agent-sdk repository
+            - name: Checkout extensions repository
               if: steps.check-trace.outputs.trace_exists == 'true'
-              uses: actions/checkout@v5
+              uses: actions/checkout@v4
               with:
-                  repository: OpenHands/software-agent-sdk
-                  path: software-agent-sdk
+                  repository: OpenHands/extensions
+                  path: extensions
 
             - name: Set up Python
               if: steps.check-trace.outputs.trace_exists == 'true'
-              uses: actions/setup-python@v6
+              uses: actions/setup-python@v5
               with:
-                  python-version: '3.13'
+                  python-version: '3.12'
 
             - name: Install uv
               if: steps.check-trace.outputs.trace_exists == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@v6
               with:
                   enable-cache: true
 
@@ -92,7 +92,7 @@ jobs:
                   cp trace-info/laminar_trace_info.json .
 
                   # Run the evaluation script
-                  uv run python software-agent-sdk/examples/03_github_workflows/02_pr_review/evaluate_review.py
+                  uv run python extensions/plugins/pr-review/workflows/evaluate_review.py
 
             - name: Upload evaluation logs
               uses: actions/upload-artifact@v5

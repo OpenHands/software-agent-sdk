@@ -7,7 +7,6 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 ## Files
 
 - **`workflow.yml`**: Example GitHub Actions workflow file that runs the PR review agent
-- **`evaluate_review.py`**: Script to evaluate review effectiveness when PR is closed
 - **`README.md`**: This documentation file
 
 ## Features
