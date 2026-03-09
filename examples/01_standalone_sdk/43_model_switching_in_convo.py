@@ -1,7 +1,7 @@
 """Mid-conversation model switching.
 
 Usage:
-    uv run examples/01_standalone_sdk/41_model_switching_in_convo.py
+    uv run examples/01_standalone_sdk/43_model_switching_in_convo.py
 """
 
 import os
