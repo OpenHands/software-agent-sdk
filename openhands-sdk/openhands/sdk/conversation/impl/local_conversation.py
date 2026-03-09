@@ -6,6 +6,7 @@ from pathlib import Path
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -25,13 +26,16 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
+    ActionEvent,
     CondensationRequest,
     MessageEvent,
+    ObservationEvent,
     PauseEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
+from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -957,6 +961,111 @@ class LocalConversation(BaseConversation):
             self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
 
         logger.info("Condensation request processed")
+
+    def rerun_actions(
+        self,
+        rerun_log_path: str | Path | None = None,
+    ) -> bool:
+        """Re-execute all actions from the conversation's event history.
+
+        This method iterates through all ActionEvents in the conversation and
+        re-executes them using their original action parameters. Execution
+        stops immediately if any tool call fails.
+
+        WARNING: This is an advanced feature intended for specific use cases
+        such as reproducing environment state from a saved conversation. Many
+        tool operations are NOT idempotent:
+
+        - File operations may fail if files already exist or were deleted
+        - Terminal commands may have different effects on changed state
+        - API calls may have side effects or return different results
+        - Browser state may differ from the original session
+
+        Use this method only when you understand that:
+        1. Results may differ from the original conversation
+        2. Some actions may fail due to changed environment state
+        3. The workspace should typically be reset before rerunning
+
+        Args:
+            rerun_log_path: Optional directory path to save a rerun event log.
+                If provided, events will be written incrementally to disk using
+                EventLog, avoiding memory buildup for large conversations.
+
+        Returns:
+            True if all actions executed successfully, False if any action failed.
+
+        Raises:
+            KeyError: If a tool from the original conversation is not available.
+                This is a configuration error (different from execution failure).
+        """
+        # Ensure agent is initialized (loads plugins and initializes tools)
+        self._ensure_agent_ready()
+
+        # Set up rerun log if path provided
+        rerun_log: EventLog | None = None
+        if rerun_log_path is not None:
+            log_dir = Path(rerun_log_path)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_store = LocalFileStore(str(log_dir))
+            rerun_log = EventLog(file_store, dir_path="events")
+
+        action_count = 0
+
+        for event in self._state.events:
+            if not isinstance(event, ActionEvent):
+                continue
+            if event.action is None:
+                # Skip actions that failed validation during original run
+                continue
+
+            action_count += 1
+            tool_name = event.tool_name
+
+            # Get the tool from the agent's tools_map
+            tool = self.agent.tools_map.get(tool_name)
+            if tool is None:
+                available_tools = list(self.agent.tools_map.keys())
+                raise KeyError(
+                    f"Tool '{tool_name}' not found during rerun. "
+                    f"Available tools: {available_tools}. "
+                    f"Ensure the agent is configured with the same tools as the "
+                    f"original conversation."
+                )
+
+            if not tool.executor:
+                logger.warning(
+                    f"Skipping action {action_count}: "
+                    f"tool '{tool_name}' has no executor"
+                )
+                continue
+
+            # Execute the tool with the original action
+            try:
+                logger.info(f"Rerunning action {action_count}: {tool_name}")
+                observation = tool(event.action, self)
+
+                # Log the action and observation incrementally
+                if rerun_log is not None:
+                    # Append action event (copy from original)
+                    rerun_log.append(event)
+                    # Append observation event
+                    obs_event = ObservationEvent(
+                        source="environment",
+                        tool_name=tool_name,
+                        tool_call_id=event.tool_call_id,
+                        observation=observation,
+                        action_id=event.id,
+                    )
+                    rerun_log.append(obs_event)
+            except Exception as e:
+                logger.error(
+                    f"Action {action_count} ({tool_name}) failed during rerun: {e}"
+                )
+                # Log is already written incrementally, just return failure
+                return False
+
+        logger.info(f"Rerun complete: {action_count} actions processed successfully")
+        return True
 
     def execute_tool(self, tool_name: str, action: Action) -> Observation:
         """Execute a tool directly without going through the agent loop.
