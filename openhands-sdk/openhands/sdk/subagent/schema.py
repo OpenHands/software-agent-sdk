@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Final
 import frontmatter
 from pydantic import BaseModel, Field
 
+from openhands.sdk.hooks.config import HookConfig
+
 
 if TYPE_CHECKING:
     from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
@@ -22,6 +24,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "tools",
     "skills",
     "max_iteration_per_run",
+    "hooks",
     "profile_store_dir",
     "permission_mode",
 }
@@ -111,6 +114,15 @@ def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     return None
 
 
+def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
+    # Parse hooks configuration
+    hooks_raw = fm.get("hooks")
+    hooks: HookConfig | None = None
+    if hooks_raw is not None and isinstance(hooks_raw, dict):
+        hooks = HookConfig.model_validate(hooks_raw)
+    return hooks
+
+
 class AgentDefinition(BaseModel):
     """Agent definition loaded from Markdown file.
 
@@ -139,6 +151,9 @@ class AgentDefinition(BaseModel):
     when_to_use_examples: list[str] = Field(
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
+    )
+    hooks: HookConfig | None = Field(
+        default=None, description="Hook configuration for this agent"
     )
     permission_mode: str | None = Field(
         default=None,
@@ -204,6 +219,7 @@ class AgentDefinition(BaseModel):
         - permission_mode (optional): How the subagent handles permissions
           ('always_confirm', 'never_confirm', 'confirm_risky'). None inherits parent.
         - max_iterations_per_run: Max iteration per run
+        - hooks (optional): List of applicable hooks
 
         The body of the Markdown is the system prompt.
 
@@ -229,6 +245,7 @@ class AgentDefinition(BaseModel):
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
+        hooks: HookConfig | None = _extract_hooks(fm)
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
@@ -245,6 +262,7 @@ class AgentDefinition(BaseModel):
             skills=skills,
             permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
+            hooks=hooks,
             profile_store_dir=profile_store_dir,
             system_prompt=content,
             source=str(agent_path),

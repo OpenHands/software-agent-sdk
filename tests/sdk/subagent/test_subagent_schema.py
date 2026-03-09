@@ -3,10 +3,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from openhands.sdk.subagent.schema import (
-    AgentDefinition,
-    _extract_examples,
-)
+from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.subagent.schema import AgentDefinition, _extract_examples
 
 
 class TestAgentDefinition:
@@ -176,6 +174,56 @@ Content.
 
         agent = AgentDefinition.load(agent_md)
         assert agent.metadata.get("custom_field") == "custom_value"
+
+    def test_load_agent_with_hooks(self, tmp_path: Path):
+        """Test loading agent with hook configuration."""
+        agent_md = tmp_path / "hooked.md"
+        agent_md.write_text(
+            """---
+name: hooked-agent
+description: An agent with hooks
+hooks:
+  pre_tool_use:
+    - matcher: "terminal"
+      hooks:
+        - command: "./scripts/validate.sh"
+          timeout: 10
+  post_tool_use:
+    - matcher: "*"
+      hooks:
+        - command: "./scripts/log.sh"
+---
+
+You are a hooked agent.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.hooks is not None
+        assert isinstance(agent.hooks, HookConfig)
+        assert len(agent.hooks.pre_tool_use) == 1
+        assert agent.hooks.pre_tool_use[0].matcher == "terminal"
+        assert agent.hooks.pre_tool_use[0].hooks[0].command == "./scripts/validate.sh"
+        assert agent.hooks.pre_tool_use[0].hooks[0].timeout == 10
+        assert len(agent.hooks.post_tool_use) == 1
+        assert agent.hooks.post_tool_use[0].matcher == "*"
+        # hooks should not appear in metadata
+        assert "hooks" not in agent.metadata
+
+    def test_load_agent_hooks_none_when_missing(self, tmp_path: Path):
+        """Test that hooks defaults to None when not in frontmatter."""
+        agent_md = tmp_path / "no-hooks.md"
+        agent_md.write_text(
+            """---
+name: no-hooks-agent
+---
+
+Content.
+"""
+        )
+
+        agent = AgentDefinition.load(agent_md)
+        assert agent.hooks is None
 
     def test_skills_default_empty(self):
         """Test that skills defaults to empty list."""
