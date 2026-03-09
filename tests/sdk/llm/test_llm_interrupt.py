@@ -83,29 +83,50 @@ def test_llm_cancel_does_not_raise_when_no_task(llm: LLM):
     assert llm.is_cancelled() is False
 
 
-def test_llm_async_loop_created_lazily(llm: LLM):
-    """Test that async loop is not created until needed."""
-    assert llm._async_loop is None
-    assert llm._async_loop_thread is None
+def test_llm_has_async_runner(llm: LLM):
+    """Test that LLM has an AsyncRunner instance."""
+    assert llm._async_runner is not None
 
 
-def test_llm_ensure_async_loop_creates_thread(llm: LLM):
-    """Test that _ensure_async_loop creates and starts background thread."""
-    loop = llm._ensure_async_loop()
+def test_llm_async_runner_loop_created_lazily(llm: LLM):
+    """Test that async runner's loop is not created until needed."""
+    # The runner exists but its loop is not created until first use
+    runner = llm._async_runner
+    assert runner is not None
+    assert runner._loop is None
+    assert runner._thread is None
+
+
+def test_llm_async_runner_creates_thread_on_use(llm: LLM):
+    """Test that async runner creates and starts background thread when used."""
+    runner = llm._async_runner
+    assert runner is not None
+
+    # Force the runner to create its loop
+    loop = runner._ensure_loop()
 
     assert loop is not None
-    assert llm._async_loop is loop
-    assert llm._async_loop_thread is not None
-    assert llm._async_loop_thread.is_alive()
-    assert llm._async_loop_thread.daemon is True
+    assert runner._loop is loop
+    assert runner._thread is not None
+    assert runner._thread.is_alive()
+    assert runner._thread.daemon is True
+
+    # Clean up
+    llm.close()
 
 
-def test_llm_ensure_async_loop_reuses_existing(llm: LLM):
-    """Test that _ensure_async_loop reuses existing loop."""
-    loop1 = llm._ensure_async_loop()
-    loop2 = llm._ensure_async_loop()
+def test_llm_async_runner_reuses_existing_loop(llm: LLM):
+    """Test that async runner reuses existing loop."""
+    runner = llm._async_runner
+    assert runner is not None
+
+    loop1 = runner._ensure_loop()
+    loop2 = runner._ensure_loop()
 
     assert loop1 is loop2
+
+    # Clean up
+    llm.close()
 
 
 @patch("openhands.sdk.llm.llm.litellm_acompletion")
@@ -279,17 +300,24 @@ def test_llm_has_close_method(llm: LLM):
 
 def test_llm_close_does_not_raise_when_no_loop(llm: LLM):
     """Test that close doesn't raise when there's no background loop."""
+    runner = llm._async_runner
+    assert runner is not None
+
     # Should not raise - calling close when nothing is started is OK
     llm.close()
-    assert llm._async_loop is None
-    assert llm._async_loop_thread is None
+    # Runner's internal loop should be None
+    assert runner._loop is None
+    assert runner._thread is None
 
 
 def test_llm_close_stops_event_loop_thread(llm: LLM):
     """Test that close() stops the background event loop thread."""
-    # First, start the event loop
-    loop = llm._ensure_async_loop()
-    thread = llm._async_loop_thread
+    runner = llm._async_runner
+    assert runner is not None
+
+    # First, start the event loop via the runner
+    loop = runner._ensure_loop()
+    thread = runner._thread
 
     assert loop is not None
     assert thread is not None
@@ -299,8 +327,8 @@ def test_llm_close_stops_event_loop_thread(llm: LLM):
     llm.close()
 
     # Thread should be stopped
-    assert llm._async_loop is None
-    assert llm._async_loop_thread is None
+    assert runner._loop is None
+    assert runner._thread is None
     # Give thread a moment to finish
     time.sleep(0.1)
     assert not thread.is_alive()
@@ -308,21 +336,27 @@ def test_llm_close_stops_event_loop_thread(llm: LLM):
 
 def test_llm_close_can_be_called_multiple_times(llm: LLM):
     """Test that close() can be called multiple times safely."""
-    # Start the event loop
-    llm._ensure_async_loop()
+    runner = llm._async_runner
+    assert runner is not None
+
+    # Start the event loop via the runner
+    runner._ensure_loop()
 
     # Close multiple times - should not raise
     llm.close()
     llm.close()
     llm.close()
 
-    assert llm._async_loop is None
-    assert llm._async_loop_thread is None
+    assert runner._loop is None
+    assert runner._thread is None
 
 
 @patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_llm_can_be_reused_after_close(mock_acompletion, llm: LLM, messages):
     """Test that LLM can be used for new calls after close()."""
+    runner = llm._async_runner
+    assert runner is not None
+
     mock_acompletion.return_value = create_mock_response()
 
     # Make a call to start the event loop
@@ -331,13 +365,13 @@ def test_llm_can_be_reused_after_close(mock_acompletion, llm: LLM, messages):
 
     # Close the LLM
     llm.close()
-    assert llm._async_loop is None
-    assert llm._async_loop_thread is None
+    assert runner._loop is None
+    assert runner._thread is None
 
     # Make another call - should work (loop recreated lazily)
     result2 = llm.completion(messages)
     assert result2 is not None
-    assert llm._async_loop is not None  # Loop was recreated
+    assert runner._loop is not None  # Loop was recreated
 
     # Clean up
     llm.close()
@@ -352,8 +386,11 @@ def test_llm_close_is_thread_safe(messages):
         num_retries=0,
     )
 
-    # Start the event loop
-    llm._ensure_async_loop()
+    runner = llm._async_runner
+    assert runner is not None
+
+    # Start the event loop via the runner
+    runner._ensure_loop()
 
     # Call close from multiple threads concurrently
     threads = []
@@ -366,8 +403,8 @@ def test_llm_close_is_thread_safe(messages):
         t.join(timeout=2)
 
     # Should not raise any errors and should be cleaned up
-    assert llm._async_loop is None
-    assert llm._async_loop_thread is None
+    assert runner._loop is None
+    assert runner._thread is None
 
 
 @patch("openhands.sdk.llm.llm.litellm_acompletion")

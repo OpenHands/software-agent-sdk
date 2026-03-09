@@ -1,6 +1,6 @@
-"""Async cancellation mixin for interruptible LLM calls.
+"""Async runner for interruptible LLM calls.
 
-This module provides the AsyncCancellationMixin class which manages a background
+This module provides the AsyncRunner class which manages a background
 event loop for running async LLM calls that can be cancelled from any thread.
 """
 
@@ -21,67 +21,97 @@ logger = get_logger(__name__)
 T = TypeVar("T")
 
 
-class AsyncCancellationMixin:
-    """Mixin providing async cancellation support for LLM calls.
+class AsyncRunner:
+    """Manages async execution with cancellation support.
 
-    This mixin manages a background event loop in a daemon thread, allowing
-    synchronous callers to use async LLM calls internally while supporting
-    immediate cancellation via Future.cancel().
+    This class manages a background event loop in a daemon thread, allowing
+    synchronous callers to run async coroutines while supporting immediate
+    cancellation via cancel().
 
-    Host class requirements (must define these private attributes):
-    - _async_loop: asyncio.AbstractEventLoop | None
-    - _async_loop_thread: threading.Thread | None
-    - _current_future: Future[Any] | None
-    - _task_lock: threading.Lock
-    - usage_id: str (for logging/debugging)
+    The event loop is created lazily on first use and can be cleaned up
+    via close(). After close(), the runner can still be used - the event
+    loop will be lazily recreated.
+
+    Example:
+        >>> runner = AsyncRunner(owner_id="my-llm")
+        >>> result = runner.run(some_async_func(), "Call cancelled")
+        >>> # From another thread:
+        >>> runner.cancel()
     """
 
-    # Type declarations for attributes that must be defined in the host class.
-    # These are not actually assigned here - they tell the type checker what
-    # attributes will be available at runtime.
-    _async_loop: asyncio.AbstractEventLoop | None
-    _async_loop_thread: threading.Thread | None
-    _current_future: Future[Any] | None
-    _task_lock: threading.Lock
-    usage_id: str
+    def __init__(self, owner_id: str) -> None:
+        """Initialize the async runner.
 
-    def _ensure_async_loop(self) -> asyncio.AbstractEventLoop:
-        """Lazily create background event loop thread for interruptible calls.
+        Args:
+            owner_id: Identifier for logging/debugging (e.g., LLM usage_id).
+        """
+        self._owner_id = owner_id
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._future: Future[Any] | None = None
+        self._lock = threading.Lock()
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """Lazily create background event loop thread.
 
         The event loop runs in a daemon thread and is used to execute async
-        LLM calls. This allows synchronous callers to use async internally
-        while supporting immediate cancellation via Task.cancel().
+        coroutines. This allows synchronous callers to use async internally
+        while supporting immediate cancellation.
         """
-        if self._async_loop is None:
-            self._async_loop = asyncio.new_event_loop()
-            self._async_loop_thread = threading.Thread(
-                target=self._async_loop.run_forever,
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._loop.run_forever,
                 daemon=True,
-                name=f"llm-async-{self.usage_id}",
+                name=f"async-runner-{self._owner_id}",
             )
-            self._async_loop_thread.start()
-            logger.debug(f"Started async event loop thread for LLM {self.usage_id}")
-        return self._async_loop
+            self._thread.start()
+            logger.debug(f"Started async runner thread for {self._owner_id}")
+        return self._loop
+
+    def run(self, coro: Coroutine[Any, Any, T], cancel_message: str) -> T:
+        """Run an async coroutine with cancellation support.
+
+        This method submits the coroutine to the background event loop and
+        blocks until completion. The call can be cancelled via cancel().
+
+        Args:
+            coro: The coroutine to execute.
+            cancel_message: Message for LLMCancelledError if cancelled.
+
+        Returns:
+            The result of the coroutine.
+
+        Raises:
+            LLMCancelledError: If cancelled via cancel().
+        """
+        loop = self._ensure_loop()
+        future: Future[T] = asyncio.run_coroutine_threadsafe(coro, loop)
+
+        with self._lock:
+            self._future = future
+
+        try:
+            return future.result()
+        except (asyncio.CancelledError, FutureCancelledError):
+            raise LLMCancelledError(cancel_message)
+        finally:
+            with self._lock:
+                self._future = None
 
     def cancel(self) -> None:
-        """Cancel any in-flight LLM call (best effort).
+        """Cancel any in-flight call (best effort).
 
-        This method cancels the current LLM call immediately. The cancellation
-        will take effect at the next await point in the LLM call.
+        This method cancels the current call immediately. The cancellation
+        takes effect at the next await point.
 
-        Can be called from any thread. After cancellation, the LLM can be
-        used for new calls - the cancellation only affects the currently
-        running call.
-
-        Example:
-            >>> # In another thread:
-            >>> llm.cancel()  # Cancels the current LLM call
+        Thread-safe: can be called from any thread. After cancellation,
+        the runner can be used for new calls.
         """
-        with self._task_lock:
-            if self._current_future is not None:
-                logger.info(f"Cancelling LLM call for {self.usage_id}")
-                # Cancel the Future directly - thread-safe and immediate
-                self._current_future.cancel()
+        with self._lock:
+            if self._future is not None:
+                logger.info(f"Cancelling call for {self._owner_id}")
+                self._future.cancel()
 
     def is_cancelled(self) -> bool:
         """Check if the current call has been cancelled.
@@ -89,80 +119,47 @@ class AsyncCancellationMixin:
         Returns:
             True if there's a current call and it has been cancelled.
         """
-        with self._task_lock:
-            if self._current_future is not None:
-                return self._current_future.cancelled()
+        with self._lock:
+            if self._future is not None:
+                return self._future.cancelled()
         return False
 
-    def _close_async_resources(self) -> None:
+    def close(self) -> None:
         """Stop the background event loop and cleanup resources.
 
-        This method should be called when the LLM instance is no longer needed,
-        especially in long-running applications that create/destroy many LLM
-        instances to prevent thread leaks.
+        This method should be called when the runner is no longer needed,
+        especially in long-running applications to prevent thread leaks.
 
-        After calling this method, the LLM can still be used - the event loop
-        will be lazily recreated on the next LLM call.
+        After close(), the runner can still be used - the event loop
+        will be lazily recreated on the next run() call.
         """
-        with self._task_lock:
-            # Cancel any in-flight call first by cancelling the Future
-            if self._current_future is not None:
-                self._current_future.cancel()
-                self._current_future = None
+        # First, cancel any in-flight call (outside the lock to avoid
+        # holding the lock during join)
+        future_to_cancel: Future[Any] | None = None
+        loop_to_stop: asyncio.AbstractEventLoop | None = None
+        thread_to_join: threading.Thread | None = None
 
-            if self._async_loop is not None:
-                # Stop the event loop
-                self._async_loop.call_soon_threadsafe(self._async_loop.stop)
-                self._async_loop = None
+        with self._lock:
+            future_to_cancel = self._future
+            self._future = None
+            loop_to_stop = self._loop
+            self._loop = None
+            thread_to_join = self._thread
+            self._thread = None
 
-            if self._async_loop_thread is not None:
-                # Wait for thread to finish (with timeout to avoid deadlock)
-                self._async_loop_thread.join(timeout=1.0)
-                self._async_loop_thread = None
+        # Perform cleanup outside the lock
+        if future_to_cancel is not None:
+            future_to_cancel.cancel()
 
-                logger.debug(f"Stopped async event loop thread for LLM {self.usage_id}")
+        if loop_to_stop is not None:
+            loop_to_stop.call_soon_threadsafe(loop_to_stop.stop)
 
-    def _run_async_with_cancellation(
-        self,
-        coro: Coroutine[Any, Any, T],
-        cancelled_error_message: str,
-    ) -> T:
-        """Run an async coroutine in the background event loop.
-
-        This method submits the coroutine to the background event loop and blocks
-        until completion, while allowing the call to be cancelled via cancel().
-
-        Args:
-            coro: The coroutine to execute.
-            cancelled_error_message: Message for LLMCancelledError if cancelled.
-
-        Returns:
-            The result of the coroutine.
-
-        Raises:
-            LLMCancelledError: If the call is cancelled via cancel().
-        """
-        loop = self._ensure_async_loop()
-        future: Future[T] = asyncio.run_coroutine_threadsafe(coro, loop)
-
-        with self._task_lock:
-            self._current_future = future
-
-        try:
-            return future.result()
-        except (asyncio.CancelledError, FutureCancelledError):
-            raise LLMCancelledError(cancelled_error_message)
-        finally:
-            with self._task_lock:
-                self._current_future = None
-
-    def _reset_async_state(self) -> None:
-        """Reset async state for use in deepcopy.
-
-        This sets async-related attributes to their initial states.
-        They will be lazily recreated when needed.
-        """
-        self._async_loop = None
-        self._async_loop_thread = None
-        self._current_future = None
-        self._task_lock = threading.Lock()
+        if thread_to_join is not None:
+            thread_to_join.join(timeout=2.0)
+            if thread_to_join.is_alive():
+                logger.warning(
+                    f"Async runner thread for {self._owner_id} did not stop "
+                    "within timeout"
+                )
+            else:
+                logger.debug(f"Stopped async runner thread for {self._owner_id}")

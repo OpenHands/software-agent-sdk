@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
 import os
-import threading
 import warnings
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -92,7 +89,7 @@ from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
     Message,
 )
-from openhands.sdk.llm.mixins.async_cancellation import AsyncCancellationMixin
+from openhands.sdk.llm.mixins.async_cancellation import AsyncRunner
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
@@ -137,7 +134,7 @@ ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 
 
-class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMixin):
+class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
 
     The LLM class provides a unified interface for interacting with various
@@ -400,11 +397,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
 
-    # Async cancellation support - background event loop for interruptible calls
-    _async_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
-    _async_loop_thread: threading.Thread | None = PrivateAttr(default=None)
-    _current_future: Future[Any] | None = PrivateAttr(default=None)
-    _task_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    # Async runner for interruptible LLM calls
+    _async_runner: AsyncRunner | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -492,6 +486,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
             output_cost_per_token=self.output_cost_per_token,
             metrics=self._metrics,
         )
+
+        # Async runner for cancellable LLM calls
+        if self._async_runner is None:
+            self._async_runner = AsyncRunner(owner_id=self.usage_id)
 
         # Tokenizer
         if self.custom_tokenizer:
@@ -602,22 +600,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
     def __deepcopy__(self, memo: dict[int, Any] | None = None) -> LLM:
         """Custom deepcopy that handles unpicklable thread-local state.
 
-        This method is required because the LLM class contains threading primitives
-        (asyncio.AbstractEventLoop, threading.Thread, threading.Lock, asyncio.Task)
-        that cannot be pickled or deepcopied by Python's standard mechanisms.
+        This method is required because the AsyncRunner contains threading
+        primitives that cannot be pickled or deepcopied.
 
         This method is invoked in two scenarios:
         1. When `copy.deepcopy(llm)` is called explicitly
         2. When `llm.model_copy(deep=True)` is called (Pydantic calls __deepcopy__
            internally for deep copies)
 
-        While the current codebase primarily uses `model_copy(deep=False)` (shallow
-        copy), this implementation ensures the LLM class remains copyable if deep
-        copies are needed in the future or by external users.
-
-        The async loop, thread, task, and lock are not deepcopyable.
-        Instead, we create a new copy without these attributes, which will
-        be lazily recreated when needed.
+        The AsyncRunner is not deepcopyable. Instead, we create a new copy
+        with a fresh AsyncRunner that will be lazily initialized.
         """
         # Create a shallow copy using pydantic's model_copy
         new_llm = self.model_copy(deep=False)
@@ -640,14 +632,40 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
         new_llm._is_subscription = self._is_subscription
         new_llm._litellm_provider = self._litellm_provider
 
-        # Reset async state via mixin - will be lazily recreated
-        new_llm._reset_async_state()
+        # Create fresh AsyncRunner for the copy
+        new_llm._async_runner = AsyncRunner(owner_id=new_llm.usage_id)
 
         return new_llm
 
     # =========================================================================
-    # Cancellation support (delegates to AsyncCancellationMixin)
+    # Cancellation support (delegates to AsyncRunner)
     # =========================================================================
+    def cancel(self) -> None:
+        """Cancel any in-flight LLM call (best effort).
+
+        This method cancels the current LLM call immediately. The cancellation
+        takes effect at the next await point.
+
+        Thread-safe: can be called from any thread. After cancellation,
+        the LLM can be used for new calls.
+
+        Example:
+            >>> # In another thread:
+            >>> llm.cancel()  # Cancels the current LLM call
+        """
+        if self._async_runner is not None:
+            self._async_runner.cancel()
+
+    def is_cancelled(self) -> bool:
+        """Check if the current call has been cancelled.
+
+        Returns:
+            True if there's a current call and it has been cancelled.
+        """
+        if self._async_runner is not None:
+            return self._async_runner.is_cancelled()
+        return False
+
     def close(self) -> None:
         """Stop the background event loop and cleanup resources.
 
@@ -665,7 +683,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
             ... finally:
             ...     llm.close()  # Clean up background thread
         """
-        self._close_async_resources()
+        if self._async_runner is not None:
+            self._async_runner.close()
 
     def _handle_error(
         self,
@@ -946,6 +965,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
             final_kwargs = {**call_kwargs, **retry_kwargs}
 
             # Run async responses call in background event loop for cancellation
+            assert self._async_runner is not None
             coro = self._async_responses_call(
                 typed_input=cast(ResponseInputParam, input_items)
                 if input_items
@@ -956,9 +976,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
                 on_token=on_token,
                 final_kwargs=final_kwargs,
             )
-            return self._run_async_with_cancellation(
-                coro, "LLM responses call was cancelled"
-            )
+            return self._async_runner.run(coro, "LLM responses call was cancelled")
 
         try:
             resp: ResponsesAPIResponse = _one_attempt()
@@ -1034,15 +1052,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin, AsyncCancellationMix
         allowing it to be cancelled via LLM.cancel(). The main thread
         blocks waiting for the result.
         """
+        assert self._async_runner is not None
         coro = self._async_transport_call(
             messages=messages,
             enable_streaming=enable_streaming,
             on_token=on_token,
             **kwargs,
         )
-        return self._run_async_with_cancellation(
-            coro, "LLM completion call was cancelled"
-        )
+        return self._async_runner.run(coro, "LLM completion call was cancelled")
 
     async def _async_transport_call(
         self,
