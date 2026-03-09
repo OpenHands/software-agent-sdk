@@ -493,8 +493,8 @@ class LocalConversation(BaseConversation):
             new_llm = self._profile_store.load(profile_name)
             new_llm = new_llm.model_copy(update={"usage_id": usage_id})
             self.llm_registry.add(new_llm)
-        self.agent = self.agent.model_copy(update={"llm": new_llm})
         with self._state:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
 
     @observe(name="conversation.send_message")
