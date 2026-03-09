@@ -869,15 +869,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     typed_input: ResponseInputParam | str = (
                         cast(ResponseInputParam, input_items) if input_items else ""
                     )
-                    api_key_value = self._get_litellm_api_key_value()
                     provider_info = self._get_litellm_provider_info()
 
                     ret = litellm_responses(
-                        **provider_info.as_litellm_call_kwargs(),
+                        **provider_info.as_litellm_call_kwargs(
+                            api_key=self._get_api_key_value()
+                        ),
                         input=typed_input,
                         instructions=instructions,
                         tools=resp_tools,
-                        api_key=api_key_value,
                         api_base=self.base_url,
                         api_version=self.api_version,
                         timeout=self.timeout,
@@ -985,28 +985,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
 
     def _get_litellm_provider_info(self) -> LLMProvider:
-        cache_key = (self.model, self.base_url)
-        if self._provider_info is None or self._provider_info_cache_key != cache_key:
-            self._provider_info = LLMProvider.from_model(
-                model=self.model, api_base=self.base_url
-            )
-            self._provider_info_cache_key = cache_key
+        self._provider_info, self._provider_info_cache_key = LLMProvider.resolve_cached(
+            model=self.model,
+            api_base=self.base_url,
+            cached_provider=self._provider_info,
+            cached_key=self._provider_info_cache_key,
+        )
+        assert self._provider_info is not None
         return self._provider_info
 
-    def _get_litellm_api_key_value(self) -> str | None:
-        api_key_value: str | None = None
-        if self.api_key:
-            assert isinstance(self.api_key, SecretStr)
-            api_key_value = self.api_key.get_secret_value()
-
-        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
-        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
-        # to reject the request with an "Invalid API Key format" error.
-        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
-        if api_key_value is not None and self._get_litellm_provider_info().is_bedrock:
+    def _get_api_key_value(self) -> str | None:
+        if self.api_key is None:
             return None
 
-        return api_key_value
+        assert isinstance(self.api_key, SecretStr)
+        return self.api_key.get_secret_value()
 
     def _transport_call(
         self,
@@ -1041,13 +1034,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     category=DeprecationWarning,
                     message="Accessing the 'model_fields' attribute.*",
                 )
-                api_key_value = self._get_litellm_api_key_value()
                 provider_info = self._get_litellm_provider_info()
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
-                    **provider_info.as_litellm_call_kwargs(),
-                    api_key=api_key_value,
+                    **provider_info.as_litellm_call_kwargs(
+                        api_key=self._get_api_key_value()
+                    ),
                     api_base=self.base_url,
                     api_version=self.api_version,
                     timeout=self.timeout,

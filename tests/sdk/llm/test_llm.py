@@ -391,6 +391,31 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_completion_does_not_forward_bedrock_api_key(mock_completion):
+    mock_response = create_mock_litellm_response("ok")
+    mock_completion.return_value = mock_response
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="us.anthropic.claude-3-sonnet-20240229-v1:0",
+        api_key=SecretStr("sk-ant-not-a-bedrock-key"),
+        num_retries=0,
+    )
+
+    provider_info = llm._get_litellm_provider_info()
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = llm.completion(messages=messages)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == provider_info.model
+    if provider_info.name is not None:
+        assert kwargs["custom_llm_provider"] == provider_info.name
+    assert "api_key" not in kwargs
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_llm_model_copy_recomputes_transport_provider_for_proxy_alias(mock_completion):
     mock_response = create_mock_litellm_response("ok")
     mock_completion.return_value = mock_response

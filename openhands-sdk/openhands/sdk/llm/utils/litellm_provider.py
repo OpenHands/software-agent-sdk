@@ -25,6 +25,24 @@ class LLMProvider:
     name: str | None
     resolved_api_base: str | None
 
+    @staticmethod
+    def cache_key(*, model: str, api_base: str | None) -> tuple[str, str | None]:
+        return (model, api_base)
+
+    @classmethod
+    def resolve_cached(
+        cls,
+        *,
+        model: str,
+        api_base: str | None,
+        cached_provider: LLMProvider | None,
+        cached_key: tuple[str, str | None] | None,
+    ) -> tuple[LLMProvider, tuple[str, str | None]]:
+        cache_key = cls.cache_key(model=model, api_base=api_base)
+        if cached_provider is not None and cached_key == cache_key:
+            return cached_provider, cache_key
+        return cls.from_model(model=model, api_base=api_base), cache_key
+
     @classmethod
     def from_model(cls, *, model: str, api_base: str | None) -> LLMProvider:
         """Parse a model string using LiteLLM's provider inference logic."""
@@ -81,10 +99,22 @@ class LLMProvider:
     def is_bedrock(self) -> bool:
         return self.name == "bedrock"
 
-    def as_litellm_call_kwargs(self) -> dict[str, str]:
+    def api_key_for_litellm(self, api_key: str | None) -> str | None:
+        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
+        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
+        # to reject the request with an "Invalid API Key format" error.
+        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
+        if api_key is not None and self.is_bedrock:
+            return None
+        return api_key
+
+    def as_litellm_call_kwargs(self, *, api_key: str | None = None) -> dict[str, str]:
         kwargs = {"model": self.model}
         if self.name is not None:
             kwargs["custom_llm_provider"] = self.name
+        normalized_api_key = self.api_key_for_litellm(api_key)
+        if normalized_api_key is not None:
+            kwargs["api_key"] = normalized_api_key
         return kwargs
 
     def infer_api_base(self) -> str | None:
