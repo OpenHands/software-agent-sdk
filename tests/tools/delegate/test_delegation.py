@@ -9,7 +9,13 @@ from pydantic import SecretStr
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    register_agent,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.tools.delegate import (
     DelegateExecutor,
     DelegateObservation,
@@ -414,3 +420,64 @@ def test_issue_2216():
     action = DelegateAction.model_validate(fixed)
     assert isinstance(action.tasks, dict)
     assert action.tasks == {"batch1": "Build TWO apps\nFollow instructions"}
+
+
+def test_spawn_passes_hook_config_to_sub_conversation():
+    """Spawned sub-agent conversations receive hook_config from the agent factory."""
+    _reset_registry_for_tests()
+
+    hook_config = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="terminal",
+                hooks=[HookDefinition(command="./validate.sh", timeout=10)],
+            )
+        ]
+    )
+
+    agent_def = AgentDefinition(
+        name="hooked-agent",
+        description="Agent with hooks",
+        model="inherit",
+        tools=[],
+        system_prompt="You are a hooked agent.",
+        hooks=hook_config,
+    )
+
+    from openhands.sdk.subagent.registry import (
+        agent_definition_to_factory,
+    )
+
+    factory_func = agent_definition_to_factory(agent_def)
+    register_agent(
+        name="hooked-agent",
+        factory_func=factory_func,
+        description=agent_def,
+    )
+
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+    )
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent.llm = parent_llm
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation._visualizer = None
+
+    executor = DelegateExecutor()
+    spawn_action = DelegateAction(
+        command="spawn", ids=["h1"], agent_types=["hooked-agent"]
+    )
+    observation = executor(spawn_action, parent_conversation)
+
+    assert "Successfully spawned" in observation.text
+    sub_conv = executor._sub_agents["h1"]
+    # The sub-conversation should have the hook_config set
+    assert sub_conv._pending_hook_config is not None
+    assert len(sub_conv._pending_hook_config.pre_tool_use) == 1
+    assert sub_conv._pending_hook_config.pre_tool_use[0].matcher == "terminal"
+
+    _reset_registry_for_tests()

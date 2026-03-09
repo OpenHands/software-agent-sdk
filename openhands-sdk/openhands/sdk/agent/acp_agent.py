@@ -365,7 +365,7 @@ class ACPAgent(AgentBase):
     def system_message(self) -> str:
         return "ACP-managed agent"
 
-    def get_all_llms(self) -> Generator[LLM, None, None]:
+    def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
 
     # -- Lifecycle ---------------------------------------------------------

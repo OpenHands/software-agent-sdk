@@ -7,10 +7,12 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     register_agent,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task.manager import (
     Task,
@@ -639,3 +641,150 @@ class TestTaskMetrics:
         assert (
             parent_stats.usage_to_metrics["task:task_00000002"].accumulated_cost == 2.00
         )
+
+
+def _register_hooked_agent(name: str, hook_config: HookConfig) -> None:
+    """Register an agent with hooks via AgentDefinition."""
+    from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+    agent_def = AgentDefinition(
+        name=name,
+        description=f"Agent with hooks: {name}",
+        model="inherit",
+        tools=[],
+        system_prompt=f"You are {name}.",
+        hooks=hook_config,
+    )
+    factory_func = agent_definition_to_factory(agent_def)
+    register_agent(name=name, factory_func=factory_func, description=agent_def)
+
+
+class TestTaskManagerHooks:
+    """Tests for hook_config propagation to sub-agent conversations."""
+
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
+    def test_create_task_passes_hook_config(self, tmp_path):
+        """_create_task should pass AgentDefinition.hooks to the sub-conversation."""
+        hook_config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    matcher="terminal",
+                    hooks=[HookDefinition(command="./validate.sh", timeout=10)],
+                )
+            ]
+        )
+        _register_hooked_agent("hooked_agent", hook_config)
+
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(
+            subagent_type="hooked_agent",
+            description="test hooks",
+            max_turns=3,
+        )
+
+        sub_conv = task.conversation
+        assert sub_conv is not None
+        assert sub_conv._pending_hook_config is not None
+        assert len(sub_conv._pending_hook_config.pre_tool_use) == 1
+        assert sub_conv._pending_hook_config.pre_tool_use[0].matcher == "terminal"
+
+    def test_create_task_no_hooks_passes_none(self, tmp_path):
+        """When the agent definition has no hooks, hook_config should be None."""
+        register_builtins_agents()
+
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(
+            subagent_type="default",
+            description="no hooks",
+            max_turns=3,
+        )
+
+        sub_conv = task.conversation
+        assert sub_conv is not None
+        assert sub_conv._pending_hook_config is None
+
+    def test_resume_task_passes_hook_config(self, tmp_path):
+        """_resume_task should pass hooks from the agent definition."""
+        hook_config = HookConfig(
+            post_tool_use=[
+                HookMatcher(
+                    matcher="*",
+                    hooks=[HookDefinition(command="./log.sh")],
+                )
+            ]
+        )
+        _register_hooked_agent("hooked_resume", hook_config)
+
+        manager, _ = _manager_with_parent(tmp_path)
+
+        # Create and evict a task
+        task = manager._create_task(
+            subagent_type="hooked_resume",
+            description="test",
+            max_turns=3,
+        )
+        original_id = task.id
+        manager._evict_task(task)
+
+        # Resume it
+        resumed = manager._resume_task(
+            resume=original_id, subagent_type="hooked_resume"
+        )
+        sub_conv = resumed.conversation
+        assert sub_conv is not None
+        assert sub_conv._pending_hook_config is not None
+        assert len(sub_conv._pending_hook_config.post_tool_use) == 1
+        assert sub_conv._pending_hook_config.post_tool_use[0].matcher == "*"
+
+    def test_get_conversation_passes_hook_config(self, tmp_path):
+        """_get_conversation should forward hook_config to LocalConversation."""
+        register_builtins_agents()
+        manager, _ = _manager_with_parent(tmp_path)
+
+        hook_config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    matcher="file_editor",
+                    hooks=[HookDefinition(command="./lint.sh")],
+                )
+            ]
+        )
+
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("default")
+
+        conv = manager._get_conversation(
+            description="test",
+            max_iteration_per_run=100,
+            task_id=task_id,
+            conversation_id=conversation_id,
+            worker_agent=agent,
+            hook_config=hook_config,
+        )
+
+        assert conv._pending_hook_config is not None
+        assert len(conv._pending_hook_config.pre_tool_use) == 1
+        assert conv._pending_hook_config.pre_tool_use[0].matcher == "file_editor"
+
+    def test_get_conversation_without_hook_config(self, tmp_path):
+        """_get_conversation without hook_config should leave it as None."""
+        register_builtins_agents()
+        manager, _ = _manager_with_parent(tmp_path)
+
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("default")
+
+        conv = manager._get_conversation(
+            description="test",
+            max_iteration_per_run=100,
+            task_id=task_id,
+            conversation_id=conversation_id,
+            worker_agent=agent,
+        )
+
+        assert conv._pending_hook_config is None
