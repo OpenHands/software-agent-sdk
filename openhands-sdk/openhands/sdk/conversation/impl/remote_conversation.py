@@ -43,11 +43,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
-from openhands.sdk.hooks import (
-    HookConfig,
-    HookEventProcessor,
-    HookManager,
-)
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -566,7 +562,6 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
-    _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
     _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
     delete_on_close: bool = False
@@ -607,7 +602,8 @@ class RemoteConversation(BaseConversation):
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
-            hook_config: Optional hook configuration for session hooks
+            hook_config: Optional hook configuration sent to the server.
+                      All hooks are executed server-side.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -621,7 +617,6 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
-        self._hook_processor = None
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
 
@@ -786,17 +781,8 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
-        if hook_config is not None:
-            # Server-side hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop)
-            # are handled by the server - we send hook_config in the payload.
-            # Client-side hooks (SessionStart, SessionEnd) are handled locally here.
-            hook_manager = HookManager(
-                config=hook_config,
-                working_dir=os.getcwd(),
-                session_id=str(self._id),
-            )
-            self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
-            self._hook_processor.run_session_start()
+        # All hooks (including SessionStart/SessionEnd) are executed server-side.
+        # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
@@ -1241,8 +1227,7 @@ class RemoteConversation(BaseConversation):
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
-        if self._hook_processor is not None:
-            self._hook_processor.run_session_end()
+        # SessionEnd hooks are executed server-side (via hook_config in payload).
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:
