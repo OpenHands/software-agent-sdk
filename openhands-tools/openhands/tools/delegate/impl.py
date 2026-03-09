@@ -188,9 +188,10 @@ class DelegateExecutor(ToolExecutor):
                 # theirs under a "subagents" subdirectory.
                 parent_persistence_dir = parent_conversation.state.persistence_dir
                 if parent_persistence_dir is not None:
-                    subagents_persistence_dir: str | None = str(
+                    subagents_persistence_dir: Path | None = (
                         Path(parent_persistence_dir) / _SUBAGENTS_DIR
                     )
+                    subagents_persistence_dir.mkdir(parents=True, exist_ok=True)
                 else:
                     subagents_persistence_dir = None
 

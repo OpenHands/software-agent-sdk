@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
@@ -518,6 +519,7 @@ def test_spawn_inherits_persistence_dir_from_parent():
     # persistence_dir + "subagents"
     sub_persistence_dir = sub_conv._state.persistence_dir
     assert sub_persistence_dir is not None
+    assert Path(sub_persistence_dir).exists()
     assert "/tmp/conversations/abc123/subagents" in sub_persistence_dir
 
 
