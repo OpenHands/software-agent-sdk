@@ -21,6 +21,7 @@ class LLMProvider:
     logic should work from LiteLLM's parsed ``provider`` + ``model`` view.
     """
 
+    requested_model: str
     model: str
     name: str | None
     requested_api_base: str | None
@@ -47,6 +48,7 @@ class LLMProvider:
             resolved_api_base = api_base
 
         return cls(
+            requested_model=model,
             model=parsed_model,
             name=provider_name,
             requested_api_base=api_base,

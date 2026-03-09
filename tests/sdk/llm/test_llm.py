@@ -391,6 +391,35 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_model_copy_recomputes_transport_provider_for_proxy_alias(mock_completion):
+    mock_response = create_mock_litellm_response("ok")
+    mock_completion.return_value = mock_response
+
+    original = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+    assert original._get_litellm_provider_info().name == "openai"
+
+    proxied = original.model_copy(
+        update={
+            "model": "proxy/test-renamed-model",
+            "model_canonical_name": "openai/gpt-5-mini",
+        }
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = proxied.completion(messages=messages)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == "proxy/test-renamed-model"
+    assert "custom_llm_provider" not in kwargs
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_completion_merges_llm_extra_headers_with_extended_thinking_default(
     mock_completion,
 ):

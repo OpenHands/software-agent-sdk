@@ -984,7 +984,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
 
     def _get_litellm_provider_info(self) -> LLMProvider:
-        if self._provider_info is None:
+        if (
+            self._provider_info is None
+            or self._provider_info.requested_model != self.model
+            or self._provider_info.requested_api_base != self.base_url
+        ):
             self._provider_info = LLMProvider.from_model(
                 model=self.model, api_base=self.base_url
             )
