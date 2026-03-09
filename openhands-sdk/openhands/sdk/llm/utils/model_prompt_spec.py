@@ -36,8 +36,11 @@ _MODEL_FAMILY_PATTERNS: dict[str, tuple[str, ...]] = {
 # Ordered heuristics to pick the most specific variant available for a family.
 _MODEL_VARIANT_PATTERNS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "openai_gpt": (
-        ("gpt-5-codex", ("gpt-5-codex", "gpt-5.1-codex")),
-        ("gpt-5", ("gpt-5", "gpt-5.1")),
+        (
+            "gpt-5-codex",
+            ("gpt-5-codex", "gpt-5.1-codex", "gpt-5.2-codex", "gpt-5.3-codex"),
+        ),
+        ("gpt-5", ("gpt-5", "gpt-5.1", "gpt-5.2")),
     ),
 }
 

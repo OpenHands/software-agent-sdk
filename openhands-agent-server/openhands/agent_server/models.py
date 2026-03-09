@@ -21,6 +21,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.models import DiscriminatedUnionMixin, OpenHandsModel
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -108,6 +109,14 @@ class StartConversationRequest(BaseModel):
             "to register the tools for this conversation."
         ),
     )
+    agent_definitions: list[AgentDefinition] = Field(
+        default_factory=list,
+        description=(
+            "Agent definitions from the client's registry. These are "
+            "registered on the server so that DelegateTool and TaskSetTool "
+            "can see user-registered subagents."
+        ),
+    )
     plugins: list[PluginSource] | None = Field(
         default=None,
         description=(
@@ -124,6 +133,13 @@ class StartConversationRequest(BaseModel):
             "UserPromptSubmit, Stop, etc.). If both hook_config and plugins are "
             "provided, they are merged with explicit hooks running before plugin "
             "hooks."
+        ),
+    )
+    autotitle: bool = Field(
+        default=True,
+        description=(
+            "If true, automatically generate a title for the conversation from "
+            "the first user message using the conversation's LLM."
         ),
     )
 

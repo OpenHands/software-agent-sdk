@@ -1,5 +1,7 @@
 # Package Guidelines
 
+See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policies and workflows.
+
 ## Package Structure & Module Organization
 
 - This directory (`openhands-workspace/openhands/workspace/`) contains workspace implementations under the `openhands.workspace.*` namespace (Docker, Apptainer, cloud, and API-remote).

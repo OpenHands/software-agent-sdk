@@ -47,6 +47,13 @@ from openhands.sdk.mcp import (
     create_mcp_tools,
 )
 from openhands.sdk.plugin import Plugin
+from openhands.sdk.subagent import (
+    agent_definition_to_factory,
+    load_agents_from_dir,
+    load_project_agents,
+    load_user_agents,
+    register_agent,
+)
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -113,6 +120,11 @@ __all__ = [
     "Workspace",
     "LocalWorkspace",
     "RemoteWorkspace",
+    "register_agent",
+    "load_project_agents",
+    "load_user_agents",
+    "load_agents_from_dir",
+    "agent_definition_to_factory",
     "load_project_skills",
     "load_skills_from_dir",
     "load_user_skills",
