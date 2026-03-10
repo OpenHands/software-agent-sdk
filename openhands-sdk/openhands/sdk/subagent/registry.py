@@ -245,7 +245,9 @@ def agent_definition_to_factory(
                 )
             tools.append(Tool(name=tool_name))
 
-        # Build MCP config if servers are defined
+        # Build MCP config if servers are defined.
+        # Key is "mcpServers" (camelCase) to match the MCPConfig schema
+        # (see sdk/plugin/types.py McpServersDict alias and Agent.mcp_config examples).
         mcp_config: dict[str, Any] = {}
         if agent_def.mcp_servers:
             mcp_config = {"mcpServers": agent_def.mcp_servers}

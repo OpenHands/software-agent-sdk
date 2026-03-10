@@ -808,3 +808,35 @@ def test_agent_definition_to_factory_no_mcp_servers() -> None:
     agent = factory(llm)
 
     assert agent.mcp_config == {}
+
+
+def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None:
+    """Integration: mcp_servers in markdown flows through registry to Agent."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "mcp-agent.md").write_text(
+        "---\n"
+        "name: mcp-agent\n"
+        "description: Agent with MCP servers\n"
+        "mcp_servers:\n"
+        "  fetch:\n"
+        "    command: uvx\n"
+        "    args: [mcp-server-fetch]\n"
+        "---\n\n"
+        "Agent with MCP.\n"
+    )
+
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert "mcp-agent" in registered
+
+    factory = get_agent_factory("mcp-agent")
+    llm = _make_test_llm()
+    agent = factory.factory_func(llm)
+
+    assert agent.mcp_config == {
+        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    }
