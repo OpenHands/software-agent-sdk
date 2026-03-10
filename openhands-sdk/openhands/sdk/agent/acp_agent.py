@@ -292,6 +292,11 @@ class ACPAgent(AgentBase):
         default_factory=dict,
         description="Additional environment variables for the ACP server process",
     )
+    acp_model: str | None = Field(
+        default=None,
+        description="Model for the ACP server to use (e.g. 'claude-opus-4-6'). "
+        "Passed via session _meta. If None, the server picks its default.",
+    )
 
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
@@ -422,8 +427,13 @@ class ACPAgent(AgentBase):
             # Initialize the protocol
             await conn.initialize(protocol_version=1)
 
+            # Build _meta for session options (e.g. model selection)
+            meta: dict[str, Any] | None = None
+            if self.acp_model:
+                meta = {"claudeCode": {"options": {"model": self.acp_model}}}
+
             # Create a new session
-            response = await conn.new_session(cwd=working_dir)
+            response = await conn.new_session(cwd=working_dir, _meta=meta)
             session_id = response.session_id
 
             return conn, process, filtered_reader, session_id
