@@ -13,6 +13,7 @@ from openhands.sdk.context.skills import (
     load_available_skills,
     to_prompt,
 )
+from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -71,6 +72,13 @@ class AgentContext(BaseModel):
             "This allows you to get the latest skills without SDK updates."
         ),
     )
+    marketplace_path: str | None = Field(
+        default=DEFAULT_MARKETPLACE_PATH,
+        description=(
+            "Relative marketplace JSON path within the public skills repository. "
+            "Set to None to load all public skills without marketplace filtering."
+        ),
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -115,6 +123,7 @@ class AgentContext(BaseModel):
             include_user=self.load_user_skills,
             include_project=False,
             include_public=self.load_public_skills,
+            marketplace_path=self.marketplace_path,
         )
 
         existing_names = {skill.name for skill in self.skills}

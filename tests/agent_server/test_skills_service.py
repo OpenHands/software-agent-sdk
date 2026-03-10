@@ -256,6 +256,24 @@ class TestLoadAllSkills:
             assert result.sources["org"] == 0
             assert result.sources["project"] == 0
 
+    def test_load_all_skills_passes_marketplace_path_to_sdk_base(self):
+        """Test that marketplace_path is forwarded to SDK public skill loading."""
+        with patch(self._PATCH_TARGET, side_effect=[{}, {}]) as mock_avail:
+            load_all_skills(
+                load_public=True,
+                load_user=True,
+                load_project=False,
+                load_org=False,
+                marketplace_path="marketplaces/custom.json",
+            )
+
+        sdk_base_call = mock_avail.call_args_list[0]
+        assert sdk_base_call.kwargs["include_public"] is True
+        assert sdk_base_call.kwargs["marketplace_path"] == "marketplaces/custom.json"
+
+        project_call = mock_avail.call_args_list[1]
+        assert project_call.kwargs["include_public"] is False
+
     def test_load_all_skills_disabled_sources(self):
         """Test that disabled sources are not loaded."""
         with patch(self._PATCH_TARGET, return_value={}) as mock_avail:

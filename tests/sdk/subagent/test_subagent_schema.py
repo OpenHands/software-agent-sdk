@@ -370,6 +370,107 @@ Content.
         agent = AgentDefinition(name="test")
         assert agent.profile_store_dir is None
 
+    def test_permission_mode_defaults_to_none(self):
+        """Test that permission_mode defaults to None (inherit parent)."""
+        agent = AgentDefinition(name="test")
+        assert agent.permission_mode is None
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "never_confirm",
+            "confirm_risky",
+            "always_confirm",
+        ],
+    )
+    def test_permission_mode_valid_values(self, mode: str):
+        """Test setting permission_mode to each valid value."""
+        agent = AgentDefinition(name="test", permission_mode=mode)
+        assert agent.permission_mode == mode
+
+    def test_load_permission_mode_from_frontmatter(self, tmp_path: Path):
+        """Test loading permission_mode from frontmatter."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: secure-agent
+permission_mode: always_confirm
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.permission_mode == "always_confirm"
+
+    def test_load_permission_mode_none_when_omitted(self, tmp_path: Path):
+        """Test that permission_mode is None when not in frontmatter."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: basic-agent
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert agent.permission_mode is None
+
+    def test_load_permission_mode_not_in_metadata(self, tmp_path: Path):
+        """Test that permission_mode is excluded from extra metadata."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+permission_mode: never_confirm
+custom_field: value
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        assert "permission_mode" not in agent.metadata
+        assert agent.metadata.get("custom_field") == "value"
+
+    def test_get_confirmation_policy_none(self):
+        """Test that None permission_mode returns None (inherit parent)."""
+        agent = AgentDefinition(name="test")
+        assert agent.get_confirmation_policy() is None
+
+    @pytest.mark.parametrize(
+        "permission_mode, expected_class_name",
+        [
+            ("always_confirm", "AlwaysConfirm"),
+            ("never_confirm", "NeverConfirm"),
+            ("confirm_risky", "ConfirmRisky"),
+        ],
+    )
+    def test_get_confirmation_policy_returns_instance(
+        self, permission_mode: str, expected_class_name: str
+    ):
+        """Test that each permission_mode returns the correct policy instance."""
+        agent = AgentDefinition(name="test", permission_mode=permission_mode)
+        policy = agent.get_confirmation_policy()
+        assert policy is not None
+        assert type(policy).__name__ == expected_class_name
+
+    def test_load_permission_mode_invalid_raises(self, tmp_path: Path):
+        """Test that an invalid permission_mode raises ValueError."""
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+permission_mode: invalid_mode
+---
+
+Prompt.
+"""
+        )
+        with pytest.raises(ValueError, match="Invalid permission_mode"):
+            AgentDefinition.load(agent_md)
+
 
 class TestExtractExamples:
     """Tests for _extract_examples function."""

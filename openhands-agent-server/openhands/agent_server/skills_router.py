@@ -14,6 +14,7 @@ from openhands.agent_server.skills_service import (
     load_all_skills,
     sync_public_skills,
 )
+from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
 
 
 skills_router = APIRouter(prefix="/skills", tags=["Skills"])
@@ -63,6 +64,13 @@ class SkillsRequest(BaseModel):
         default=True, description="Load project skills from workspace"
     )
     load_org: bool = Field(default=True, description="Load organization-level skills")
+    marketplace_path: str | None = Field(
+        default=DEFAULT_MARKETPLACE_PATH,
+        description=(
+            "Relative marketplace JSON path for public skills. "
+            "Set to null to load all public skills."
+        ),
+    )
     project_dir: str | None = Field(
         default=None, description="Workspace directory path for project skills"
     )
@@ -145,6 +153,7 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         org_repo_url=org_repo_url,
         org_name=org_name,
         sandbox_exposed_urls=sandbox_urls,
+        marketplace_path=request.marketplace_path,
     )
 
     # Convert Skill objects to SkillInfo for response

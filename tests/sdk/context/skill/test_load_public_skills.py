@@ -386,6 +386,33 @@ def test_agent_context_loads_public_skills(mock_repo_dir, tmp_path):
         assert "testing" in skill_names
 
 
+def test_agent_context_uses_custom_marketplace_path(
+    mock_repo_with_marketplace, tmp_path
+):
+    """Test that AgentContext forwards marketplace_path to public skill loading."""
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return mock_repo_with_marketplace
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        context = AgentContext(
+            load_public_skills=True,
+            marketplace_path="marketplaces/custom.json",
+        )
+
+    skill_names = {s.name for s in context.skills}
+    assert skill_names == {"git", "internal-only"}
+
+
 def test_agent_context_can_disable_public_skills_loading():
     """Test that public skills loading can be disabled."""
     context = AgentContext(load_public_skills=False)
@@ -626,6 +653,21 @@ def mock_repo_with_marketplace(tmp_path):
     }
     (marketplaces_dir / "default.json").write_text(json.dumps(marketplace))
 
+    custom_marketplace = {
+        "name": "custom",
+        "owner": {"name": "OpenHands", "email": "test@test.com"},
+        "metadata": {"description": "Custom test marketplace", "version": "1.0.0"},
+        "plugins": [
+            {"name": "git", "source": "./git", "description": "Git skill"},
+            {
+                "name": "internal-only",
+                "source": "./internal-only",
+                "description": "Internal skill",
+            },
+        ],
+    }
+    (marketplaces_dir / "custom.json").write_text(json.dumps(custom_marketplace))
+
     # Create .git directory to simulate a git repo
     (repo_dir / ".git").mkdir()
 
@@ -695,11 +737,56 @@ def test_load_public_skills_filters_by_marketplace(
     ):
         skills = load_public_skills()
 
-        # Should only have git and docker (from marketplace), not internal-only
-        skill_names = {s.name for s in skills}
-        assert skill_names == {"git", "docker"}
-        assert "internal-only" not in skill_names
-        assert "experimental" not in skill_names
+    skill_names = {skill.name for skill in skills}
+    assert skill_names == {"git", "docker"}
+    assert "internal-only" not in skill_names
+    assert "experimental" not in skill_names
+
+
+def test_load_public_skills_uses_custom_marketplace_path(
+    mock_repo_with_marketplace, tmp_path
+):
+    """Test that a custom marketplace_path selects a different skill set."""
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return mock_repo_with_marketplace
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        skills = load_public_skills(marketplace_path="marketplaces/custom.json")
+
+    assert {skill.name for skill in skills} == {"git", "internal-only"}
+
+
+def test_load_public_skills_returns_empty_for_invalid_custom_marketplace_path(
+    mock_repo_with_marketplace, tmp_path
+):
+    """Test that an invalid custom marketplace_path does not broaden skill loading."""
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return mock_repo_with_marketplace
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        skills = load_public_skills(marketplace_path="marketplaces/missing.json")
+
+    assert skills == []
 
 
 def test_load_public_skills_loads_all_when_no_marketplace(tmp_path):
