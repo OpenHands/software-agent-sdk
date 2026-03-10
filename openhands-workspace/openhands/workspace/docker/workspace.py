@@ -1,6 +1,5 @@
 """Docker-based remote workspace implementation."""
 
-from email.policy import default
 import os
 import subprocess
 import sys
