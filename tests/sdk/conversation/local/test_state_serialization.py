@@ -1274,3 +1274,45 @@ def test_agent_verify_fails_when_builtin_tool_removed():
     # Should fail because builtin tools don't match
     with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
         runtime_agent.verify(persisted_agent)
+
+
+def test_v1_11_5_cli_default_conversation_fails_when_runtime_adds_delegate(
+    tmp_path: Path,
+):
+    """Test resuming a v1.11.5 CLI conversation fails after adding delegate."""
+    from openhands.sdk.tool import Tool
+    from openhands.tools.preset.default import get_default_agent
+
+    fixture_path = (
+        Path(__file__).resolve().parents[3]
+        / "fixtures"
+        / "conversations"
+        / "v1_11_5_cli_default"
+        / "base_state.json"
+    )
+    conversation_id = uuid.UUID("11111111-2222-3333-4444-555555555555")
+    persistence_root = tmp_path / "persist"
+    persistence_dir = Path(
+        LocalConversation.get_persistence_dir(persistence_root, conversation_id)
+    )
+    persistence_dir.mkdir(parents=True)
+    (persistence_dir / "base_state.json").write_text(fixture_path.read_text())
+    (persistence_dir / "events").mkdir()
+
+    llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+    default_agent = get_default_agent(llm, cli_mode=True)
+    runtime_agent = default_agent.model_copy(
+        update={"tools": [*default_agent.tools, Tool(name="delegate")]}
+    )
+
+    with pytest.raises(ValueError, match="added: \\['delegate'\\]"):
+        Conversation(
+            agent=runtime_agent,
+            workspace=tmp_path,
+            persistence_dir=persistence_root,
+            conversation_id=conversation_id,
+        )
