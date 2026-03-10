@@ -92,19 +92,27 @@ def demo_conversation_with_github_plugin(llm: LLM) -> None:
                 plugins=plugins,
             )
 
+            conversation.send_message(
+                "What's the best way to create a PowerPoint presentation "
+                "programmatically? Check the skill before you answer."
+            )
+
             skills = (
                 conversation.agent.agent_context.skills
                 if conversation.agent.agent_context
                 else []
             )
             print(f"✓ Loaded {len(skills)} skill(s) from GitHub plugin")
-            for skill in skills:
+            for skill in skills[:5]:
                 print(f"  - {skill.name}")
+            if len(skills) > 5:
+                print(f"  ... and {len(skills) - 5} more skills")
 
-            conversation.send_message(
-                "What's the best way to create a PowerPoint presentation "
-                "programmatically? Check the skill before you answer."
-            )
+            if conversation.resolved_plugins:
+                print("Resolved plugin refs:")
+                for resolved in conversation.resolved_plugins:
+                    print(f"  - {resolved.source} @ {resolved.resolved_ref}")
+
             conversation.run()
 
         except PluginFetchError as e:
