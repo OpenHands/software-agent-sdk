@@ -45,4 +45,6 @@ finally:
     # Clean up the ACP server subprocess
     agent.close()
 
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"\nEXAMPLE_COST: {cost}")
 print("Done!")

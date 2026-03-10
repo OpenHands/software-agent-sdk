@@ -483,7 +483,7 @@ class ACPAgent(AgentBase):
         """Version of the ACP server (from InitializeResponse.agent_info)."""
         return self._agent_version
 
-    def get_all_llms(self) -> Generator[LLM, None, None]:
+    def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
 
     # -- Lifecycle ---------------------------------------------------------

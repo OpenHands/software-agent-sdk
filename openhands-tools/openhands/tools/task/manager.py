@@ -13,16 +13,30 @@ if the task is resumed for further work later.
 import shutil
 import tempfile
 import uuid
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.event import ActionEvent
+
+ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 
 
 logger = get_logger(__name__)
@@ -75,8 +89,12 @@ class Task(BaseModel):
 class TaskManager:
     """Manage sub-agent tasks."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        confirmation_handler: ConfirmationHandler | None = None,
+    ):
         self._parent_conversation: LocalConversation | None = None
+        self._confirmation_handler = confirmation_handler
 
         self._tasks: dict[str, Task] = {}
 
@@ -160,14 +178,21 @@ class TaskManager:
                 f"Available tasks: {', '.join(sorted(self._tasks))}"
             )
 
-        worker_agent = self._get_sub_agent(subagent_type)
+        factory = get_agent_factory(subagent_type)
+        worker_agent = self._get_sub_agent_from_factory(factory)
         conversation_id = self._tasks[resume].conversation_id
         conversation = LocalConversation(
             agent=worker_agent,
             workspace=self.parent_conversation.state.workspace.working_dir,
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
+            hook_config=factory.definition.hooks,
             delete_on_close=False,
+        )
+
+        self._set_confirmation_policy(
+            conversation,
+            factory.definition.get_confirmation_policy(),
         )
 
         self._tasks[resume] = self._tasks[resume].model_copy(
@@ -188,7 +213,7 @@ class TaskManager:
         """Create a fresh task.
 
         The iteration limit is resolved with the following precedence:
-        1. ``factory.max_iteration_per_run`` (from the agent definition)
+        1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. ``max_turns`` (explicit caller override)
         3. Hard-coded default of 500
         """
@@ -198,11 +223,11 @@ class TaskManager:
         worker_agent = self._get_sub_agent_from_factory(factory)
 
         # Priority:
-        # 1. factory.max_iteration_per_run (agent def)
+        # 1. factory.definition.max_iteration_per_run (agent def)
         # 2. max_turns (caller)
         # 3. default to 500
-        if factory.max_iteration_per_run:
-            effective_max_iter = factory.max_iteration_per_run
+        if factory.definition.max_iteration_per_run:
+            effective_max_iter = factory.definition.max_iteration_per_run
         elif max_turns:
             effective_max_iter = max_turns
         else:
@@ -214,6 +239,12 @@ class TaskManager:
             task_id=task_id,
             worker_agent=worker_agent,
             conversation_id=conversation_id,
+            hook_config=factory.definition.hooks,
+        )
+
+        self._set_confirmation_policy(
+            sub_conversation,
+            factory.definition.get_confirmation_policy(),
         )
 
         self._tasks[task_id] = Task(
@@ -231,6 +262,7 @@ class TaskManager:
         task_id: str,
         conversation_id: uuid.UUID,
         worker_agent: Agent,
+        hook_config: HookConfig | None = None,
     ) -> LocalConversation:
         parent = self.parent_conversation
         parent_visualizer = parent._visualizer
@@ -247,6 +279,7 @@ class TaskManager:
             persistence_dir=self._tmp_dir,
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
+            hook_config=hook_config,
             delete_on_close=False,
         )
 
@@ -270,7 +303,13 @@ class TaskManager:
         # Metrics object
         sub_agent_llm.reset_metrics()
 
-        return factory.factory_func(sub_agent_llm)
+        sub_agent = factory.factory_func(sub_agent_llm)
+
+        # ensuring that the sub-agent LLM has stream deactivated
+        sub_agent = sub_agent.model_copy(
+            update={"llm": sub_agent.llm.model_copy(update={"stream": False})}
+        )
+        return sub_agent
 
     def _run_task(self, task: Task, prompt: str) -> Task:
         """Run a task synchronously."""
@@ -284,7 +323,7 @@ class TaskManager:
 
         try:
             task.conversation.send_message(prompt, sender=parent_name)
-            task.conversation.run()
+            self._run_until_finished(task.id, task.conversation)
             result = get_agent_final_response(task.conversation.state.events)
             task.set_result(result)
             logger.info(f"Task '{task.id}' completed.")
@@ -296,6 +335,43 @@ class TaskManager:
             self._evict_task(task)
 
         return task
+
+    def _run_until_finished(
+        self, task_id: str, conversation: LocalConversation
+    ) -> None:
+        """Run a sub-agent conversation to completion, handling confirmations."""
+        conversation.run()
+        while (
+            conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        ):
+            pending = ConversationState.get_unmatched_actions(conversation.state.events)
+            if not pending:
+                break
+
+            if self._confirmation_handler is None or self._confirmation_handler(
+                task_id, pending
+            ):
+                conversation.run()
+            else:
+                conversation.reject_pending_actions("User rejected the actions")
+                conversation.run()
+
+    def _set_confirmation_policy(
+        self,
+        conversation: LocalConversation,
+        confirmation_policy: ConfirmationPolicyBase | None,
+    ) -> None:
+        """
+        Apply permission_mode: explicit mode from definition
+        or inherit the parent's policy when None.
+        """
+        if confirmation_policy is None:
+            conversation.set_confirmation_policy(
+                self.parent_conversation.state.confirmation_policy
+            )
+        else:
+            conversation.set_confirmation_policy(confirmation_policy)
 
     def _update_parent_metrics(self, parent: LocalConversation, task: Task) -> None:
         """

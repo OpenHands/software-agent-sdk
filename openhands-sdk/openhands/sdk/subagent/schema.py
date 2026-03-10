@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import frontmatter
 from pydantic import BaseModel, Field
+
+from openhands.sdk.hooks.config import HookConfig
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 
 
 KNOWN_FIELDS: Final[set[str]] = {
@@ -18,6 +24,15 @@ KNOWN_FIELDS: Final[set[str]] = {
     "tools",
     "skills",
     "max_iteration_per_run",
+    "hooks",
+    "profile_store_dir",
+    "permission_mode",
+}
+
+_VALID_PERMISSION_MODES: Final[set[str]] = {
+    "always_confirm",
+    "never_confirm",
+    "confirm_risky",
 }
 
 
@@ -56,11 +71,37 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     return skills
 
 
+def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
+    """Extract profile store directory from frontmatter."""
+    profile_store_dir_raw = fm.get("profile_store_dir")
+    if profile_store_dir_raw is None:
+        return None
+    if isinstance(profile_store_dir_raw, str):
+        return profile_store_dir_raw
+    raise ValueError(
+        f"profile_store_dir must be a scalar value, got {type(profile_store_dir_raw)}"
+    )
+
+
 def _extract_examples(description: str) -> list[str]:
     """Extract <example> tags from description for agent triggering."""
     pattern = r"<example>(.*?)</example>"
     matches = re.findall(pattern, description, re.DOTALL | re.IGNORECASE)
     return [m.strip() for m in matches if m.strip()]
+
+
+def _extract_permission_mode(fm: dict[str, object]) -> str | None:
+    """Extract permission_mode from frontmatter, defaulting to None (inherit parent)."""
+    raw = fm.get("permission_mode")
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if value not in _VALID_PERMISSION_MODES:
+        raise ValueError(
+            f"Invalid permission_mode '{raw}'. "
+            f"Must be one of: {', '.join(sorted(_VALID_PERMISSION_MODES))}"
+        )
+    return value
 
 
 def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
@@ -71,6 +112,15 @@ def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     if isinstance(max_iter_raw, int):
         return max_iter_raw
     return None
+
+
+def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
+    # Parse hooks configuration
+    hooks_raw = fm.get("hooks")
+    hooks: HookConfig | None = None
+    if hooks_raw is not None and isinstance(hooks_raw, dict):
+        hooks = HookConfig.model_validate(hooks_raw)
+    return hooks
 
 
 class AgentDefinition(BaseModel):
@@ -102,15 +152,58 @@ class AgentDefinition(BaseModel):
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
     )
+    hooks: HookConfig | None = Field(
+        default=None, description="Hook configuration for this agent"
+    )
+    permission_mode: str | None = Field(
+        default=None,
+        description="How the subagent handles permissions. "
+        "None inherits the parent policy, 'always_confirm' requires "
+        "confirmation for every action, 'never_confirm' skips all confirmations, "
+        "'confirm_risky' only confirms actions above a risk threshold.",
+    )
     max_iteration_per_run: int | None = Field(
         default=None,
         description="Maximum iterations per run. "
         "It must be strictly positive, or None for default.",
         gt=0,
     )
+    profile_store_dir: str | None = Field(
+        default=None,
+        description="Path to the directory where LLM profiles are stored. "
+        "If None, the default profile store directory is used.",
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
+
+    def get_confirmation_policy(self) -> ConfirmationPolicyBase | None:
+        """Convert permission_mode to a ConfirmationPolicyBase instance.
+
+        Returns None when permission_mode is None (inherit parent policy).
+        """
+        if self.permission_mode is None:
+            return None
+
+        match self.permission_mode:
+            case "always_confirm":
+                from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+
+                return AlwaysConfirm()
+            case "never_confirm":
+                from openhands.sdk.security.confirmation_policy import NeverConfirm
+
+                return NeverConfirm()
+            case "confirm_risky":
+                from openhands.sdk.security.confirmation_policy import ConfirmRisky
+
+                return ConfirmRisky()
+            case _:
+                # Should never reach here due to validation
+                # in _extract_permission_mode()
+                raise AssertionError(
+                    f"Unexpected permission_mode: {self.permission_mode}"
+                )
 
     @classmethod
     def load(cls, agent_path: Path) -> AgentDefinition:
@@ -123,7 +216,10 @@ class AgentDefinition(BaseModel):
         - skills (optional): Comma-separated skill names or list of skill names
         - model (optional): Model profile to use (default: 'inherit')
         - color (optional): Display color
+        - permission_mode (optional): How the subagent handles permissions
+          ('always_confirm', 'never_confirm', 'confirm_risky'). None inherits parent.
         - max_iterations_per_run: Max iteration per run
+        - hooks (optional): List of applicable hooks
 
         The body of the Markdown is the system prompt.
 
@@ -146,7 +242,10 @@ class AgentDefinition(BaseModel):
         color: str | None = _extract_color(fm)
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
+        permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
+        profile_store_dir: str | None = _extract_profile_store_dir(fm)
+        hooks: HookConfig | None = _extract_hooks(fm)
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
@@ -161,7 +260,10 @@ class AgentDefinition(BaseModel):
             color=color,
             tools=tools,
             skills=skills,
+            permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
+            hooks=hooks,
+            profile_store_dir=profile_store_dir,
             system_prompt=content,
             source=str(agent_path),
             when_to_use_examples=when_to_use_examples,

@@ -1,5 +1,7 @@
 # Package Guidelines
 
+See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policies and workflows.
+
 ## Package Structure & Module Organization
 
 - This directory (`openhands-tools/openhands/tools/`) contains runtime tool implementations under the `openhands.tools.*` namespace.
