@@ -2,7 +2,6 @@
 
 import asyncio
 import tempfile
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -223,9 +222,21 @@ class TestServiceParallelization:
         mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
-        # Make each service take 0.1 seconds to start
+        active_starts = 0
+        max_concurrent_starts = 0
+        start_lock = asyncio.Lock()
+
         async def slow_start():
+            nonlocal active_starts, max_concurrent_starts
+            async with start_lock:
+                active_starts += 1
+                max_concurrent_starts = max(max_concurrent_starts, active_starts)
+
             await asyncio.sleep(0.1)
+
+            async with start_lock:
+                active_starts -= 1
+
             return True
 
         mock_vscode_service.start = AsyncMock(side_effect=slow_start)
@@ -255,20 +266,10 @@ class TestServiceParallelization:
             mock_app = AsyncMock()
             mock_app.state = AsyncMock()
 
-            # Measure time for parallel startup
-            start_time = time.time()
             async with api_lifespan(mock_app):
                 pass
-            end_time = time.time()
 
-            # If services were started sequentially, it would take ~0.3 seconds
-            # If parallel, it should take ~0.1 seconds (plus some overhead)
-            # We'll allow up to 0.2 seconds to account for overhead
-            elapsed_time = end_time - start_time
-            assert elapsed_time < 0.2, (
-                f"Services took {elapsed_time:.3f}s, "
-                "expected < 0.2s for parallel startup"
-            )
+            assert max_concurrent_starts == 3
 
             # Verify all services were started
             mock_vscode_service.start.assert_called_once()

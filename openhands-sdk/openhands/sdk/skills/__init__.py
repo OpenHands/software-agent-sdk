@@ -4,6 +4,8 @@ from openhands.sdk.skills.fetch import SkillFetchError, fetch_skill_with_resolut
 from openhands.sdk.skills.installed import (
     InstalledSkillInfo,
     InstalledSkillsMetadata,
+    disable_skill,
+    enable_skill,
     get_installed_skill,
     get_installed_skills_dir,
     install_skill,
@@ -27,5 +29,7 @@ __all__ = [
     "load_installed_skills",
     "get_installed_skills_dir",
     "get_installed_skill",
+    "enable_skill",
+    "disable_skill",
     "update_skill",
 ]

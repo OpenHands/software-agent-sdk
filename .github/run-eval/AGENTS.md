@@ -1,5 +1,7 @@
 # Model Configuration for OpenHands SDK
 
+See the [project root AGENTS.md](../../AGENTS.md) for repository-wide policies and workflows.
+
 This directory contains model configuration and evaluation setup for the OpenHands SDK.
 
 ## Key Files
