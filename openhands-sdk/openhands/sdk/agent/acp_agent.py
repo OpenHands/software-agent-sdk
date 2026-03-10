@@ -44,6 +44,7 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
@@ -797,18 +798,37 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.ERROR
         except Exception as e:
             logger.error("ACP prompt failed: %s", e, exc_info=True)
-            # Emit error as an agent message since AgentErrorEvent requires
-            # tool context we don't have
+            error_str = str(e)
+
+            # Emit error as an agent message (existing behavior, preserved for
+            # consumers that inspect MessageEvents)
             error_message = Message(
                 role="assistant",
                 content=[TextContent(text=f"ACP error: {e}")],
             )
-            error_event = MessageEvent(
-                source="agent",
-                llm_message=error_message,
+            on_event(MessageEvent(source="agent", llm_message=error_message))
+
+            # Emit typed ConversationErrorEvent so RemoteConversation can
+            # report the actual error detail via _get_last_error_detail()
+            # instead of falling back to "Remote conversation ended with error"
+            is_aup = (
+                "usage policy" in error_str.lower()
+                or "content policy" in error_str.lower()
             )
-            on_event(error_event)
+            on_event(
+                ConversationErrorEvent(
+                    source="agent",
+                    code="UsagePolicyRefusal" if is_aup else "ACPPromptError",
+                    detail=error_str[:500],
+                )
+            )
+
             state.execution_status = ConversationExecutionStatus.ERROR
+
+            # Re-raise so LocalConversation.run()'s outer except handler
+            # breaks the loop, emits ConversationErrorEvent, and raises
+            # ConversationRunError — matching how the regular Agent works
+            raise
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""
