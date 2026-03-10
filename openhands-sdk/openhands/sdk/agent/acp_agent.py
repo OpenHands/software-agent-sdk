@@ -628,13 +628,15 @@ class ACPAgent(AgentBase):
                         [m.id for m in auth_methods],
                     )
 
-            # Build _meta for session options (e.g. model selection)
-            meta: dict[str, Any] | None = None
-            if self.acp_model:
-                meta = {"claudeCode": {"options": {"model": self.acp_model}}}
+            # Build _meta content for session options (e.g. model selection).
+            # Extra kwargs to new_session() become the _meta dict in the
+            # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
+            session_meta: dict[str, Any] = {}
+            if self.acp_model and "claude" in agent_name.lower():
+                session_meta["claudeCode"] = {"options": {"model": self.acp_model}}
 
             # Create a new session
-            response = await conn.new_session(cwd=working_dir, _meta=meta)
+            response = await conn.new_session(cwd=working_dir, **session_meta)
             session_id = response.session_id
 
             # Resolve the permission mode to use.  Different ACP servers
