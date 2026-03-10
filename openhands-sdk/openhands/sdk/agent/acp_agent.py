@@ -11,6 +11,7 @@ See https://agentclientprotocol.com/protocol/overview
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
@@ -35,16 +36,13 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Seconds to wait after prompt() for pending session_update notifications
-# to be processed.  This is a best-effort workaround: the ACP protocol does
-# not currently signal when all notifications for a turn have been delivered,
-# so we yield to the event loop and then sleep briefly to allow in-flight
-# handlers to finish.  Override via ACP_NOTIFICATION_DRAIN_DELAY for slow or
-# remote servers.
-# TODO: Replace with protocol-level synchronization once ACP supports a
-#       "turn complete" sentinel notification.
-_NOTIFICATION_DRAIN_DELAY: float = float(
-    os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
+# Maximum seconds to wait for a UsageUpdate notification after prompt()
+# returns.  The ACP server writes UsageUpdate to the wire before the
+# PromptResponse, so under normal conditions the notification handler
+# finishes almost immediately.  The timeout is a safety net for slow
+# or remote servers.  Override via ACP_USAGE_UPDATE_TIMEOUT.
+_USAGE_UPDATE_TIMEOUT: float = float(
+    os.environ.get("ACP_USAGE_UPDATE_TIMEOUT", "2.0")
 )
 
 
@@ -100,17 +98,23 @@ class _OpenHandsACPClient:
         self.accumulated_text: list[str] = []
         self.accumulated_thoughts: list[str] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
-        # Telemetry state from UsageUpdate (persists across turns)
-        self._last_cost: float = 0.0  # last cumulative cost seen
+        # Telemetry state (persists across turns)
+        self._last_cost: float = 0.0  # last cumulative cost seen from ACP
         self._context_window: int = 0  # context window size from ACP
-        self._llm_ref: Any = None  # reference to the sentinel LLM
+        # Per-turn synchronization for UsageUpdate notifications.
+        # session_update() stores the data and signals the event;
+        # step() awaits the event and records all telemetry in one place.
+        self._turn_usage_update: Any = None  # latest UsageUpdate for current turn
+        self._usage_received: Any = None  # asyncio.Event, set when UsageUpdate arrives
 
     def reset(self) -> None:
         self.accumulated_text.clear()
         self.accumulated_thoughts.clear()
         self.on_token = None
-        # Note: telemetry state (_last_cost, _context_window, etc.)
-        # is intentionally NOT cleared — it accumulates across turns.
+        # Per-turn usage update is cleared each turn.
+        self._turn_usage_update = None
+        # Note: _last_cost and _context_window are intentionally NOT
+        # cleared — they accumulate across turns.
 
     # -- Client protocol methods ------------------------------------------
 
@@ -142,14 +146,13 @@ class _OpenHandsACPClient:
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(update.content.text)
         elif isinstance(update, UsageUpdate):
-            # Update context window size
+            # Store the update for step() to process — no metrics
+            # side-effects here.  step() is the single place where
+            # all telemetry (cost, tokens, latency) is recorded.
             self._context_window = update.size
-            # Record incremental cost
-            if update.cost is not None and self._llm_ref is not None:
-                delta = update.cost.amount - self._last_cost
-                if delta > 0:
-                    self._llm_ref.metrics.add_cost(delta)
-                self._last_cost = update.cost.amount
+            self._turn_usage_update = update
+            if self._usage_received is not None:
+                self._usage_received.set()
         elif isinstance(update, (ToolCallStart, ToolCallProgress)):
             logger.debug("ACP tool call event: %s", type(update).__name__)
         else:
@@ -375,7 +378,6 @@ class ACPAgent(AgentBase):
         )
 
         client = _OpenHandsACPClient()
-        client._llm_ref = self.llm
         self._client = client
 
         # Build environment: inherit current env + ACP extras
@@ -464,39 +466,81 @@ class ACPAgent(AgentBase):
 
             from acp.helpers import text_block
 
-            async def _prompt() -> Any:
+            async def _prompt() -> tuple[Any, float]:
+                # Prepare synchronization: the ACP server writes UsageUpdate
+                # to the wire *before* the PromptResponse, so the notification
+                # is enqueued before the response future resolves.  We use an
+                # asyncio.Event to wait for the handler to finish processing
+                # it instead of a blind sleep.
+                self._client._usage_received = asyncio.Event()
+                self._client._turn_usage_update = None
+
+                t0 = time.monotonic()
                 response = await self._conn.prompt(
                     [text_block(user_message)],
                     self._session_id,
                 )
-                # Drain pending session_update notification handlers.
-                # First yield lets already-queued handlers run, then a
-                # short sleep covers handlers still arriving over IO.
-                await asyncio.sleep(0)
-                await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
-                return response
+                latency = time.monotonic() - t0
+
+                # Wait for UsageUpdate if it hasn't arrived yet.
+                if self._client._turn_usage_update is None:
+                    try:
+                        await asyncio.wait_for(
+                            self._client._usage_received.wait(),
+                            timeout=_USAGE_UPDATE_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "UsageUpdate not received within %.1fs timeout",
+                            _USAGE_UPDATE_TIMEOUT,
+                        )
+
+                return response, latency
 
             # Send prompt to ACP server
-            response = self._executor.run_async(_prompt)
+            response, latency = self._executor.run_async(_prompt)
 
-            # Record per-turn token usage from PromptResponse
+            # --- Single telemetry recording point ---
+            # All cost, token, and latency data is recorded here after
+            # both PromptResponse and UsageUpdate are available.
+
+            usage_update = self._client._turn_usage_update
+
+            # 1. Cost (from UsageUpdate)
+            if usage_update is not None and usage_update.cost is not None:
+                delta = usage_update.cost.amount - self._client._last_cost
+                if delta > 0:
+                    self.llm.metrics.add_cost(delta)
+                self._client._last_cost = usage_update.cost.amount
+
+            # 2. Tokens (from PromptResponse.usage)
             if (
                 response is not None
                 and hasattr(response, "usage")
                 and response.usage is not None
             ):
                 usage = response.usage
+                ctx_window = (
+                    usage_update.size
+                    if usage_update is not None
+                    else self._client._context_window
+                )
                 self.llm.metrics.add_token_usage(
                     prompt_tokens=usage.input_tokens,
                     completion_tokens=usage.output_tokens,
                     cache_read_tokens=usage.cached_read_tokens or 0,
                     cache_write_tokens=usage.cached_write_tokens or 0,
                     reasoning_tokens=usage.thought_tokens or 0,
-                    context_window=self._client._context_window,
+                    context_window=ctx_window,
                     response_id=self._session_id or "",
                 )
 
-            # Notify stats callback
+            # 3. Latency
+            self.llm.metrics.add_response_latency(
+                latency, self._session_id or ""
+            )
+
+            # 4. Stats callback
             if self.llm.telemetry._stats_update_callback is not None:
                 try:
                     self.llm.telemetry._stats_update_callback()

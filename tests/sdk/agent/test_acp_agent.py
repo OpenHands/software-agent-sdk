@@ -294,8 +294,12 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
+        mock_response = MagicMock()
+        mock_response.usage = None
+
         def _fake_run_async(_coro):
             mock_client.accumulated_text.append("The answer is 4")
+            return mock_response, 0.1
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
@@ -320,9 +324,13 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
+        mock_response = MagicMock()
+        mock_response.usage = None
+
         def _fake_run_async(_coro):
             mock_client.accumulated_text.append("4")
             mock_client.accumulated_thoughts.append("I need to add 2+2")
+            return mock_response, 0.1
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
@@ -342,8 +350,12 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
+        mock_response = MagicMock()
+        mock_response.usage = None
+
         def _fake_run_async(_coro):
             mock_client.accumulated_text.append("done")
+            return mock_response, 0.1
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
@@ -397,13 +409,16 @@ class TestACPAgentStep:
         events: list = []
 
         mock_client = _OpenHandsACPClient()
-        # accumulated_text stays empty — run_async is a no-op
+        # accumulated_text stays empty
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
+        mock_response = MagicMock()
+        mock_response.usage = None
+
         mock_executor = MagicMock()
-        mock_executor.run_async = lambda _coro: None
+        mock_executor.run_async = lambda _coro: (mock_response, 0.1)
         agent._executor = mock_executor
 
         agent.step(conversation, on_event=events.append)
@@ -421,8 +436,12 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
+        mock_response = MagicMock()
+        mock_response.usage = None
+
         def _fake_run_async(_coro):
             mock_client.accumulated_text.append("ok")
+            return mock_response, 0.1
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
@@ -589,39 +608,70 @@ class TestACPAgentTelemetry:
         assert llms[0] is agent.llm
         assert llms[0].model == "acp-managed"
 
-    def test_step_records_token_usage(self, tmp_path):
-        """step() records per-turn token usage from PromptResponse.usage."""
-        agent = _make_agent()
+    def _make_step_fixtures(self, tmp_path, agent=None, usage=None, cost=None):
+        """Set up agent + client + executor for step() tests.
+
+        Returns ``(agent, mock_client)`` ready for ``agent.step()``.
+        *usage* is a dict of token fields for PromptResponse.usage (or None).
+        *cost* is a ``(amount, size)`` tuple for the UsageUpdate (or None).
+
+        If *agent* already has a ``_client``, it is reused (preserving
+        cumulative telemetry state like ``_last_cost``).
+        """
+        if agent is None:
+            agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
 
-        mock_client = _OpenHandsACPClient()
-        mock_client._context_window = 200000
-        agent._client = mock_client
+        # Reuse existing client to preserve cross-turn state (_last_cost)
+        if agent._client is None:
+            mock_client = _OpenHandsACPClient()
+            mock_client._context_window = 200000
+            agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        # Build a mock PromptResponse with usage
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.cached_read_tokens = 10
-        mock_usage.cached_write_tokens = 5
-        mock_usage.thought_tokens = 20
-
         mock_response = MagicMock()
-        mock_response.usage = mock_usage
+        if usage is not None:
+            mock_usage = MagicMock()
+            mock_usage.input_tokens = usage.get("input", 0)
+            mock_usage.output_tokens = usage.get("output", 0)
+            mock_usage.cached_read_tokens = usage.get("cache_read", 0)
+            mock_usage.cached_write_tokens = usage.get("cache_write", 0)
+            mock_usage.thought_tokens = usage.get("thought", 0)
+            mock_response.usage = mock_usage
+        else:
+            mock_response.usage = None
+
+        client_ref = agent._client
 
         def _fake_run_async(_coro):
-            mock_client.accumulated_text.append("response text")
-            return mock_response
+            client_ref.accumulated_text.append("response text")
+            # Simulate UsageUpdate arriving during prompt()
+            if cost is not None:
+                mock_update = MagicMock()
+                mock_update.cost = MagicMock()
+                mock_update.cost.amount = cost[0]
+                mock_update.size = cost[1]
+                client_ref._turn_usage_update = mock_update
+            return mock_response, 0.5  # (response, latency)
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
         agent._executor = mock_executor
 
+        return agent, conversation
+
+    def test_step_records_token_usage(self, tmp_path):
+        """step() records per-turn token usage from PromptResponse.usage."""
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={"input": 100, "output": 50, "cache_read": 10,
+                   "cache_write": 5, "thought": 20},
+            cost=(0.05, 200000),
+        )
+
         agent.step(conversation, on_event=lambda _: None)
 
-        # Verify token usage was recorded
         metrics = agent.llm.metrics
         assert len(metrics.token_usages) == 1
         usage = metrics.token_usages[0]
@@ -634,41 +684,80 @@ class TestACPAgentTelemetry:
 
     def test_step_handles_no_usage(self, tmp_path):
         """step() handles PromptResponse with no usage gracefully."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
-
-        mock_client = _OpenHandsACPClient()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        mock_response = MagicMock()
-        mock_response.usage = None
-
-        def _fake_run_async(_coro):
-            mock_client.accumulated_text.append("response")
-            return mock_response
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
+        agent, conversation = self._make_step_fixtures(tmp_path)
 
         agent.step(conversation, on_event=lambda _: None)
 
-        # No token usage should be recorded
         assert len(agent.llm.metrics.token_usages) == 0
 
+    def test_step_records_cost_from_usage_update(self, tmp_path):
+        """step() records cost from UsageUpdate in the single telemetry path."""
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={"input": 100, "output": 50},
+            cost=(0.05, 128000),
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+        assert len(agent.llm.metrics.costs) == 1
+        assert agent._client._last_cost == 0.05
+
+    def test_step_records_incremental_cost(self, tmp_path):
+        """Cost tracking is incremental across turns (cumulative deltas)."""
+        agent = _make_agent()
+
+        # Turn 1: cumulative cost 0.05
+        _, conversation1 = self._make_step_fixtures(
+            tmp_path, agent=agent,
+            usage={"input": 100, "output": 50},
+            cost=(0.05, 128000),
+        )
+        agent.step(conversation1, on_event=lambda _: None)
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+
+        # Turn 2: cumulative cost 0.12 → delta 0.07
+        _, conversation2 = self._make_step_fixtures(
+            tmp_path, agent=agent,
+            usage={"input": 200, "output": 100},
+            cost=(0.12, 130000),
+        )
+        agent.step(conversation2, on_event=lambda _: None)
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.12)
+        assert len(agent.llm.metrics.costs) == 2
+
+    def test_step_no_cost_when_usage_update_missing(self, tmp_path):
+        """No cost recorded when UsageUpdate doesn't arrive."""
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={"input": 100, "output": 50},
+            cost=None,
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert agent.llm.metrics.accumulated_cost == 0.0
+        assert len(agent.llm.metrics.costs) == 0
+        # Tokens should still be recorded
+        assert len(agent.llm.metrics.token_usages) == 1
+
+    def test_step_records_latency(self, tmp_path):
+        """step() records response latency."""
+        agent, conversation = self._make_step_fixtures(tmp_path)
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert len(agent.llm.metrics.response_latencies) == 1
+        assert agent.llm.metrics.response_latencies[0].latency == pytest.approx(0.5)
+
     @pytest.mark.asyncio
-    async def test_usage_update_records_cost(self):
-        """UsageUpdate with cost records incremental cost via metrics."""
+    async def test_session_update_stores_usage_update(self):
+        """session_update() stores UsageUpdate for step() to process."""
         from acp.schema import UsageUpdate
 
-        from openhands.sdk.llm import LLM
-
         client = _OpenHandsACPClient()
-        llm = LLM(model="acp-managed")
-        client._llm_ref = llm
-        client._last_cost = 0.0
+        client._usage_received = asyncio.Event()
 
         update = MagicMock(spec=UsageUpdate)
         update.size = 128000
@@ -677,39 +766,26 @@ class TestACPAgentTelemetry:
 
         await client.session_update("sess-1", update)
 
-        assert llm.metrics.accumulated_cost == pytest.approx(0.05)
-        assert client._last_cost == 0.05
+        # Data is stored, not written to metrics
+        assert client._turn_usage_update is update
         assert client._context_window == 128000
+        assert client._usage_received.is_set()
 
     @pytest.mark.asyncio
-    async def test_usage_update_incremental_cost(self):
-        """UsageUpdate cost tracking is incremental (delta from last seen)."""
+    async def test_session_update_signals_event(self):
+        """session_update() signals _usage_received when UsageUpdate arrives."""
         from acp.schema import UsageUpdate
 
-        from openhands.sdk.llm import LLM
-
         client = _OpenHandsACPClient()
-        llm = LLM(model="acp-managed")
-        client._llm_ref = llm
+        client._usage_received = asyncio.Event()
 
-        # First update: cost 0.05
-        update1 = MagicMock(spec=UsageUpdate)
-        update1.size = 128000
-        update1.cost = MagicMock()
-        update1.cost.amount = 0.05
+        update = MagicMock(spec=UsageUpdate)
+        update.size = 100000
+        update.cost = None
 
-        await client.session_update("sess-1", update1)
-        assert llm.metrics.accumulated_cost == pytest.approx(0.05)
-
-        # Second update: cumulative cost 0.12 → delta should be 0.07
-        update2 = MagicMock(spec=UsageUpdate)
-        update2.size = 130000
-        update2.cost = MagicMock()
-        update2.cost.amount = 0.12
-
-        await client.session_update("sess-1", update2)
-        assert llm.metrics.accumulated_cost == pytest.approx(0.12)
-        assert client._last_cost == 0.12
+        assert not client._usage_received.is_set()
+        await client.session_update("sess-1", update)
+        assert client._usage_received.is_set()
 
     @pytest.mark.asyncio
     async def test_usage_update_updates_context_window(self):
@@ -728,26 +804,8 @@ class TestACPAgentTelemetry:
 
     def test_stats_callback_invoked(self, tmp_path):
         """After step(), the sentinel LLM's stats callback is invoked."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
+        agent, conversation = self._make_step_fixtures(tmp_path)
 
-        mock_client = _OpenHandsACPClient()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        mock_response = MagicMock()
-        mock_response.usage = None
-
-        def _fake_run_async(_coro):
-            mock_client.accumulated_text.append("ok")
-            return mock_response
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
-
-        # Set up a stats callback
         callback = MagicMock()
         agent.llm.telemetry._stats_update_callback = callback
 
@@ -755,31 +813,12 @@ class TestACPAgentTelemetry:
 
         callback.assert_called_once()
 
-    def test_start_acp_server_wires_llm_ref(self, tmp_path):
-        """_start_acp_server wires _llm_ref on the client."""
-        agent = _make_agent()
-        state = _make_state(tmp_path)
-
-        with patch(
-            "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"
-        ) as mock_start:
-
-            def fake_start(s):
-                client = _OpenHandsACPClient()
-                client._llm_ref = agent.llm
-                agent._client = client
-
-            mock_start.side_effect = fake_start
-            agent.init_state(state, on_event=lambda _: None)
-
-        assert agent._client._llm_ref is agent.llm
-
     def test_reset_preserves_telemetry_state(self):
-        """reset() clears text/thoughts but preserves telemetry state."""
+        """reset() clears text/thoughts/turn_usage but preserves cumulative state."""
         client = _OpenHandsACPClient()
         client._last_cost = 1.23
         client._context_window = 128000
-        client._llm_ref = MagicMock()
+        client._turn_usage_update = MagicMock()
         client.accumulated_text.append("hello")
         client.accumulated_thoughts.append("thinking")
 
@@ -787,6 +826,6 @@ class TestACPAgentTelemetry:
 
         assert client.accumulated_text == []
         assert client.accumulated_thoughts == []
+        assert client._turn_usage_update is None
         assert client._last_cost == 1.23
         assert client._context_window == 128000
-        assert client._llm_ref is not None
