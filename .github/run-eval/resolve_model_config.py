@@ -140,6 +140,11 @@ MODELS = {
             "reasoning_effort": "high",
         },
     },
+    "gpt-5.4": {
+        "id": "gpt-5.4",
+        "display_name": "GPT-5.4",
+        "llm_config": {"model": "litellm_proxy/openai/gpt-5.4"},
+    },
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
