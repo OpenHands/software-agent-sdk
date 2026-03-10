@@ -21,6 +21,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.workspace.local import LocalWorkspace
 
@@ -390,13 +391,19 @@ class TestACPAgentStep:
         mock_executor.run_async = MagicMock(side_effect=RuntimeError("boom"))
         agent._executor = mock_executor
 
-        agent.step(conversation, on_event=events.append)
+        with pytest.raises(RuntimeError, match="boom"):
+            agent.step(conversation, on_event=events.append)
 
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
-        assert len(events) == 1
+        assert len(events) == 2
+        # First event: MessageEvent with the error text
         content_block = events[0].llm_message.content[0]
         assert isinstance(content_block, TextContent)
         assert "ACP error: boom" in content_block.text
+        # Second event: ConversationErrorEvent with error detail
+        assert isinstance(events[1], ConversationErrorEvent)
+        assert events[1].code == "ACPPromptError"
+        assert "boom" in events[1].detail
 
     def test_step_no_response_text_fallback(self, tmp_path):
         agent = _make_agent()
