@@ -414,6 +414,11 @@ class ACPAgent(AgentBase):
             "Prevents indefinite hangs when the ACP server fails to respond."
         ),
     )
+    acp_model: str | None = Field(
+        default=None,
+        description="Model for the ACP server to use (e.g. 'claude-opus-4-6'). "
+        "Passed via session _meta. If None, the server picks its default.",
+    )
 
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
@@ -623,8 +628,13 @@ class ACPAgent(AgentBase):
                         [m.id for m in auth_methods],
                     )
 
+            # Build _meta for session options (e.g. model selection)
+            meta: dict[str, Any] | None = None
+            if self.acp_model:
+                meta = {"claudeCode": {"options": {"model": self.acp_model}}}
+
             # Create a new session
-            response = await conn.new_session(cwd=working_dir)
+            response = await conn.new_session(cwd=working_dir, _meta=meta)
             session_id = response.session_id
 
             # Resolve the permission mode to use.  Different ACP servers
