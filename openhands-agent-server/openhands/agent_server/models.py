@@ -298,7 +298,9 @@ class AskAgentResponse(BaseModel):
 class ExecuteToolRequest(BaseModel):
     """Payload to execute a tool directly on a conversation."""
 
-    tool_name: str = Field(description="The name of the tool to execute (e.g., 'terminal')")
+    tool_name: str = Field(
+        description="The name of the tool to execute (e.g., 'terminal')"
+    )
     action: dict[str, Any] = Field(
         description="The action parameters to pass to the tool executor"
     )

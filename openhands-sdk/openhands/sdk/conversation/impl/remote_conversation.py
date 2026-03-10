@@ -1226,7 +1226,7 @@ class RemoteConversation(BaseConversation):
         Raises:
             RuntimeError: If the tool execution fails on the server
         """
-        from openhands.sdk.tool.schema import Observation as BaseObservation
+        from openhands.sdk.tool.schema import Observation
 
         payload = {
             "tool_name": tool_name,
@@ -1242,14 +1242,18 @@ class RemoteConversation(BaseConversation):
         observation_data = result.get("observation", {})
         is_error = result.get("is_error", False)
 
-        # Return a generic Observation with the response data
+        # Extract text from the observation data
         text = observation_data.get("text", "")
         if not text:
-            # Try to extract text from content list
             content = observation_data.get("content", [])
             if content and isinstance(content, list):
                 text = content[0].get("text", "") if content else ""
-        return BaseObservation.from_text(text=text, is_error=is_error)
+
+        # Use a concrete subclass since Observation is abstract
+        class _RemoteObservation(Observation):
+            pass
+
+        return _RemoteObservation.from_text(text=text, is_error=is_error)
 
     def close(self) -> None:
         """Close the conversation and clean up resources.

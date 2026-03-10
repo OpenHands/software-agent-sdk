@@ -330,14 +330,12 @@ class EventService:
             # blocking on the full conversation execution.
             loop.create_task(_run_with_error_handling())
 
-    async def execute_tool(
-        self, tool_name: str, action_dict: dict
-    ) -> dict:
-        """Execute a tool directly on the conversation without going through the agent loop.
+    async def execute_tool(self, tool_name: str, action_dict: dict) -> dict:
+        """Execute a tool directly on the conversation.
 
-        This is useful for pre-run setup operations like running .openhands/setup.sh
-        through the agent's terminal tool so environment changes persist in the
-        agent's session.
+        Bypasses the agent loop. Useful for pre-run setup operations
+        like running .openhands/setup.sh through the agent's terminal
+        tool so environment changes persist in the agent's session.
 
         Args:
             tool_name: The name of the tool to execute (e.g., 'terminal')
@@ -353,21 +351,21 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
+        conversation = self._conversation
         loop = asyncio.get_running_loop()
 
         def _execute():
             # Get the tool to resolve the action type
-            self._conversation._ensure_agent_ready()
-            tool = self._conversation.agent.tools_map.get(tool_name)
+            conversation._ensure_agent_ready()
+            tool = conversation.agent.tools_map.get(tool_name)
             if tool is None:
-                available_tools = list(self._conversation.agent.tools_map.keys())
+                available_tools = list(conversation.agent.tools_map.keys())
                 raise KeyError(
-                    f"Tool '{tool_name}' not found. "
-                    f"Available tools: {available_tools}"
+                    f"Tool '{tool_name}' not found. Available tools: {available_tools}"
                 )
             # Validate the action dict against the tool's action type
             action = tool.action_type.model_validate(action_dict)
-            observation = self._conversation.execute_tool(tool_name, action)
+            observation = conversation.execute_tool(tool_name, action)
             return observation.model_dump(mode="json")
 
         return await loop.run_in_executor(None, _execute)
