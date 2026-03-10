@@ -500,3 +500,4 @@ def test_gpt_5_4_config():
     assert model["id"] == "gpt-5.4"
     assert model["display_name"] == "GPT-5.4"
     assert model["llm_config"]["model"] == "litellm_proxy/openai/gpt-5.4"
+    assert model["llm_config"]["reasoning_effort"] == "high"
