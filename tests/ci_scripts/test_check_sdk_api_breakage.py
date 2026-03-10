@@ -7,6 +7,7 @@ functions) so tests remain coupled to real behavior.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
+get_pypi_baseline_version = _prod.get_pypi_baseline_version
 
 # Reusable test config matching the _write_pkg_init helper
 _SDK_CFG = PackageConfig(
@@ -62,6 +64,40 @@ def _write_pkg_init(
         "__all__ = [\n" + "\n".join(f"    {name!r}," for name in all_names) + "\n]\n"
     )
     return pkg
+
+
+def _mock_pypi_releases(monkeypatch, releases: list[str]) -> None:
+    payload = {"releases": {version: [] for version in releases}}
+
+    class _DummyResponse:
+        def __init__(self, data: dict) -> None:
+            self._data = data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(self._data).encode()
+
+    def _fake_urlopen(*_args, **_kwargs):
+        return _DummyResponse(payload)
+
+    monkeypatch.setattr(_prod.urllib.request, "urlopen", _fake_urlopen)
+
+
+def test_get_pypi_baseline_version_returns_current_when_published(monkeypatch):
+    _mock_pypi_releases(monkeypatch, ["1.0.0", "1.1.0"])
+
+    assert get_pypi_baseline_version("openhands-sdk", "1.1.0") == "1.1.0"
+
+
+def test_get_pypi_baseline_version_falls_back_to_previous(monkeypatch):
+    _mock_pypi_releases(monkeypatch, ["1.0.0", "1.1.0"])
+
+    assert get_pypi_baseline_version("openhands-sdk", "1.2.0") == "1.1.0"
 
 
 def test_griffe_breakage_removed_attribute_requires_minor_bump(tmp_path):

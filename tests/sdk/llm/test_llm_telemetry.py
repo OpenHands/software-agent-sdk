@@ -332,6 +332,61 @@ class TestTelemetryCostCalculation:
             # Should strip provider prefix
             call_kwargs = mock_cost.call_args[1]
             assert call_kwargs["model"] == "gpt-4o-mini"
+            assert call_kwargs["custom_llm_provider"] == "provider"
+
+    def test_compute_cost_passes_provider_to_litellm_cost_calculator(
+        self, mock_metrics
+    ):
+        telemetry = Telemetry(
+            model_name="vertex_ai/claude-sonnet-4-5@20250929",
+            metrics=mock_metrics,
+        )
+
+        resp = ModelResponse(
+            id="test-id",
+            choices=[],
+            created=1234567890,
+            model="claude-sonnet-4-5@20250929",
+            object="chat.completion",
+        )
+
+        with patch(
+            "openhands.sdk.llm.utils.telemetry.litellm_completion_cost"
+        ) as mock_cost:
+            mock_cost.return_value = 0.10
+            telemetry._compute_cost(resp)
+
+            mock_cost.assert_called_once()
+            kwargs = mock_cost.call_args.kwargs
+            assert kwargs["model"] == "claude-sonnet-4-5@20250929"
+            assert kwargs["custom_llm_provider"] == "vertex_ai"
+
+    def test_compute_cost_passes_provider_to_litellm_cost_calculator_azure(
+        self, mock_metrics
+    ):
+        telemetry = Telemetry(
+            model_name="azure/responses/gpt-5.2-chat",
+            metrics=mock_metrics,
+        )
+
+        resp = ModelResponse(
+            id="test-id",
+            choices=[],
+            created=1234567890,
+            model="gpt-5.2-chat",
+            object="chat.completion",
+        )
+
+        with patch(
+            "openhands.sdk.llm.utils.telemetry.litellm_completion_cost"
+        ) as mock_cost:
+            mock_cost.return_value = 0.05
+            telemetry._compute_cost(resp)
+
+            mock_cost.assert_called_once()
+            kwargs = mock_cost.call_args.kwargs
+            assert kwargs["model"] == "responses/gpt-5.2-chat"
+            assert kwargs["custom_llm_provider"] == "azure"
 
 
 class TestTelemetryLogging:
