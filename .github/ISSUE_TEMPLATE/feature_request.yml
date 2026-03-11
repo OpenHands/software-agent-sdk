@@ -15,7 +15,7 @@ body:
       attributes:
           label: Is there an existing feature request for this?
           description: Please search existing issues and feature requests before creating a new one. If found, react or comment to the duplicate issue
-              instead of making a new one.
+              instead of making a new one. <!-- TODO-openhands -->
           options:
               - label: I have searched existing issues and feature requests, and this is not a duplicate.
                 required: true
@@ -74,27 +74,25 @@ body:
               - Unknown - Not sure about the technical complexity
           default: 3
 
-    - type: dropdown
+    - type: checkboxes
       id: feature-area
       attributes:
           label: Feature Area
           description: Which part of OpenHands SDK does this feature relate to? If you select "Other", please specify the area in the Additional 
-              Context section below.
+              Context section below. <!-- TODO-openhands -->
           options:
-              - Agent API / Core functionality
-              - Tools / Tool system
-              - Skills / Plugins
-              - Agent Server
-              - Workspace management
-              - Configuration / Settings
-              - Examples / Templates
-              - Documentation
-              - Testing / Development tools
-              - Performance / Optimization
-              - Integrations (GitHub, APIs, etc.)
-              - Other
-      validations:
-          required: true
+              - label: Agent API / Core functionality
+              - label: Tools / Tool system
+              - label: Skills / Plugins
+              - label: Agent Server
+              - label: Workspace management
+              - label: Configuration / Settings
+              - label: Examples / Templates
+              - label: Documentation
+              - label: Testing / Development tools
+              - label: Performance / Optimization
+              - label: Integrations (GitHub, APIs, etc.)
+              - label: Other
 
     - type: textarea
       id: technical-details

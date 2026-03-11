@@ -17,7 +17,7 @@ body:
       attributes:
           label: Is there an existing issue for the same bug?
           description: Please search existing issues before creating a new one. If found, react or comment to the duplicate issue instead of making a 
-              new one.
+              new one. <!-- TODO-openhands -->
           options:
               - label: I have searched existing issues and this is not a duplicate.
                 required: true
@@ -63,22 +63,12 @@ body:
       validations:
           required: false
 
-    - type: dropdown
+    - type: input
       id: installation
       attributes:
           label: Installation Method
           description: How did you install the OpenHands SDK?
-          options:
-              - pip install openhands-sdk
-              - pip install openhands-agent-server
-              - pip install openhands-tools
-              - pip install openhands-workspace
-              - Development mode (pip install -e .)
-              - uv (uv pip install openhands-sdk)
-              - Other
-          default: 0
-      validations:
-          required: false
+          placeholder: ex. pip install openhands-sdk, uv pip install openhands-sdk, pip install -e ., etc.
 
     - type: input
       id: installation-other
