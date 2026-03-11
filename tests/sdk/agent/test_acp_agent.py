@@ -1450,7 +1450,9 @@ class TestACPPromptRetry:
             agent.step(conversation, on_event=events.append)
 
         assert call_count == 2  # First failed, second succeeded
-        assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
         assert len(events) == 3  # MessageEvent, ActionEvent, ObservationEvent
         assert "Success after retry" in events[0].llm_message.content[0].text
 
