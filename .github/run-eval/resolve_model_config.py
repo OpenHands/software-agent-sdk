@@ -238,6 +238,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "nemotron-3-super-120b-a12b-free": {
+        "id": "nemotron-3-super-120b-a12b-free",
+        "display_name": "NVIDIA Nemotron-3 Super 120B",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+            "temperature": 0.0,
+        },
+    },
 }
 
 

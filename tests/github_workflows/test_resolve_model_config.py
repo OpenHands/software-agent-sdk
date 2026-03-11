@@ -501,3 +501,16 @@ def test_gpt_5_4_config():
     assert model["display_name"] == "GPT-5.4"
     assert model["llm_config"]["model"] == "litellm_proxy/openai/gpt-5.4"
     assert model["llm_config"]["reasoning_effort"] == "high"
+
+
+def test_nemotron_3_super_120b_a12b_free_config():
+    """Test that nemotron-3-super-120b-a12b-free has correct configuration."""
+    model = MODELS["nemotron-3-super-120b-a12b-free"]
+
+    assert model["id"] == "nemotron-3-super-120b-a12b-free"
+    assert model["display_name"] == "NVIDIA Nemotron-3 Super 120B"
+    assert (
+        model["llm_config"]["model"]
+        == "litellm_proxy/openrouter/nvidia/nemotron-3-super-120b-a12b:free"
+    )
+    assert model["llm_config"]["temperature"] == 0.0
