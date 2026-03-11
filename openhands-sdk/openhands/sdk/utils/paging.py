@@ -20,7 +20,7 @@ async def page_iterator[T](
     search_func: Callable[..., Awaitable[PageProtocol[T]]],
     *args: Any,
     **kwargs: Any,
-) -> AsyncGenerator[T, None]:
+) -> AsyncGenerator[T]:
     """
     Iterate over items from paginated search results.
 

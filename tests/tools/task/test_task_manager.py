@@ -7,10 +7,12 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     register_agent,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task.manager import (
     Task,
@@ -27,7 +29,10 @@ def _make_llm() -> LLM:
     )
 
 
-def _make_parent_conversation(tmp_path: Path) -> LocalConversation:
+def _make_parent_conversation(
+    tmp_path: Path,
+    persistence_dir: str | Path | None = None,
+) -> LocalConversation:
     """Create a real (minimal) parent conversation for the manager."""
     llm = _make_llm()
     agent = Agent(llm=llm, tools=[])
@@ -36,13 +41,17 @@ def _make_parent_conversation(tmp_path: Path) -> LocalConversation:
         workspace=str(tmp_path),
         visualizer=None,
         delete_on_close=False,
+        persistence_dir=persistence_dir,
     )
 
 
-def _manager_with_parent(tmp_path: Path) -> tuple[TaskManager, LocalConversation]:
+def _manager_with_parent(
+    tmp_path: Path,
+    persistence_dir: str | Path | None = None,
+) -> tuple[TaskManager, LocalConversation]:
     """Return a TaskManager whose parent conversation is already set."""
     manager = TaskManager()
-    parent = _make_parent_conversation(tmp_path)
+    parent = _make_parent_conversation(tmp_path, persistence_dir=persistence_dir)
     manager._ensure_parent(parent)
     return manager, parent
 
@@ -116,11 +125,9 @@ class TestTaskManager:
         assert len(manager._tasks) == 0
         assert manager._parent_conversation is None
 
-    def test_tmp_dir_created(self):
+    def test_persistence_dir_none_at_init(self):
         manager = TaskManager()
-        assert manager._tmp_dir.exists()
-        manager.close()
-        assert not manager._tmp_dir.exists()
+        assert manager._persistence_dir is None
 
     def test_generate_task_id(self):
         """Generated task IDs should be unique and prefixed."""
@@ -245,9 +252,10 @@ class TestTaskManager:
         with pytest.raises(ValueError, match="Unknown agent"):
             manager._get_sub_agent("nonexistent_agent")
 
-    def test_close(self):
-        manager = TaskManager()
-        assert manager._tmp_dir.exists()
+    def test_close(self, tmp_path):
+        manager, _ = _manager_with_parent(tmp_path)
+        assert manager._persistence_dir is not None
+        assert manager._persistence_dir.exists()
 
         manager._tasks["tasks_123"] = Task(
             id="tasks_123",
@@ -257,7 +265,7 @@ class TestTaskManager:
 
         manager.close()
 
-        assert not manager._tmp_dir.exists()
+        assert not manager._persistence_dir.exists()
         assert len(manager._tasks) == 0
 
     def test_returns_local_conversation(self, tmp_path):
@@ -293,7 +301,7 @@ class TestTaskManager:
         persistence_dir = conv.state.persistence_dir
         assert persistence_dir is not None
         conv_persistence = Path(persistence_dir)
-        assert str(conv_persistence).startswith(str(manager._tmp_dir))
+        assert str(conv_persistence).startswith(str(manager._persistence_dir))
 
     def test_no_visualizer_when_parent_has_none(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
@@ -639,3 +647,231 @@ class TestTaskMetrics:
         assert (
             parent_stats.usage_to_metrics["task:task_00000002"].accumulated_cost == 2.00
         )
+
+
+def _register_hooked_agent(name: str, hook_config: HookConfig) -> None:
+    """Register an agent with hooks via AgentDefinition."""
+    from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+    agent_def = AgentDefinition(
+        name=name,
+        description=f"Agent with hooks: {name}",
+        model="inherit",
+        tools=[],
+        system_prompt=f"You are {name}.",
+        hooks=hook_config,
+    )
+    factory_func = agent_definition_to_factory(agent_def)
+    register_agent(name=name, factory_func=factory_func, description=agent_def)
+
+
+class TestTaskManagerHooks:
+    """Tests for hook_config propagation to sub-agent conversations."""
+
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
+    def test_create_task_passes_hook_config(self, tmp_path):
+        """_create_task should pass AgentDefinition.hooks to the sub-conversation."""
+        hook_config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    matcher="terminal",
+                    hooks=[HookDefinition(command="./validate.sh", timeout=10)],
+                )
+            ]
+        )
+        _register_hooked_agent("hooked_agent", hook_config)
+
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(
+            subagent_type="hooked_agent",
+            description="test hooks",
+            max_turns=3,
+        )
+
+        sub_conv = task.conversation
+        assert sub_conv is not None
+        assert sub_conv._pending_hook_config is not None
+        assert len(sub_conv._pending_hook_config.pre_tool_use) == 1
+        assert sub_conv._pending_hook_config.pre_tool_use[0].matcher == "terminal"
+
+    def test_create_task_no_hooks_passes_none(self, tmp_path):
+        """When the agent definition has no hooks, hook_config should be None."""
+        register_builtins_agents()
+
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(
+            subagent_type="default",
+            description="no hooks",
+            max_turns=3,
+        )
+
+        sub_conv = task.conversation
+        assert sub_conv is not None
+        assert sub_conv._pending_hook_config is None
+
+    def test_resume_task_passes_hook_config(self, tmp_path):
+        """_resume_task should pass hooks from the agent definition."""
+        hook_config = HookConfig(
+            post_tool_use=[
+                HookMatcher(
+                    matcher="*",
+                    hooks=[HookDefinition(command="./log.sh")],
+                )
+            ]
+        )
+        _register_hooked_agent("hooked_resume", hook_config)
+
+        manager, _ = _manager_with_parent(tmp_path)
+
+        # Create and evict a task
+        task = manager._create_task(
+            subagent_type="hooked_resume",
+            description="test",
+            max_turns=3,
+        )
+        original_id = task.id
+        manager._evict_task(task)
+
+        # Resume it
+        resumed = manager._resume_task(
+            resume=original_id, subagent_type="hooked_resume"
+        )
+        sub_conv = resumed.conversation
+        assert sub_conv is not None
+        assert sub_conv._pending_hook_config is not None
+        assert len(sub_conv._pending_hook_config.post_tool_use) == 1
+        assert sub_conv._pending_hook_config.post_tool_use[0].matcher == "*"
+
+    def test_get_conversation_passes_hook_config(self, tmp_path):
+        """_get_conversation should forward hook_config to LocalConversation."""
+        register_builtins_agents()
+        manager, _ = _manager_with_parent(tmp_path)
+
+        hook_config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    matcher="file_editor",
+                    hooks=[HookDefinition(command="./lint.sh")],
+                )
+            ]
+        )
+
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("default")
+
+        conv = manager._get_conversation(
+            description="test",
+            max_iteration_per_run=100,
+            task_id=task_id,
+            conversation_id=conversation_id,
+            worker_agent=agent,
+            hook_config=hook_config,
+        )
+
+        assert conv._pending_hook_config is not None
+        assert len(conv._pending_hook_config.pre_tool_use) == 1
+        assert conv._pending_hook_config.pre_tool_use[0].matcher == "file_editor"
+
+    def test_get_conversation_without_hook_config(self, tmp_path):
+        """_get_conversation without hook_config should leave it as None."""
+        register_builtins_agents()
+        manager, _ = _manager_with_parent(tmp_path)
+
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("default")
+
+        conv = manager._get_conversation(
+            description="test",
+            max_iteration_per_run=100,
+            task_id=task_id,
+            conversation_id=conversation_id,
+            worker_agent=agent,
+        )
+
+        assert conv._pending_hook_config is None
+
+
+class TestTaskManagerPersistence:
+    """Tests for persistence directory behavior."""
+
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
+    def test_no_persistence_uses_tmp_dir(self, tmp_path):
+        """When the parent has no persistence_dir, manager uses a temp directory."""
+        manager, parent = _manager_with_parent(tmp_path)
+        assert parent.state.persistence_dir is None
+        assert manager._persistence_dir is not None
+        assert manager._persistence_dir.exists()
+        assert "openhands_tasks_" in str(manager._persistence_dir)
+
+    def test_no_persistence_close_deletes_tmp_dir(self, tmp_path):
+        """When the parent has no persistence_dir, close() deletes the temp dir."""
+        manager, _ = _manager_with_parent(tmp_path)
+        persistence_dir = manager._persistence_dir
+        assert persistence_dir is not None
+        assert persistence_dir.exists()
+
+        manager.close()
+
+        assert not persistence_dir.exists()
+
+    def test_with_persistence_creates_subagents_dir(self, tmp_path):
+        """When the parent persists, manager creates a subagents/ subdirectory."""
+        parent_persistence = tmp_path / "conversations"
+        parent_persistence.mkdir()
+        manager, parent = _manager_with_parent(
+            tmp_path, persistence_dir=parent_persistence
+        )
+
+        assert parent.state.persistence_dir is not None
+        assert manager._persistence_dir is not None
+        assert manager._persistence_dir.exists()
+        assert manager._persistence_dir.name == "subagents"
+        assert str(manager._persistence_dir).startswith(
+            str(parent.state.persistence_dir)
+        )
+
+    def test_with_persistence_close_preserves_subagents_dir(self, tmp_path):
+        """When the parent persists, close() does NOT delete the subagents dir."""
+        parent_persistence = tmp_path / "conversations"
+        parent_persistence.mkdir()
+        manager, _ = _manager_with_parent(tmp_path, persistence_dir=parent_persistence)
+        persistence_dir = manager._persistence_dir
+        assert persistence_dir is not None
+        assert persistence_dir.exists()
+
+        manager.close()
+
+        # The subagents dir should be preserved for future restarts
+        assert persistence_dir.exists()
+
+    def test_with_persistence_subagent_conv_stored_under_subagents(self, tmp_path):
+        """Sub-agent conversations should be persisted under the subagents/ dir."""
+        parent_persistence = tmp_path / "conversations"
+        parent_persistence.mkdir()
+        manager, _ = _manager_with_parent(tmp_path, persistence_dir=parent_persistence)
+        register_builtins_agents()
+
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("default")
+
+        conv = manager._get_conversation(
+            description=None,
+            max_iteration_per_run=500,
+            task_id=task_id,
+            worker_agent=agent,
+            conversation_id=conversation_id,
+        )
+
+        conv_persistence = conv.state.persistence_dir
+        assert conv_persistence is not None
+        assert str(conv_persistence).startswith(str(manager._persistence_dir))
