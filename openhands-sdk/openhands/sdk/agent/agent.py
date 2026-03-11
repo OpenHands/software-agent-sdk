@@ -10,6 +10,7 @@ from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
     prepare_llm_messages,
+    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -574,7 +575,10 @@ class Agent(CriticMixin, AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            arguments = json.loads(tool_call.arguments)
+            # Sanitize raw control characters (U+0000–U+001F) that some
+            # models emit as literal bytes instead of JSON escape sequences.
+            sanitized_args = sanitize_json_control_chars(tool_call.arguments)
+            arguments = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)

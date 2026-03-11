@@ -399,6 +399,9 @@ class LocalConversation(BaseConversation):
 
         # Set up hook processor with the combined config
         if final_hook_config is not None:
+            # Store final hook_config in state for observability
+            self._state.hook_config = final_hook_config
+
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
@@ -523,10 +526,13 @@ class LocalConversation(BaseConversation):
             "Only user messages are allowed to be sent to the agent."
         )
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
+            if self._state.execution_status in (
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.STUCK,
+            ):
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
-                )  # now we have a new message
+                )  # new message resets terminal states
 
             # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
@@ -581,6 +587,7 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
                 ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
