@@ -1387,3 +1387,153 @@ class TestACPSessionMode:
         restored = AgentBase.model_validate_json(dumped)
         assert isinstance(restored, ACPAgent)
         assert restored.acp_session_mode == "full-access"
+
+
+# ---------------------------------------------------------------------------
+# Connection retry logic
+# ---------------------------------------------------------------------------
+
+
+class TestACPPromptRetry:
+    """Test retry logic for ACP prompt failures."""
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        """Create a mock conversation with a user message."""
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_retry_on_connection_error_then_success(self, tmp_path):
+        """Retry succeeds after transient connection error."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ConnectionError("Connection reset by peer")
+            # Second call succeeds - must populate text and return a response
+            mock_client.accumulated_text.append("Success after retry")
+            # Return a mock PromptResponse (can be MagicMock since we only check usage)
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        # Patch sleep to avoid actual delays in tests
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2  # First failed, second succeeded
+        assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        assert len(events) == 3  # MessageEvent, ActionEvent, ObservationEvent
+        assert "Success after retry" in events[0].llm_message.content[0].text
+
+    def test_no_retry_on_non_connection_error(self, tmp_path):
+        """Non-connection errors (e.g., RuntimeError) fail immediately without retry."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Some application error")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(RuntimeError, match="Some application error"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 1  # No retry attempted
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_no_retry_on_timeout(self, tmp_path):
+        """Timeout errors are not retried (handled separately)."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise TimeoutError("ACP prompt timed out")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert call_count == 1  # No retry for timeout
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_max_retries_exceeded(self, tmp_path):
+        """Error raised after max retries exhausted."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("Persistent connection failure")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            with pytest.raises(ConnectionError, match="Persistent connection failure"):
+                agent.step(conversation, on_event=events.append)
+
+        # Default max retries is 3, so 4 total attempts (1 initial + 3 retries)
+        assert call_count == 4
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
