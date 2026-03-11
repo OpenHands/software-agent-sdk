@@ -911,6 +911,11 @@ class LocalConversation(BaseConversation):
         # Use provided LLM or fall back to agent's LLM
         llm_to_use = llm or self.agent.llm
 
+        # Skip LLM-based title generation for ACP agents with sentinel LLM
+        # The sentinel model "acp-managed" cannot make LLM calls directly
+        if llm_to_use.model == "acp-managed":
+            llm_to_use = None
+
         return generate_conversation_title(
             events=self._state.events, llm=llm_to_use, max_length=max_length
         )
