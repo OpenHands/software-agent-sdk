@@ -6,7 +6,8 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from typing import SupportsIndex, overload
+from queue import Empty, Queue
+from typing import TYPE_CHECKING, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -14,6 +15,10 @@ import websockets
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
@@ -38,12 +43,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
-from openhands.sdk.hooks import (
-    HookConfig,
-    HookEventProcessor,
-    HookEventType,
-    HookManager,
-)
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -526,6 +526,15 @@ class RemoteState(ConversationStateProtocol):
         stats_data = info.get("stats", {})
         return ConversationStats.model_validate(stats_data)
 
+    @property
+    def hook_config(self) -> HookConfig | None:
+        """Get hook configuration (fetched from remote)."""
+        info = self._get_conversation_info()
+        hook_config_data = info.get("hook_config")
+        if hook_config_data is not None:
+            return HookConfig.model_validate(hook_config_data)
+        return None
+
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
         info = self._get_conversation_info()
@@ -553,8 +562,9 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
-    _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
+    _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
+    delete_on_close: bool = False
 
     def __init__(
         self,
@@ -573,6 +583,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        delete_on_close: bool = False,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -591,7 +602,8 @@ class RemoteConversation(BaseConversation):
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
-            hook_config: Optional hook configuration for session hooks
+            hook_config: Optional hook configuration sent to the server.
+                      All hooks are executed server-side.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -605,8 +617,8 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
-        self._hook_processor = None
         self._cleanup_initiated = False
+        self._terminal_status_queue: Queue[str] = Queue()
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -626,10 +638,16 @@ class RemoteConversation(BaseConversation):
 
         if should_create:
             # Import here to avoid circular imports
+            from openhands.sdk.subagent.registry import get_registered_agent_definitions
             from openhands.sdk.tool.registry import get_tool_module_qualnames
 
             tool_qualnames = get_tool_module_qualnames()
             logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
+
+            agent_defs = get_registered_agent_definitions()
+            serialized_defs = [d.model_dump(mode="json") for d in agent_defs]
+            logger.debug(f"Sending {len(serialized_defs)} agent_definitions to server")
+
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -643,8 +661,12 @@ class RemoteConversation(BaseConversation):
                 ).model_dump(),
                 # Include tool module qualnames for dynamic registration on server
                 "tool_module_qualnames": tool_qualnames,
+                # Include agent definitions for subagent registration on server
+                "agent_definitions": serialized_defs,
                 # Include plugins to load on server
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
+                # Include hook_config for server-side hooks
+                "hook_config": hook_config.model_dump() if hook_config else None,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -706,8 +728,21 @@ class RemoteConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
+        # Add a callback that signals when run completes via WebSocket
+        # This ensures we wait for all events to be delivered before run() returns
+        def run_complete_callback(event: Event) -> None:
+            if isinstance(event, ConversationStateUpdateEvent):
+                if event.key == "execution_status":
+                    try:
+                        status = ConversationExecutionStatus(event.value)
+                        if status.is_terminal():
+                            self._terminal_status_queue.put(event.value)
+                    except ValueError:
+                        pass  # Unknown status value, ignore
+
         # Compose all callbacks into a single callback
-        composed_callback = BaseConversation.compose_callbacks(self._callbacks)
+        all_callbacks = self._callbacks + [run_complete_callback]
+        composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
         # Initialize WebSocket client for callbacks
         self._ws_client = WebSocketCallbackClient(
@@ -746,25 +781,9 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
-        if hook_config is not None:
-            unsupported = (
-                HookEventType.PRE_TOOL_USE,
-                HookEventType.POST_TOOL_USE,
-                HookEventType.USER_PROMPT_SUBMIT,
-                HookEventType.STOP,
-            )
-            if any(hook_config.has_hooks_for_event(t) for t in unsupported):
-                logger.warning(
-                    "RemoteConversation only supports SessionStart/SessionEnd hooks; "
-                    "other hook types will not be enforced."
-                )
-            hook_manager = HookManager(
-                config=hook_config,
-                working_dir=os.getcwd(),
-                session_id=str(self._id),
-            )
-            self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
-            self._hook_processor.run_session_start()
+        # All hooks (including SessionStart/SessionEnd) are executed server-side.
+        # hook_config is sent in the creation payload.
+        self.delete_on_close = delete_on_close
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -859,6 +878,14 @@ class RemoteConversation(BaseConversation):
         Raises:
             ConversationRunError: If the run fails or times out.
         """
+        # Drain any stale terminal status events from previous runs.
+        # This prevents stale events from causing early returns.
+        while True:
+            try:
+                self._terminal_status_queue.get_nowait()
+            except Empty:
+                break
+
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
         try:
@@ -886,10 +913,20 @@ class RemoteConversation(BaseConversation):
         poll_interval: float = 1.0,
         timeout: float = 1800.0,
     ) -> None:
-        """Poll the server until the conversation is no longer running.
+        """Wait for the conversation run to complete.
+
+        This method waits for the run to complete by listening for the terminal
+        status event via WebSocket. This ensures all events are delivered before
+        returning, avoiding the race condition where polling sees "finished"
+        status before WebSocket delivers the final events.
+
+        As a fallback, it also polls the server periodically. If the WebSocket
+        is delayed or disconnected, we return after multiple consecutive polls
+        show a terminal status, and reconcile events to catch any that were
+        missed via WebSocket.
 
         Args:
-            poll_interval: Time in seconds between status polls.
+            poll_interval: Time in seconds between status polls (fallback).
             timeout: Maximum time in seconds to wait.
 
         Raises:
@@ -898,6 +935,14 @@ class RemoteConversation(BaseConversation):
                 responses are retried until timeout.
         """
         start_time = time.monotonic()
+        consecutive_terminal_polls = 0
+        # Return after this many consecutive terminal polls (fallback for WS issues).
+        # We use 3 polls to balance latency vs reliability:
+        # - 1 poll could be a transient state during shutdown
+        # - 2 polls might still catch a race condition
+        # - 3 polls (with default 1s interval = 3s total) provides high confidence
+        #   that the run is truly complete while keeping fallback latency reasonable
+        TERMINAL_POLL_THRESHOLD = 3
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -910,20 +955,57 @@ class RemoteConversation(BaseConversation):
                     ),
                 )
 
+            # Wait for either:
+            # 1. WebSocket delivers terminal status event (preferred)
+            # 2. Poll interval expires (fallback - check status via REST)
+            try:
+                ws_status = self._terminal_status_queue.get(timeout=poll_interval)
+                # Handle ERROR/STUCK states - raises ConversationRunError
+                self._handle_conversation_status(ws_status)
+
+                logger.info(
+                    "Run completed via WebSocket notification "
+                    "(status: %s, elapsed: %.1fs)",
+                    ws_status,
+                    elapsed,
+                )
+                return
+            except Empty:
+                pass  # Queue.get() timed out, fall through to REST polling
+
+            # Poll the server for status as a health check and fallback.
+            # This catches ERROR/STUCK states that need immediate attention,
+            # and provides a fallback if WebSocket is delayed/disconnected.
             try:
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
+                consecutive_terminal_polls = 0  # Reset on error
             else:
-                if self._handle_conversation_status(status):
-                    logger.info(
-                        "Run completed with status: %s (elapsed: %.1fs)",
-                        status,
-                        elapsed,
-                    )
-                    return
+                # Raises ConversationRunError for ERROR/STUCK states
+                self._handle_conversation_status(status)
 
-            time.sleep(poll_interval)
+                # Track consecutive terminal polls as a fallback for WS issues.
+                # If WebSocket is delayed/disconnected, we return after multiple
+                # consecutive polls confirm the terminal status.
+                if status and ConversationExecutionStatus(status).is_terminal():
+                    consecutive_terminal_polls += 1
+                    if consecutive_terminal_polls >= TERMINAL_POLL_THRESHOLD:
+                        logger.info(
+                            "Run completed via REST fallback after %d consecutive "
+                            "terminal polls (status: %s, elapsed: %.1fs). "
+                            "Reconciling events...",
+                            consecutive_terminal_polls,
+                            status,
+                            elapsed,
+                        )
+                        # Reconcile events to catch any that were missed via WS.
+                        # This is only called in the fallback path, so it doesn't
+                        # add overhead in the common case where WS works.
+                        self._state.events.reconcile()
+                        return
+                else:
+                    consecutive_terminal_polls = 0
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
@@ -1113,6 +1195,28 @@ class RemoteConversation(BaseConversation):
         """
         _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
 
+    def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
+        """Execute a tool directly without going through the agent loop.
+
+        Note: This method is not yet supported for RemoteConversation.
+        Tool execution for remote conversations happens on the server side
+        during the normal agent loop.
+
+        Args:
+            tool_name: The name of the tool to execute
+            action: The action to pass to the tool executor
+
+        Raises:
+            NotImplementedError: Always, as this feature is not yet supported
+                for remote conversations.
+        """
+        raise NotImplementedError(
+            "execute_tool is not yet supported for RemoteConversation. "
+            "Tool execution for remote conversations happens on the server side "
+            "during the normal agent loop. Use LocalConversation for direct "
+            "tool execution."
+        )
+
     def close(self) -> None:
         """Close the conversation and clean up resources.
 
@@ -1123,8 +1227,7 @@ class RemoteConversation(BaseConversation):
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
-        if self._hook_processor is not None:
-            self._hook_processor.run_session_end()
+        # SessionEnd hooks are executed server-side (via hook_config in payload).
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:
@@ -1134,6 +1237,13 @@ class RemoteConversation(BaseConversation):
             pass
 
         self._end_observability_span()
+        if self.delete_on_close:
+            try:
+                # trigger server-side delete_conversation to release resources
+                # like tmux sessions
+                _send_request(self._client, "DELETE", f"/api/conversations/{self.id}")
+            except Exception:
+                pass
 
     def __del__(self) -> None:
         try:

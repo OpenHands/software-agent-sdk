@@ -333,7 +333,9 @@ _DEFAULT_PACKAGE_VERSION = _package_version()
 
 
 class BuildOptions(BaseModel):
-    base_image: str = Field(default="nikolaik/python-nodejs:python3.13-nodejs22")
+    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+    # with Python 3.13. See issue #1886 for details.
+    base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22")
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
     )
@@ -562,6 +564,10 @@ def build(opts: BuildOptions) -> list[str]:
         opts.target,
         "--build-arg",
         f"BASE_IMAGE={opts.base_image}",
+        "--build-arg",
+        f"OPENHANDS_BUILD_GIT_SHA={opts.git_sha}",
+        "--build-arg",
+        f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
     ]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
@@ -662,7 +668,9 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--base-image",
-        default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.13-nodejs22"),
+        # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+        # with Python 3.13. See issue #1886.
+        default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22"),
         help="Base image to use (default from $BASE_IMAGE).",
     )
     parser.add_argument(

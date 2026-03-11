@@ -1,4 +1,5 @@
 import re
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import (
@@ -42,6 +43,7 @@ ActionT = TypeVar("ActionT", bound=Action)
 ObservationT = TypeVar("ObservationT", bound=Observation)
 _action_types_with_risk: dict[type, type] = {}
 _action_types_with_summary: dict[type, type] = {}
+_action_type_lock = threading.Lock()
 
 
 def _camel_to_snake(name: str) -> str:
@@ -477,24 +479,25 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
 
 def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
-    action_type_with_risk = _action_types_with_risk.get(action_type)
-    if action_type_with_risk:
-        return action_type_with_risk
+    with _action_type_lock:
+        action_type_with_risk = _action_types_with_risk.get(action_type)
+        if action_type_with_risk:
+            return action_type_with_risk
 
-    action_type_with_risk = type(
-        f"{action_type.__name__}WithRisk",
-        (action_type,),
-        {
-            "security_risk": Field(
-                # We do NOT add default value to make it an required field
-                # default=risk.SecurityRisk.UNKNOWN
-                description="The LLM's assessment of the safety risk of this action.",
-            ),
-            "__annotations__": {"security_risk": risk.SecurityRisk},
-        },
-    )
-    _action_types_with_risk[action_type] = action_type_with_risk
-    return action_type_with_risk
+        action_type_with_risk = type(
+            f"{action_type.__name__}WithRisk",
+            (action_type,),
+            {
+                "security_risk": Field(
+                    # We do NOT add default value to make it an required field
+                    # default=risk.SecurityRisk.UNKNOWN
+                    description="The LLM's assessment of the safety risk of this action.",  # noqa:E501
+                ),
+                "__annotations__": {"security_risk": risk.SecurityRisk},
+            },
+        )
+        _action_types_with_risk[action_type] = action_type_with_risk
+        return action_type_with_risk
 
 
 def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
@@ -509,24 +512,25 @@ def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
     Returns:
         A new type that includes the summary field
     """
-    action_type_with_summary = _action_types_with_summary.get(action_type)
-    if action_type_with_summary:
-        return action_type_with_summary
+    with _action_type_lock:
+        action_type_with_summary = _action_types_with_summary.get(action_type)
+        if action_type_with_summary:
+            return action_type_with_summary
 
-    action_type_with_summary = type(
-        f"{action_type.__name__}WithSummary",
-        (action_type,),
-        {
-            "summary": Field(
-                default=None,
-                description=(
-                    "A concise summary (approximately 10 words) describing what "
-                    "this specific action does. Focus on the key operation and target. "
-                    "Example: 'List all Python files in current directory'"
+        action_type_with_summary = type(
+            f"{action_type.__name__}WithSummary",
+            (action_type,),
+            {
+                "summary": Field(
+                    default=None,
+                    description=(
+                        "A concise summary (approximately 10 words) describing what "
+                        "this specific action does. Focus on the key operation and target. "  # noqa:E501
+                        "Example: 'List all Python files in current directory'"
+                    ),
                 ),
-            ),
-            "__annotations__": {"summary": str | None},
-        },
-    )
-    _action_types_with_summary[action_type] = action_type_with_summary
-    return action_type_with_summary
+                "__annotations__": {"summary": str | None},
+            },
+        )
+        _action_types_with_summary[action_type] = action_type_with_summary
+        return action_type_with_summary

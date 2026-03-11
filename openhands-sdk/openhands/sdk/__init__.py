@@ -1,6 +1,9 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from openhands.sdk.agent import Agent, AgentBase
+from openhands.sdk.agent import (
+    Agent,
+    AgentBase,
+)
 from openhands.sdk.context import (
     AgentContext,
     load_project_skills,
@@ -19,12 +22,14 @@ from openhands.sdk.conversation import (
     RemoteConversation,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.event import Event, LLMConvertibleEvent
+from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    FallbackStrategy,
     ImageContent,
+    LLMProfileStore,
     LLMRegistry,
     LLMStreamChunk,
     Message,
@@ -42,6 +47,13 @@ from openhands.sdk.mcp import (
     create_mcp_tools,
 )
 from openhands.sdk.plugin import Plugin
+from openhands.sdk.subagent import (
+    agent_definition_to_factory,
+    load_agents_from_dir,
+    load_project_agents,
+    load_user_agents,
+    register_agent,
+)
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -66,7 +78,9 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMProfileStore",
     "LLMStreamChunk",
+    "FallbackStrategy",
     "TokenCallbackType",
     "ConversationStats",
     "RegistryEvent",
@@ -85,6 +99,7 @@ __all__ = [
     "MCPToolDefinition",
     "MCPToolObservation",
     "MessageEvent",
+    "HookExecutionEvent",
     "create_mcp_tools",
     "get_logger",
     "Conversation",
@@ -106,6 +121,11 @@ __all__ = [
     "Workspace",
     "LocalWorkspace",
     "RemoteWorkspace",
+    "register_agent",
+    "load_project_agents",
+    "load_user_agents",
+    "load_agents_from_dir",
+    "agent_definition_to_factory",
     "load_project_skills",
     "load_skills_from_dir",
     "load_user_skills",

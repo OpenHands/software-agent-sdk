@@ -11,7 +11,7 @@ on:
 
 jobs:
     prepare-release:
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Validate version format
               run: |
@@ -48,6 +48,9 @@ jobs:
               run: |
                   echo "🔧 Setting version to ${{ inputs.version }}"
                   make set-package-version version=${{ inputs.version }}
+
+            - name: Update sdk_ref default in run-eval workflow
+              run: python3 .github/scripts/update_sdk_ref_default.py "${{ inputs.version }}"
 
             - name: Commit version changes
               run: |

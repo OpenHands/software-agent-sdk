@@ -65,6 +65,35 @@ class LLMContextWindowExceedError(LLMError):
         super().__init__(message)
 
 
+class LLMContextWindowTooSmallError(LLMError):
+    """Raised when the model's context window is too small for OpenHands to work."""
+
+    def __init__(
+        self,
+        context_window: int,
+        min_required: int = 16384,
+        message: str | None = None,
+    ) -> None:
+        if message is None:
+            message = (
+                f"The configured model has a context window of {context_window:,} "
+                f"tokens, which is below the minimum of {min_required:,} tokens "
+                "required for OpenHands to function properly.\n\n"
+                "For local LLMs (Ollama, LM Studio, etc.), increase the context "
+                "window.\n"
+                "For cloud providers, verify you're using the correct model "
+                "variant.\n\n"
+                "For configuration instructions, see:\n"
+                "  https://docs.openhands.dev/openhands/usage/llms/local-llms\n\n"
+                "To override this check (not recommended), set the environment "
+                "variable:\n"
+                "  ALLOW_SHORT_CONTEXT_WINDOWS=true"
+            )
+        super().__init__(message)
+        self.context_window = context_window
+        self.min_required = min_required
+
+
 class LLMAuthenticationError(LLMError):
     def __init__(self, message: str = "Invalid or missing API credentials") -> None:
         super().__init__(message)

@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_service import (
+    AutoTitleSubscriber,
     ConversationService,
 )
 from openhands.agent_server.event_service import EventService
@@ -19,11 +21,13 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Message
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -41,7 +45,7 @@ def sample_stored_conversation():
     """Create a sample StoredConversation for testing."""
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -124,7 +128,7 @@ class TestConversationServiceSearchConversations:
         ):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -176,7 +180,7 @@ class TestConversationServiceSearchConversations:
         for i in range(3):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -253,7 +257,7 @@ class TestConversationServiceSearchConversations:
         for i in range(5):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -323,7 +327,7 @@ class TestConversationServiceSearchConversations:
         for status, created_at in conversations_data:
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -440,7 +444,7 @@ class TestConversationServiceCountConversations:
         for i, status in enumerate(statuses):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -502,7 +506,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 secrets=test_secrets,
@@ -526,7 +530,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -565,7 +569,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request without secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
             )
@@ -588,7 +592,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -619,7 +623,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -637,7 +641,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -648,7 +652,7 @@ class TestConversationServiceStartConversation:
             assert is_new
 
             duplicate_request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -672,7 +676,7 @@ class TestConversationServiceStartConversation:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -720,7 +724,7 @@ class TestConversationServiceStartConversation:
         mock_event_service.is_open.return_value = True
         mock_event_service.stored = StoredConversation(
             id=custom_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -740,7 +744,7 @@ class TestConversationServiceStartConversation:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -763,7 +767,7 @@ class TestConversationServiceStartConversation:
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -799,7 +803,7 @@ class TestConversationServiceStartConversation:
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -1033,6 +1037,37 @@ class TestConversationServiceUpdateConversation:
         # Verify save_meta was called three times
         assert mock_service.save_meta.call_count == 3
 
+    @pytest.mark.asyncio
+    async def test_update_conversation_sets_updated_at(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Test that update_conversation advances updated_at.
+
+        Renaming a conversation is a meaningful change; the timestamp must
+        reflect when it happened rather than staying at the value set at
+        conversation creation time.
+        """
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        original_updated_at = mock_service.stored.updated_at
+
+        request = UpdateConversationRequest(title="New Title")
+        await conversation_service.update_conversation(conversation_id, request)
+
+        assert mock_service.stored.updated_at > original_updated_at
+
 
 class TestConversationServiceDeleteConversation:
     """Test cases for ConversationService.delete_conversation method."""
@@ -1061,7 +1096,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1170,7 +1205,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1213,7 +1248,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1263,7 +1298,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1373,3 +1408,91 @@ class TestSafeRmtree:
             result = _safe_rmtree(str(test_dir), "test directory")
             assert result is True
             assert not test_dir.exists()
+
+
+class TestAutoTitle:
+    """Tests for AutoTitleSubscriber."""
+
+    def _make_service(self, title: str | None = None) -> AsyncMock:
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            title=title,
+        )
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        return service
+
+    def _user_message_event(self) -> MessageEvent:
+        return MessageEvent(id="evt-1", source="user", llm_message=Message(role="user"))
+
+    @pytest.mark.asyncio
+    async def test_autotitle_sets_title_on_first_user_message(self):
+        """Title is generated and saved when the first user message arrives."""
+        service = self._make_service()
+        service.generate_title.return_value = "✨ Generated Title"
+
+        subscriber = AutoTitleSubscriber(service=service)
+        await subscriber(self._user_message_event())
+
+        # Allow the background task to complete
+        await asyncio.sleep(0)
+
+        assert service.stored.title == "✨ Generated Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_non_user_events(self):
+        """Non-user events do not trigger title generation.
+
+        Covers ConversationStateUpdateEvent and assistant MessageEvents.
+        """
+        service = self._make_service()
+        subscriber = AutoTitleSubscriber(service=service)
+
+        # ConversationStateUpdateEvent should be ignored
+        await subscriber(
+            ConversationStateUpdateEvent(key="execution_status", value="IDLE")
+        )
+        # Assistant MessageEvent should be ignored
+        await subscriber(
+            MessageEvent(
+                id="evt-2", source="agent", llm_message=Message(role="assistant")
+            )
+        )
+
+        await asyncio.sleep(0)
+
+        service.generate_title.assert_not_called()
+        assert service.stored.title is None
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_when_title_already_set(self):
+        """No LLM call is made when the conversation already has a title."""
+        service = self._make_service(title="Existing Title")
+        subscriber = AutoTitleSubscriber(service=service)
+
+        await subscriber(self._user_message_event())
+        await asyncio.sleep(0)
+
+        service.generate_title.assert_not_called()
+        assert service.stored.title == "Existing Title"
+
+    @pytest.mark.asyncio
+    async def test_autotitle_handles_generate_title_failure(self):
+        """A failed title generation is logged as a warning and not re-raised."""
+        service = self._make_service()
+        service.generate_title.side_effect = Exception("LLM unavailable")
+
+        subscriber = AutoTitleSubscriber(service=service)
+        # Should not raise
+        await subscriber(self._user_message_event())
+        await asyncio.sleep(0)
+
+        # Title remains unset; save_meta was never called
+        assert service.stored.title is None
+        service.save_meta.assert_not_called()

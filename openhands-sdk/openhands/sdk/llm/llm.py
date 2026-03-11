@@ -21,20 +21,24 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
+    from openhands.sdk.llm.auth import SupportedVendor
     from openhands.sdk.tool.tool import ToolDefinition
+
+from openhands.sdk.llm.auth.openai import transform_for_subscription
 
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     import litellm
 
-from typing import cast
+from typing import Final, cast
 
 from litellm import (
     ChatCompletionToolParam,
@@ -50,8 +54,20 @@ from litellm.exceptions import (
     Timeout as LiteLLMTimeout,
 )
 from litellm.responses.main import responses as litellm_responses
-from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import ModelResponse
+from litellm.responses.streaming_iterator import SyncResponsesAPIStreamingIterator
+from litellm.types.llms.openai import (
+    OutputTextDeltaEvent,
+    ReasoningSummaryTextDeltaEvent,
+    RefusalDeltaEvent,
+    ResponseCompletedEvent,
+    ResponsesAPIResponse,
+)
+from litellm.types.utils import (
+    Delta,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+)
 from litellm.utils import (
     create_pretrained_tokenizer,
     supports_vision,
@@ -59,6 +75,7 @@ from litellm.utils import (
 )
 
 from openhands.sdk.llm.exceptions import (
+    LLMContextWindowTooSmallError,
     LLMNoResponseError,
     map_provider_exception,
 )
@@ -74,8 +91,9 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
+from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -87,7 +105,7 @@ __all__ = ["LLM"]
 
 
 # Exceptions we retry on
-LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
+LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     APIConnectionError,
     RateLimitError,
     ServiceUnavailableError,
@@ -95,6 +113,20 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     InternalServerError,
     LLMNoResponseError,
 )
+
+# Minimum context window size required for OpenHands to function properly.
+# Based on typical usage: system prompt (~2k) + conversation history (~4k)
+# + tool definitions (~2k) + working memory (~8k) = ~16k minimum.
+MIN_CONTEXT_WINDOW_TOKENS: Final[int] = 16384
+
+# Environment variable to override the minimum context window check
+ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
+
+# Default max output tokens when model info only provides 'max_tokens' (ambiguous).
+# Some providers use 'max_tokens' for the total context window, not output limit.
+# This cap prevents requesting output that exceeds the context window.
+# 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
+DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -156,10 +188,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description=(
             "Sampling temperature for response generation. "
-            "Defaults to 0 for most models and provider default for reasoning models."
+            "Defaults to None (uses provider default temperature). "
+            "Set to 0.0 for deterministic outputs, "
+            "or higher values (0.7-1.0) for more creative responses."
         ),
     )
-    top_p: float | None = Field(default=1.0, ge=0, le=1)
+    top_p: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Nucleus sampling parameter. "
+            "Defaults to None (uses provider default). "
+            "Set to a value between 0 and 1 to control diversity of outputs."
+        ),
+    )
     top_k: float | None = Field(default=None, ge=0)
 
     max_input_tokens: int | None = Field(
@@ -268,12 +311,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
-    # Prompt cache retention only applies to GPT-5+ models; filtered in chat options
+    # Prompt cache retention is filtered per model features in chat options.
     prompt_cache_retention: str | None = Field(
         default="24h",
         description=(
-            "Retention policy for prompt cache. Only sent for GPT-5+ models; "
-            "explicitly stripped for all other models."
+            "Retention policy for prompt cache. Only sent for supported models "
+            "(GPT-5+ and GPT-4.1, excluding Azure deployments); explicitly "
+            "stripped for all others."
         ),
     )
     extended_thinking_budget: int | None = Field(
@@ -321,6 +365,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ),
     )
 
+    fallback_strategy: FallbackStrategy | None = Field(
+        default=None,
+        description=(
+            "Optional fallback strategy for trying alternate LLMs on transient "
+            "failure. Construct with FallbackStrategy(fallback_llms=[...])."
+            "Excluded from serialization; must be reconfigured after load."
+        ),
+        exclude=True,
+    )
+
     # =========================================================================
     # Internal fields (excluded from dumps)
     # =========================================================================
@@ -335,6 +389,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
+    _is_subscription: bool = PrivateAttr(default=False)
+    _litellm_provider: str | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -391,11 +447,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
-        # HF doesn't support the OpenAI default value for top_p (1)
-        if model_val.startswith("huggingface"):
-            if d.get("top_p", 1.0) == 1.0:
-                d["top_p"] = 0.9
-
         return d
 
     @model_validator(mode="after")
@@ -434,9 +485,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Capabilities + model info
         self._init_model_info_and_caps()
-
-        if self.temperature is None:
-            self.temperature = get_default_temperature(self.model)
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
@@ -479,9 +527,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> cost = llm.metrics.accumulated_cost
             >>> print(f"Total cost: ${cost}")
         """
-        assert self._metrics is not None, (
-            "Metrics should be initialized after model validation"
-        )
+        if self._metrics is None:
+            self._metrics = Metrics(model_name=self.model)
         return self._metrics
 
     @property
@@ -494,14 +541,75 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Example:
             >>> llm.telemetry.set_log_completions_callback(my_callback)
         """
-        assert self._telemetry is not None, (
-            "Telemetry should be initialized after model validation"
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self.metrics,
+            )
         return self._telemetry
+
+    @property
+    def is_subscription(self) -> bool:
+        """Check if this LLM uses subscription-based authentication.
+
+        Returns True when the LLM was created via `LLM.subscription_login()`,
+        which uses the ChatGPT subscription Codex backend rather than the
+        standard OpenAI API.
+
+        Returns:
+            bool: True if using subscription-based transport, False otherwise.
+        """
+        return self._is_subscription
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+
+    def reset_metrics(self) -> None:
+        """Reset metrics and telemetry to fresh instances.
+
+        This is used by the LLMRegistry to ensure each registered LLM has
+        independent metrics, preventing metrics from being shared between
+        LLMs that were created via model_copy().
+
+        When an LLM is copied (e.g., to create a condenser LLM from an agent LLM),
+        Pydantic's model_copy() does a shallow copy of private attributes by default,
+        causing the original and copied LLM to share the same Metrics object.
+        This method allows the registry to fix this by resetting metrics to None,
+        which will be lazily recreated when accessed.
+        """
+        self._metrics = None
+        self._telemetry = None
+
+    def _handle_error(
+        self,
+        error: Exception,
+        fallback_call_fn: Callable[[LLM], LLMResponse],
+    ) -> LLMResponse:
+        """Handle an error from completion/responses: try fallback, then map and raise.
+
+        Must be called from within an except block. Either returns an
+        LLMResponse (fallback succeeded) or re-raises (mapped or original).
+        """
+        assert self._telemetry is not None
+        self._telemetry.on_error(error)
+        if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
+            result = self.fallback_strategy.try_fallback(
+                primary_model=self.model,
+                primary_error=error,
+                primary_metrics=self.metrics,
+                call_fn=fallback_call_fn,
+            )
+            if result is not None:
+                return result
+        mapped = map_provider_exception(error)
+        if mapped is not error:
+            raise mapped from error
+        raise
 
     def completion(
         self,
@@ -655,14 +763,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=resp
             )
         except Exception as e:
-            self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            return self._handle_error(
+                e,
+                lambda fb: fb.completion(
+                    messages,
+                    tools,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    on_token,
+                ),
+            )
 
     # =========================================================================
-    # Responses API (non-stream, v1)
+    # Responses API (v1)
     # =========================================================================
     def responses(
         self,
@@ -686,16 +799,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store: Whether to store the conversation
             _return_metrics: Whether to return usage metrics
             add_security_risk_prediction: Add security_risk field to tool schemas
-            on_token: Optional callback for streaming tokens (not yet supported)
+            on_token: Optional callback for streaming deltas
             **kwargs: Additional arguments passed to the API
 
         Note:
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        # Streaming not yet supported
-        if kwargs.get("stream", False) or self.stream or on_token is not None:
-            raise ValueError("Streaming is not supported for Responses API yet")
+        user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
+        if user_enable_streaming:
+            if on_token is None and not self.is_subscription:
+                # We allow on_token to be None for subscription mode
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
@@ -752,11 +868,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     typed_input: ResponseInputParam | str = (
                         cast(ResponseInputParam, input_items) if input_items else ""
                     )
-                    # Extract api_key value with type assertion for type checker
-                    api_key_value: str | None = None
-                    if self.api_key:
-                        assert isinstance(self.api_key, SecretStr)
-                        api_key_value = self.api_key.get_secret_value()
+                    api_key_value = self._get_litellm_api_key_value()
 
                     ret = litellm_responses(
                         model=self.model,
@@ -771,12 +883,67 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         seed=self.seed,
                         **final_kwargs,
                     )
-                    assert isinstance(ret, ResponsesAPIResponse), (
+                    if isinstance(ret, ResponsesAPIResponse):
+                        if user_enable_streaming:
+                            logger.warning(
+                                "Responses streaming was requested, but the provider "
+                                "returned a non-streaming response; no on_token deltas "
+                                "will be emitted."
+                            )
+                        self._telemetry.on_response(ret)
+                        return ret
+
+                    # When stream=True, LiteLLM returns a streaming iterator rather than
+                    # a single ResponsesAPIResponse. Drain the iterator and use the
+                    # completed response.
+                    if final_kwargs.get("stream", False):
+                        if not isinstance(ret, SyncResponsesAPIStreamingIterator):
+                            raise AssertionError(
+                                f"Expected Responses stream iterator, got {type(ret)}"
+                            )
+
+                        stream_callback = on_token if user_enable_streaming else None
+                        for event in ret:
+                            if stream_callback is None:
+                                continue
+                            if isinstance(
+                                event,
+                                (
+                                    OutputTextDeltaEvent,
+                                    RefusalDeltaEvent,
+                                    ReasoningSummaryTextDeltaEvent,
+                                ),
+                            ):
+                                delta = event.delta
+                                if delta:
+                                    stream_callback(
+                                        ModelResponseStream(
+                                            choices=[
+                                                StreamingChoices(
+                                                    delta=Delta(content=delta)
+                                                )
+                                            ]
+                                        )
+                                    )
+
+                        completed_event = ret.completed_response
+                        if completed_event is None:
+                            raise LLMNoResponseError(
+                                "Responses stream finished without a completed response"
+                            )
+                        if not isinstance(completed_event, ResponseCompletedEvent):
+                            raise LLMNoResponseError(
+                                f"Unexpected completed event: {type(completed_event)}"
+                            )
+
+                        completed_resp = completed_event.response
+
+                        self._telemetry.on_response(completed_resp)
+                        return completed_resp
+
+                    raise AssertionError(
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
-                    # telemetry (latency, cost). Token usage mapping we handle after.
-                    self._telemetry.on_response(ret)
-                    return ret
 
         try:
             resp: ResponsesAPIResponse = _one_attempt()
@@ -798,15 +965,46 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=resp
             )
         except Exception as e:
-            self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
+            return self._handle_error(
+                e,
+                lambda fb: fb.responses(
+                    messages,
+                    tools,
+                    include,
+                    store,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    on_token,
+                ),
+            )
 
     # =========================================================================
     # Transport + helpers
     # =========================================================================
+
+    def _infer_litellm_provider(self) -> str | None:
+        if self._litellm_provider is not None:
+            return self._litellm_provider
+
+        provider = infer_litellm_provider(model=self.model, api_base=self.base_url)
+        self._litellm_provider = provider
+        return provider
+
+    def _get_litellm_api_key_value(self) -> str | None:
+        api_key_value: str | None = None
+        if self.api_key:
+            assert isinstance(self.api_key, SecretStr)
+            api_key_value = self.api_key.get_secret_value()
+
+        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
+        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
+        # to reject the request with an "Invalid API Key format" error.
+        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
+        if api_key_value is not None and self._infer_litellm_provider() == "bedrock":
+            return None
+
+        return api_key_value
+
     def _transport_call(
         self,
         *,
@@ -840,11 +1038,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     category=DeprecationWarning,
                     message="Accessing the 'model_fields' attribute.*",
                 )
-                # Extract api_key value with type assertion for type checker
-                api_key_value: str | None = None
-                if self.api_key:
-                    assert isinstance(self.api_key, SecretStr)
-                    api_key_value = self.api_key.get_secret_value()
+                api_key_value = self._get_litellm_api_key_value()
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
@@ -902,6 +1096,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ):
             self.max_input_tokens = self._model_info.get("max_input_tokens")
 
+        # Validate context window size
+        self._validate_context_window_size()
+
         if self.max_output_tokens is None:
             if any(
                 m in self.model
@@ -922,7 +1119,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
                 elif isinstance(self._model_info.get("max_tokens"), int):
-                    self.max_output_tokens = self._model_info.get("max_tokens")
+                    # 'max_tokens' is ambiguous: some providers use it for total
+                    # context window, not output limit. Cap it to avoid requesting
+                    # output that exceeds the context window.
+                    max_tokens_value = self._model_info.get("max_tokens")
+                    assert isinstance(max_tokens_value, int)  # for type checker
+                    self.max_output_tokens = min(
+                        max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                    )
+                    if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s for %s "
+                            "(max_tokens may be context window, not output)",
+                            max_tokens_value,
+                            self.max_output_tokens,
+                            self.model,
+                        )
 
         if "o3" in self.model:
             o3_limit = 100000
@@ -933,6 +1145,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     self.max_output_tokens,
                     self.model,
                 )
+
+    def _validate_context_window_size(self) -> None:
+        """Validate that the context window is large enough for OpenHands."""
+        # Allow override via environment variable
+        if os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower() in (
+            "true",
+            "1",
+            "yes",
+        ):
+            return
+
+        # Unknown context window - cannot validate
+        if self.max_input_tokens is None:
+            return
+
+        # Check minimum requirement
+        if self.max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
+            raise LLMContextWindowTooSmallError(
+                self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
+            )
 
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
@@ -995,11 +1227,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _apply_prompt_caching(self, messages: list[Message]) -> None:
         """Applies caching breakpoints to the messages.
 
-        For new Anthropic API, we only need to mark the last user or
-          tool message as cacheable.
+        For Anthropic's prefix caching, we mark specific content blocks:
+        1. System message: Mark the first block (static prompt) for caching.
+           If there are two blocks (static + dynamic), only the first is marked
+           to enable cross-conversation cache sharing.
+        2. Last user/tool message: Mark for caching to extend the cache prefix.
         """
         if len(messages) > 0 and messages[0].role == "system":
-            messages[0].content[-1].cache_prompt = True
+            sys_content = messages[0].content
+            if len(sys_content) >= 2:
+                # Two-block structure: static (index 0) + dynamic (index 1)
+                # Mark only the static block; ensure dynamic is unmarked
+                sys_content[0].cache_prompt = True
+                sys_content[1].cache_prompt = False
+            elif len(sys_content) == 1:
+                # Single block: mark it for caching
+                sys_content[0].cache_prompt = True
+
         # NOTE: this is only needed for anthropic
         for message in reversed(messages):
             if message.role in ("user", "tool"):
@@ -1046,8 +1290,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         - Skips prompt caching flags and string serializer concerns
         - Uses Message.to_responses_value to get either instructions (system)
-         or input items (others)
+          or input items (others)
         - Concatenates system instructions into a single instructions string
+        - For subscription mode, system prompts are prepended to user content
         """
         msgs = copy.deepcopy(messages)
 
@@ -1057,18 +1302,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
+        system_chunks: list[str] = []
+
         for m in msgs:
             val = m.to_responses_value(vision_enabled=vision_active)
             if isinstance(val, str):
                 s = val.strip()
-                if not s:
-                    continue
-                instructions = (
-                    s if instructions is None else f"{instructions}\n\n---\n\n{s}"
-                )
-            else:
-                if val:
-                    input_items.extend(val)
+                if s:
+                    if self.is_subscription:
+                        system_chunks.append(s)
+                    else:
+                        instructions = (
+                            s
+                            if instructions is None
+                            else f"{instructions}\n\n---\n\n{s}"
+                        )
+            elif val:
+                input_items.extend(val)
+
+        if self.is_subscription:
+            return transform_for_subscription(system_chunks, input_items)
         return instructions, input_items
 
     def get_token_count(self, messages: list[Message]) -> int:
@@ -1159,3 +1412,62 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if v is not None:
                 data[field_name] = v
         return cls(**data)
+
+    @classmethod
+    def subscription_login(
+        cls,
+        vendor: SupportedVendor,
+        model: str,
+        force_login: bool = False,
+        open_browser: bool = True,
+        **llm_kwargs,
+    ) -> LLM:
+        """Authenticate with a subscription service and return an LLM instance.
+
+        This method provides subscription-based access to LLM models that are
+        available through chat subscriptions (e.g., ChatGPT Plus/Pro) rather
+        than API credits. It handles credential caching, token refresh, and
+        the OAuth login flow.
+
+        Currently supported vendors:
+        - "openai": ChatGPT Plus/Pro subscription for Codex models
+
+        Supported OpenAI models:
+        - gpt-5.1-codex-max
+        - gpt-5.1-codex-mini
+        - gpt-5.2
+        - gpt-5.2-codex
+
+        Args:
+            vendor: The vendor/provider. Currently only "openai" is supported.
+            model: The model to use. Must be supported by the vendor's
+                subscription service.
+            force_login: If True, always perform a fresh login even if valid
+                credentials exist.
+            open_browser: Whether to automatically open the browser for the
+                OAuth login flow.
+            **llm_kwargs: Additional arguments to pass to the LLM constructor.
+
+        Returns:
+            An LLM instance configured for subscription-based access.
+
+        Raises:
+            ValueError: If the vendor or model is not supported.
+            RuntimeError: If authentication fails.
+
+        Example:
+            >>> from openhands.sdk import LLM
+            >>> # First time: opens browser for OAuth login
+            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            >>> # Subsequent calls: reuses cached credentials
+            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+        """
+        from openhands.sdk.llm.auth.openai import subscription_login
+
+        return subscription_login(
+            vendor=vendor,
+            model=model,
+            force_login=force_login,
+            open_browser=open_browser,
+            **llm_kwargs,
+        )

@@ -29,6 +29,9 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 logger = get_logger(__name__)
 
+# Default timeout for MCP tool execution in seconds
+MCP_TOOL_TIMEOUT_SECONDS = 300
+
 
 # NOTE: We don't define MCPToolAction because it
 # will be a pydantic BaseModel dynamically created from the MCP tool schema.
@@ -45,10 +48,17 @@ class MCPToolExecutor(ToolExecutor):
 
     tool_name: str
     client: MCPClient
+    timeout: float
 
-    def __init__(self, tool_name: str, client: MCPClient):
+    def __init__(
+        self,
+        tool_name: str,
+        client: MCPClient,
+        timeout: float = MCP_TOOL_TIMEOUT_SECONDS,
+    ):
         self.tool_name = tool_name
         self.client = client
+        self.timeout = timeout
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
@@ -83,9 +93,22 @@ class MCPToolExecutor(ToolExecutor):
         conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> MCPToolObservation:
         """Execute an MCP tool call."""
-        return self.client.call_async_from_sync(
-            self.call_tool, action=action, timeout=300
-        )
+        try:
+            return self.client.call_async_from_sync(
+                self.call_tool, action=action, timeout=self.timeout
+            )
+        except TimeoutError:
+            error_msg = (
+                f"MCP tool '{self.tool_name}' timed out after {self.timeout} seconds. "
+                "The tool server may be unresponsive or the operation is taking "
+                "too long. Consider retrying or using an alternative approach."
+            )
+            logger.error(error_msg)
+            return MCPToolObservation.from_text(
+                text=error_msg,
+                is_error=True,
+                tool_name=self.tool_name,
+            )
 
 
 _mcp_dynamic_action_type: dict[str, type[Schema]] = {}

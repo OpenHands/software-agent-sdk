@@ -117,3 +117,221 @@ class TestHookExecutor:
 
         assert result.blocked
         assert "error message" in result.stderr
+
+
+class TestAsyncHookExecution:
+    """Tests for async hook execution."""
+
+    @pytest.fixture
+    def executor(self, tmp_path):
+        """Create an executor with a temporary working directory."""
+        return HookExecutor(working_dir=str(tmp_path))
+
+    @pytest.fixture
+    def sample_event(self):
+        """Create a sample hook event."""
+        return HookEvent(
+            event_type=HookEventType.POST_TOOL_USE,
+            tool_name="TestTool",
+            tool_input={"arg": "value"},
+            session_id="test-session",
+        )
+
+    def test_execute_async_hook_returns_immediately(self, executor, sample_event):
+        """Test that async hooks return immediately without waiting."""
+        import time
+
+        hook = HookDefinition.model_validate({"command": "sleep 5", "async": True})
+
+        start = time.time()
+        result = executor.execute(hook, sample_event)
+        elapsed = time.time() - start
+
+        assert result.success
+        assert result.async_started
+        assert elapsed < 1.0  # Should return immediately, not wait 5s
+
+    def test_execute_async_hook_result_fields(self, executor, sample_event):
+        """Test that async hook result has expected field values."""
+        hook = HookDefinition.model_validate({"command": "echo 'test'", "async": True})
+        result = executor.execute(hook, sample_event)
+
+        assert result.success is True
+        assert result.async_started is True
+        assert result.exit_code == 0
+        assert result.blocked is False
+        assert result.stdout == ""  # No output captured for async
+        assert result.stderr == ""
+
+    def test_execute_async_hook_process_tracked(self, executor, sample_event, tmp_path):
+        """Test that async hooks track processes for cleanup."""
+        marker = tmp_path / "async_marker.txt"
+        hook = HookDefinition.model_validate(
+            {"command": f"sleep 0.3 && touch {marker}", "async": True, "timeout": 5}
+        )
+
+        result = executor.execute(hook, sample_event)
+        assert result.async_started
+
+        # Process should be tracked
+        assert len(executor.async_process_manager._processes) == 1
+
+        # Wait for process to complete and verify marker file created
+        import time
+
+        time.sleep(0.5)
+        assert marker.exists()
+
+    def test_execute_async_hook_receives_stdin(self, executor, sample_event, tmp_path):
+        """Test that async hooks receive event data on stdin."""
+        output_file = tmp_path / "stdin_output.json"
+        # Script that reads stdin and writes to file
+        hook = HookDefinition.model_validate(
+            {"command": f"cat > {output_file}", "async": True, "timeout": 5}
+        )
+
+        result = executor.execute(hook, sample_event)
+        assert result.async_started
+
+        # Wait for async process to complete
+        import json
+        import time
+
+        time.sleep(0.3)
+
+        assert output_file.exists()
+        content = json.loads(output_file.read_text())
+        assert content["tool_name"] == "TestTool"
+        assert content["event_type"] == "PostToolUse"
+
+    def test_sync_hook_not_marked_async(self, executor, sample_event):
+        """Test that synchronous hooks are not marked as async_started."""
+        hook = HookDefinition.model_validate({"command": "echo 'sync'", "async": False})
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.async_started is False
+        assert "sync" in result.stdout
+
+    def test_execute_all_with_mixed_sync_async_hooks(
+        self, executor, sample_event, tmp_path
+    ):
+        """Test execute_all with a mix of sync and async hooks."""
+        marker = tmp_path / "async_ran.txt"
+        hooks = [
+            HookDefinition(command="echo 'sync1'"),
+            HookDefinition.model_validate(
+                {"command": f"touch {marker}", "async": True}
+            ),
+            HookDefinition(command="echo 'sync2'"),
+        ]
+
+        results = executor.execute_all(hooks, sample_event, stop_on_block=False)
+
+        assert len(results) == 3
+        assert results[0].async_started is False
+        assert results[1].async_started is True
+        assert results[2].async_started is False
+
+        # Wait for async hook to complete
+        import time
+
+        time.sleep(0.2)
+        assert marker.exists()
+
+
+class TestAsyncProcessManager:
+    """Tests for AsyncProcessManager."""
+
+    def test_add_process_and_cleanup_all(self, tmp_path):
+        """Test that processes can be added and cleaned up."""
+        import subprocess
+
+        from openhands.sdk.hooks.executor import AsyncProcessManager
+
+        manager = AsyncProcessManager()
+
+        # Start a long-running process with new session for process group cleanup
+        process = subprocess.Popen(
+            "sleep 60",
+            shell=True,
+            cwd=str(tmp_path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        manager.add_process(process, timeout=30)
+        assert len(manager._processes) == 1
+        assert process.poll() is None  # Still running
+
+        manager.cleanup_all()
+        assert len(manager._processes) == 0
+
+        # Give process time to terminate
+        import time
+
+        time.sleep(0.1)
+        assert process.poll() is not None  # Terminated
+
+    def test_cleanup_expired_terminates_old_processes(self, tmp_path):
+        """Test that cleanup_expired terminates processes past their timeout."""
+        import subprocess
+        import time
+
+        from openhands.sdk.hooks.executor import AsyncProcessManager
+
+        manager = AsyncProcessManager()
+
+        # Start a process with very short timeout that's already expired
+        process = subprocess.Popen(
+            "sleep 60",
+            shell=True,
+            cwd=str(tmp_path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        # Add with a timeout in the past (simulated by setting start time)
+        manager._processes.append(
+            (process, time.time() - 10, 5)
+        )  # Started 10s ago, 5s timeout
+
+        assert process.poll() is None  # Still running
+        manager.cleanup_expired()
+
+        time.sleep(0.1)
+        assert process.poll() is not None  # Terminated
+        assert len(manager._processes) == 0
+
+    def test_cleanup_expired_keeps_active_processes(self, tmp_path):
+        """Test that cleanup_expired keeps processes within their timeout."""
+        import subprocess
+
+        from openhands.sdk.hooks.executor import AsyncProcessManager
+
+        manager = AsyncProcessManager()
+
+        process = subprocess.Popen(
+            "sleep 60",
+            shell=True,
+            cwd=str(tmp_path),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        manager.add_process(process, timeout=60)  # Long timeout
+
+        manager.cleanup_expired()
+
+        # Process should still be tracked and running
+        assert len(manager._processes) == 1
+        assert process.poll() is None
+
+        # Clean up for test teardown
+        process.terminate()

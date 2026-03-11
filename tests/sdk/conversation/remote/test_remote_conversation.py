@@ -23,7 +23,7 @@ class TestRemoteConversation:
     def setup_method(self):
         """Set up test environment."""
         self.host: str = "http://localhost:8000"
-        self.llm: LLM = LLM(model="gpt-4", api_key=SecretStr("test-key"))
+        self.llm: LLM = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
         self.agent: Agent = Agent(llm=self.llm, tools=[])
         self.mock_client: Mock = Mock(spec=httpx.Client)
         self.workspace: RemoteWorkspace = RemoteWorkspace(
@@ -512,7 +512,12 @@ class TestRemoteConversation:
     def test_remote_conversation_run_blocking_polls_until_finished(
         self, mock_ws_client
     ):
-        """Test that blocking=True polls until status is not running."""
+        """Test that blocking=True polls until status is not running.
+
+        The implementation waits for WebSocket to deliver terminal status, but falls
+        back to REST polling if WebSocket doesn't deliver. The fallback requires 3
+        consecutive terminal polls (TERMINAL_POLL_THRESHOLD) before returning.
+        """
         # Setup mocks
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
@@ -549,8 +554,11 @@ class TestRemoteConversation:
         conversation.run(blocking=True, poll_interval=0.01)  # Fast polling for test
 
         # Verify polling happened multiple times
-        assert poll_count[0] == 3, (
-            f"Should have polled 3 times (2 running + 1 finished), got {poll_count[0]}"
+        # With the fallback mechanism, we need 3 consecutive terminal polls:
+        # 2 running + 3 finished = 5 total polls
+        assert poll_count[0] == 5, (
+            f"Should have polled 5 times (2 running + 3 finished for fallback "
+            f"threshold), got {poll_count[0]}"
         )
 
     @patch(
@@ -992,3 +1000,35 @@ class TestRemoteConversation:
 
         # Verify trailing slash was removed and workspace host was normalized
         assert conversation.workspace.host == "http://localhost:8000"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_execute_tool_not_implemented(self, mock_ws_client):
+        """Test that execute_tool raises NotImplementedError for RemoteConversation."""
+        # Setup mocks
+        mock_client_instance = self.setup_mock_client()
+
+        conversation_id = str(uuid.uuid4())
+        mock_conv_response = self.create_mock_conversation_response(conversation_id)
+        mock_events_response = self.create_mock_events_response()
+
+        mock_client_instance.post.return_value = mock_conv_response
+        mock_client_instance.get.return_value = mock_events_response
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        # Create conversation
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        # Create a dummy action (using a simple mock)
+        from unittest.mock import MagicMock
+
+        mock_action = MagicMock()
+
+        # Verify execute_tool raises NotImplementedError
+        with pytest.raises(NotImplementedError) as exc_info:
+            conversation.execute_tool("any_tool", mock_action)
+
+        assert "not yet supported for RemoteConversation" in str(exc_info.value)
