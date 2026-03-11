@@ -68,7 +68,7 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
               uses: OpenHands/extensions/plugins/pr-review@main
               with:
                   # Customize these inputs as needed
-                  llm-model: anthropic/claude-3-5-sonnet-20240620
+                  llm-model: anthropic/claude-sonnet-4-5-20250929
                   llm-base-url: ''
                   review-style: roasted
                   # Secrets
@@ -173,7 +173,7 @@ The workflow is configured using inputs to the `OpenHands/extensions/plugins/pr-
 
 | Input | Description | Default Example |
 |-------|-------------|---------|
-| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | `anthropic/claude-3-5-sonnet-20240620` |
+| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | `anthropic/claude-sonnet-4-5-20250929` |
 | `llm-base-url` | LLM base URL (optional) | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | `roasted` |
 | `llm-api-key` | LLM API key | `${{ secrets.LLM_API_KEY }}` |
@@ -195,7 +195,7 @@ Specify multiple models as a comma-separated list in the `llm-model` input:
               uses: OpenHands/extensions/plugins/pr-review@main
               with:
                   # Multiple models for A/B testing - one will be randomly selected
-                  llm-model: 'anthropic/claude-3-5-sonnet-20240620,gpt-4'
+                  llm-model: 'anthropic/claude-sonnet-4-5-20250929,gpt-4'
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   # ... other inputs
