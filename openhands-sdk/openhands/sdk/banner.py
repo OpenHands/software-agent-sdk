@@ -8,6 +8,7 @@ import os
 import sys
 
 
+# Not guarded by a lock; worst case in a race is the banner prints twice.
 _BANNER_PRINTED = False
 
 
