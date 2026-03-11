@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,6 +40,8 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 
 
 logger = get_logger(__name__)
+
+_SUBAGENTS_DIR: Final[str] = "subagents"
 
 
 class TaskStatus(StrEnum):
@@ -98,12 +100,21 @@ class TaskManager:
 
         self._tasks: dict[str, Task] = {}
 
-        # tmp directory to save task to eventually resume it later
-        self._tmp_dir = Path(tempfile.mkdtemp(prefix="openhands_tasks_"))
+        # Set once in _ensure_parent: uses the parent's subagents dir
+        # when the parent persists, otherwise a temporary directory.
+        self._persistence_dir: Path | None = None
 
     def _ensure_parent(self, conversation: LocalConversation) -> None:
         if self._parent_conversation is None:
             self._parent_conversation = conversation
+            parent_persistence_dir = conversation.state.persistence_dir
+            if parent_persistence_dir is not None:
+                self._persistence_dir = Path(parent_persistence_dir) / _SUBAGENTS_DIR
+                self._persistence_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                self._persistence_dir = Path(
+                    tempfile.mkdtemp(prefix="openhands_tasks_")
+                )
 
     @property
     def parent_conversation(self) -> LocalConversation:
@@ -184,7 +195,7 @@ class TaskManager:
         conversation = LocalConversation(
             agent=worker_agent,
             workspace=self.parent_conversation.state.workspace.working_dir,
-            persistence_dir=self._tmp_dir,
+            persistence_dir=self._persistence_dir,
             conversation_id=conversation_id,
             hook_config=factory.definition.hooks,
             delete_on_close=False,
@@ -276,7 +287,7 @@ class TaskManager:
             agent=worker_agent,
             workspace=parent.state.workspace.working_dir,
             visualizer=visualizer,
-            persistence_dir=self._tmp_dir,
+            persistence_dir=self._persistence_dir,
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
             hook_config=hook_config,
@@ -384,8 +395,18 @@ class TaskManager:
             )
 
     def close(self) -> None:
-        """Clean up tmp directory and remove all created tasks."""
-        if self._tmp_dir.exists():
-            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+        """Clean up temporary directory (if used) and remove all created tasks."""
+        # Only clean up when using a temp dir (parent had no persistence).
+        # When the parent persists, subagent data lives under its directory.
+        parent_persists = (
+            self._parent_conversation is not None
+            and self._parent_conversation.state.persistence_dir is not None
+        )
+        if (
+            not parent_persists
+            and self._persistence_dir is not None
+            and self._persistence_dir.exists()
+        ):
+            shutil.rmtree(self._persistence_dir, ignore_errors=True)
 
         self._tasks.clear()
