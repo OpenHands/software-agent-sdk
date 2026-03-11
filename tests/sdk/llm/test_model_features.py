@@ -39,6 +39,7 @@ def test_model_matches(name, pattern, expected):
         # GPT-5 family
         ("gpt-5.2", True),
         ("gpt-5.2-codex", True),
+        ("gpt-5.4-codex", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),

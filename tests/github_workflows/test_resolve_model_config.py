@@ -491,3 +491,12 @@ print(f"SUCCESS: Imported {len(MODELS)} models without litellm")
         f"stderr: {result.stderr}"
     )
     assert "SUCCESS" in result.stdout
+
+
+def test_gpt_5_4_codex_config():
+    """Test that gpt-5.4-codex has correct configuration."""
+    model = MODELS["gpt-5.4-codex"]
+
+    assert model["id"] == "gpt-5.4-codex"
+    assert model["display_name"] == "GPT-5.4 Codex"
+    assert model["llm_config"]["model"] == "litellm_proxy/gpt-5.4-codex"
