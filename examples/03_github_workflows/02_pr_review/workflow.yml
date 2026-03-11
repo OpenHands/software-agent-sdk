@@ -35,7 +35,7 @@ jobs:
             - name: Run PR Review
               uses: OpenHands/extensions/plugins/pr-review@main
               with:
-                  llm-model: anthropic/claude-3-5-sonnet-20240620
+                  llm-model: anthropic/claude-3-5anthropic/claude-sonnet-4-5-20250929sonnet-20240620
                   llm-base-url: ''
                   review-style: roasted
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
