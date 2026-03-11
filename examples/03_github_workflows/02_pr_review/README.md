@@ -61,20 +61,20 @@ Set the following secrets in your GitHub repository settings:
 
 ### 3. Customize the workflow (optional)
 
-Edit `.github/workflows/pr-review-by-openhands.yml` to customize the environment variables:
+Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
 
 ```yaml
-            - name: Run PR review
-              shell: bash
-              env:
-                  # Customize these variables as needed
-                  LLM_MODEL: anthropic/claude-3-5-sonnet-20240620
-                  LLM_BASE_URL: ''
-                  REVIEW_STYLE: roasted
+            - name: Run PR Review
+              uses: OpenHands/extensions/plugins/pr-review@main
+              with:
+                  # Customize these inputs as needed
+                  llm-model: anthropic/claude-3-5-sonnet-20240620
+                  llm-base-url: ''
+                  review-style: roasted
                   # Secrets
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  lmnr-api-key: ${{ secrets.LMNR_PROJECT_API_KEY }}
 ```
 
 ### 4. Create the review label
@@ -167,20 +167,20 @@ See the [software-agent-sdk's own code-review skill](https://github.com/OpenHand
 
 ## Workflow Configuration
 
-The workflow is configured using environment variables in the `Run PR review` step.
+The workflow is configured using inputs to the `OpenHands/extensions/plugins/pr-review` action.
 
-### Environment Variables
+### Action Inputs
 
-| Variable | Description | Default Example |
-|----------|-------------|---------|
-| `LLM_MODEL` | LLM model(s) - can be comma-separated for A/B testing | `anthropic/claude-3-5-sonnet-20240620` |
-| `LLM_BASE_URL` | LLM base URL (optional) | `''` |
-| `REVIEW_STYLE` | Review style: 'standard' or 'roasted' | `roasted` |
-| `LLM_API_KEY` | LLM API key | `${{ secrets.LLM_API_KEY }}` |
-| `GITHUB_TOKEN` | GitHub token for API access | `${{ secrets.GITHUB_TOKEN }}` |
-| `LMNR_PROJECT_API_KEY` | Laminar API key for observability (optional) | `${{ secrets.LMNR_PROJECT_API_KEY }}` |
+| Input | Description | Default Example |
+|-------|-------------|---------|
+| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | `anthropic/claude-3-5-sonnet-20240620` |
+| `llm-base-url` | LLM base URL (optional) | `''` |
+| `review-style` | Review style: 'standard' or 'roasted' | `roasted` |
+| `llm-api-key` | LLM API key | `${{ secrets.LLM_API_KEY }}` |
+| `github-token` | GitHub token for API access | `${{ secrets.GITHUB_TOKEN }}` |
+| `lmnr-api-key` | Laminar API key for observability (optional) | `${{ secrets.LMNR_PROJECT_API_KEY }}` |
 
-To use a specific version of the extensions repository, modify the `Checkout extensions repository` step in the workflow file.
+To use a specific version of the extensions repository, modify the `uses` line in the workflow file, e.g., `uses: OpenHands/extensions/plugins/pr-review@v1.0.0`.
 
 ## A/B Testing with Multiple Models
 
@@ -188,17 +188,17 @@ The PR review workflow supports A/B testing different LLM models. When multiple 
 
 ### Configuration
 
-Specify multiple models as a comma-separated list in the `LLM_MODEL` environment variable:
+Specify multiple models as a comma-separated list in the `llm-model` input:
 
 ```yaml
-            - name: Run PR review
-              shell: bash
-              env:
+            - name: Run PR Review
+              uses: OpenHands/extensions/plugins/pr-review@main
+              with:
                   # Multiple models for A/B testing - one will be randomly selected
-                  LLM_MODEL: 'anthropic/claude-3-5-sonnet-20240620,gpt-4'
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  # ... other variables
+                  llm-model: 'anthropic/claude-3-5-sonnet-20240620,gpt-4'
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  # ... other inputs
 ```
 
 ### Observability
