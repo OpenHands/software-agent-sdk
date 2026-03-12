@@ -107,11 +107,33 @@ class ParallelToolExecutor:
         action: ActionEvent,
         tool_runner: Callable[[ActionEvent], list[Event]],
     ) -> list[Event]:
-        """Run tool_runner, converting exceptions to AgentErrorEvent."""
+        """Run tool_runner, converting exceptions to AgentErrorEvent.
+
+        All exceptions are caught so that one failing tool in a parallel
+        batch cannot crash the agent or prevent sibling tools from
+        completing.  ValueErrors are expected tool errors (bad arguments,
+        validation failures); anything else is likely a programming bug
+        and is logged at ERROR with a full traceback.
+        """
         try:
             return tool_runner(action)
+        except ValueError as e:
+            # Expected tool errors (invalid arguments, precondition failures, etc.)
+            logger.info(f"Tool error in '{action.tool_name}': {e}")
+            return [
+                AgentErrorEvent(
+                    error=f"Error executing tool '{action.tool_name}': {e}",
+                    tool_name=action.tool_name,
+                    tool_call_id=action.tool_call_id,
+                )
+            ]
         except Exception as e:
-            logger.error(f"Error executing tool '{action.tool_name}': {e}")
+            # Unexpected errors — likely bugs in tool implementations.
+            # Logged at ERROR with traceback to aid debugging.
+            logger.error(
+                f"Unexpected error in tool '{action.tool_name}': {e}",
+                exc_info=True,
+            )
             return [
                 AgentErrorEvent(
                     error=f"Error executing tool '{action.tool_name}': {e}",

@@ -248,15 +248,15 @@ class Agent(CriticMixin, AgentBase):
             additional_secret_infos=secret_infos,
         )
 
-    def _execute_actions(
-        self,
-        conversation: LocalConversation,
+    @staticmethod
+    def _truncate_at_finish(
         action_events: list[ActionEvent],
-        on_event: ConversationCallbackType,
-    ) -> None:
-        state = conversation.state
+    ) -> tuple[list[ActionEvent], bool]:
+        """Truncate a batch of actions at the first FinishTool.
 
-        # Truncate at FinishTool — anything after "finish" is meaningless.
+        Returns the (possibly shortened) list and whether a FinishTool was
+        found.  Tool calls after FinishTool are discarded and logged.
+        """
         finish_idx = next(
             (
                 i
@@ -265,15 +265,26 @@ class Agent(CriticMixin, AgentBase):
             ),
             None,
         )
-        if finish_idx is not None:
-            discarded = action_events[finish_idx + 1 :]
-            if discarded:
-                names = [ae.tool_name for ae in discarded]
-                logger.warning(
-                    f"Discarding {len(discarded)} tool call(s) "
-                    f"after FinishTool: {names}"
-                )
-            action_events = action_events[: finish_idx + 1]
+        if finish_idx is None:
+            return action_events, False
+
+        discarded = action_events[finish_idx + 1 :]
+        if discarded:
+            names = [ae.tool_name for ae in discarded]
+            logger.warning(
+                f"Discarding {len(discarded)} tool call(s) after FinishTool: {names}"
+            )
+        return action_events[: finish_idx + 1], True
+
+    def _execute_actions(
+        self,
+        conversation: LocalConversation,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> None:
+        state = conversation.state
+
+        action_events, has_finish = self._truncate_at_finish(action_events)
 
         # Pre-process blocked actions on main thread (not thread-safe)
         blocked_reasons: dict[str, str] = {}
@@ -318,7 +329,7 @@ class Agent(CriticMixin, AgentBase):
 
         # Handle FinishTool state transition on main thread, after all
         # events have been emitted.
-        if finish_idx is not None:
+        if has_finish:
             finish_ae = action_events[-1]  # FinishTool is always last after truncation
             if finish_ae.id not in blocked_reasons:
                 should_continue, followup = self._check_iterative_refinement(
