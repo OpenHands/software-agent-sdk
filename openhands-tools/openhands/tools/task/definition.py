@@ -43,7 +43,7 @@ class TaskAction(Action):
         description="The task for the agent to perform.",
     )
     subagent_type: str = Field(
-        default="default",
+        default="general purpose",
         description="The type of specialized agent to use for this task.",
     )
     resume: str | None = Field(
@@ -138,6 +138,16 @@ Example 2 — Running tests (good use of bash):
     subagent_type="bash"
     prompt="Run: cd /workspace/django && python tests/runtests.py
     utils_tests.test_dateformat -v 2. Report the full output."
+
+Example 3 - Research information on a website (good use of general purpose):
+    subagent_type="general purpose"
+    prompt="Navigate to the Stripe API docs and find the parameters for the PaymentIntent create endpoint."
+
+Example 4 - Perform a multi-step task involving code editing and shell commands:
+    subagent_type="general purpose (cli mode)"
+    prompt="Read the database module in src/db.py, extract the connection 
+    pooling logic into a separate file, update all imports, and run the 
+    test suite to verify nothing breaks."
 """  # noqa: E501
 
 
