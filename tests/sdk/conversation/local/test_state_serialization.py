@@ -503,7 +503,7 @@ def test_agent_verify_validates_tools_match():
 
     # Runtime agent with different tools should fail
     different_tools_agent = Agent(llm=llm, tools=[Tool(name="TerminalTool")])
-    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
+    with pytest.raises(ValueError, match="tools were removed mid-conversation"):
         different_tools_agent.verify(persisted_agent)
 
 
@@ -1209,8 +1209,8 @@ def test_agent_verify_fails_when_explicit_tools_differ():
         include_default_tools=["FinishTool"],
     )
 
-    # Should fail because explicit tools don't match (TerminalTool vs FileEditorTool)
-    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
+    # Should fail because TerminalTool was removed (FileEditorTool vs TerminalTool)
+    with pytest.raises(ValueError, match="tools were removed mid-conversation"):
         runtime_agent.verify(persisted_agent)
 
 
@@ -1243,8 +1243,8 @@ def test_agent_verify_fails_when_builtin_tools_differ():
         include_default_tools=["ThinkTool"],  # Different builtin!
     )
 
-    # Should fail because builtin tools don't match (FinishTool vs ThinkTool)
-    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
+    # Should fail because FinishTool was removed (ThinkTool replaces it)
+    with pytest.raises(ValueError, match="tools were removed mid-conversation"):
         runtime_agent.verify(persisted_agent)
 
 
@@ -1271,15 +1271,18 @@ def test_agent_verify_fails_when_builtin_tool_removed():
         include_default_tools=["FinishTool"],  # Missing ThinkTool!
     )
 
-    # Should fail because builtin tools don't match
-    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
+    # Should fail because ThinkTool was removed
+    with pytest.raises(ValueError, match="tools were removed mid-conversation"):
         runtime_agent.verify(persisted_agent)
 
 
-def test_v1_11_5_cli_default_conversation_fails_when_runtime_adds_delegate(
+def test_v1_11_5_cli_default_conversation_resumes_when_runtime_adds_delegate(
     tmp_path: Path,
 ):
-    """Test resuming a v1.11.5 CLI conversation fails after adding delegate."""
+    """Test resuming a v1.11.5 CLI conversation succeeds after adding delegate.
+
+    Adding new tools is allowed — only removing tools is rejected.
+    """
     from openhands.sdk.tool import Tool
     from openhands.tools.preset.default import get_default_agent
 
@@ -1309,10 +1312,9 @@ def test_v1_11_5_cli_default_conversation_fails_when_runtime_adds_delegate(
         update={"tools": [*default_agent.tools, Tool(name="delegate")]}
     )
 
-    with pytest.raises(ValueError, match="added: \\['delegate'\\]"):
-        Conversation(
-            agent=runtime_agent,
-            workspace=tmp_path,
-            persistence_dir=persistence_root,
-            conversation_id=conversation_id,
-        )
+    _ = Conversation(
+        agent=runtime_agent,
+        workspace=tmp_path,
+        persistence_dir=persistence_root,
+        conversation_id=conversation_id,
+    )
