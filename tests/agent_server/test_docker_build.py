@@ -1,7 +1,22 @@
 """Tests for agent_server docker build module."""
 
 import os
+import subprocess
+import tarfile
+from pathlib import Path
 from unittest.mock import patch
+
+
+def _create_fake_sdist(tmp_path: Path) -> Path:
+    src_root = tmp_path / "openhands-sdk-test"
+    src_root.mkdir()
+    (src_root / "README.md").write_text("fixture", encoding="utf-8")
+
+    tarball = tmp_path / "openhands-sdk-test.tar.gz"
+    with tarfile.open(tarball, "w:gz") as tar:
+        tar.add(src_root, arcname=src_root.name)
+
+    return tarball
 
 
 def test_git_info_priority_sdk_sha():
@@ -441,3 +456,157 @@ def test_versioned_tags_format_without_v_prefix():
     # Should be "1.2.0-python", not "v1.2.0-python"
     assert versioned_tags == ["1.2.0-python"]
     assert not any(tag.startswith("v") for tag in versioned_tags)
+
+
+def test_make_build_context_reuses_prebuilt_sdist_without_running_uv_build(
+    tmp_path: Path,
+):
+    from openhands.agent_server.docker.build import (
+        _default_sdk_project_root,
+        _make_build_context,
+    )
+
+    prebuilt_sdist = _create_fake_sdist(tmp_path)
+
+    with patch("openhands.agent_server.docker.build._run") as mock_run:
+        ctx = _make_build_context(
+            _default_sdk_project_root(),
+            prebuilt_sdist=prebuilt_sdist,
+        )
+
+    try:
+        mock_run.assert_not_called()
+        assert (ctx / "README.md").read_text(encoding="utf-8") == "fixture"
+        assert (ctx / "Dockerfile").exists()
+    finally:
+        if ctx.exists():
+            import shutil
+
+            shutil.rmtree(ctx, ignore_errors=True)
+
+
+def test_build_with_prebuilt_sdist_preserves_tags_and_docker_args(tmp_path: Path):
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    prebuilt_sdist = _create_fake_sdist(tmp_path)
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    docker_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        docker_calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python,java",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        sdk_version="1.2.0",
+        include_versioned_tag=True,
+        target="source-minimal",
+        push=False,
+        sdk_project_root=_default_sdk_project_root(),
+        prebuilt_sdist=prebuilt_sdist,
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context", return_value=ctx
+        ) as mock_make_context,
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build._active_buildx_driver",
+            return_value="docker-container",
+        ),
+        patch(
+            "openhands.agent_server.docker.build._default_local_cache_dir",
+            return_value=tmp_path / "cache",
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        tags = build(opts)
+
+    assert tags == opts.all_tags
+    mock_make_context.assert_called_once_with(opts.sdk_project_root, prebuilt_sdist)
+    assert len(docker_calls) == 1
+    cmd, cwd = docker_calls[0]
+    assert cwd == str(ctx)
+    assert "--load" in cmd
+    assert "--target" in cmd and "source-minimal" in cmd
+    assert "--build-arg" in cmd
+    assert "BASE_IMAGE=python:3.12" in cmd
+    for tag in opts.all_tags:
+        assert tag in cmd
+
+
+def test_build_can_reuse_same_prebuilt_sdist_multiple_times(tmp_path: Path):
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    prebuilt_sdist = _create_fake_sdist(tmp_path)
+    docker_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        docker_calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    def fake_make_context(*_args, **_kwargs):
+        idx = len(docker_calls)
+        ctx = tmp_path / f"ctx-{idx}"
+        ctx.mkdir()
+        return ctx
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context",
+            side_effect=fake_make_context,
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build._active_buildx_driver",
+            return_value="docker-container",
+        ),
+        patch(
+            "openhands.agent_server.docker.build._default_local_cache_dir",
+            return_value=tmp_path / "cache",
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        first_tags = build(
+            BuildOptions(
+                base_image="python:3.12",
+                custom_tags="python",
+                git_sha="abc1234567890",
+                git_ref="refs/heads/main",
+                push=False,
+                sdk_project_root=_default_sdk_project_root(),
+                prebuilt_sdist=prebuilt_sdist,
+            )
+        )
+        second_tags = build(
+            BuildOptions(
+                base_image="python:3.12",
+                custom_tags="java",
+                git_sha="abc1234567890",
+                git_ref="refs/heads/main",
+                push=False,
+                sdk_project_root=_default_sdk_project_root(),
+                prebuilt_sdist=prebuilt_sdist,
+            )
+        )
+
+    assert prebuilt_sdist.exists()
+    assert len(docker_calls) == 2
+    assert first_tags != second_tags

@@ -372,6 +372,14 @@ class BuildOptions(BaseModel):
         default_factory=_default_sdk_project_root,
         description="Path to OpenHands SDK root. Auto if None.",
     )
+    prebuilt_sdist: Path | None = Field(
+        default=None,
+        description=(
+            "Path to a pre-built SDK sdist tarball to reuse when creating the "
+            "clean Docker build context. If unset, the SDK will run "
+            "`uv build --sdist` itself."
+        ),
+    )
     sdk_version: str = Field(
         default=_DEFAULT_PACKAGE_VERSION,
         description=(
@@ -465,26 +473,37 @@ def _extract_tarball(tarball: Path, dest: Path) -> None:
         tar.extractall(path=".", filter="data")
 
 
-def _make_build_context(sdk_project_root: Path) -> Path:
+def _make_build_context(
+    sdk_project_root: Path,
+    prebuilt_sdist: Path | None = None,
+) -> Path:
     dockerfile_path = _get_dockerfile_path(sdk_project_root)
     tmp_root = Path(tempfile.mkdtemp(prefix="agent-build-", dir=None)).resolve()
-    sdist_dir = Path(tempfile.mkdtemp(prefix="agent-sdist-", dir=None)).resolve()
+    sdist_dir: Path | None = None
     try:
-        # sdists = _build_sdists(sdk_project_root, sdist_dir)
-        _run(
-            ["uv", "build", "--sdist", "--out-dir", str(sdist_dir.resolve())],
-            cwd=str(sdk_project_root.resolve()),
-        )
-        sdists = sorted(sdist_dir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
-        logger.info(
-            f"[build] Built {len(sdists)} sdists for "
-            f"clean context: {', '.join(str(s) for s in sdists)}"
-        )
-        assert len(sdists) == 1, "Expected exactly one sdist"
-        logger.debug(
-            f"[build] Extracting sdist {sdists[0]} to clean context {tmp_root}"
-        )
-        _extract_tarball(sdists[0], tmp_root)
+        if prebuilt_sdist is None:
+            sdist_dir = Path(
+                tempfile.mkdtemp(prefix="agent-sdist-", dir=None)
+            ).resolve()
+            _run(
+                ["uv", "build", "--sdist", "--out-dir", str(sdist_dir.resolve())],
+                cwd=str(sdk_project_root.resolve()),
+            )
+            sdists = sorted(sdist_dir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
+            logger.info(
+                f"[build] Built {len(sdists)} sdists for "
+                f"clean context: {', '.join(str(s) for s in sdists)}"
+            )
+            assert len(sdists) == 1, "Expected exactly one sdist"
+            sdist = sdists[0]
+        else:
+            sdist = Path(prebuilt_sdist).expanduser().resolve()
+            if not sdist.is_file():
+                raise FileNotFoundError(f"Pre-built sdist not found at {sdist}")
+            logger.info(f"[build] Reusing pre-built sdist for clean context: {sdist}")
+
+        logger.debug(f"[build] Extracting sdist {sdist} to clean context {tmp_root}")
+        _extract_tarball(sdist, tmp_root)
 
         # assert only one folder created
         entries = list(tmp_root.iterdir())
@@ -500,7 +519,8 @@ def _make_build_context(sdk_project_root: Path) -> Path:
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
     finally:
-        shutil.rmtree(sdist_dir, ignore_errors=True)
+        if sdist_dir is not None:
+            shutil.rmtree(sdist_dir, ignore_errors=True)
 
 
 def _active_buildx_driver() -> str | None:
@@ -551,7 +571,7 @@ def build(opts: BuildOptions) -> list[str]:
     tags = opts.all_tags
     cache_tag, cache_tag_base = opts.cache_tags
 
-    ctx = _make_build_context(opts.sdk_project_root)
+    ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
     logger.info(f"[build] Clean build context: {ctx}")
 
     args = [
@@ -715,6 +735,12 @@ def main(argv: list[str]) -> int:
         help="Path to OpenHands SDK root (default: auto-detect).",
     )
     parser.add_argument(
+        "--prebuilt-sdist",
+        type=Path,
+        default=None,
+        help="Path to a pre-built SDK sdist tarball to reuse for the build context.",
+    )
+    parser.add_argument(
         "--build-ctx-only",
         action="store_true",
         help="Only create the clean build context directory and print its path.",
@@ -741,7 +767,7 @@ def main(argv: list[str]) -> int:
 
     # ---- build-ctx-only path ----
     if args.build_ctx_only:
-        ctx = _make_build_context(sdk_project_root)
+        ctx = _make_build_context(sdk_project_root, args.prebuilt_sdist)
         logger.info(f"[build] Clean build context (kept for debugging): {ctx}")
 
         # Create BuildOptions to generate tags
@@ -753,6 +779,7 @@ def main(argv: list[str]) -> int:
             platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
             push=None,  # Not relevant for build-ctx-only
             sdk_project_root=sdk_project_root,
+            prebuilt_sdist=args.prebuilt_sdist,
             arch=args.arch or None,
             include_versioned_tag=args.versioned_tag,
         )
@@ -800,6 +827,7 @@ def main(argv: list[str]) -> int:
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
         sdk_project_root=sdk_project_root,
+        prebuilt_sdist=args.prebuilt_sdist,
         arch=args.arch or None,
         include_versioned_tag=args.versioned_tag,
     )
