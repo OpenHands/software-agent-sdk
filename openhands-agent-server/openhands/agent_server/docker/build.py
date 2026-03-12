@@ -566,6 +566,20 @@ def _scoped_cache_tags(base: str, git_ref: str) -> tuple[str, str]:
     return base, f"{base}-main"
 
 
+def _shared_registry_cache_export_enabled() -> bool:
+    raw = os.getenv("OPENHANDS_SHARED_REGISTRY_CACHE_EXPORT", "").strip().lower()
+    if raw in ("", "0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    logger.warning(
+        "[build] Unknown OPENHANDS_SHARED_REGISTRY_CACHE_EXPORT=%r; "
+        "defaulting to disabled",
+        raw,
+    )
+    return False
+
+
 # --- single entry point ---
 
 
@@ -624,12 +638,19 @@ def build(opts: BuildOptions) -> list[str]:
                 f"type=registry,ref={opts.image}:{cache_ref}",
             ]
 
-        for cache_ref in dict.fromkeys((cache_tag, shared_cache_tag)):
+        cache_to_refs = [cache_tag]
+        if _shared_registry_cache_export_enabled():
+            cache_to_refs.append(shared_cache_tag)
+
+        for cache_ref in dict.fromkeys(cache_to_refs):
             cache_args += [
                 "--cache-to",
                 f"type=registry,ref={opts.image}:{cache_ref},mode=max",
             ]
-        logger.info("[build] Cache: registry (remote/CI) + inline")
+        logger.info(
+            "[build] Cache: registry (remote/CI), shared cache export=%s",
+            "enabled" if shared_cache_tag in cache_to_refs else "disabled",
+        )
     else:
         # Local/dev builds: prefer local dir cache if
         # driver supports it; otherwise inline-only.
