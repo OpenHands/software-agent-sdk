@@ -242,7 +242,7 @@ MODELS = {
         "id": "nemotron-3-super-120b-a12b",
         "display_name": "NVIDIA Nemotron-3 Super 120B",
         "llm_config": {
-            "model": "litellm_proxy/openai/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+            "model": "litellm_proxy/nvidia/nemotron-3-super-120b-a12b",
             "temperature": 0.0,
         },
     },
