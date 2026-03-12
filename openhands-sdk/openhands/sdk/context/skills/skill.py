@@ -160,14 +160,14 @@ class Skill(BaseModel):
         ),
     )
 
-    MAX_DESCRIPTION_LENGTH: ClassVar[int] = 16384
+    MAX_DESCRIPTION_LENGTH: ClassVar[int] = 1024
 
     # AgentSkills standard fields (https://agentskills.io/specification)
     description: str | None = Field(
         default=None,
         description=(
             "A brief description of what the skill does and when to use it. "
-            "Descriptions exceeding 16384 characters are silently truncated."
+            "Descriptions exceeding 1024 characters are silently truncated."
         ),
     )
     license: str | None = Field(

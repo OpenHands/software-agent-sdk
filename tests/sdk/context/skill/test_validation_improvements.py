@@ -3,11 +3,11 @@
 from openhands.sdk.context.skills import Skill
 
 
-MAX_DESCRIPTION_LENGTH = 16384
+MAX_DESCRIPTION_LENGTH = 1024
 
 
 def test_description_at_limit() -> None:
-    """Skill should accept description at 16384 chars."""
+    """Skill should accept description at 1024 chars."""
     desc = "x" * MAX_DESCRIPTION_LENGTH
     skill = Skill(name="test", content="# Test", description=desc)
     assert skill.description is not None
@@ -15,7 +15,7 @@ def test_description_at_limit() -> None:
 
 
 def test_description_exceeds_limit_is_truncated() -> None:
-    """Skill should truncate description over 16384 chars instead of erroring."""
+    """Skill should truncate description over 1024 chars instead of erroring."""
     desc = "x" * (MAX_DESCRIPTION_LENGTH + 100)
     skill = Skill(name="test", content="# Test", description=desc)
     assert skill.description is not None

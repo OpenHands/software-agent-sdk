@@ -302,8 +302,8 @@ def test_long_description_skill_does_not_break_other_skills(tmp_path):
         "---\nname: good-skill\ntriggers:\n  - good\n---\nGood skill content."
     )
 
-    # Create a skill with a description exceeding 16384 chars
-    long_desc = "A" * 20000
+    # Create a skill with a description exceeding 1024 chars
+    long_desc = "A" * 2000
     bad_skill_dir = skills_dir / "bad-skill"
     bad_skill_dir.mkdir()
     (bad_skill_dir / "SKILL.md").write_text(
@@ -321,7 +321,7 @@ def test_long_description_skill_does_not_break_other_skills(tmp_path):
     assert "bad-skill" in skill_names
     bad = next(s for s in skills if s.name == "bad-skill")
     assert bad.description is not None
-    assert len(bad.description) == 16384
+    assert len(bad.description) == 1024
 
 
 def test_load_project_skills_with_string_path(tmp_path):
