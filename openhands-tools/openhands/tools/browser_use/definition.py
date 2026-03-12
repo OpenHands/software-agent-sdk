@@ -5,7 +5,7 @@ import hashlib
 import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 from pydantic import Field
 
@@ -779,6 +779,10 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     when created and automatically installs it if missing.
     """
 
+    # Shared executor: reuse a single Chromium/CDP instance across parent
+    # and subagents to avoid CDP port conflicts in sandbox containers.
+    _shared_executor: ClassVar["BrowserToolExecutor | None"] = None
+
     @classmethod
     def create(
         cls,
@@ -789,8 +793,9 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         # avoid hanging during module import
         import sys
 
-        # Use Windows-specific executor on Windows systems
-        if sys.platform == "win32":
+        if cls._shared_executor is not None:
+            executor = cls._shared_executor
+        elif sys.platform == "win32":
             from openhands.tools.browser_use.impl_windows import (
                 WindowsBrowserToolExecutor,
             )
@@ -799,6 +804,7 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
                 **executor_config,
             )
+            cls._shared_executor = executor
         else:
             from openhands.tools.browser_use.impl import BrowserToolExecutor
 
@@ -806,6 +812,7 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
                 **executor_config,
             )
+            cls._shared_executor = executor
 
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
