@@ -29,7 +29,7 @@ from openhands.sdk.context.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
 
 
 logger = get_logger(__name__)
@@ -168,7 +168,8 @@ class Skill(BaseModel):
         default=None,
         description=(
             "A brief description of what the skill does and when to use it. "
-            "Descriptions exceeding 1024 characters are silently truncated."
+            "Descriptions exceeding MAX_DESCRIPTION_LENGTH are truncated "
+            "with a notice pointing to the skill's source path."
         ),
     )
     license: str | None = Field(
@@ -207,18 +208,11 @@ class Skill(BaseModel):
         ),
     )
 
-    @field_validator("description")
-    @classmethod
-    def _validate_description_length(cls, v: str | None) -> str | None:
-        """Truncate description to MAX_DESCRIPTION_LENGTH if it exceeds the limit."""
-        if v is not None and len(v) > cls.MAX_DESCRIPTION_LENGTH:
-            logger.warning(
-                "Description truncated from %d to %d characters",
-                len(v),
-                cls.MAX_DESCRIPTION_LENGTH,
-            )
-            return maybe_truncate(v, truncate_after=cls.MAX_DESCRIPTION_LENGTH)
-        return v
+    _DESCRIPTION_TRUNCATE_NOTICE = (
+        "<response clipped><NOTE>Due to the max output limit, only part of "
+        "the full description is shown. You can view the complete skill "
+        "content at {source}.</NOTE>"
+    )
 
     @field_validator("allowed_tools", mode="before")
     @classmethod
@@ -501,6 +495,34 @@ class Skill(BaseModel):
             )
 
         return None
+
+    @model_validator(mode="after")
+    def _truncate_long_description(self):
+        """Truncate description to MAX_DESCRIPTION_LENGTH via maybe_truncate.
+
+        Uses a model_validator (not field_validator) so the truncation notice
+        can reference self.source, telling the agent where to find the full
+        skill content.
+        """
+        if (
+            self.description is not None
+            and len(self.description) > self.MAX_DESCRIPTION_LENGTH
+        ):
+            logger.warning(
+                "Skill '%s' description truncated from %d to %d characters",
+                self.name,
+                len(self.description),
+                self.MAX_DESCRIPTION_LENGTH,
+            )
+            notice = DEFAULT_TRUNCATE_NOTICE
+            if self.source:
+                notice = self._DESCRIPTION_TRUNCATE_NOTICE.format(source=self.source)
+            self.description = maybe_truncate(
+                self.description,
+                truncate_after=self.MAX_DESCRIPTION_LENGTH,
+                truncate_notice=notice,
+            )
+        return self
 
     @model_validator(mode="after")
     def _append_missing_variables_prompt(self):
