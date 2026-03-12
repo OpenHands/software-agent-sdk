@@ -174,6 +174,43 @@ def test_browser_toolset_shared_executor_reset():
         assert executor1 is not executor2
 
 
+def test_browser_toolset_warns_when_config_ignored(caplog):
+    """
+    Test that a warning is logged when a second create()
+    passes config that gets ignored.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+
+        # First call sets up the shared executor
+        BrowserToolSet.create(conv_state=conv_state)
+
+        # Second call with different config should warn
+        with caplog.at_level(
+            "WARNING", logger="openhands.tools.browser_use.definition"
+        ):
+            BrowserToolSet.create(conv_state=conv_state, headless=False)
+
+        assert any("shared executor already exists" in msg for msg in caplog.messages)
+
+
+def test_browser_toolset_no_warning_when_no_config(caplog):
+    """Test that no warning is logged when a second create() passes no extra config."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+
+        BrowserToolSet.create(conv_state=conv_state)
+
+        with caplog.at_level(
+            "WARNING", logger="openhands.tools.browser_use.definition"
+        ):
+            BrowserToolSet.create(conv_state=conv_state)
+
+        assert not any(
+            "shared executor already exists" in msg for msg in caplog.messages
+        )
+
+
 def test_browser_toolset_create_tools_can_generate_mcp_schema():
     """Test that tools from BrowserToolSet.create() can generate MCP schemas."""
     with tempfile.TemporaryDirectory() as temp_dir:
