@@ -186,21 +186,26 @@ def test_error_returns_agent_error_event_in_batch():
     assert results[2] == [success_event]
 
 
-def test_programming_errors_propagate():
-    """Non-ValueError exceptions (bugs) propagate instead of being swallowed."""
+def test_all_exceptions_wrapped_in_agent_error_event():
+    """All exceptions are caught and converted to AgentErrorEvent."""
     executor = ParallelToolExecutor()
     actions = [
         _make_action("tool_a", "call_0"),
         _make_action("tool_b", "call_1"),
     ]
+    success_event = MagicMock()
 
     def tool_runner(action: Any) -> list:
         if action.tool_call_id == "call_1":
-            raise RuntimeError("This should not happen")
-        return [MagicMock()]
+            raise RuntimeError("something broke")
+        return [success_event]
 
-    with pytest.raises(RuntimeError, match="This should not happen"):
-        executor.execute_batch(actions, tool_runner)
+    results = executor.execute_batch(actions, tool_runner)
+
+    assert len(results) == 2
+    assert results[0] == [success_event]
+    assert isinstance(results[1][0], AgentErrorEvent)
+    assert "something broke" in results[1][0].error
 
 
 def test_nested_execution_no_deadlock():

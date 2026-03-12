@@ -266,6 +266,13 @@ class Agent(CriticMixin, AgentBase):
             None,
         )
         if finish_idx is not None:
+            discarded = action_events[finish_idx + 1 :]
+            if discarded:
+                names = [ae.tool_name for ae in discarded]
+                logger.warning(
+                    f"Discarding {len(discarded)} tool call(s) "
+                    f"after FinishTool: {names}"
+                )
             action_events = action_events[: finish_idx + 1]
 
         # Pre-process blocked actions on main thread (not thread-safe)

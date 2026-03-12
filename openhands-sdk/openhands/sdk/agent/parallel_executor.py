@@ -2,6 +2,15 @@
 
 This module provides utilities for executing multiple tool calls concurrently
 with a configurable per-agent concurrency limit.
+
+.. warning:: Thread safety of individual tools
+
+   When ``TOOL_CONCURRENCY_LIMIT > 1``, multiple tools run in parallel
+   threads sharing the same ``conversation`` object. Tools are **not**
+   thread-safe by default — concurrent mutations to working directory,
+   filesystem, or conversation state can race. Callers opting into
+   parallelism must ensure the tools in use are safe for concurrent
+   execution.
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ def _get_max_concurrency() -> int:
     if env_value:
         with suppress(ValueError):
             val = int(env_value)
-            if int(env_value) > 0:
+            if val > 0:
                 return val
         logger.warning(
             f"{ENV_TOOL_CONCURRENCY_LIMIT}={env_value} is invalid, "
@@ -51,7 +60,14 @@ class ParallelToolExecutor:
     nested execution (e.g., subagents) cannot deadlock the parent.
 
     Concurrency is configured via TOOL_CONCURRENCY_LIMIT
-    environment variable (default: 8).
+    environment variable (default: 1, no concurrency).
+
+    .. warning::
+
+       When concurrency > 1, tools share the ``conversation`` object
+       across threads. Tools are not thread-safe by default — concurrent
+       mutations to filesystem, working directory, or conversation state
+       can cause race conditions.
     """
 
     def __init__(self) -> None:
@@ -91,15 +107,10 @@ class ParallelToolExecutor:
         action: ActionEvent,
         tool_runner: Callable[[ActionEvent], list[Event]],
     ) -> list[Event]:
-        """Run tool_runner, converting tool errors to AgentErrorEvent.
-
-        Only catches ValueError (expected tool errors like invalid arguments).
-        Programming errors (RuntimeError, AssertionError, TypeError, etc.)
-        are allowed to propagate so they surface loudly.
-        """
+        """Run tool_runner, converting exceptions to AgentErrorEvent."""
         try:
             return tool_runner(action)
-        except ValueError as e:
+        except Exception as e:
             logger.error(f"Error executing tool '{action.tool_name}': {e}")
             return [
                 AgentErrorEvent(
