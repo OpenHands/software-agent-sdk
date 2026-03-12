@@ -160,12 +160,14 @@ class Skill(BaseModel):
         ),
     )
 
+    MAX_DESCRIPTION_LENGTH: ClassVar[int] = 16384
+
     # AgentSkills standard fields (https://agentskills.io/specification)
     description: str | None = Field(
         default=None,
         description=(
             "A brief description of what the skill does and when to use it. "
-            "AgentSkills standard field (max 1024 characters)."
+            "Descriptions exceeding 16384 characters are silently truncated."
         ),
     )
     license: str | None = Field(
@@ -207,11 +209,14 @@ class Skill(BaseModel):
     @field_validator("description")
     @classmethod
     def _validate_description_length(cls, v: str | None) -> str | None:
-        """Validate description length per AgentSkills spec (max 1024 chars)."""
-        if v is not None and len(v) > 1024:
-            raise SkillValidationError(
-                f"Description exceeds 1024 characters ({len(v)} chars)"
+        """Truncate description to MAX_DESCRIPTION_LENGTH if it exceeds the limit."""
+        if v is not None and len(v) > cls.MAX_DESCRIPTION_LENGTH:
+            logger.warning(
+                "Description truncated from %d to %d characters",
+                len(v),
+                cls.MAX_DESCRIPTION_LENGTH,
             )
+            return v[: cls.MAX_DESCRIPTION_LENGTH]
         return v
 
     @field_validator("allowed_tools", mode="before")

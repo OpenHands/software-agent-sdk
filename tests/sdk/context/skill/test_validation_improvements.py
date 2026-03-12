@@ -1,21 +1,22 @@
 """Tests for skill validation improvements."""
 
-import pytest
+from openhands.sdk.context.skills import Skill
 
-from openhands.sdk.context.skills import Skill, SkillValidationError
+
+MAX_DESCRIPTION_LENGTH = 16384
 
 
 def test_description_at_limit() -> None:
-    """Skill should accept description at 1024 chars."""
-    desc = "x" * 1024
+    """Skill should accept description at 16384 chars."""
+    desc = "x" * MAX_DESCRIPTION_LENGTH
     skill = Skill(name="test", content="# Test", description=desc)
     assert skill.description is not None
-    assert len(skill.description) == 1024
+    assert len(skill.description) == MAX_DESCRIPTION_LENGTH
 
 
-def test_description_exceeds_limit() -> None:
-    """Skill should reject description over 1024 chars."""
-    desc = "x" * 1025
-    with pytest.raises(SkillValidationError) as exc_info:
-        Skill(name="test", content="# Test", description=desc)
-    assert "1024 characters" in str(exc_info.value)
+def test_description_exceeds_limit_is_truncated() -> None:
+    """Skill should truncate description over 16384 chars instead of erroring."""
+    desc = "x" * (MAX_DESCRIPTION_LENGTH + 100)
+    skill = Skill(name="test", content="# Test", description=desc)
+    assert skill.description is not None
+    assert len(skill.description) == MAX_DESCRIPTION_LENGTH
