@@ -1283,8 +1283,8 @@ def test_v1_11_5_cli_default_conversation_resumes_when_runtime_adds_delegate(
 
     Adding new tools is allowed — only removing tools is rejected.
     """
+    from openhands.sdk.agent import Agent
     from openhands.sdk.tool import Tool
-    from openhands.tools.preset.default import get_default_agent
 
     fixture_path = (
         Path(__file__).resolve().parents[3]
@@ -1307,9 +1307,17 @@ def test_v1_11_5_cli_default_conversation_resumes_when_runtime_adds_delegate(
         api_key=SecretStr("test-key"),
         usage_id="test-llm",
     )
-    default_agent = get_default_agent(llm, cli_mode=True)
-    runtime_agent = default_agent.model_copy(
-        update={"tools": [*default_agent.tools, Tool(name="delegate")]}
+    # The fixture has tools: terminal, file_editor, task_tracker
+    # Runtime adds delegate — this should succeed (adding tools is allowed)
+    runtime_agent = Agent(
+        llm=llm,
+        tools=[
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
+            Tool(name="task_tracker"),
+            Tool(name="delegate"),
+        ],
+        include_default_tools=["FinishTool", "ThinkTool"],
     )
 
     _ = Conversation(
