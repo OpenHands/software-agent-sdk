@@ -12,7 +12,9 @@ State transition matrix tested:
 - PAUSED -> RUNNING (when run() is called after pause)
 - WAITING_FOR_CONFIRMATION -> RUNNING (when run() is called to confirm)
 - FINISHED -> IDLE -> RUNNING (when new message sent after completion)
-- FINISHED/STUCK -> remain unchanged (run() exits immediately)
+- STUCK -> IDLE (when new message sent) -> RUNNING (when run() is called)
+- STUCK -> RUNNING (when run() is called directly)
+- FINISHED -> remain unchanged (run() exits immediately without new message)
 """
 
 import threading
@@ -357,23 +359,60 @@ def test_run_exits_immediately_when_already_finished():
     assert llm.call_count == initial_call_count
 
 
-def test_run_exits_immediately_when_stuck():
-    """Test that run() exits immediately when status is STUCK."""
-    # Use TestLLM with no scripted responses (should not be called)
-    llm = TestLLM.from_messages([])
+def test_run_recovers_from_stuck():
+    """Test that run() resets STUCK status and lets the agent continue.
+
+    When a conversation is STUCK (e.g. stuck detector triggered or
+    persisted STUCK state from a previous session), calling run() should
+    reset the status to RUNNING so the agent can retry.  Without this
+    reset, a persisted STUCK state would permanently kill the session.
+    """
+    # Provide a finish response so the agent can complete after unsticking.
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="Recovered")])]
+    )
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
 
-    # Manually set status to STUCK (simulating stuck detection)
+    # Seed a user message so the agent has context to work with
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Please continue")])
+    )
+
+    # Simulate stuck detection persisted from previous session
     conversation._state.execution_status = ConversationExecutionStatus.STUCK
 
-    # Call run - should exit immediately
     conversation.run()
 
-    # Status should still be STUCK
-    assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
-    # LLM should not be called
-    assert llm.call_count == 0
+    # Agent should have recovered and finished normally
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert llm.call_count == 1
+
+
+def test_send_message_resets_stuck_to_idle():
+    """Test STUCK → IDLE transition when a new user message arrives.
+
+    A new user message is an implicit signal to unstick the conversation,
+    analogous to how FINISHED → IDLE works.
+    """
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="Done")])]
+    )
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Simulate stuck state
+    conversation._state.execution_status = ConversationExecutionStatus.STUCK
+
+    # Sending a new message should reset STUCK → IDLE
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Try again")])
+    )
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Running should proceed normally: IDLE → RUNNING → FINISHED
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
 def test_execution_status_error_on_max_iterations():
