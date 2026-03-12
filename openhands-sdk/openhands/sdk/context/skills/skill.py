@@ -29,6 +29,7 @@ from openhands.sdk.context.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
@@ -216,7 +217,7 @@ class Skill(BaseModel):
                 len(v),
                 cls.MAX_DESCRIPTION_LENGTH,
             )
-            return v[: cls.MAX_DESCRIPTION_LENGTH]
+            return maybe_truncate(v, truncate_after=cls.MAX_DESCRIPTION_LENGTH)
         return v
 
     @field_validator("allowed_tools", mode="before")

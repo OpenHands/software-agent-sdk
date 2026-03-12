@@ -292,7 +292,8 @@ def test_long_description_skill_does_not_break_other_skills(tmp_path):
     """Regression test: a skill with a very long description should not
     prevent other valid skills in the same directory from loading.
 
-    The description should be silently truncated rather than raising an error.
+    The description should be silently truncated (via maybe_truncate)
+    rather than raising an error.
     """
     skills_dir = tmp_path / ".agents" / "skills"
     skills_dir.mkdir(parents=True)
@@ -321,7 +322,7 @@ def test_long_description_skill_does_not_break_other_skills(tmp_path):
     assert "bad-skill" in skill_names
     bad = next(s for s in skills if s.name == "bad-skill")
     assert bad.description is not None
-    assert len(bad.description) == 1024
+    assert len(bad.description) <= 1024
 
 
 def test_load_project_skills_with_string_path(tmp_path):
