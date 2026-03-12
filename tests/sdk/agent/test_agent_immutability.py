@@ -114,7 +114,7 @@ class TestAgentImmutability:
         )
 
         # They should have the same configuration
-        assert agent1 == agent2
+        assert agent1.model_dump() == agent2.model_dump()
         assert agent1.system_prompt_filename == agent2.system_prompt_filename
 
         # But they should be different instances

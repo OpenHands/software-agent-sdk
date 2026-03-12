@@ -1,11 +1,12 @@
 import json
 
-from pydantic import ValidationError, model_validator
+from pydantic import PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
@@ -21,6 +22,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Event,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -85,6 +87,10 @@ class Agent(CriticMixin, AgentBase):
         >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         >>> agent = Agent(llm=llm, tools=tools)
     """
+
+    _parallel_executor: ParallelToolExecutor = PrivateAttr(
+        default_factory=ParallelToolExecutor
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -247,9 +253,80 @@ class Agent(CriticMixin, AgentBase):
         conversation: LocalConversation,
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
-    ):
-        for action_event in action_events:
-            self._execute_action_event(conversation, action_event, on_event=on_event)
+    ) -> None:
+        state = conversation.state
+
+        # Truncate at FinishTool — anything after "finish" is meaningless.
+        finish_idx = next(
+            (
+                i
+                for i, ae in enumerate(action_events)
+                if ae.tool_name == FinishTool.name
+            ),
+            None,
+        )
+        if finish_idx is not None:
+            action_events = action_events[: finish_idx + 1]
+
+        # Pre-process blocked actions on main thread (not thread-safe)
+        blocked_reasons: dict[str, str] = {}
+        executable: list[ActionEvent] = []
+        for ae in action_events:
+            reason = state.pop_blocked_action(ae.id)
+            if reason is not None:
+                blocked_reasons[ae.id] = reason
+            else:
+                executable.append(ae)
+
+        # Execute non-blocked actions in parallel
+        def tool_runner(action_event: ActionEvent) -> list[Event]:
+            return self._execute_action_event(conversation, action_event)
+
+        executed_results = self._parallel_executor.execute_batch(
+            executable, tool_runner
+        )
+        # ae.id is a UUID assigned at ActionEvent creation — always unique per batch.
+        results_by_id: dict[str, list[Event]] = dict(
+            zip([ae.id for ae in executable], executed_results)
+        )
+
+        # Emit all events in original action order.
+        for ae in action_events:
+            if ae.id in blocked_reasons:
+                logger.info(
+                    f"Action '{ae.tool_name}' blocked by hook: {blocked_reasons[ae.id]}"
+                )
+                rejection = UserRejectObservation(
+                    action_id=ae.id,
+                    tool_name=ae.tool_name,
+                    tool_call_id=ae.tool_call_id,
+                    rejection_reason=blocked_reasons[ae.id],
+                    rejection_source="hook",
+                )
+                on_event(rejection)
+                continue
+
+            for event in results_by_id[ae.id]:
+                on_event(event)
+
+        # Handle FinishTool state transition on main thread, after all
+        # events have been emitted.
+        if finish_idx is not None:
+            finish_ae = action_events[-1]  # FinishTool is always last after truncation
+            if finish_ae.id not in blocked_reasons:
+                should_continue, followup = self._check_iterative_refinement(
+                    conversation, finish_ae
+                )
+                if should_continue and followup:
+                    followup_msg = MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user", content=[TextContent(text=followup)]
+                        ),
+                    )
+                    on_event(followup_msg)
+                else:
+                    state.execution_status = ConversationExecutionStatus.FINISHED
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -645,38 +722,26 @@ class Agent(CriticMixin, AgentBase):
         on_event(action_event)
         return action_event
 
-    @observe(ignore_inputs=["state", "on_event"])
+    @observe()
     def _execute_action_event(
         self,
         conversation: LocalConversation,
         action_event: ActionEvent,
-        on_event: ConversationCallbackType,
-    ):
-        """Execute an action event and update the conversation state.
+    ) -> list[Event]:
+        """Execute a single tool and return the resulting events.
 
-        It will call the tool's executor and update the state & call callback fn
-        with the observation.
+        Called from parallel threads by _execute_actions. This method must
+        not mutate shared conversation state (blocked_actions,
+        execution_status) — those transitions are handled by the caller
+        on the main thread.
 
-        If the action was blocked by a PreToolUse hook (recorded in
-        state.blocked_actions), a UserRejectObservation is emitted instead
-        of executing the action.
+        Note: the tool itself receives ``conversation`` and may mutate it
+        (e.g. filesystem, working directory). Thread safety of individual
+        tools is the tool's responsibility.
+
+        Returns a list of events (observation or error). Events are NOT
+        emitted here — the caller is responsible for emitting them in order.
         """
-        state = conversation.state
-
-        # Check if this action was blocked by a PreToolUse hook
-        reason = state.pop_blocked_action(action_event.id)
-        if reason is not None:
-            logger.info(f"Action '{action_event.tool_name}' blocked by hook: {reason}")
-            rejection = UserRejectObservation(
-                action_id=action_event.id,
-                tool_name=action_event.tool_name,
-                tool_call_id=action_event.tool_call_id,
-                rejection_reason=reason,
-                rejection_source="hook",
-            )
-            on_event(rejection)
-            return rejection
-
         tool = self.tools_map.get(action_event.tool_name, None)
         if tool is None:
             raise RuntimeError(
@@ -706,8 +771,7 @@ class Agent(CriticMixin, AgentBase):
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
             )
-            on_event(error_event)
-            return error_event
+            return [error_event]
 
         obs_event = ObservationEvent(
             observation=observation,
@@ -715,27 +779,7 @@ class Agent(CriticMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
-        on_event(obs_event)
-
-        # Set conversation state
-        if tool.name == FinishTool.name:
-            # Check if iterative refinement should continue
-            should_continue, followup = self._check_iterative_refinement(
-                conversation, action_event
-            )
-            if should_continue and followup:
-                # Send follow-up message and continue agent loop
-                followup_msg = MessageEvent(
-                    source="user",
-                    llm_message=Message(
-                        role="user", content=[TextContent(text=followup)]
-                    ),
-                )
-                on_event(followup_msg)
-                # Don't set FINISHED - let the agent continue
-            else:
-                state.execution_status = ConversationExecutionStatus.FINISHED
-        return obs_event
+        return [obs_event]
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType

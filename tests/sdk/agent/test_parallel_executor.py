@@ -1,4 +1,4 @@
-"""Tests for ParallelToolExecutor and ToolExecutorSemaphore."""
+"""Tests for ParallelToolExecutor."""
 
 import threading
 import time
@@ -11,189 +11,224 @@ from openhands.sdk.agent.parallel_executor import (
     DEFAULT_TOOL_CONCURRENCY_LIMIT,
     ENV_TOOL_CONCURRENCY_LIMIT,
     ParallelToolExecutor,
-    ToolExecutorSemaphore,
+    _get_max_concurrency,
 )
+from openhands.sdk.event.llm_convertible import AgentErrorEvent
 
 
-@pytest.fixture(autouse=True)
-def reset_semaphore():
-    """Reset the singleton semaphore before and after each test."""
-    ToolExecutorSemaphore._instance = None
-    ToolExecutorSemaphore._initialized = False
-    yield
-    ToolExecutorSemaphore._instance = None
-    ToolExecutorSemaphore._initialized = False
+def test_get_max_concurrency_default():
+    assert _get_max_concurrency() == DEFAULT_TOOL_CONCURRENCY_LIMIT
 
 
-class TestToolExecutorSemaphore:
-    """Tests for ToolExecutorSemaphore."""
-
-    def test_default_concurrency_limit(self):
-        """Test that default concurrency limit is applied."""
-        semaphore = ToolExecutorSemaphore()
-        assert semaphore.max_concurrent == DEFAULT_TOOL_CONCURRENCY_LIMIT
-
-    def test_singleton_pattern(self):
-        """Test that instantiation returns the same instance."""
-        instance1 = ToolExecutorSemaphore()
-        instance2 = ToolExecutorSemaphore()
-        assert instance1 is instance2
-
-    def test_env_variable_configuration(self, monkeypatch):
-        """Test that env variable overrides default limit."""
-        monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
-        semaphore = ToolExecutorSemaphore()
-        assert semaphore.max_concurrent == 4
-
-    def test_invalid_env_variable_falls_back_to_default(self, monkeypatch):
-        """Test that invalid env variable falls back to default."""
-        monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "not_a_number")
-        semaphore = ToolExecutorSemaphore()
-        assert semaphore.max_concurrent == DEFAULT_TOOL_CONCURRENCY_LIMIT
-
-    def test_negative_env_variable_falls_back_to_default(self, monkeypatch):
-        """Test that negative env variable falls back to default."""
-        monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "-1")
-        semaphore = ToolExecutorSemaphore()
-        assert semaphore.max_concurrent == DEFAULT_TOOL_CONCURRENCY_LIMIT
-
-    def test_context_manager(self, monkeypatch):
-        """Test context manager acquire/release."""
-        monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "1")
-        semaphore = ToolExecutorSemaphore()
-        acquired: list[str] = []
-
-        def worker():
-            with semaphore:
-                acquired.append(threading.current_thread().name)
-                time.sleep(0.1)
-
-        t1 = threading.Thread(target=worker, name="worker-1")
-        t2 = threading.Thread(target=worker, name="worker-2")
-
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        # Both workers should have acquired the semaphore
-        assert len(acquired) == 2
-
-    def test_concurrency_limiting(self, monkeypatch):
-        """Test that semaphore actually limits concurrency."""
-        monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "2")
-        semaphore = ToolExecutorSemaphore()
-        concurrent_count: list[int] = []
-        lock = threading.Lock()
-        current_count = [0]
-
-        def worker():
-            with semaphore:
-                with lock:
-                    current_count[0] += 1
-                    concurrent_count.append(current_count[0])
-                time.sleep(0.05)
-                with lock:
-                    current_count[0] -= 1
-
-        threads = [threading.Thread(target=worker) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        # Maximum concurrent executions should never exceed 2
-        assert max(concurrent_count) <= 2
+@pytest.mark.parametrize(
+    "env_value, expected",
+    [
+        ("4", 4),
+        ("1", 1),
+        ("not_a_number", DEFAULT_TOOL_CONCURRENCY_LIMIT),
+        ("0", DEFAULT_TOOL_CONCURRENCY_LIMIT),
+        ("-1", DEFAULT_TOOL_CONCURRENCY_LIMIT),
+    ],
+)
+def test_get_max_concurrency_from_env(monkeypatch, env_value, expected):
+    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, env_value)
+    assert _get_max_concurrency() == expected
 
 
-class TestParallelToolExecutor:
-    """Tests for ParallelToolExecutor."""
+def test_empty_batch():
+    executor = ParallelToolExecutor()
+    results = executor.execute_batch([], lambda x: [MagicMock()])
+    assert results == []
 
-    def test_empty_batch(self):
-        """Test handling of empty action list."""
-        executor = ParallelToolExecutor()
-        results = executor.execute_batch([], lambda x: MagicMock())  # type: ignore[arg-type]
-        assert results == []
 
-    def test_single_action_no_thread_pool(self):
-        """Test that single action is executed without thread pool."""
-        executor = ParallelToolExecutor()
-        action: Any = MagicMock()
-        result = MagicMock()
+def test_single_action_bypasses_thread_pool():
+    executor = ParallelToolExecutor()
+    action: Any = MagicMock()
+    event = MagicMock()
 
-        def tool_runner(event: Any) -> Any:
-            return result
+    results = executor.execute_batch([action], lambda a: [event])
+    assert len(results) == 1
+    assert results[0] == [event]
 
-        results = executor.execute_batch([action], tool_runner)  # type: ignore[arg-type]
-        assert len(results) == 1
-        assert results[0] is result
 
-    def test_multiple_actions_parallel_execution(self):
-        """Test parallel execution of multiple actions."""
-        executor = ParallelToolExecutor()
-        actions: list[Any] = [MagicMock(name=f"action-{i}") for i in range(4)]
-        results_map = {
-            id(a): MagicMock(name=f"result-{i}") for i, a in enumerate(actions)
-        }
+def test_result_ordering_preserved_despite_variable_duration():
+    """Results are in input order even when later actions finish first."""
+    executor = ParallelToolExecutor()
+    actions: list[Any] = [MagicMock() for _ in range(5)]
 
-        def tool_runner(action: Any) -> Any:
-            time.sleep(0.05)  # Simulate work
-            return results_map[id(action)]
+    def tool_runner(action: Any) -> list:
+        idx = actions.index(action)
+        time.sleep((5 - idx) * 0.01)  # First action sleeps longest
+        return [f"result-{idx}"]
 
-        results = executor.execute_batch(actions, tool_runner)  # type: ignore[arg-type]
+    results = executor.execute_batch(actions, tool_runner)
 
-        # Results should be in original order
-        assert len(results) == 4
-        for i, action in enumerate(actions):
-            assert results[i] is results_map[id(action)]
+    assert results == [
+        ["result-0"],
+        ["result-1"],
+        ["result-2"],
+        ["result-3"],
+        ["result-4"],
+    ]
 
-    def test_result_ordering_preserved(self):
-        """Test that results are returned in original order."""
-        executor = ParallelToolExecutor()
-        actions: list[Any] = [MagicMock() for _ in range(5)]
 
-        # Make each action sleep for a different duration (reverse order)
-        def tool_runner(action: Any) -> Any:
-            idx = actions.index(action)
-            time.sleep((5 - idx) * 0.01)  # First action sleeps longest
-            return f"result-{idx}"
+def test_actions_run_concurrently(monkeypatch):
+    """Verify that actions actually run in parallel, not sequentially."""
+    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
+    executor = ParallelToolExecutor()
+    actions: list[Any] = [MagicMock() for _ in range(4)]
+    max_concurrent = [0]
+    current = [0]
+    lock = threading.Lock()
 
-        results = executor.execute_batch(actions, tool_runner)  # type: ignore[arg-type]
+    def tool_runner(action: Any) -> list:
+        with lock:
+            current[0] += 1
+            max_concurrent[0] = max(max_concurrent[0], current[0])
+        time.sleep(0.05)
+        with lock:
+            current[0] -= 1
+        return [MagicMock()]
 
-        # Despite different completion times, results should be in order
-        assert results == ["result-0", "result-1", "result-2", "result-3", "result-4"]
+    executor.execute_batch(actions, tool_runner)
 
-    def test_semaphore_limits_concurrency(self, monkeypatch):
-        """Test that executor respects the OPENHANDS_TOOL_CONCURRENCY_LIMIT."""
-        monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "2")
+    assert max_concurrent[0] > 1
 
-        executor = ParallelToolExecutor()
-        actions: list[Any] = [MagicMock() for _ in range(6)]
-        concurrent_count: list[int] = []
-        lock = threading.Lock()
-        current = [0]
 
-        def tool_runner(action: Any) -> Any:
-            with lock:
-                current[0] += 1
-                concurrent_count.append(current[0])
-            time.sleep(0.02)
-            with lock:
-                current[0] -= 1
-            return MagicMock()
+def test_concurrency_limited_by_max_workers(monkeypatch):
+    """Concurrency does not exceed the configured limit."""
+    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "2")
 
-        executor.execute_batch(actions, tool_runner)  # type: ignore[arg-type]
+    executor = ParallelToolExecutor()
+    actions: list[Any] = [MagicMock() for _ in range(6)]
+    concurrent_count: list[int] = []
+    lock = threading.Lock()
+    current = [0]
 
-        # Should be limited by semaphore's max_concurrent=2
-        assert max(concurrent_count) <= 2
+    def tool_runner(action: Any) -> list:
+        with lock:
+            current[0] += 1
+            concurrent_count.append(current[0])
+        time.sleep(0.02)
+        with lock:
+            current[0] -= 1
+        return [MagicMock()]
 
-    def test_exception_propagation(self):
-        """Test that exceptions from tool_runner are propagated."""
-        executor = ParallelToolExecutor()
-        actions: list[Any] = [MagicMock()]
+    executor.execute_batch(actions, tool_runner)
 
-        def tool_runner(action: Any) -> Any:
-            raise ValueError("Test error")
+    assert max(concurrent_count) <= 2
 
-        with pytest.raises(ValueError, match="Test error"):
-            executor.execute_batch(actions, tool_runner)  # type: ignore[arg-type]
+
+def test_multiple_events_per_action():
+    """tool_runner can return multiple events for a single action."""
+    executor = ParallelToolExecutor()
+    actions: list[Any] = [MagicMock(), MagicMock()]
+
+    def tool_runner(action: Any) -> list:
+        return [MagicMock(name="obs"), MagicMock(name="followup")]
+
+    results = executor.execute_batch(actions, tool_runner)
+
+    assert len(results) == 2
+    assert len(results[0]) == 2
+    assert len(results[1]) == 2
+
+
+def _make_action(name: str = "test_tool", tool_call_id: str = "call_1") -> Any:
+    """Create a mock ActionEvent with required fields."""
+    action = MagicMock()
+    action.tool_name = name
+    action.tool_call_id = tool_call_id
+    return action
+
+
+def test_error_returns_agent_error_event_for_single_action():
+    """Single action errors are wrapped in AgentErrorEvent."""
+    executor = ParallelToolExecutor()
+    action = _make_action("my_tool", "call_1")
+
+    def tool_runner(a: Any) -> list:
+        raise ValueError("Test error")
+
+    results = executor.execute_batch([action], tool_runner)
+    assert len(results) == 1
+    assert len(results[0]) == 1
+    assert isinstance(results[0][0], AgentErrorEvent)
+    assert "Test error" in results[0][0].error
+
+
+def test_error_returns_agent_error_event_in_batch():
+    """
+    ValueErrors in a batch produce AgentErrorEvents
+    successful results are preserved.
+    """
+    executor = ParallelToolExecutor()
+    actions = [
+        _make_action("tool_a", "call_0"),
+        _make_action("tool_b", "call_1"),
+        _make_action("tool_c", "call_2"),
+    ]
+    success_event = MagicMock()
+
+    def tool_runner(action: Any) -> list:
+        if action.tool_call_id == "call_1":
+            raise ValueError("action 1 failed")
+        time.sleep(0.02)
+        return [success_event]
+
+    results = executor.execute_batch(actions, tool_runner)
+
+    assert len(results) == 3
+    assert results[0] == [success_event]
+    assert len(results[1]) == 1
+    assert isinstance(results[1][0], AgentErrorEvent)
+    assert "action 1 failed" in results[1][0].error
+    assert results[2] == [success_event]
+
+
+def test_programming_errors_propagate():
+    """Non-ValueError exceptions (bugs) propagate instead of being swallowed."""
+    executor = ParallelToolExecutor()
+    actions = [
+        _make_action("tool_a", "call_0"),
+        _make_action("tool_b", "call_1"),
+    ]
+
+    def tool_runner(action: Any) -> list:
+        if action.tool_call_id == "call_1":
+            raise RuntimeError("This should not happen")
+        return [MagicMock()]
+
+    with pytest.raises(RuntimeError, match="This should not happen"):
+        executor.execute_batch(actions, tool_runner)
+
+
+def test_nested_execution_no_deadlock():
+    """Nested execute_batch (subagent scenario) does not deadlock.
+
+    The outer executor has max_workers=1. The subagent tool creates its
+    own executor — since pools are per-instance, no thread starvation.
+    """
+    outer_executor = ParallelToolExecutor()
+    outer_executor._max_workers = 1
+
+    def inner_tool_runner(action: Any) -> list:
+        return [f"inner-{action}"]
+
+    def outer_tool_runner(action: Any) -> list:
+        if action == "subagent":
+            inner_executor = ParallelToolExecutor()
+            inner_executor._max_workers = 2
+            inner_results = inner_executor.execute_batch(
+                ["a", "b"],  # type: ignore[arg-type]
+                inner_tool_runner,
+            )
+            return [item for sublist in inner_results for item in sublist]
+        return [f"leaf-{action}"]
+
+    results = outer_executor.execute_batch(
+        ["subagent"],  # type: ignore[arg-type]
+        outer_tool_runner,
+    )
+
+    assert results == [["inner-a", "inner-b"]]
