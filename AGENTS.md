@@ -111,6 +111,16 @@ When working inside a package or domain, read the closest AGENTS file.
 - Agent server: [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md)
 - Eval config: [.github/run-eval/AGENTS.md](.github/run-eval/AGENTS.md)
 
+## Public REST API compatibility
+
+For public REST APIs in this repository, all REST contract breaks need a
+deprecation notice and a runway of **5 minor releases** before removing the
+old contract or making an incompatible replacement mandatory.
+
+Prefer additive changes, parallel fields, or versioned endpoints/contracts during
+that runway. If a breaking REST API change still ships, it requires at least a
+**MINOR** SemVer bump.
+
 <DEV_SETUP>
 - Make sure you `make build` to configure the dependencies first
 - We use pre-commit hooks `.pre-commit-config.yaml` that includes:
