@@ -5,7 +5,7 @@ from urllib.request import urlopen
 
 import httpx
 import tenacity
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
@@ -363,6 +363,104 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                     self._client.close()
             except Exception:
                 pass
+
+    def get_llm(self, **llm_kwargs: Any) -> "LLM":
+        """Fetch LLM settings from the user's SaaS account and return an LLM instance.
+
+        Makes an API call to the Cloud server to retrieve the user's LLM
+        configuration (model, API key, base URL) and constructs an SDK LLM
+        instance. The API key returned is always the BYOR (Bring Your Own
+        Runtime) key, not the default SaaS-internal key.
+
+        Args:
+            **llm_kwargs: Additional keyword arguments passed to the LLM
+                constructor, allowing overrides of any LLM parameter.
+
+        Returns:
+            An LLM instance configured with the user's SaaS credentials.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            ValueError: If no LLM API key is configured in the user's account.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     llm = workspace.get_llm()
+            ...     agent = Agent(llm=llm, tools=get_default_tools())
+        """
+        from openhands.sdk.llm.llm import LLM
+
+        resp = self._send_api_request(
+            "GET",
+            f"{self.cloud_api_url}/api/v1/users/settings/llm",
+        )
+        data = resp.json()
+
+        # Build LLM kwargs from the API response, allowing overrides
+        kwargs: dict[str, Any] = {}
+        if data.get("model"):
+            kwargs["model"] = data["model"]
+        if data.get("api_key"):
+            kwargs["api_key"] = SecretStr(data["api_key"])
+        if data.get("base_url"):
+            kwargs["base_url"] = data["base_url"]
+
+        # User-provided kwargs take precedence
+        kwargs.update(llm_kwargs)
+
+        if "api_key" not in kwargs or kwargs["api_key"] is None:
+            raise ValueError(
+                "No LLM API key is configured in your SaaS account. "
+                "Please configure a BYOR key in your Cloud settings."
+            )
+
+        return LLM(**kwargs)
+
+    def get_secrets(
+        self, names: list[str] | None = None
+    ) -> dict[str, str]:
+        """Fetch custom secrets from the user's SaaS account.
+
+        Makes an API call to the Cloud server to retrieve the user's custom
+        secrets. The returned dict can be passed directly to
+        ``conversation.update_secrets()``.
+
+        Args:
+            names: Optional list of secret names to retrieve. If None,
+                all secrets are returned.
+
+        Returns:
+            A dictionary mapping secret names to their values.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     # Get all secrets
+            ...     all_secrets = workspace.get_secrets()
+            ...     conversation.update_secrets(all_secrets)
+            ...
+            ...     # Get specific secrets
+            ...     gh_secrets = workspace.get_secrets(names=["GITHUB_TOKEN"])
+            ...     conversation.update_secrets(gh_secrets)
+        """
+        params: dict[str, Any] = {}
+        if names is not None:
+            params["names"] = names
+
+        resp = self._send_api_request(
+            "GET",
+            f"{self.cloud_api_url}/api/v1/users/settings/secrets",
+            params=params,
+        )
+        data = resp.json()
+
+        result: dict[str, str] = {}
+        for item in data.get("secrets", []):
+            result[item["name"]] = item["value"]
+
+        return result
 
     def __del__(self) -> None:
         self.cleanup()
