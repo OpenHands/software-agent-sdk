@@ -54,7 +54,7 @@ async def _upload_file(path: str, file: UploadFile) -> Success:
         return Success()
 
     except HTTPException:
-        raise
+    except Exception as e:
     except Exception as e:
         logger.error(f"Failed to upload file: {e}")
         raise HTTPException(
