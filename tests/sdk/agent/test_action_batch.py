@@ -1,4 +1,4 @@
-"""Unit tests for _ActionBatch — truncation, blocked partitioning, and execution."""
+"""Unit tests for _ActionBatch."""
 
 from typing import Any
 from unittest.mock import MagicMock
@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from openhands.sdk.agent.agent import _ActionBatch
-from openhands.sdk.event import ActionEvent
+from openhands.sdk.event import ActionEvent, ObservationEvent
+from openhands.sdk.event.llm_convertible import UserRejectObservation
 from openhands.sdk.tool.builtins import FinishTool
 
 
@@ -15,6 +16,7 @@ def _ae(tool_name: str = "tool", action_id: str | None = None) -> ActionEvent:
     ae = MagicMock(spec=ActionEvent)
     ae.tool_name = tool_name
     ae.id = action_id or str(id(ae))
+    ae.tool_call_id = f"tc-{ae.id}"
     return ae  # type: ignore[return-value]
 
 
@@ -117,3 +119,107 @@ def test_prepare_empty():
     assert batch.action_events == []
     assert not batch.has_finish
     assert batch.results_by_id == {}
+
+
+# ── emit ──────────────────────────────────────────────────────────
+
+
+def _obs(label: str) -> ObservationEvent:
+    """Create a minimal ObservationEvent stub for testing."""
+    obs = MagicMock(spec=ObservationEvent)
+    obs._label = label
+    return obs  # type: ignore[return-value]
+
+
+def test_emit_results_in_order():
+    o1, o2a, o2b = _obs("o1"), _obs("o2a"), _obs("o2b")
+    events = [_ae("a", "1"), _ae("b", "2")]
+    batch = _ActionBatch(
+        action_events=events,
+        has_finish=False,
+        results_by_id={"1": [o1], "2": [o2a, o2b]},
+    )
+    emitted: list[Any] = []
+    batch.emit(emitted.append)
+    assert emitted == [o1, o2a, o2b]
+
+
+def test_emit_blocked_produces_rejection():
+    o2 = _obs("o2")
+    events = [_ae("a", "1"), _ae("b", "2")]
+    batch = _ActionBatch(
+        action_events=events,
+        has_finish=False,
+        blocked_reasons={"1": "policy"},
+        results_by_id={"2": [o2]},
+    )
+    emitted: list[Any] = []
+    batch.emit(emitted.append)
+
+    assert len(emitted) == 2
+    assert isinstance(emitted[0], UserRejectObservation)
+    assert emitted[0].rejection_reason == "policy"
+    assert emitted[1] is o2
+
+
+# ── finalize ──────────────────────────────────────────────────────
+
+
+def test_finalize_noop_when_no_finish():
+    batch = _ActionBatch(action_events=[_ae("a", "1")], has_finish=False)
+    finished: list[bool] = []
+    batch.finalize(
+        on_event=lambda e: None,
+        check_iterative_refinement=lambda ae: (False, None),
+        mark_finished=lambda: finished.append(True),
+    )
+    assert finished == []
+
+
+def test_finalize_marks_finished():
+    events = [_ae(_F, "1")]
+    batch = _ActionBatch(
+        action_events=events,
+        has_finish=True,
+        results_by_id={"1": [_obs("o")]},
+    )
+    finished: list[bool] = []
+    batch.finalize(
+        on_event=lambda e: None,
+        check_iterative_refinement=lambda ae: (False, None),
+        mark_finished=lambda: finished.append(True),
+    )
+    assert finished == [True]
+
+
+def test_finalize_emits_followup_on_refinement():
+    events = [_ae(_F, "1")]
+    batch = _ActionBatch(
+        action_events=events,
+        has_finish=True,
+        results_by_id={"1": [_obs("o")]},
+    )
+    emitted: list[Any] = []
+    batch.finalize(
+        on_event=emitted.append,
+        check_iterative_refinement=lambda ae: (True, "try again"),
+        mark_finished=lambda: None,
+    )
+    assert len(emitted) == 1
+    assert emitted[0].llm_message.content[0].text == "try again"
+
+
+def test_finalize_noop_when_finish_blocked():
+    events = [_ae(_F, "1")]
+    batch = _ActionBatch(
+        action_events=events,
+        has_finish=True,
+        blocked_reasons={"1": "denied"},
+    )
+    finished: list[bool] = []
+    batch.finalize(
+        on_event=lambda e: None,
+        check_iterative_refinement=lambda ae: (False, None),
+        mark_finished=lambda: finished.append(True),
+    )
+    assert finished == []

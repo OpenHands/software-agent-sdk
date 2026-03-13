@@ -78,7 +78,14 @@ INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 @dataclass(frozen=True, slots=True)
 class _ActionBatch:
-    """Immutable result of preparing a batch of actions for execution."""
+    """Immutable result of preparing a batch of actions for execution.
+
+    Owns the full lifecycle of a tool-call batch: preparation (truncation,
+    blocked-action partitioning, execution), event emission, and post-batch
+    state transitions. Agent-specific logic (iterative refinement, state
+    mutation) is injected via callables so the batch stays decoupled from
+    the Agent class.
+    """
 
     action_events: list[ActionEvent]
     has_finish: bool
@@ -142,6 +149,58 @@ class _ActionBatch:
             blocked_reasons=blocked_reasons,
             results_by_id=results_by_id,
         )
+
+    def emit(self, on_event: ConversationCallbackType) -> None:
+        """Emit all events in original action order."""
+        for ae in self.action_events:
+            reason = self.blocked_reasons.get(ae.id)
+            if reason is not None:
+                logger.info(f"Action '{ae.tool_name}' blocked by hook: {reason}")
+                on_event(
+                    UserRejectObservation(
+                        action_id=ae.id,
+                        tool_name=ae.tool_name,
+                        tool_call_id=ae.tool_call_id,
+                        rejection_reason=reason,
+                        rejection_source="hook",
+                    )
+                )
+            else:
+                for event in self.results_by_id[ae.id]:
+                    on_event(event)
+
+    def finalize(
+        self,
+        on_event: ConversationCallbackType,
+        check_iterative_refinement: Callable[[ActionEvent], tuple[bool, str | None]],
+        mark_finished: Callable[[], None],
+    ) -> None:
+        """Transition state after FinishTool, or inject iterative-refinement followup.
+
+        Args:
+            on_event: Callback for emitting events.
+            check_iterative_refinement: Returns (should_continue, followup)
+                for a FinishTool action event.
+            mark_finished: Called to set the conversation execution status
+                to FINISHED when the agent is done.
+        """
+        # Nothing to finalise: no FinishTool, or it was blocked by a hook.
+        if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+            return
+
+        should_continue, followup = check_iterative_refinement(self.action_events[-1])
+        if should_continue and followup:
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[TextContent(text=followup)],
+                    ),
+                )
+            )
+        else:
+            mark_finished()
 
 
 class Agent(CriticMixin, AgentBase):
@@ -325,69 +384,26 @@ class Agent(CriticMixin, AgentBase):
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
     ) -> None:
-        """
-        Prepare a batch (truncate, filter blocked, run tools),
-        then emit results and handle finish.
-        """
+        """Prepare a batch, emit results, and handle finish."""
+        state = conversation.state
         batch = _ActionBatch.prepare(
             action_events,
-            state=conversation.state,
+            state=state,
             executor=self._parallel_executor,
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
         )
-        self._emit_batch(batch, on_event)
-        self._handle_finish(conversation, batch, on_event)
-
-    def _emit_batch(
-        self,
-        batch: _ActionBatch,
-        on_event: ConversationCallbackType,
-    ) -> None:
-        """Emit all events in original action order."""
-        for ae in batch.action_events:
-            reason = batch.blocked_reasons.get(ae.id)
-            if reason is not None:
-                logger.info(f"Action '{ae.tool_name}' blocked by hook: {reason}")
-                on_event(
-                    UserRejectObservation(
-                        action_id=ae.id,
-                        tool_name=ae.tool_name,
-                        tool_call_id=ae.tool_call_id,
-                        rejection_reason=reason,
-                        rejection_source="hook",
-                    )
-                )
-            else:
-                for event in batch.results_by_id[ae.id]:
-                    on_event(event)
-
-    def _handle_finish(
-        self,
-        conversation: LocalConversation,
-        batch: _ActionBatch,
-        on_event: ConversationCallbackType,
-    ) -> None:
-        """
-        Transition state after FinishTool, or inject iterative-refinement followup.
-        """
-        # Nothing to finalise: no FinishTool in the batch, or it was blocked by a hook.
-        if not batch.has_finish or batch.action_events[-1].id in batch.blocked_reasons:
-            return
-
-        should_continue, followup = self._check_iterative_refinement(
-            conversation, batch.action_events[-1]
+        batch.emit(on_event)
+        batch.finalize(
+            on_event=on_event,
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
+            ),
+            mark_finished=lambda: setattr(
+                state,
+                "execution_status",
+                ConversationExecutionStatus.FINISHED,
+            ),
         )
-        if should_continue and followup:
-            on_event(
-                MessageEvent(
-                    source="user",
-                    llm_message=Message(
-                        role="user", content=[TextContent(text=followup)]
-                    ),
-                )
-            )
-        else:
-            conversation.state.execution_status = ConversationExecutionStatus.FINISHED
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
