@@ -306,3 +306,18 @@ def test_download_file_with_special_characters_in_path(client, tmp_path):
 
     assert response.status_code == 200
     assert response.content == b"special path content"
+
+
+def test_file_legacy_routes_are_deprecated_in_openapi(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    openapi_schema = response.json()
+
+    upload_operation = openapi_schema["paths"]["/api/file/upload/{path}"]["post"]
+    assert upload_operation.get("deprecated") is True
+    assert "Deprecated since v1.15.0" in upload_operation["description"]
+
+    download_operation = openapi_schema["paths"]["/api/file/download/{path}"]["get"]
+    assert download_operation.get("deprecated") is True
+    assert "Deprecated since v1.15.0" in download_operation["description"]

@@ -20,7 +20,6 @@ from openhands.agent_server.conversation_service import get_default_conversation
 from openhands.agent_server.models import ExecuteBashRequest, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.deprecation import deprecated
 
 
 logger = get_logger(__name__)
@@ -110,21 +109,18 @@ async def upload_file_query(
     return await _upload_file(path, file)
 
 
-@file_router.post("/upload/{path:path}")
-@deprecated(
-    deprecated_in="1.15.0",
-    removed_in="1.20.0",
-    details=(
-        "Use the /file/upload endpoint with a query parameter for the path "
-        "instead of a path parameter. This allows for better handling of "
-        "complex paths and is more consistent with other endpoints."
-    ),
-)
+@file_router.post("/upload/{path:path}", deprecated=True)
 async def upload_file_path(
     path: Annotated[str, FastApiPath(alias="path", description="Absolute file path.")],
     file: Annotated[UploadFile, File(...)],
 ) -> Success:
-    """Upload a file using path parameter (legacy, for backwards compatibility)."""
+    """Upload a file using path parameter (legacy, for backwards compatibility).
+
+    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
+
+    Prefer `/file/upload?path=...` to avoid path-encoding issues and align with
+    other file endpoints.
+    """
     return await _upload_file(path, file)
 
 
@@ -136,20 +132,17 @@ async def download_file_query(
     return await _download_file(path)
 
 
-@file_router.get("/download/{path:path}")
-@deprecated(
-    deprecated_in="1.15.0",
-    removed_in="1.20.0",
-    details=(
-        "Use the /file/download endpoint with a query parameter for the path "
-        "instead of a path parameter. This allows for better handling of "
-        "complex paths and is more consistent with other endpoints."
-    ),
-)
+@file_router.get("/download/{path:path}", deprecated=True)
 async def download_file_path(
     path: Annotated[str, FastApiPath(description="Absolute file path.")],
 ) -> FileResponse:
-    """Download a file using path parameter (legacy, for backwards compatibility)."""
+    """Download a file using path parameter (legacy, for backwards compatibility).
+
+    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
+
+    Prefer `/file/download?path=...` to avoid path-encoding issues and align with
+    other file endpoints.
+    """
     return await _download_file(path)
 
 
