@@ -42,8 +42,56 @@ jobs:
                   echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
                   exit "${exit_code}"
 
+            - name: Write REST API breakage summary
+              if: ${{ always() }}
+              env:
+                  EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
+                  IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+                  LOG_PATH: api-breakage.log
+                  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              run: |
+                  python3 <<'PY' >> "$GITHUB_STEP_SUMMARY"
+                  import os
+                  from pathlib import Path
+
+                  exit_code = int(os.environ.get('EXIT_CODE', '0') or '0')
+                  is_fork = os.environ.get('IS_FORK', 'false') == 'true'
+                  run_url = os.environ['RUN_URL']
+
+                  print('## Agent server REST API breakage checks (OpenAPI)')
+                  print()
+                  print(f"**Result:** {'✅ Passed' if exit_code == 0 else '❌ Failed'}")
+                  print()
+
+                  if is_fork:
+                      print(
+                          '_Fork PR detected: sticky PR comment was skipped because '
+                          'the GitHub token is read-only for `pull_request` workflows '
+                          'from forks._'
+                      )
+                      print()
+
+                  if exit_code != 0:
+                      try:
+                          log = Path(os.environ['LOG_PATH']).read_text()
+                      except Exception as exc:
+                          log = f'Unable to read log file: {exc}'
+
+                      excerpt = log[:1000].replace('```', '``\\`')
+                      print('<details><summary>Log excerpt (first 1000 characters)</summary>')
+                      print()
+                      print('```text')
+                      print(excerpt)
+                      print('```')
+                      print()
+                      print('</details>')
+                      print()
+
+                  print(f'[Action log]({run_url})')
+                  PY
+
             - name: Post REST API breakage report to PR
-              if: ${{ always() && github.event_name == 'pull_request' }}
+              if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
               uses: actions/github-script@v7
               env:
                   EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
