@@ -105,7 +105,7 @@ jobs:
 
             - name: Install Poetry
               run: |
-                  pipx install poetry
+                  pipx install poetry==2.2.1
 
             # OpenHands-CLI step runs first since it's simpler and less error-prone
             - name: Create PR for OpenHands-CLI repo
