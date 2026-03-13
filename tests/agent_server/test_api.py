@@ -360,9 +360,9 @@ class TestRootPath:
     """Tests for _get_root_path function and root_path configuration."""
 
     def test_get_root_path_returns_slash_when_web_url_is_none(self):
-        """Test that _get_root_path returns '/' when web_url is not configured."""
+        """Test that _get_root_path returns '' when web_url is not configured."""
         config = Config(web_url=None)
-        assert _get_root_path(config) == "/"
+        assert _get_root_path(config) == ""
 
     def test_get_root_path_extracts_path_from_url(self):
         """Test that _get_root_path extracts the path component from web_url."""
@@ -377,7 +377,7 @@ class TestRootPath:
     def test_get_root_path_with_trailing_slash(self):
         """Test that _get_root_path preserves trailing slash."""
         config = Config(web_url="https://example.com/api/")
-        assert _get_root_path(config) == "/api/"
+        assert _get_root_path(config) == "/api"
 
     def test_get_root_path_with_complex_path(self):
         """Test _get_root_path with a complex nested path."""
@@ -396,7 +396,7 @@ class TestRootPath:
         """Test that FastAPI instance uses '/' root_path when web_url is None."""
         config = Config(web_url=None)
         app = create_app(config)
-        assert app.root_path == "/"
+        assert app.root_path == ""
 
 
 class TestConfigWebUrl:
@@ -425,9 +425,9 @@ class TestConfigWebUrl:
 @pytest.mark.parametrize(
     "web_url,expected_root_path",
     [
-        (None, "/"),
+        (None, ""),
         ("https://example.com", ""),
-        ("https://example.com/", "/"),
+        ("https://example.com/", ""),
         ("https://example.com/api", "/api"),
         ("https://example.com/api/v1", "/api/v1"),
         ("http://localhost:8000/test", "/test"),

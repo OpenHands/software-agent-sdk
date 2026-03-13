@@ -141,10 +141,11 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
 
 def _get_root_path(config: Config) -> str:
+    root_path = ""
     if config.web_url:
         web_url = urlparse(config.web_url)
-        return web_url.path
-    return "/"
+        root_path = web_url.path.rstrip("/")
+    return root_path
 
 
 def _create_fastapi_instance(config: Config) -> FastAPI:
