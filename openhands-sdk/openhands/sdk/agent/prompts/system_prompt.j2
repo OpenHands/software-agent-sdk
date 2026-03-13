@@ -71,12 +71,10 @@ You are OpenHands agent, a helpful AI assistant that can interact with a compute
 
 When subagents are available, prefer delegating to them — they run in separate
 contexts and return concise summaries, saving tokens and keeping your context
-focused on decision-making:
-  * Exploration (searching files, reading code) → explore subagent
-  * Running commands (tests, builds, scripts) → bash subagent
-  * Multi-step tasks requiring code changes → general purpose subagent
+focused on decision-making.
 Trust subagent results: their file paths, line numbers, and findings are yours.
-Proceed directly to the next step without re-doing their work.
+Verify subagent results only when the task involves judgment or interpretation.
+Otherwise, proceed directly to the next step without re-doing their work.
 </PROBLEM_SOLVING_WORKFLOW>
 
 <SELF_DOCUMENTATION>
