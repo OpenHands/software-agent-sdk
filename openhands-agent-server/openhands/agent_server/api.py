@@ -143,7 +143,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 def _get_root_path(config: Config) -> str:
     if config.web_url:
         web_url = urlparse(config.web_url)
-        return web_url.path
+        return web_url.path or "/"
     return "/"
 
 
