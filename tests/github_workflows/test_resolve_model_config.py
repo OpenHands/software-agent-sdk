@@ -297,7 +297,9 @@ class TestTestModel:
             "llm_config": {"model": "litellm_proxy/test-model"},
         }
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content=""))]
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="", reasoning_content=None))
+        ]
 
         with patch("litellm.completion", return_value=mock_response):
             success, message = test_model(model_config, "test-key", "https://test.com")
@@ -305,6 +307,48 @@ class TestTestModel:
         assert success is False
         assert "✗" in message
         assert "Empty response" in message
+
+    def test_thinking_model_success(self):
+        """Test that a thinking model with only reasoning_content passes."""
+        model_config = {
+            "display_name": "Thinking Model",
+            "llm_config": {"model": "litellm_proxy/thinking-model"},
+        }
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(content="", reasoning_content="Let me think...")
+            )
+        ]
+
+        with patch("litellm.completion", return_value=mock_response):
+            success, message = test_model(model_config, "test-key", "https://test.com")
+
+        assert success is True
+        assert "✓" in message
+
+    def test_model_without_reasoning_content_attribute(self):
+        """Test that models whose Message object lacks reasoning_content don't raise."""
+        from types import SimpleNamespace
+
+        model_config = {
+            "display_name": "Standard Model",
+            "llm_config": {"model": "litellm_proxy/standard-model"},
+        }
+        mock_response = MagicMock()
+        # SimpleNamespace has only the attributes we give it - no reasoning_content
+        message = SimpleNamespace(content="2")
+        choice = MagicMock()
+        choice.message = message
+        mock_response.choices = [choice]
+
+        with patch("litellm.completion", return_value=mock_response):
+            success, message_str = test_model(
+                model_config, "test-key", "https://test.com"
+            )
+
+        assert success is True
+        assert "✓" in message_str
 
     def test_timeout_error(self):
         """Test that timeout errors are handled correctly."""
