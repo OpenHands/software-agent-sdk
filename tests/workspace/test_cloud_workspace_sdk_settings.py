@@ -40,23 +40,24 @@ class TestGetLLM:
     """Tests for OpenHandsCloudWorkspace.get_llm()."""
 
     def test_get_llm_returns_usable_llm(self, mock_workspace):
-        """get_llm returns a real LLM with the raw api_key."""
+        """get_llm calls /users/me?expose_secrets=true and returns a real LLM."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "model": "anthropic/claude-sonnet-4-20250514",
-            "api_key": "sk-test-key-123",
-            "base_url": "https://litellm.example.com",
+            "llm_model": "anthropic/claude-sonnet-4-20250514",
+            "llm_api_key": "sk-test-key-123",
+            "llm_base_url": "https://litellm.example.com",
         }
         mock_response.raise_for_status = MagicMock()
 
         with patch.object(
-            mock_workspace, "_send_settings_request", return_value=mock_response
+            mock_workspace, "_send_api_request", return_value=mock_response
         ) as mock_req:
             llm = mock_workspace.get_llm()
 
         mock_req.assert_called_once_with(
             "GET",
-            f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/llm",
+            f"{CLOUD_URL}/api/v1/users/me",
+            params={"expose_secrets": "true"},
         )
         assert llm.model == "anthropic/claude-sonnet-4-20250514"
         # api_key is a real SecretStr (LLM validator converts str → SecretStr)
@@ -68,14 +69,14 @@ class TestGetLLM:
         """User-provided kwargs override SaaS settings."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "model": "anthropic/claude-sonnet-4-20250514",
-            "api_key": "sk-test-key",
-            "base_url": None,
+            "llm_model": "anthropic/claude-sonnet-4-20250514",
+            "llm_api_key": "sk-test-key",
+            "llm_base_url": None,
         }
         mock_response.raise_for_status = MagicMock()
 
         with patch.object(
-            mock_workspace, "_send_settings_request", return_value=mock_response
+            mock_workspace, "_send_api_request", return_value=mock_response
         ):
             llm = mock_workspace.get_llm(model="gpt-4o", temperature=0.5)
 
@@ -87,14 +88,14 @@ class TestGetLLM:
         """If no API key is configured, the LLM gets api_key=None."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "model": "gpt-4o",
-            "api_key": None,
-            "base_url": None,
+            "llm_model": "gpt-4o",
+            "llm_api_key": None,
+            "llm_base_url": None,
         }
         mock_response.raise_for_status = MagicMock()
 
         with patch.object(
-            mock_workspace, "_send_settings_request", return_value=mock_response
+            mock_workspace, "_send_api_request", return_value=mock_response
         ):
             llm = mock_workspace.get_llm()
 

@@ -393,8 +393,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def get_llm(self, **llm_kwargs: Any) -> LLM:
         """Fetch LLM settings from the user's SaaS account and return an LLM.
 
-        Returns a fully usable ``LLM`` instance with the user's model,
-        API key, and base URL pre-configured.
+        Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
+        user's LLM configuration (model, api_key, base_url) and returns a
+        fully usable ``LLM`` instance.
 
         Args:
             **llm_kwargs: Additional keyword arguments passed to the LLM
@@ -418,16 +419,20 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
 
-        resp = self._send_settings_request("GET", f"{self._settings_base_url}/llm")
+        resp = self._send_api_request(
+            "GET",
+            f"{self.cloud_api_url}/api/v1/users/me",
+            params={"expose_secrets": "true"},
+        )
         data = resp.json()
 
         kwargs: dict[str, Any] = {}
-        if data.get("model"):
-            kwargs["model"] = data["model"]
-        if data.get("api_key"):
-            kwargs["api_key"] = data["api_key"]
-        if data.get("base_url"):
-            kwargs["base_url"] = data["base_url"]
+        if data.get("llm_model"):
+            kwargs["model"] = data["llm_model"]
+        if data.get("llm_api_key"):
+            kwargs["api_key"] = data["llm_api_key"]
+        if data.get("llm_base_url"):
+            kwargs["base_url"] = data["llm_base_url"]
 
         # User-provided kwargs take precedence
         kwargs.update(llm_kwargs)
