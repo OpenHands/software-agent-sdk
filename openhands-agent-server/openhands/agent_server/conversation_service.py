@@ -757,6 +757,7 @@ class ConversationWebhookSubscriber:
         conversation_data = conversation_info.model_dump(mode="json")
 
         # Retry logic
+        response = None
         for attempt in range(self.spec.num_retries + 1):
             try:
                 async with httpx.AsyncClient() as client:
@@ -780,10 +781,14 @@ class ConversationWebhookSubscriber:
                 if attempt < self.spec.num_retries:
                     await asyncio.sleep(self.spec.retry_delay)
                 else:
+                    # Log response content for debugging failures
+                    response_content = (
+                        response.text if response is not None else "No response"
+                    )
                     logger.error(
                         f"Failed to post conversation info to webhook "
                         f"{conversations_url} after {self.spec.num_retries + 1} "
-                        "attempts"
+                        f"attempts. Response: {response_content}"
                     )
 
 

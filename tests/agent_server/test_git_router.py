@@ -305,3 +305,18 @@ async def test_git_changes_with_complex_paths(client):
         assert response_data[0]["path"] == "src/deep/nested/file.py"
         assert response_data[1]["path"] == "file with spaces.txt"
         assert response_data[2]["path"] == "special-chars_file@123.py"
+
+
+def test_git_legacy_routes_are_deprecated_in_openapi(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    openapi_schema = response.json()
+
+    changes_operation = openapi_schema["paths"]["/api/git/changes/{path}"]["get"]
+    assert changes_operation.get("deprecated") is True
+    assert "Deprecated since v1.15.0" in changes_operation["description"]
+
+    diff_operation = openapi_schema["paths"]["/api/git/diff/{path}"]["get"]
+    assert diff_operation.get("deprecated") is True
+    assert "Deprecated since v1.15.0" in diff_operation["description"]
