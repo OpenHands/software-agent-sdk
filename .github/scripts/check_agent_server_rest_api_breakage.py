@@ -9,7 +9,8 @@ not schema drift from newer FastAPI/Pydantic releases.
 
 Policies enforced:
 
-1) Deprecation metadata for REST endpoints
+1) REST deprecations must use FastAPI/OpenAPI metadata
+   - FastAPI route handlers must not use `openhands.sdk.utils.deprecation.deprecated`.
    - Endpoints documented as deprecated in their OpenAPI description must also be
      marked `deprecated: true` in the generated schema.
 
@@ -27,6 +28,7 @@ the script emits a warning and exits successfully to avoid flaky CI.
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -51,6 +53,7 @@ HTTP_METHODS = {
     "head",
     "trace",
 }
+ROUTE_DECORATOR_NAMES = HTTP_METHODS | {"api_route"}
 OPENAPI_PROGRAM = """
 import json
 import sys
@@ -171,6 +174,96 @@ def _generate_openapi_for_git_ref(git_ref: str) -> dict | None:
             return None
 
         return _generate_openapi_from_source_tree(source_tree, git_ref)
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _dotted_name(node.value)
+        if prefix is None:
+            return None
+        return f"{prefix}.{node.attr}"
+    return None
+
+
+def _find_sdk_deprecated_fastapi_routes_in_file(
+    file_path: Path, repo_root: Path
+) -> list[str]:
+    tree = ast.parse(file_path.read_text(), filename=str(file_path))
+
+    deprecated_names: set[str] = set()
+    deprecation_module_names: set[str] = set()
+
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "openhands.sdk.utils.deprecation":
+                for alias in node.names:
+                    if alias.name == "deprecated":
+                        deprecated_names.add(alias.asname or alias.name)
+            elif node.module == "openhands.sdk.utils":
+                for alias in node.names:
+                    if alias.name == "deprecation":
+                        deprecation_module_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "openhands.sdk.utils.deprecation":
+                    deprecation_module_names.add(alias.asname or alias.name)
+
+    errors: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+
+        has_route_decorator = False
+        uses_sdk_deprecated = False
+
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+
+            dotted_name = _dotted_name(decorator.func)
+            if (
+                isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr in ROUTE_DECORATOR_NAMES
+            ):
+                has_route_decorator = True
+
+            if dotted_name in deprecated_names or (
+                dotted_name == "openhands.sdk.utils.deprecation.deprecated"
+            ):
+                uses_sdk_deprecated = True
+                continue
+
+            if (
+                isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr == "deprecated"
+            ):
+                base_name = _dotted_name(decorator.func.value)
+                if base_name in deprecation_module_names or (
+                    base_name == "openhands.sdk.utils.deprecation"
+                ):
+                    uses_sdk_deprecated = True
+
+        if has_route_decorator and uses_sdk_deprecated:
+            rel_path = file_path.relative_to(repo_root)
+            errors.append(
+                f"{rel_path}:{node.lineno} FastAPI route `{node.name}` uses "
+                "openhands.sdk.utils.deprecation.deprecated; use the route "
+                "decorator's deprecated=True flag instead."
+            )
+
+    return errors
+
+
+def _find_sdk_deprecated_fastapi_routes(repo_root: Path) -> list[str]:
+    app_root = repo_root / "openhands-agent-server" / "openhands" / "agent_server"
+    errors: list[str] = []
+
+    for file_path in sorted(app_root.rglob("*.py")):
+        errors.extend(_find_sdk_deprecated_fastapi_routes_in_file(file_path, repo_root))
+
+    return errors
 
 
 def _find_deprecation_policy_errors(schema: dict) -> list[str]:
@@ -301,6 +394,10 @@ def main() -> int:
 
     baseline_git_ref = f"v{baseline_version}"
 
+    static_policy_errors = _find_sdk_deprecated_fastapi_routes(REPO_ROOT)
+    for error in static_policy_errors:
+        print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
+
     current_schema = _generate_current_openapi()
     if current_schema is None:
         return 1
@@ -311,7 +408,7 @@ def main() -> int:
 
     prev_schema = _generate_openapi_for_git_ref(baseline_git_ref)
     if prev_schema is None:
-        return 0 if not deprecation_policy_errors else 1
+        return 0 if not (static_policy_errors or deprecation_policy_errors) else 1
 
     prev_schema = _normalize_openapi_for_oasdiff(prev_schema)
     current_schema = _normalize_openapi_for_oasdiff(current_schema)
@@ -380,7 +477,7 @@ def main() -> int:
         ):
             return 1
 
-    return 1 if deprecation_policy_errors else 0
+    return 1 if (static_policy_errors or deprecation_policy_errors) else 0
 
 
 if __name__ == "__main__":
