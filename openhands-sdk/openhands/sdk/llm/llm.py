@@ -418,6 +418,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Handle deserialized SecretSource dicts (e.g. from JSON round-trip)
         if isinstance(v, dict) and "kind" in v:
             return SecretSource.model_validate(v, context=info.context)
+        # At this point v is str | SecretStr | None (dict without 'kind' is
+        # rejected by validate_secret which is fine).
+        assert not isinstance(v, dict), f"Unexpected dict without 'kind': {v}"
         return validate_secret(v, info)
 
     # REMOVE_AT: 1.15.0 - Remove this validator
@@ -1110,7 +1113,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # For SecretSource api_key, don't pass it to model info lookup —
         # we don't want to trigger a network call just for capability checks,
         # and the api_key is only used for litellm_proxy model info lookups.
-        api_key_for_info = None if isinstance(self.api_key, SecretSource) else self.api_key
+        api_key_for_info = (
+            None if isinstance(self.api_key, SecretSource) else self.api_key
+        )
         self._model_info = get_litellm_model_info(
             secret_api_key=api_key_for_info,
             base_url=self.base_url,

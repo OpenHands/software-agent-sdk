@@ -1,6 +1,8 @@
 """OpenHands Cloud workspace implementation using Cloud API."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
 
 import httpx
@@ -9,6 +11,11 @@ from pydantic import Field, PrivateAttr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.secret import LookupSecret
 
 
 logger = get_logger(__name__)
@@ -371,17 +378,19 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     @property
     def _settings_base_url(self) -> str:
         """Base URL for sandbox-scoped settings endpoints."""
-        return (
-            f"{self.cloud_api_url}/api/v1"
-            f"/sandboxes/{self._sandbox_id}/settings"
-        )
+        return f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}/settings"
 
     @property
     def _session_headers(self) -> dict[str, str]:
         """Headers for settings requests (SESSION_API_KEY auth)."""
         return {"X-Session-API-Key": self._session_api_key or ""}
 
-    def get_llm(self, **llm_kwargs: Any) -> "LLM":
+    @staticmethod
+    def _env_headers() -> dict[str, str]:
+        """env_headers for LookupSecret — resolved inside sandbox only."""
+        return {"X-Session-API-Key": "SESSION_API_KEY"}
+
+    def get_llm(self, **llm_kwargs: Any) -> LLM:
         """Fetch LLM settings from the user's SaaS account and return an LLM.
 
         The returned LLM's ``api_key`` is a ``LookupSecret`` — a lazy
@@ -430,9 +439,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         return LLM(**kwargs)
 
-    def get_secrets(
-        self, names: list[str] | None = None
-    ) -> dict[str, "LookupSecret"]:
+    def get_secrets(self, names: list[str] | None = None) -> dict[str, LookupSecret]:
         """Build ``LookupSecret`` references for the user's SaaS secrets.
 
         Fetches the list of available secret **names** from the SaaS (no raw
@@ -468,9 +475,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
 
-        resp = self._send_settings_request(
-            "GET", f"{self._settings_base_url}/secrets"
-        )
+        resp = self._send_settings_request("GET", f"{self._settings_base_url}/secrets")
         data = resp.json()
 
         result: dict[str, LookupSecret] = {}
@@ -480,7 +485,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 continue
             result[name] = LookupSecret(
                 url=f"{self._settings_base_url}/secrets/{name}",
-                headers=self._session_headers,
+                env_headers=self._env_headers(),
                 description=item.get("description"),
             )
 
@@ -512,7 +517,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def __del__(self) -> None:
         self.cleanup()
 
-    def __enter__(self) -> "OpenHandsCloudWorkspace":
+    def __enter__(self) -> OpenHandsCloudWorkspace:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

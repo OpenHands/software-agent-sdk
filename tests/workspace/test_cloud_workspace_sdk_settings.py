@@ -21,7 +21,9 @@ CLOUD_URL = "https://app.all-hands.dev"
 @pytest.fixture
 def mock_workspace():
     """Create a workspace instance with mocked sandbox lifecycle."""
-    with patch.object(OpenHandsCloudWorkspace, "model_post_init", lambda self, ctx: None):
+    with patch.object(
+        OpenHandsCloudWorkspace, "model_post_init", lambda self, ctx: None
+    ):
         workspace = OpenHandsCloudWorkspace(
             cloud_api_url=CLOUD_URL,
             cloud_api_key="test-api-key",
@@ -37,14 +39,14 @@ class TestGetLLM:
     """Tests for OpenHandsCloudWorkspace.get_llm()."""
 
     def test_get_llm_returns_lookup_secret_api_key(self, mock_workspace):
-        """get_llm returns an LLM whose api_key is a LookupSecret."""
+        """get_llm returns an LLM whose api_key is a LookupSecret with env_headers."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "model": "anthropic/claude-sonnet-4-20250514",
             "api_key": {
                 "kind": "LookupSecret",
                 "url": f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/llm-key",
-                "headers": {"X-Session-API-Key": SESSION_KEY},
+                "env_headers": {"X-Session-API-Key": "SESSION_API_KEY"},
             },
             "base_url": "https://litellm.example.com",
         }
@@ -62,6 +64,9 @@ class TestGetLLM:
         assert llm.model == "anthropic/claude-sonnet-4-20250514"
         assert isinstance(llm.api_key, LookupSecret)
         assert llm.api_key.url.endswith("/settings/llm-key")
+        # Session key is referenced by env var name, not embedded
+        assert llm.api_key.env_headers == {"X-Session-API-Key": "SESSION_API_KEY"}
+        assert llm.api_key.headers == {}
         assert llm.base_url == "https://litellm.example.com"
 
     def test_get_llm_allows_overrides(self, mock_workspace):
@@ -72,7 +77,7 @@ class TestGetLLM:
             "api_key": {
                 "kind": "LookupSecret",
                 "url": f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/llm-key",
-                "headers": {"X-Session-API-Key": SESSION_KEY},
+                "env_headers": {"X-Session-API-Key": "SESSION_API_KEY"},
             },
             "base_url": None,
         }
@@ -85,7 +90,6 @@ class TestGetLLM:
 
         assert llm.model == "gpt-4o"
         assert llm.temperature == 0.5
-        # api_key should still be a LookupSecret from SaaS
         assert isinstance(llm.api_key, LookupSecret)
 
     def test_get_llm_no_api_key_still_works(self, mock_workspace):
@@ -146,7 +150,9 @@ class TestGetSecrets:
         assert gh_secret.url == (
             f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/secrets/GITHUB_TOKEN"
         )
-        assert gh_secret.headers["X-Session-API-Key"] == SESSION_KEY
+        # Session key referenced by env var name, not embedded
+        assert gh_secret.env_headers == {"X-Session-API-Key": "SESSION_API_KEY"}
+        assert gh_secret.headers == {}
         assert gh_secret.description == "GitHub token"
 
     def test_get_secrets_filters_by_name(self, mock_workspace):

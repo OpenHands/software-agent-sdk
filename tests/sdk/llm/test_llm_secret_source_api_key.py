@@ -12,7 +12,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
-from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
+from openhands.sdk.secret import LookupSecret, StaticSecret
 
 
 # ---------------------------------------------------------------------------
@@ -39,10 +39,11 @@ class TestLookupSecretApiKeyConstruction:
             description="SaaS LLM key",
         )
         llm = LLM(model="test-model", api_key=lookup)
+        assert isinstance(llm.api_key, LookupSecret)
         assert llm.api_key.description == "SaaS LLM key"
 
     def test_static_secret_accepted(self):
-        static = StaticSecret(value="sk-direct-key")
+        static = StaticSecret(value=SecretStr("sk-direct-key"))
         llm = LLM(model="test-model", api_key=static)
         assert isinstance(llm.api_key, StaticSecret)
 
@@ -114,7 +115,7 @@ class TestLookupSecretSerialization:
         assert isinstance(restored.api_key, LookupSecret)
 
     def test_static_secret_round_trip(self):
-        static = StaticSecret(value="sk-direct")
+        static = StaticSecret(value=SecretStr("sk-direct"))
         llm = LLM(model="test-model", api_key=static)
         dumped = llm.model_dump(mode="json", context={"expose_secrets": True})
 
@@ -150,7 +151,7 @@ class TestLookupSecretResolution:
         assert result == "sk-resolved-key"
 
     def test_static_secret_resolved(self):
-        static = StaticSecret(value="sk-static")
+        static = StaticSecret(value=SecretStr("sk-static"))
         llm = LLM(model="test-model", api_key=static)
         assert llm._get_litellm_api_key_value() == "sk-static"
 
@@ -163,12 +164,14 @@ class TestLookupSecretResolution:
         assert llm._get_litellm_api_key_value() is None
 
     def test_bedrock_lookup_secret_not_forwarded(self):
-        """Bedrock models should NOT forward api_key to litellm, even with LookupSecret."""
+        """Bedrock models should NOT forward api_key to litellm."""
         lookup = LookupSecret(
             url="https://saas.example.com/key",
             headers={"X-Session-API-Key": "sk"},
         )
-        llm = LLM(model="bedrock/anthropic.claude-3-sonnet-20240229-v1:0", api_key=lookup)
+        llm = LLM(
+            model="bedrock/anthropic.claude-3-sonnet-20240229-v1:0", api_key=lookup
+        )
 
         mock_response = httpx.Response(
             200,
@@ -179,6 +182,78 @@ class TestLookupSecretResolution:
             result = llm._get_litellm_api_key_value()
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# env_headers enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestEnvHeadersEnforcement:
+    """env_headers ensures secrets resolve only where the env var is set."""
+
+    def test_env_headers_resolved_from_environment(self):
+        """LookupSecret with env_headers reads the header from os.environ."""
+        lookup = LookupSecret(
+            url="https://saas.example.com/key",
+            env_headers={"X-Session-API-Key": "SESSION_API_KEY"},
+        )
+        llm = LLM(model="test-model", api_key=lookup)
+
+        mock_response = httpx.Response(
+            200,
+            text="sk-env-resolved",
+            request=httpx.Request("GET", "https://saas.example.com/key"),
+        )
+        with (
+            patch.dict("os.environ", {"SESSION_API_KEY": "sandbox-session-key-123"}),
+            patch("httpx.get", return_value=mock_response) as mock_get,
+        ):
+            result = llm._get_litellm_api_key_value()
+
+        assert result == "sk-env-resolved"
+        # Verify the env-resolved header was passed
+        call_headers = mock_get.call_args[1]["headers"]
+        assert call_headers["X-Session-API-Key"] == "sandbox-session-key-123"
+
+    def test_env_headers_not_in_serialized_output(self):
+        """env_headers contain env var NAMES, not secret values."""
+        lookup = LookupSecret(
+            url="https://saas.example.com/key",
+            env_headers={"X-Session-API-Key": "SESSION_API_KEY"},
+        )
+        llm = LLM(model="test-model", api_key=lookup)
+        dumped = llm.model_dump(mode="json", context={"expose_secrets": True})
+
+        api_key_dict = dumped["api_key"]
+        assert api_key_dict["env_headers"] == {"X-Session-API-Key": "SESSION_API_KEY"}
+        # No raw session key anywhere in the serialized output
+        assert "headers" not in api_key_dict or not api_key_dict["headers"]
+
+    def test_client_side_resolution_fails_without_env_var(self):
+        """Without SESSION_API_KEY in env, the header is not sent → 401."""
+        import os as _os
+
+        lookup = LookupSecret(
+            url="https://saas.example.com/key",
+            env_headers={"X-Session-API-Key": "SESSION_API_KEY"},
+        )
+        llm = LLM(model="test-model", api_key=lookup)
+
+        mock_401 = httpx.Response(
+            401,
+            text="Unauthorized",
+            request=httpx.Request("GET", "https://saas.example.com/key"),
+        )
+        # Ensure SESSION_API_KEY is not in env
+        saved = _os.environ.pop("SESSION_API_KEY", None)
+        try:
+            with patch("httpx.get", return_value=mock_401):
+                with pytest.raises(httpx.HTTPStatusError):
+                    llm._get_litellm_api_key_value()
+        finally:
+            if saved is not None:
+                _os.environ["SESSION_API_KEY"] = saved
 
 
 # ---------------------------------------------------------------------------
@@ -193,11 +268,9 @@ class TestModelInfoWithLookupSecret:
         """Creating an LLM with LookupSecret should not trigger HTTP calls."""
         lookup = LookupSecret(
             url="https://saas.example.com/key",
-            headers={"X-Session-API-Key": "sk"},
+            env_headers={"X-Session-API-Key": "SESSION_API_KEY"},
         )
         # If get_value() is called during __init__, this would fail
-        with patch.object(
-            LookupSecret, "get_value", side_effect=RuntimeError("should not be called")
-        ):
+        with patch("httpx.get", side_effect=RuntimeError("should not be called")):
             llm = LLM(model="test-model", api_key=lookup)
             assert llm.api_key is not None
