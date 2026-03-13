@@ -318,12 +318,12 @@ def check_model(
         }
 
         # Use simple arithmetic prompt that works reliably across all models
-        # max_tokens=300 provides enough room for models to respond
+        # max_tokens=100 provides enough room for models to respond
         # (some need >10 tokens)
         response = litellm.completion(
             model=model_name,
             messages=[{"role": "user", "content": "1+1="}],
-            max_tokens=300,
+            max_tokens=100,
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
