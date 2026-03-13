@@ -511,6 +511,6 @@ def test_nemotron_3_super_120b_a12b_config():
     assert model["display_name"] == "NVIDIA Nemotron-3 Super 120B"
     assert (
         model["llm_config"]["model"]
-        == "litellm_proxy/openai/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+        == "litellm_proxy/nvidia/nemotron-3-super-120b-a12b"
     )
     assert model["llm_config"]["temperature"] == 0.0
