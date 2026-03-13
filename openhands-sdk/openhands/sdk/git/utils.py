@@ -14,6 +14,56 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
+def redact_url_credentials(url: str) -> str:
+    """Redact credentials from a URL for safe logging.
+
+    Handles various URL formats with embedded credentials:
+    - https://user:password@host/path
+    - https://oauth2:token@host/path
+    - https://token@host/path
+
+    Args:
+        url: URL string that may contain credentials.
+
+    Returns:
+        URL with credentials replaced by '****', or the original URL
+        if no credentials are detected.
+
+    Examples:
+        >>> redact_url_credentials("https://oauth2:SECRET@gitlab.com/org/repo")
+        "https://****@gitlab.com/org/repo"
+        >>> redact_url_credentials("https://user:pass@github.com/owner/repo.git")
+        "https://****@github.com/owner/repo.git"
+        >>> redact_url_credentials("https://github.com/owner/repo.git")
+        "https://github.com/owner/repo.git"
+        >>> redact_url_credentials("git@github.com:owner/repo.git")
+        "git@github.com:owner/repo.git"
+    """
+    # Pattern matches: scheme://[user[:password]@]host
+    # We want to replace user:password@ or user@ with ****@
+    # Only for http:// and https:// URLs (not ssh git@ URLs)
+    pattern = r"^(https?://)([^@]+)@"
+    match = re.match(pattern, url)
+    if match:
+        return f"{match.group(1)}****@{url[match.end() :]}"
+    return url
+
+
+def _redact_git_args(args: list[str]) -> list[str]:
+    """Redact credentials from git command arguments for safe logging.
+
+    Applies credential redaction to any argument that looks like a URL
+    with embedded credentials.
+
+    Args:
+        args: List of git command arguments.
+
+    Returns:
+        New list with credentials redacted from URL arguments.
+    """
+    return [redact_url_credentials(arg) for arg in args]
+
+
 def run_git_command(
     args: list[str],
     cwd: str | Path | None = None,
@@ -43,28 +93,31 @@ def run_git_command(
         )
 
         if result.returncode != 0:
-            cmd_str = shlex.join(args)
+            # Redact credentials from command for logging and error messages
+            redacted_args = _redact_git_args(args)
+            cmd_str = shlex.join(redacted_args)
             error_msg = f"Git command failed: {cmd_str}"
             logger.error(
                 f"{error_msg}. Exit code: {result.returncode}. Stderr: {result.stderr}"
             )
             raise GitCommandError(
                 message=error_msg,
-                command=args,
+                command=redacted_args,
                 exit_code=result.returncode,
                 stderr=result.stderr.strip(),
             )
 
-        logger.debug(f"Git command succeeded: {shlex.join(args)}")
+        logger.debug(f"Git command succeeded: {shlex.join(_redact_git_args(args))}")
         return result.stdout.strip()
 
     except subprocess.TimeoutExpired as e:
-        cmd_str = shlex.join(args)
+        redacted_args = _redact_git_args(args)
+        cmd_str = shlex.join(redacted_args)
         error_msg = f"Git command timed out: {cmd_str}"
         logger.error(error_msg)
         raise GitCommandError(
             message=error_msg,
-            command=args,
+            command=redacted_args,
             exit_code=-1,
             stderr="Command timed out",
         ) from e
@@ -73,7 +126,7 @@ def run_git_command(
         logger.error(error_msg)
         raise GitCommandError(
             message=error_msg,
-            command=args,
+            command=_redact_git_args(args),
             exit_code=-1,
             stderr="Git executable not found",
         ) from e
