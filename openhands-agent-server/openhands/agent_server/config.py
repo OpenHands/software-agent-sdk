@@ -14,7 +14,6 @@ from openhands.sdk.utils.deprecation import warn_deprecated
 V0_SESSION_API_KEY_ENV = "SESSION_API_KEY"
 V1_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
 V0_RUNTIME_URL = "RUNTIME_URL"
-V1_WEB_URL_ENV = "OH_WEB_URL"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
 _logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ def _default_secret_key() -> SecretStr | None:
 
 
 def _default_web_url() -> str | None:
-    web_url = os.getenv(V1_WEB_URL_ENV)
+    web_url = os.getenv("OH_WEB_URL")
     if web_url:
         return web_url
 
@@ -62,7 +61,7 @@ def _default_web_url() -> str | None:
         "RUNTIME_URL environment variable",
         deprecated_in="1.13.1",
         removed_in="1.18.0",
-        details=f"Use {V1_WEB_URL_ENV} instead.",
+        details="Use OH_WEB_URL instead.",
     )
     return legacy_web_url
 
