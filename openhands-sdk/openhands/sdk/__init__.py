@@ -4,6 +4,7 @@ from openhands.sdk.agent import (
     Agent,
     AgentBase,
 )
+from openhands.sdk.banner import _print_banner
 from openhands.sdk.context import (
     AgentContext,
     load_project_skills,
@@ -74,6 +75,9 @@ try:
     __version__ = version("openhands-sdk")
 except PackageNotFoundError:
     __version__ = "0.0.0"  # fallback for editable/unbuilt environments
+
+# Print startup banner
+_print_banner(__version__)
 
 __all__ = [
     "LLM",
