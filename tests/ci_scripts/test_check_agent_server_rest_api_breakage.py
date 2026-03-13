@@ -24,6 +24,9 @@ def _load_prod_module():
 _prod = _load_prod_module()
 
 _find_deprecation_policy_errors = _prod._find_deprecation_policy_errors
+_find_sdk_deprecated_fastapi_routes_in_file = (
+    _prod._find_sdk_deprecated_fastapi_routes_in_file
+)
 _get_baseline_version = _prod._get_baseline_version
 _is_minor_or_major_bump = _prod._is_minor_or_major_bump
 _normalize_openapi_for_oasdiff = _prod._normalize_openapi_for_oasdiff
@@ -85,6 +88,68 @@ def test_find_deprecation_policy_errors_ignores_non_deprecated_operations():
     )
 
     assert _find_deprecation_policy_errors(schema) == []
+
+
+def test_find_sdk_deprecated_fastapi_routes_in_file_flags_direct_import(tmp_path):
+    repo_root = tmp_path
+    source = repo_root / "openhands-agent-server" / "openhands" / "agent_server"
+    source.mkdir(parents=True)
+    file_path = source / "router.py"
+    file_path.write_text(
+        "from openhands.sdk.utils.deprecation import deprecated\n"
+        "\n"
+        '@router.get("/foo")\n'
+        '@deprecated(deprecated_in="1.0.0", removed_in="1.1.0")\n'
+        "async def foo():\n"
+        "    return {}\n"
+    )
+
+    errors = _find_sdk_deprecated_fastapi_routes_in_file(file_path, repo_root)
+
+    assert errors == [
+        "openhands-agent-server/openhands/agent_server/router.py:5 FastAPI route "
+        "`foo` uses openhands.sdk.utils.deprecation.deprecated; use the route "
+        "decorator's deprecated=True flag instead."
+    ]
+
+
+def test_find_sdk_deprecated_fastapi_routes_in_file_flags_alias_import(tmp_path):
+    repo_root = tmp_path
+    source = repo_root / "openhands-agent-server" / "openhands" / "agent_server"
+    source.mkdir(parents=True)
+    file_path = source / "router.py"
+    file_path.write_text(
+        "import openhands.sdk.utils.deprecation as dep\n"
+        "\n"
+        '@router.post("/foo")\n'
+        '@dep.deprecated(deprecated_in="1.0.0", removed_in="1.1.0")\n'
+        "async def foo():\n"
+        "    return {}\n"
+    )
+
+    errors = _find_sdk_deprecated_fastapi_routes_in_file(file_path, repo_root)
+
+    assert errors == [
+        "openhands-agent-server/openhands/agent_server/router.py:5 FastAPI route "
+        "`foo` uses openhands.sdk.utils.deprecation.deprecated; use the route "
+        "decorator's deprecated=True flag instead."
+    ]
+
+
+def test_find_sdk_deprecated_fastapi_routes_in_file_ignores_non_route_usage(tmp_path):
+    repo_root = tmp_path
+    source = repo_root / "openhands-agent-server" / "openhands" / "agent_server"
+    source.mkdir(parents=True)
+    file_path = source / "helpers.py"
+    file_path.write_text(
+        "from openhands.sdk.utils.deprecation import deprecated\n"
+        "\n"
+        '@deprecated(deprecated_in="1.0.0", removed_in="1.1.0")\n'
+        "def helper():\n"
+        "    return None\n"
+    )
+
+    assert _find_sdk_deprecated_fastapi_routes_in_file(file_path, repo_root) == []
 
 
 def test_get_baseline_version_warns_and_returns_none_when_pypi_fails(

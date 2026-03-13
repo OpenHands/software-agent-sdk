@@ -28,6 +28,9 @@ When deprecating a REST endpoint:
 2. Add a docstring note that includes:
    - the version it was deprecated in
    - the version it is scheduled for removal in (default: **3 minor releases** later)
+3. Do **not** use `openhands.sdk.utils.deprecation.deprecated` for FastAPI routes.
+   That decorator affects Python warnings/docstrings, not OpenAPI, and may be a
+   no-op before the declared deprecation version.
 
 Example:
 
@@ -50,9 +53,14 @@ Removing an endpoint is a breaking change.
 ### CI enforcement
 
 The workflow `Agent server REST API breakage checks` compares the current OpenAPI
-schema against the previous `openhands-agent-server` release on PyPI using [oasdiff](https://github.com/oasdiff/oasdiff).
+schema against the previous `openhands-agent-server` release selected from PyPI,
+but generates the baseline schema from the matching git tag under the current
+workspace dependency set before diffing with [oasdiff](https://github.com/oasdiff/oasdiff).
 
 It currently enforces:
+- FastAPI route handlers must not use `openhands.sdk.utils.deprecation.deprecated`.
+- Endpoints that document deprecation in their OpenAPI description must also set
+  `deprecated: true`.
 - No removal of operations (path + method) unless they were already marked
   `deprecated: true` in the previous release.
 - Breaking changes require a MINOR (or MAJOR) version bump.
