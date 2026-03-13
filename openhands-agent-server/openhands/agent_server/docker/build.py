@@ -575,6 +575,7 @@ def _get_dockerfile_path(sdk_project_root: Path) -> Path:
         raise FileNotFoundError(f"Dockerfile not found at {dockerfile_path}")
     return dockerfile_path
 
+
 def _round_seconds(value: float) -> float:
     return round(value, 3)
 
@@ -683,6 +684,8 @@ def _parse_buildkit_telemetry(stderr: str) -> BuildTelemetry:
         telemetry.export_manifest_seconds
     )
     return telemetry
+
+
 # --- single entry point ---
 
 
@@ -698,7 +701,7 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
-    ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
+    ctx = _make_build_context(opts.sdk_project_root)
     telemetry.build_context_seconds = _round_seconds(
         time.monotonic() - build_context_started
     )

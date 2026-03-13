@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+
 BUILDKIT_STDERR_SAMPLE = "\n".join(
     [
         "#8 importing cache manifest from "
@@ -30,6 +31,8 @@ BUILDKIT_STDERR_SAMPLE = "\n".join(
         "",
     ]
 )
+
+
 def test_git_info_priority_sdk_sha():
     """Test that SDK_SHA takes priority over GITHUB_SHA and git commands."""
     from openhands.agent_server.docker.build import _git_info
