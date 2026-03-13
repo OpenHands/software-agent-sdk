@@ -2,20 +2,27 @@
 """REST API breakage detection for openhands-agent-server using oasdiff.
 
 This script compares the current OpenAPI schema for the agent-server REST API against
-the most recent published version on PyPI, using oasdiff for breaking change detection.
+an already-published release. The baseline version is selected from PyPI, but the
+baseline schema is generated from the matching git tag under the current workspace's
+locked dependency set. This keeps the comparison focused on API changes in our code,
+not schema drift from newer FastAPI/Pydantic releases.
 
-Policies enforced (mirrors the SDK's Griffe checks, but for REST):
+Policies enforced:
 
-1) Deprecation-before-removal
+1) Deprecation metadata for REST endpoints
+   - Endpoints documented as deprecated in their OpenAPI description must also be
+     marked `deprecated: true` in the generated schema.
+
+2) Deprecation-before-removal
    - If a REST operation (path + HTTP method) is removed, it must have been marked
      `deprecated: true` in the baseline release.
 
-2) MINOR version bump
+3) MINOR version bump
    - If a breaking REST change is detected, the current version must be at least a
      MINOR bump compared to the baseline release.
 
-If the baseline release schema can't be fetched (e.g., network / PyPI issues), the
-script emits a warning and exits successfully to avoid flaky CI.
+If the baseline release schema can't be generated (e.g., missing tag / repo issues),
+the script emits a warning and exits successfully to avoid flaky CI.
 """
 
 from __future__ import annotations
@@ -34,6 +41,33 @@ from packaging import version as pkg_version
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_SERVER_PYPROJECT = REPO_ROOT / "openhands-agent-server" / "pyproject.toml"
 PYPI_DISTRIBUTION = "openhands-agent-server"
+HTTP_METHODS = {
+    "get",
+    "put",
+    "post",
+    "delete",
+    "patch",
+    "options",
+    "head",
+    "trace",
+}
+OPENAPI_PROGRAM = """
+import json
+import sys
+from pathlib import Path
+
+source_tree = Path(sys.argv[1])
+sys.path = [
+    str(source_tree / "openhands-agent-server"),
+    str(source_tree / "openhands-sdk"),
+    str(source_tree / "openhands-tools"),
+    str(source_tree / "openhands-workspace"),
+] + sys.path
+
+from openhands.agent_server.api import create_app
+
+print(json.dumps(create_app().openapi()))
+"""
 
 
 def _read_version_from_pyproject(pyproject: Path) -> str:
@@ -81,85 +115,88 @@ def _get_baseline_version(distribution: str, current: str) -> str | None:
     return max(older, key=pkg_version.parse)
 
 
-def _generate_current_openapi() -> dict:
-    from openhands.agent_server.api import create_app
+def _generate_openapi_from_source_tree(source_tree: Path, label: str) -> dict | None:
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", OPENAPI_PROGRAM, str(source_tree)],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=source_tree,
+        )
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")
+        excerpt = output.strip()[-1000:]
+        print(
+            f"::warning title={PYPI_DISTRIBUTION} REST API::Failed to generate "
+            f"OpenAPI schema for {label}: {exc}\n{excerpt}"
+        )
+        return None
+    except Exception as exc:
+        print(
+            f"::warning title={PYPI_DISTRIBUTION} REST API::Failed to generate "
+            f"OpenAPI schema for {label}: {exc}"
+        )
+        return None
 
-    return create_app().openapi()
+
+def _generate_current_openapi() -> dict | None:
+    return _generate_openapi_from_source_tree(REPO_ROOT, "current workspace")
 
 
-def _generate_openapi_for_version(version: str) -> dict | None:
-    """Generate OpenAPI schema for a published agent-server version.
-
-    Returns None on failure so callers can treat it as a best-effort comparison.
-    """
-
+def _generate_openapi_for_git_ref(git_ref: str) -> dict | None:
     with tempfile.TemporaryDirectory(prefix="agent-server-openapi-") as tmp:
-        venv_dir = Path(tmp) / ".venv"
-        python = venv_dir / "bin" / "python"
+        source_tree = Path(tmp)
 
         try:
-            subprocess.run(
-                [
-                    "uv",
-                    "venv",
-                    str(venv_dir),
-                    "--python",
-                    sys.executable,
-                ],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            openhands_packages = (
-                "openhands-agent-server",
-                "openhands-sdk",
-                "openhands-tools",
-                "openhands-workspace",
-            )
-            packages = [f"{name}=={version}" for name in openhands_packages]
-
-            subprocess.run(
-                [
-                    "uv",
-                    "pip",
-                    "install",
-                    "--python",
-                    str(python),
-                    *packages,
-                ],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-
-            program = (
-                "import json; "
-                "from openhands.agent_server.api import create_app; "
-                "print(json.dumps(create_app().openapi()))"
-            )
-            result = subprocess.run(
-                [str(python), "-c", program],
+            archive = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "archive", git_ref],
                 check=True,
                 capture_output=True,
-                text=True,
             )
-            return json.loads(result.stdout)
+            subprocess.run(
+                ["tar", "-x", "-C", str(source_tree)],
+                check=True,
+                input=archive.stdout,
+                capture_output=True,
+            )
         except subprocess.CalledProcessError as exc:
-            output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")
-            excerpt = output.strip()[-1000:]
+            output = (exc.stdout or b"") + (b"\n" + exc.stderr if exc.stderr else b"")
+            excerpt = output.decode(errors="replace").strip()[-1000:]
             print(
-                f"::warning title={PYPI_DISTRIBUTION} REST API::Failed to generate "
-                f"OpenAPI schema for v{version}: {exc}\n{excerpt}"
+                f"::warning title={PYPI_DISTRIBUTION} REST API::Failed to extract "
+                f"source for {git_ref}: {exc}\n{excerpt}"
             )
             return None
-        except Exception as exc:
-            print(
-                f"::warning title={PYPI_DISTRIBUTION} REST API::Failed to generate "
-                f"OpenAPI schema for v{version}: {exc}"
+
+        return _generate_openapi_from_source_tree(source_tree, git_ref)
+
+
+def _find_deprecation_policy_errors(schema: dict) -> list[str]:
+    errors: list[str] = []
+
+    for path, path_item in schema.get("paths", {}).items():
+        if not isinstance(path_item, dict):
+            continue
+
+        for method, operation in path_item.items():
+            if method not in HTTP_METHODS or not isinstance(operation, dict):
+                continue
+
+            description = operation.get("description") or ""
+            if "deprecated since" not in description.lower():
+                continue
+
+            if operation.get("deprecated") is True:
+                continue
+
+            errors.append(
+                f"{method.upper()} {path} documents deprecation in its "
+                "description but is not marked deprecated=true in OpenAPI."
             )
-            return None
+
+    return errors
 
 
 def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
@@ -262,11 +299,19 @@ def main() -> int:
         )
         return 0
 
-    prev_schema = _generate_openapi_for_version(baseline_version)
-    if prev_schema is None:
-        return 0
+    baseline_git_ref = f"v{baseline_version}"
 
     current_schema = _generate_current_openapi()
+    if current_schema is None:
+        return 1
+
+    deprecation_policy_errors = _find_deprecation_policy_errors(current_schema)
+    for error in deprecation_policy_errors:
+        print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
+
+    prev_schema = _generate_openapi_for_git_ref(baseline_git_ref)
+    if prev_schema is None:
+        return 0 if not deprecation_policy_errors else 1
 
     prev_schema = _normalize_openapi_for_oasdiff(prev_schema)
     current_schema = _normalize_openapi_for_oasdiff(current_schema)
@@ -291,63 +336,51 @@ def main() -> int:
                 f"oasdiff returned exit code {exit_code} but no breaking changes "
                 "in JSON format. There may be warnings only."
             )
-        return 0
+    else:
+        removed_operations = []
 
-    removed_operations = []
-    other_breakage = []
+        for change in breaking_changes:
+            change_id = change.get("id", "")
+            details = change.get("details", {})
 
-    for change in breaking_changes:
-        change_id = change.get("id", "")
-        text = change.get("text", "")
-        details = change.get("details", {})
+            if "removed" in change_id.lower() and "operation" in change_id.lower():
+                removed_operations.append(
+                    {
+                        "path": details.get("path", ""),
+                        "method": details.get("method", ""),
+                        "deprecated": details.get("deprecated", False),
+                    }
+                )
 
-        if "removed" in change_id.lower() and "operation" in change_id.lower():
-            path = details.get("path", "")
-            method = details.get("method", "")
-            operation_id = details.get("operationId", "")
-            deprecated = details.get("deprecated", False)
+        undeprecated_removals = [
+            op for op in removed_operations if not op.get("deprecated", False)
+        ]
 
-            removed_operations.append(
-                {
-                    "path": path,
-                    "method": method,
-                    "operationId": operation_id,
-                    "deprecated": deprecated,
-                }
-            )
-        else:
-            other_breakage.append(text)
-
-    undeprecated_removals = [
-        op for op in removed_operations if not op.get("deprecated", False)
-    ]
-
-    if undeprecated_removals:
         for op in undeprecated_removals:
             print(
-                f"::error "
-                f"title={PYPI_DISTRIBUTION} REST API::Removed {op['method'].upper()} "
-                f"{op['path']} without prior deprecation (deprecated=true)."
+                f"::error title={PYPI_DISTRIBUTION} REST API::Removed "
+                f"{op['method'].upper()} {op['path']} without prior deprecation "
+                "(deprecated=true)."
             )
 
-    has_breaking = bool(breaking_changes)
+        if not _is_minor_or_major_bump(current_version, baseline_version):
+            print(
+                "::error "
+                f"title={PYPI_DISTRIBUTION} REST API::Breaking REST API change "
+                f"detected without MINOR version bump ({baseline_version} -> "
+                f"{current_version})."
+            )
 
-    if has_breaking and not _is_minor_or_major_bump(current_version, baseline_version):
-        print(
-            "::error "
-            f"title={PYPI_DISTRIBUTION} REST API::Breaking REST API change detected "
-            f"without MINOR version bump ({baseline_version} -> {current_version})."
-        )
-
-    if has_breaking:
         print("\nBreaking REST API changes detected compared to baseline release:")
         for text in breaking_changes:
             print(f"- {text.get('text', str(text))}")
 
-    errors = bool(undeprecated_removals) or (
-        has_breaking and not _is_minor_or_major_bump(current_version, baseline_version)
-    )
-    return 1 if errors else 0
+        if undeprecated_removals or not _is_minor_or_major_bump(
+            current_version, baseline_version
+        ):
+            return 1
+
+    return 1 if deprecation_policy_errors else 0
 
 
 if __name__ == "__main__":

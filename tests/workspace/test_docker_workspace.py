@@ -18,11 +18,13 @@ def mock_docker_workspace():
         # Mock execute_command to return success
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
 
-        def _create_workspace(cleanup_image=False):
+        def _create_workspace(cleanup_image=False, network=None):
             # Create workspace without triggering initialization
             with patch.object(DockerWorkspace, "_start_container"):
                 workspace = DockerWorkspace(
-                    server_image="test:latest", cleanup_image=cleanup_image
+                    server_image="test:latest",
+                    cleanup_image=cleanup_image,
+                    network=network,
                 )
 
             # Manually set up state that would normally be set during startup
@@ -139,3 +141,40 @@ def test_cleanup_with_image_deletion(mock_docker_workspace):
     assert "rmi" in rmi_call_args
     assert "-f" in rmi_call_args
     assert "test:latest" in rmi_call_args
+
+
+def test_docker_network(mock_docker_workspace):
+    """Test that specifying `network` passes the value to Docker."""
+    from openhands.workspace import DockerWorkspace
+
+    # We need to mock things that _start_container calls before and after docker run
+    with (
+        patch(
+            "openhands.workspace.docker.workspace.check_port_available",
+            return_value=True,
+        ),
+        patch(
+            "openhands.workspace.docker.workspace.find_available_tcp_port",
+            return_value=8000,
+        ),
+        patch.object(DockerWorkspace, "_wait_for_health"),
+    ):
+        # Use a custom network name
+        network_name = "my-custom-network"
+        workspace, mock_exec = mock_docker_workspace(network=network_name)
+
+        # Clear mock_exec and ensure docker run returns a container ID
+        mock_exec.reset_mock()
+        mock_exec.return_value = Mock(returncode=0, stdout="container_123", stderr="")
+
+        # Trigger the container startup (it's normally called in model_post_init
+        # but the fixture mocks it out to allow manual testing)
+        workspace._start_container("test:latest", None)
+
+        # Verify docker run was called with --network
+        all_calls = [call[0][0] for call in mock_exec.call_args_list]
+        run_cmd = next(cmd for cmd in all_calls if "run" in cmd)
+
+        assert "--network" in run_cmd
+        network_index = run_cmd.index("--network")
+        assert run_cmd[network_index + 1] == network_name
