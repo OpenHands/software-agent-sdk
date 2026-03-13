@@ -144,7 +144,7 @@ def _get_root_path(config: Config) -> str:
     if config.web_url:
         web_url = urlparse(config.web_url)
         return web_url.path
-    return '/'
+    return "/"
 
 
 def _create_fastapi_instance(config: Config) -> FastAPI:

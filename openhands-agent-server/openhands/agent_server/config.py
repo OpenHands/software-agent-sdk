@@ -168,7 +168,7 @@ class Config(BaseModel):
         default_factory=lambda: os.getenv(V0_RUNTIME_URL),
         description=(
             "The URL where this agent server instance is available externally"
-        )
+        ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
 
