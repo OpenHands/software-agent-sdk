@@ -251,10 +251,12 @@ jobs:
                   echo "✅ Updated pyproject.toml"
 
                   # 2. Regenerate poetry.lock with the new versions
+                  # Note: In Poetry 2.x, the default behavior is to not update packages already
+                  # in the lock file (the --no-update flag was removed in Poetry 2.x)
                   echo "📝 Regenerating poetry.lock..."
-                  poetry lock --no-update
+                  poetry lock
 
-                  # 2. Update the version in sandbox_spec_service.py
+                  # 3. Update the version in sandbox_spec_service.py
                   echo "🔧 Updating AGENT_SERVER_IMAGE..."
                   SANDBOX_SPEC_FILE="openhands/app_server/sandbox/sandbox_spec_service.py"
                   if [ -f "$SANDBOX_SPEC_FILE" ]; then
@@ -266,7 +268,7 @@ jobs:
                     exit 1
                   fi
 
-                  # 3. Run pre-commit to fix formatting (pyproject-fmt removes parentheses from version specs)
+                  # 4. Run pre-commit to fix formatting (pyproject-fmt removes parentheses from version specs)
                   echo "🔧 Running pre-commit to fix formatting..."
                   pip install pre-commit
                   pre-commit run --files pyproject.toml --config ./dev_config/python/.pre-commit-config.yaml || true
