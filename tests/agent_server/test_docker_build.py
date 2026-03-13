@@ -837,7 +837,8 @@ def test_build_push_reads_shared_registry_cache_but_does_not_export_it_by_defaul
     ):
         build(opts)
 
-    mock_make_context.assert_called_once_with(opts.sdk_project_root)
+    mock_make_context.assert_called_once()
+    assert mock_make_context.call_args.args[0] == opts.sdk_project_root
     assert len(docker_calls) == 1
     cmd, cwd = docker_calls[0]
     assert cwd == str(ctx)
@@ -906,7 +907,8 @@ def test_build_push_can_disable_registry_cache_export(tmp_path: Path):
     ):
         build(opts)
 
-    mock_make_context.assert_called_once_with(opts.sdk_project_root)
+    mock_make_context.assert_called_once()
+    assert mock_make_context.call_args.args[0] == opts.sdk_project_root
     assert len(docker_calls) == 1
     cmd, cwd = docker_calls[0]
     assert cwd == str(ctx)
@@ -972,7 +974,8 @@ def test_build_push_can_opt_in_to_shared_registry_cache_export(tmp_path: Path):
     ):
         build(opts)
 
-    mock_make_context.assert_called_once_with(opts.sdk_project_root)
+    mock_make_context.assert_called_once()
+    assert mock_make_context.call_args.args[0] == opts.sdk_project_root
     assert len(docker_calls) == 1
     cmd, _ = docker_calls[0]
 
