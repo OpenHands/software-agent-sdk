@@ -230,10 +230,32 @@ jobs:
                     echo "✅ enterprise/pyproject.toml does not have explicit SDK packages"
                   fi
 
-                  poetry add --lock "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION"
+                  # 1. Update versions in pyproject.toml using sed for exact pinning
+                  # Note: We use sed instead of `poetry add --lock` because Poetry normalizes
+                  # version constraints (e.g., "==1.13.1" becomes "1.13") which causes
+                  # inconsistencies between [tool.poetry.dependencies] and [project].dependencies
+                  echo "📝 Updating pyproject.toml with exact version pins..."
 
-                  # 2. Update the hash in sandbox_spec_service.py
-                  echo "🔧 Updating AGENT_SERVER_IMAGE hash..."
+                  # Update [tool.poetry.dependencies] section
+                  # Matches: openhands-sdk = "1.13" or openhands-sdk = "1.13.0"
+                  sed -i -E 's/^(openhands-sdk = )"[^"]*"/\1"'"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/^(openhands-tools = )"[^"]*"/\1"'"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/^(openhands-agent-server = )"[^"]*"/\1"'"$VERSION"'"/' pyproject.toml
+
+                  # Update [project].dependencies section (PEP 621 format)
+                  # Matches: "openhands-sdk==1.13.1", or "openhands-sdk==1.13",
+                  sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
+
+                  echo "✅ Updated pyproject.toml"
+
+                  # 2. Regenerate poetry.lock with the new versions
+                  echo "📝 Regenerating poetry.lock..."
+                  poetry lock --no-update
+
+                  # 2. Update the version in sandbox_spec_service.py
+                  echo "🔧 Updating AGENT_SERVER_IMAGE..."
                   SANDBOX_SPEC_FILE="openhands/app_server/sandbox/sandbox_spec_service.py"
                   if [ -f "$SANDBOX_SPEC_FILE" ]; then
                     # Update the AGENT_SERVER_IMAGE line with the new hash
