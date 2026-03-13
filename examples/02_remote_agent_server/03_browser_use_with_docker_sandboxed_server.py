@@ -56,7 +56,7 @@ server_image = get_server_image()
 logger.info(f"Using server image: {server_image}")
 with DockerWorkspace(
     server_image=server_image,
-    host_port=8011,
+    # host_port auto-selects an available port when not specified
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
 ) as workspace:
