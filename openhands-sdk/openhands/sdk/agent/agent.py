@@ -1,4 +1,6 @@
 import json
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -71,6 +73,74 @@ maybe_init_laminar()
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
+
+
+@dataclass(frozen=True, slots=True)
+class _ActionBatch:
+    """Immutable result of preparing a batch of actions for execution."""
+
+    action_events: list[ActionEvent]
+    has_finish: bool
+    blocked_reasons: dict[str, str] = field(default_factory=dict)
+    results_by_id: dict[str, list[Event]] = field(default_factory=dict)
+
+    @staticmethod
+    def _truncate_at_finish(
+        action_events: list[ActionEvent],
+    ) -> tuple[list[ActionEvent], bool]:
+        """
+        Return (events[:finish+1], True) or (events, False).
+        Discards and logs any calls after FinishTool.
+        """
+        finish_idx = next(
+            (
+                i
+                for i, ae in enumerate(action_events)
+                if ae.tool_name == FinishTool.name
+            ),
+            None,
+        )
+        if finish_idx is None:
+            return action_events, False
+
+        discarded = action_events[finish_idx + 1 :]
+        if discarded:
+            names = [ae.tool_name for ae in discarded]
+            logger.warning(
+                f"Discarding {len(discarded)} tool call(s) "
+                f"after FinishTool: {', '.join(names)}"
+            )
+        return action_events[: finish_idx + 1], True
+
+    @classmethod
+    def prepare(
+        cls,
+        action_events: list[ActionEvent],
+        state: ConversationState,
+        executor: ParallelToolExecutor,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+    ) -> "_ActionBatch":
+        """Truncate, partition blocked actions, execute the rest, return the batch."""
+        action_events, has_finish = cls._truncate_at_finish(action_events)
+
+        blocked_reasons: dict[str, str] = {}
+        executable: list[ActionEvent] = []
+        for ae in action_events:
+            reason = state.pop_blocked_action(ae.id)
+            if reason is not None:
+                blocked_reasons[ae.id] = reason
+            else:
+                executable.append(ae)
+
+        executed_results = executor.execute_batch(executable, tool_runner)
+        results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+
+        return cls(
+            action_events=action_events,
+            has_finish=has_finish,
+            blocked_reasons=blocked_reasons,
+            results_by_id=results_by_id,
+        )
 
 
 class Agent(CriticMixin, AgentBase):
@@ -248,103 +318,75 @@ class Agent(CriticMixin, AgentBase):
             additional_secret_infos=secret_infos,
         )
 
-    @staticmethod
-    def _truncate_at_finish(
-        action_events: list[ActionEvent],
-    ) -> tuple[list[ActionEvent], bool]:
-        """Truncate a batch of actions at the first FinishTool.
-
-        Returns the (possibly shortened) list and whether a FinishTool was
-        found.  Tool calls after FinishTool are discarded and logged.
-        """
-        finish_idx = next(
-            (
-                i
-                for i, ae in enumerate(action_events)
-                if ae.tool_name == FinishTool.name
-            ),
-            None,
-        )
-        if finish_idx is None:
-            return action_events, False
-
-        discarded = action_events[finish_idx + 1 :]
-        if discarded:
-            names = [ae.tool_name for ae in discarded]
-            logger.warning(
-                f"Discarding {len(discarded)} tool call(s) after FinishTool: {names}"
-            )
-        return action_events[: finish_idx + 1], True
-
     def _execute_actions(
         self,
         conversation: LocalConversation,
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
     ) -> None:
-        state = conversation.state
+        """
+        Prepare a batch (truncate, filter blocked, run tools),
+        then emit results and handle finish.
+        """
+        batch = _ActionBatch.prepare(
+            action_events,
+            state=conversation.state,
+            executor=self._parallel_executor,
+            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+        )
+        self._emit_batch(batch, on_event)
+        self._handle_finish(conversation, batch, on_event)
 
-        action_events, has_finish = self._truncate_at_finish(action_events)
-
-        # Pre-process blocked actions on main thread (not thread-safe)
-        blocked_reasons: dict[str, str] = {}
-        executable: list[ActionEvent] = []
-        for ae in action_events:
-            reason = state.pop_blocked_action(ae.id)
+    def _emit_batch(
+        self,
+        batch: _ActionBatch,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Emit all events in original action order."""
+        for ae in batch.action_events:
+            reason = batch.blocked_reasons.get(ae.id)
             if reason is not None:
-                blocked_reasons[ae.id] = reason
-            else:
-                executable.append(ae)
-
-        # Execute non-blocked actions in parallel
-        def tool_runner(action_event: ActionEvent) -> list[Event]:
-            return self._execute_action_event(conversation, action_event)
-
-        executed_results = self._parallel_executor.execute_batch(
-            executable, tool_runner
-        )
-        # ae.id is a UUID assigned at ActionEvent creation — always unique per batch.
-        results_by_id: dict[str, list[Event]] = dict(
-            zip([ae.id for ae in executable], executed_results)
-        )
-
-        # Emit all events in original action order.
-        for ae in action_events:
-            if ae.id in blocked_reasons:
-                logger.info(
-                    f"Action '{ae.tool_name}' blocked by hook: {blocked_reasons[ae.id]}"
-                )
-                rejection = UserRejectObservation(
-                    action_id=ae.id,
-                    tool_name=ae.tool_name,
-                    tool_call_id=ae.tool_call_id,
-                    rejection_reason=blocked_reasons[ae.id],
-                    rejection_source="hook",
-                )
-                on_event(rejection)
-                continue
-
-            for event in results_by_id[ae.id]:
-                on_event(event)
-
-        # Handle FinishTool state transition on main thread, after all
-        # events have been emitted.
-        if has_finish:
-            finish_ae = action_events[-1]  # FinishTool is always last after truncation
-            if finish_ae.id not in blocked_reasons:
-                should_continue, followup = self._check_iterative_refinement(
-                    conversation, finish_ae
-                )
-                if should_continue and followup:
-                    followup_msg = MessageEvent(
-                        source="user",
-                        llm_message=Message(
-                            role="user", content=[TextContent(text=followup)]
-                        ),
+                logger.info(f"Action '{ae.tool_name}' blocked by hook: {reason}")
+                on_event(
+                    UserRejectObservation(
+                        action_id=ae.id,
+                        tool_name=ae.tool_name,
+                        tool_call_id=ae.tool_call_id,
+                        rejection_reason=reason,
+                        rejection_source="hook",
                     )
-                    on_event(followup_msg)
-                else:
-                    state.execution_status = ConversationExecutionStatus.FINISHED
+                )
+            else:
+                for event in batch.results_by_id[ae.id]:
+                    on_event(event)
+
+    def _handle_finish(
+        self,
+        conversation: LocalConversation,
+        batch: _ActionBatch,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """
+        Transition state after FinishTool, or inject iterative-refinement followup.
+        """
+        # Nothing to finalise: no FinishTool in the batch, or it was blocked by a hook.
+        if not batch.has_finish or batch.action_events[-1].id in batch.blocked_reasons:
+            return
+
+        should_continue, followup = self._check_iterative_refinement(
+            conversation, batch.action_events[-1]
+        )
+        if should_continue and followup:
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text=followup)]
+                    ),
+                )
+            )
+        else:
+            conversation.state.execution_status = ConversationExecutionStatus.FINISHED
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
