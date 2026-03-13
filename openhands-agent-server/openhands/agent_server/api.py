@@ -2,6 +2,7 @@ import asyncio
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -139,7 +140,14 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
 
-def _create_fastapi_instance() -> FastAPI:
+def _get_root_path(config: Config) -> str:
+    if config.web_url:
+        web_url = urlparse(config.web_url)
+        return web_url.path
+    return '/'
+
+
+def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
@@ -151,6 +159,7 @@ def _create_fastapi_instance() -> FastAPI:
             "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
         ),
         lifespan=api_lifespan,
+        root_path=_get_root_path(config),
     )
 
 
@@ -343,7 +352,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     """
     if config is None:
         config = get_default_config()
-    app = _create_fastapi_instance()
+    app = _create_fastapi_instance(config)
     app.state.config = config
 
     _add_api_routes(app, config)
