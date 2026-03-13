@@ -19,6 +19,33 @@ def _create_fake_sdist(tmp_path: Path) -> Path:
     return tarball
 
 
+BUILDKIT_STDERR_SAMPLE = "\n".join(
+    [
+        "#8 importing cache manifest from "
+        "ghcr.io/openhands/eval-agent-server:buildcache-source-minimal-sample",
+        "#8 DONE 15.3s",
+        "#12 importing cache manifest from "
+        "ghcr.io/openhands/eval-agent-server:buildcache-shared-source-minimal-main",
+        "#12 ERROR: failed to configure registry cache importer: "
+        "ghcr.io/openhands/eval-agent-server:"
+        "buildcache-shared-source-minimal-main: not found",
+        "#14 importing cache manifest from "
+        "ghcr.io/openhands/eval-agent-server:buildcache-shared-source-minimal",
+        "#14 DONE 20.4s",
+        "#17 [builder 10/10] RUN uv sync",
+        "#17 CACHED",
+        "#30 exporting to image",
+        "#30 exporting manifest sha256:abc123 1.4s done",
+        "#30 exporting config sha256:def456 2.3s done",
+        "#30 pushing layers 35.9s done",
+        "#30 DONE 142.8s",
+        "#31 exporting cache to registry",
+        "#31 DONE 264.3s",
+        "",
+    ]
+)
+
+
 def test_git_info_priority_sdk_sha():
     """Test that SDK_SHA takes priority over GITHUB_SHA and git commands."""
     from openhands.agent_server.docker.build import _git_info
@@ -842,3 +869,129 @@ def test_build_push_can_opt_in_to_shared_registry_cache_export(tmp_path: Path):
         f"type=registry,ref={opts.image}:{opts.cache_tags[0]},mode=max",
         f"type=registry,ref={opts.image}:{opts.shared_cache_tags[0]},mode=max",
     }
+
+
+def test_parse_buildkit_telemetry_extracts_phase_timings():
+    from openhands.agent_server.docker.build import _parse_buildkit_telemetry
+
+    telemetry = _parse_buildkit_telemetry(BUILDKIT_STDERR_SAMPLE)
+
+    assert telemetry.cache_import_seconds == 35.7
+    assert telemetry.cache_import_miss_count == 1
+    assert telemetry.cache_export_seconds == 264.3
+    assert telemetry.image_export_seconds == 142.8
+    assert telemetry.push_layers_seconds == 35.9
+    assert telemetry.export_manifest_seconds == 3.7
+    assert telemetry.cached_step_count == 1
+
+
+def test_build_with_telemetry_returns_parsed_buildkit_fields(tmp_path: Path):
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build_with_telemetry,
+    )
+
+    prebuilt_sdist = _create_fake_sdist(tmp_path)
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="ok", stderr=BUILDKIT_STDERR_SAMPLE
+        )
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        image="ghcr.io/openhands/eval-agent-server",
+        target="source-minimal",
+        push=True,
+        sdk_project_root=_default_sdk_project_root(),
+        prebuilt_sdist=prebuilt_sdist,
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context", return_value=ctx
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build.time.monotonic",
+            side_effect=[10.0, 13.25, 20.0, 45.5, 46.0, 46.2],
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        result = build_with_telemetry(opts)
+
+    assert result.tags == opts.all_tags
+    assert result.telemetry.build_context_seconds == 3.25
+    assert result.telemetry.buildx_wall_clock_seconds == 25.5
+    assert result.telemetry.cleanup_seconds == 0.2
+    assert result.telemetry.cache_import_seconds == 35.7
+    assert result.telemetry.cache_export_seconds == 264.3
+    assert result.telemetry.image_export_seconds == 142.8
+    assert result.telemetry.push_layers_seconds == 35.9
+    assert result.telemetry.export_manifest_seconds == 3.7
+    assert result.telemetry.cache_import_miss_count == 1
+    assert result.telemetry.cached_step_count == 1
+
+
+def test_build_with_telemetry_preserves_telemetry_on_failure(tmp_path: Path):
+    import pytest
+
+    from openhands.agent_server.docker.build import (
+        BuildCommandError,
+        BuildOptions,
+        _default_sdk_project_root,
+        build_with_telemetry,
+    )
+
+    prebuilt_sdist = _create_fake_sdist(tmp_path)
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        raise subprocess.CalledProcessError(
+            1,
+            cmd,
+            output="stdout failure",
+            stderr=BUILDKIT_STDERR_SAMPLE,
+        )
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        image="ghcr.io/openhands/eval-agent-server",
+        target="source-minimal",
+        push=True,
+        sdk_project_root=_default_sdk_project_root(),
+        prebuilt_sdist=prebuilt_sdist,
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context", return_value=ctx
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build.time.monotonic",
+            side_effect=[10.0, 13.25, 20.0, 45.5, 46.0, 46.2],
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+        pytest.raises(BuildCommandError) as excinfo,
+    ):
+        build_with_telemetry(opts)
+
+    assert excinfo.value.telemetry.build_context_seconds == 3.25
+    assert excinfo.value.telemetry.buildx_wall_clock_seconds == 25.5
+    assert excinfo.value.telemetry.cache_export_seconds == 264.3
+    assert excinfo.value.telemetry.cache_import_miss_count == 1

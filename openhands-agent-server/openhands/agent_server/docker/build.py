@@ -23,6 +23,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import tomllib
 from contextlib import chdir
 from pathlib import Path
@@ -36,6 +37,11 @@ from openhands.sdk.workspace import PlatformType, TargetType
 logger = get_logger(__name__)
 
 VALID_TARGETS = {"binary", "binary-minimal", "source", "source-minimal"}
+_BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
+_BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
+_BUILDKIT_INLINE_DONE_RE = re.compile(
+    r"^(?P<description>.+?)\s+(?P<seconds>\d+(?:\.\d+)?)s done$"
+)
 
 
 # --- helpers ---
@@ -456,6 +462,38 @@ class BuildOptions(BaseModel):
         return tags
 
 
+class BuildTelemetry(BaseModel):
+    build_context_seconds: float = 0.0
+    buildx_wall_clock_seconds: float = 0.0
+    cleanup_seconds: float = 0.0
+    cache_import_seconds: float = 0.0
+    cache_import_miss_count: int = 0
+    cache_export_seconds: float = 0.0
+    image_export_seconds: float = 0.0
+    push_layers_seconds: float = 0.0
+    export_manifest_seconds: float = 0.0
+    cached_step_count: int = 0
+
+
+class BuildResult(BaseModel):
+    tags: list[str]
+    telemetry: BuildTelemetry = Field(default_factory=BuildTelemetry)
+
+
+class BuildCommandError(subprocess.CalledProcessError):
+    def __init__(
+        self,
+        returncode: int,
+        cmd: list[str],
+        *,
+        output: str,
+        stderr: str,
+        telemetry: BuildTelemetry,
+    ) -> None:
+        super().__init__(returncode, cmd, output=output, stderr=stderr)
+        self.telemetry = telemetry
+
+
 # --- build helpers ---
 
 
@@ -591,11 +629,121 @@ def _cache_to_mode() -> str:
     return "max"
 
 
+def _round_seconds(value: float) -> float:
+    return round(value, 3)
+
+
+def _classify_buildkit_description(description: str) -> str | None:
+    normalized = description.strip().lower()
+    if normalized.startswith("importing cache manifest from "):
+        return "cache_import"
+    if normalized.startswith("exporting cache to "):
+        return "cache_export"
+    if normalized == "exporting to image":
+        return "image_export"
+    if normalized == "pushing layers":
+        return "push_layers"
+    if normalized.startswith("exporting manifest"):
+        return "export_manifest"
+    if normalized.startswith("exporting manifest list"):
+        return "export_manifest"
+    if normalized.startswith("exporting config"):
+        return "export_manifest"
+    return None
+
+
+def _add_buildkit_duration(
+    telemetry: BuildTelemetry, description: str, duration_seconds: float
+) -> None:
+    phase = _classify_buildkit_description(description)
+    if phase == "cache_import":
+        telemetry.cache_import_seconds += duration_seconds
+    elif phase == "cache_export":
+        telemetry.cache_export_seconds += duration_seconds
+    elif phase == "image_export":
+        telemetry.image_export_seconds += duration_seconds
+    elif phase == "push_layers":
+        telemetry.push_layers_seconds += duration_seconds
+    elif phase == "export_manifest":
+        telemetry.export_manifest_seconds += duration_seconds
+
+
+def _parse_buildkit_telemetry(stderr: str) -> BuildTelemetry:
+    telemetry = BuildTelemetry()
+    step_descriptions: dict[str, str] = {}
+
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        match = _BUILDKIT_STEP_RE.match(line)
+        if not match:
+            continue
+
+        step = match.group("step")
+        message = match.group("message").strip()
+
+        if message == "CACHED":
+            telemetry.cached_step_count += 1
+            continue
+
+        if message.startswith("ERROR:"):
+            description = step_descriptions.get(step, "")
+            if (
+                _classify_buildkit_description(description) == "cache_import"
+                and "not found" in message.lower()
+            ):
+                telemetry.cache_import_miss_count += 1
+            continue
+
+        if " ERROR:" in message:
+            description = message.split(" ERROR:", 1)[0].strip()
+            if (
+                _classify_buildkit_description(description) == "cache_import"
+                and "not found" in message.lower()
+            ):
+                telemetry.cache_import_miss_count += 1
+            step_descriptions[step] = description
+            continue
+
+        done_match = _BUILDKIT_DONE_RE.match(message)
+        if done_match:
+            description = step_descriptions.get(step)
+            if description:
+                _add_buildkit_duration(
+                    telemetry, description, float(done_match.group("seconds"))
+                )
+            continue
+
+        inline_done_match = _BUILDKIT_INLINE_DONE_RE.match(message)
+        if inline_done_match:
+            _add_buildkit_duration(
+                telemetry,
+                inline_done_match.group("description"),
+                float(inline_done_match.group("seconds")),
+            )
+            continue
+
+        step_descriptions[step] = message.removesuffix(" ...").strip()
+
+    telemetry.build_context_seconds = _round_seconds(telemetry.build_context_seconds)
+    telemetry.buildx_wall_clock_seconds = _round_seconds(
+        telemetry.buildx_wall_clock_seconds
+    )
+    telemetry.cleanup_seconds = _round_seconds(telemetry.cleanup_seconds)
+    telemetry.cache_import_seconds = _round_seconds(telemetry.cache_import_seconds)
+    telemetry.cache_export_seconds = _round_seconds(telemetry.cache_export_seconds)
+    telemetry.image_export_seconds = _round_seconds(telemetry.image_export_seconds)
+    telemetry.push_layers_seconds = _round_seconds(telemetry.push_layers_seconds)
+    telemetry.export_manifest_seconds = _round_seconds(
+        telemetry.export_manifest_seconds
+    )
+    return telemetry
+
+
 # --- single entry point ---
 
 
-def build(opts: BuildOptions) -> list[str]:
-    """Single entry point for building the agent-server image."""
+def build_with_telemetry(opts: BuildOptions) -> BuildResult:
+    """Build the agent-server image and return tags plus phase telemetry."""
     dockerfile_path = _get_dockerfile_path(opts.sdk_project_root)
     push = opts.push
     if push is None:
@@ -605,7 +753,12 @@ def build(opts: BuildOptions) -> list[str]:
     cache_tag, cache_tag_fallback = opts.cache_tags
     shared_cache_tag, shared_cache_tag_fallback = opts.shared_cache_tags
 
+    telemetry = BuildTelemetry()
+    build_context_started = time.monotonic()
     ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
+    telemetry.build_context_seconds = _round_seconds(
+        time.monotonic() - build_context_started
+    )
     logger.info(f"[build] Clean build context: {ctx}")
 
     args = [
@@ -719,23 +872,52 @@ def build(opts: BuildOptions) -> list[str]:
         f"shared={shared_cache_tag} shared_fallback={shared_cache_tag_fallback}"
     )
 
+    buildx_started = time.monotonic()
     try:
         res = _run(args, cwd=str(ctx))
+        telemetry.buildx_wall_clock_seconds = _round_seconds(
+            time.monotonic() - buildx_started
+        )
+        parsed = _parse_buildkit_telemetry(res.stderr)
+        parsed.build_context_seconds = telemetry.build_context_seconds
+        parsed.buildx_wall_clock_seconds = telemetry.buildx_wall_clock_seconds
+        telemetry = parsed
         sys.stdout.write(res.stdout or "")
     except subprocess.CalledProcessError as e:
+        telemetry.buildx_wall_clock_seconds = _round_seconds(
+            time.monotonic() - buildx_started
+        )
+        parsed = _parse_buildkit_telemetry(e.stderr or "")
+        parsed.build_context_seconds = telemetry.build_context_seconds
+        parsed.buildx_wall_clock_seconds = telemetry.buildx_wall_clock_seconds
+        telemetry = parsed
         logger.error(f"[build] ERROR: Build failed with exit code {e.returncode}")
         logger.error(f"[build] Command: {' '.join(e.cmd)}")
         logger.error(f"[build] Full stdout:\n{e.output}")
         logger.error(f"[build] Full stderr:\n{e.stderr}")
-        raise
+        raise BuildCommandError(
+            e.returncode,
+            e.cmd,
+            output=e.output or "",
+            stderr=e.stderr or "",
+            telemetry=telemetry,
+        ) from e
     finally:
+        cleanup_started = time.monotonic()
         logger.info(f"[build] Cleaning {ctx}")
         shutil.rmtree(ctx, ignore_errors=True)
+        telemetry.cleanup_seconds = _round_seconds(time.monotonic() - cleanup_started)
 
     logger.info("[build] Done. Tags:")
     for t in tags:
         logger.info(f" - {t}")
-    return tags
+    logger.info("[build] Telemetry: %s", telemetry.model_dump_json())
+    return BuildResult(tags=tags, telemetry=telemetry)
+
+
+def build(opts: BuildOptions) -> list[str]:
+    """Single entry point for building the agent-server image."""
+    return build_with_telemetry(opts).tags
 
 
 # --- CLI shim ---
