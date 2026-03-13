@@ -288,6 +288,43 @@ def test_load_project_skills_one_bad_skill_does_not_break_others(tmp_path):
     assert "bad-skill" not in skill_names
 
 
+def test_long_description_skill_does_not_break_other_skills(tmp_path):
+    """Regression test: a skill with a very long description should not
+    prevent other valid skills in the same directory from loading.
+
+    The description should be silently truncated (via maybe_truncate)
+    rather than raising an error.
+    """
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+
+    # Create a valid skill
+    (skills_dir / "good-skill.md").write_text(
+        "---\nname: good-skill\ntriggers:\n  - good\n---\nGood skill content."
+    )
+
+    # Create a skill with a description exceeding 1024 chars
+    long_desc = "A" * 2000
+    bad_skill_dir = skills_dir / "bad-skill"
+    bad_skill_dir.mkdir()
+    (bad_skill_dir / "SKILL.md").write_text(
+        f"---\nname: bad-skill\ndescription: {long_desc}\n---\n"
+        "# Bad Skill\nContent here."
+    )
+
+    skills = load_project_skills(tmp_path)
+    skill_names = {s.name for s in skills}
+
+    # The good skill must load regardless
+    assert "good-skill" in skill_names
+
+    # The bad skill should also load (description truncated, not rejected)
+    assert "bad-skill" in skill_names
+    bad = next(s for s in skills if s.name == "bad-skill")
+    assert bad.description is not None
+    assert len(bad.description) <= 1024
+
+
 def test_load_project_skills_with_string_path(tmp_path):
     """Test that load_project_skills accepts string paths."""
     # Create .openhands/skills directory
