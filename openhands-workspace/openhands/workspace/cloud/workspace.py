@@ -393,10 +393,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def get_llm(self, **llm_kwargs: Any) -> LLM:
         """Fetch LLM settings from the user's SaaS account and return an LLM.
 
-        The returned LLM's ``api_key`` is a ``LookupSecret`` — a lazy
-        reference that the agent-server inside the sandbox resolves when
-        it actually needs the key.  The raw API key **never** transits
-        through the SDK client.
+        Returns a fully usable ``LLM`` instance with the user's model,
+        API key, and base URL pre-configured.
 
         Args:
             **llm_kwargs: Additional keyword arguments passed to the LLM
@@ -423,14 +421,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         resp = self._send_settings_request("GET", f"{self._settings_base_url}/llm")
         data = resp.json()
 
-        # Build LLM kwargs from the response.  The api_key is already a
-        # serialised LookupSecret dict — pass it straight through so the
-        # LLM validator deserialises it.
         kwargs: dict[str, Any] = {}
         if data.get("model"):
             kwargs["model"] = data["model"]
         if data.get("api_key"):
-            kwargs["api_key"] = data["api_key"]  # LookupSecret dict
+            kwargs["api_key"] = data["api_key"]
         if data.get("base_url"):
             kwargs["base_url"] = data["base_url"]
 

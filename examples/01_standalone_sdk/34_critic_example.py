@@ -22,8 +22,6 @@ import re
 import tempfile
 from pathlib import Path
 
-from pydantic import SecretStr
-
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.sdk.critic import APIBasedCritic, IterativeRefinementConfig
 from openhands.sdk.critic.base import CriticBase
@@ -84,8 +82,6 @@ def get_default_critic(llm: LLM) -> CriticBase | None:
     base_url = llm.base_url
     api_key = llm.api_key
     if base_url is None or api_key is None:
-        return None
-    if not isinstance(api_key, (str, SecretStr)):
         return None
 
     # Match: llm-proxy.{env}.all-hands.dev (e.g., staging, prod, eval)

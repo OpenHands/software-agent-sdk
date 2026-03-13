@@ -23,7 +23,6 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
-from openhands.sdk.secret import SecretSource
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -153,13 +152,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Config fields
     # =========================================================================
     model: str = Field(default="claude-sonnet-4-20250514", description="Model name.")
-    api_key: str | SecretStr | SecretSource | None = Field(
-        default=None,
-        description=(
-            "API key. Accepts a plain string, SecretStr, or a SecretSource "
-            "(e.g. LookupSecret) for deferred/on-demand key retrieval."
-        ),
-    )
+    api_key: str | SecretStr | None = Field(default=None, description="API key.")
     base_url: str | None = Field(default=None, description="Custom base URL.")
     api_version: str | None = Field(
         default=None, description="API version (e.g., Azure)."
@@ -408,19 +401,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     @field_validator("api_key", "aws_access_key_id", "aws_secret_access_key")
     @classmethod
-    def _validate_secrets(
-        cls, v: str | SecretStr | SecretSource | dict | None, info
-    ) -> SecretStr | SecretSource | None:
-        # SecretSource instances (e.g. LookupSecret) are passed through as-is;
-        # they will be resolved lazily when get_value() is called inside the sandbox.
-        if isinstance(v, SecretSource):
-            return v
-        # Handle deserialized SecretSource dicts (e.g. from JSON round-trip)
-        if isinstance(v, dict) and "kind" in v:
-            return SecretSource.model_validate(v, context=info.context)
-        # At this point v is str | SecretStr | None (dict without 'kind' is
-        # rejected by validate_secret which is fine).
-        assert not isinstance(v, dict), f"Unexpected dict without 'kind': {v}"
+    def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
 
     # REMOVE_AT: 1.15.0 - Remove this validator
@@ -529,11 +510,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @field_serializer(
         "api_key", "aws_access_key_id", "aws_secret_access_key", when_used="always"
     )
-    def _serialize_secrets(self, v: SecretStr | SecretSource | None, info):
-        # SecretSource instances serialize themselves (via DiscriminatedUnionMixin)
-        # into {"kind": "LookupSecret", "url": "...", "headers": {...}} etc.
-        if isinstance(v, SecretSource):
-            return v.model_dump(mode=info.mode, context=info.context)
+    def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
 
     # =========================================================================
@@ -1015,14 +992,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _get_litellm_api_key_value(self) -> str | None:
         api_key_value: str | None = None
-        if self.api_key is not None:
-            if isinstance(self.api_key, SecretSource):
-                # Resolve on demand — the HTTP call happens here, inside the sandbox
-                api_key_value = self.api_key.get_value()
-            elif isinstance(self.api_key, SecretStr):
-                api_key_value = self.api_key.get_secret_value()
-            else:
-                api_key_value = str(self.api_key)
+        if self.api_key:
+            assert isinstance(self.api_key, SecretStr)
+            api_key_value = self.api_key.get_secret_value()
 
         # LiteLLM treats api_key for Bedrock as an AWS bearer token.
         # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
@@ -1110,14 +1082,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return self.model_canonical_name or self.model
 
     def _init_model_info_and_caps(self) -> None:
-        # For SecretSource api_key, don't pass it to model info lookup —
-        # we don't want to trigger a network call just for capability checks,
-        # and the api_key is only used for litellm_proxy model info lookups.
-        api_key_for_info = (
-            None if isinstance(self.api_key, SecretSource) else self.api_key
-        )
         self._model_info = get_litellm_model_info(
-            secret_api_key=api_key_for_info,
+            secret_api_key=self.api_key,
             base_url=self.base_url,
             model=self._model_name_for_capabilities(),
         )

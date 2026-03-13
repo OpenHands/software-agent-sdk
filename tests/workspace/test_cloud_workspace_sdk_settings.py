@@ -1,13 +1,14 @@
 """Tests for OpenHandsCloudWorkspace.get_llm() and get_secrets() methods.
 
-These methods use the LookupSecret approach: raw secret values are never
-returned to the SDK client.  Instead, the client receives LookupSecret
-references that the agent-server inside the sandbox resolves lazily.
+get_llm() returns a real LLM with the raw api_key from SaaS.
+get_secrets() returns LookupSecret references — raw values only flow
+SaaS→sandbox, never to the SDK client.
 """
 
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.sdk.secret import LookupSecret
 from openhands.workspace.cloud.workspace import OpenHandsCloudWorkspace
@@ -38,16 +39,12 @@ def mock_workspace():
 class TestGetLLM:
     """Tests for OpenHandsCloudWorkspace.get_llm()."""
 
-    def test_get_llm_returns_lookup_secret_api_key(self, mock_workspace):
-        """get_llm returns an LLM whose api_key is a LookupSecret with env_headers."""
+    def test_get_llm_returns_usable_llm(self, mock_workspace):
+        """get_llm returns a real LLM with the raw api_key."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "model": "anthropic/claude-sonnet-4-20250514",
-            "api_key": {
-                "kind": "LookupSecret",
-                "url": f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/llm-key",
-                "env_headers": {"X-Session-API-Key": "SESSION_API_KEY"},
-            },
+            "api_key": "sk-test-key-123",
             "base_url": "https://litellm.example.com",
         }
         mock_response.raise_for_status = MagicMock()
@@ -62,11 +59,9 @@ class TestGetLLM:
             f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/llm",
         )
         assert llm.model == "anthropic/claude-sonnet-4-20250514"
-        assert isinstance(llm.api_key, LookupSecret)
-        assert llm.api_key.url.endswith("/settings/llm-key")
-        # Session key is referenced by env var name, not embedded
-        assert llm.api_key.env_headers == {"X-Session-API-Key": "SESSION_API_KEY"}
-        assert llm.api_key.headers == {}
+        # api_key is a real SecretStr (LLM validator converts str → SecretStr)
+        assert isinstance(llm.api_key, SecretStr)
+        assert llm.api_key.get_secret_value() == "sk-test-key-123"
         assert llm.base_url == "https://litellm.example.com"
 
     def test_get_llm_allows_overrides(self, mock_workspace):
@@ -74,11 +69,7 @@ class TestGetLLM:
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "model": "anthropic/claude-sonnet-4-20250514",
-            "api_key": {
-                "kind": "LookupSecret",
-                "url": f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/llm-key",
-                "env_headers": {"X-Session-API-Key": "SESSION_API_KEY"},
-            },
+            "api_key": "sk-test-key",
             "base_url": None,
         }
         mock_response.raise_for_status = MagicMock()
@@ -90,7 +81,7 @@ class TestGetLLM:
 
         assert llm.model == "gpt-4o"
         assert llm.temperature == 0.5
-        assert isinstance(llm.api_key, LookupSecret)
+        assert isinstance(llm.api_key, SecretStr)
 
     def test_get_llm_no_api_key_still_works(self, mock_workspace):
         """If no API key is configured, the LLM gets api_key=None."""

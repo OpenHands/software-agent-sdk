@@ -47,7 +47,7 @@ tom_params["llm_model"] = llm.model
 if llm.api_key:
     if isinstance(llm.api_key, SecretStr):
         tom_params["api_key"] = llm.api_key.get_secret_value()
-    elif isinstance(llm.api_key, str):
+    else:
         tom_params["api_key"] = llm.api_key
 if llm.base_url:
     tom_params["api_base"] = llm.base_url
