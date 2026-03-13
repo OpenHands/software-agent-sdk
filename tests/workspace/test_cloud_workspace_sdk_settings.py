@@ -40,7 +40,7 @@ class TestGetLLM:
     """Tests for OpenHandsCloudWorkspace.get_llm()."""
 
     def test_get_llm_returns_usable_llm(self, mock_workspace):
-        """get_llm calls /users/me?expose_secrets=true and returns a real LLM."""
+        """get_llm calls /users/me?expose_secrets=true with session key and returns a real LLM."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "llm_model": "anthropic/claude-sonnet-4-20250514",
@@ -58,6 +58,7 @@ class TestGetLLM:
             "GET",
             f"{CLOUD_URL}/api/v1/users/me",
             params={"expose_secrets": "true"},
+            headers={"X-Session-API-Key": SESSION_KEY},
         )
         assert llm.model == "anthropic/claude-sonnet-4-20250514"
         # api_key is a real SecretStr (LLM validator converts str → SecretStr)

@@ -423,6 +423,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             "GET",
             f"{self.cloud_api_url}/api/v1/users/me",
             params={"expose_secrets": "true"},
+            headers={"X-Session-API-Key": self._session_api_key or ""},
         )
         data = resp.json()
 
