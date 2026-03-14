@@ -25,7 +25,7 @@ def test_whitespace_api_key_converted_to_none():
 
 def test_valid_api_key_preserved():
     """Test that valid API keys are preserved."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("valid-key"), usage_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("valid-key"), usage_id="test-llm")
     assert llm.api_key is not None
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "valid-key"
@@ -72,9 +72,27 @@ def test_bedrock_model_with_none_api_key():
     assert llm.aws_region_name == "us-east-1"
 
 
+def test_bedrock_model_with_api_key_not_forwarded_to_litellm():
+    """Test that Bedrock models never forward LLM.api_key to LiteLLM.
+
+    LiteLLM interprets the Bedrock api_key parameter as an AWS bearer token.
+    Forwarding a non-Bedrock key (e.g. OpenAI/Anthropic) breaks IAM/SigV4 auth.
+    """
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="us.anthropic.claude-3-sonnet-20240229-v1:0",
+        api_key=SecretStr("sk-ant-not-a-bedrock-key"),
+    )
+    assert llm.api_key is not None
+    assert llm._get_litellm_api_key_value() is None
+
+
 def test_non_bedrock_model_with_valid_key():
     """Test that non-Bedrock models work normally with valid API keys."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("valid-openai-key"), usage_id="test-llm")
+    llm = LLM(
+        model="gpt-4o-mini", api_key=SecretStr("valid-openai-key"), usage_id="test-llm"
+    )
     assert llm.api_key is not None
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "valid-openai-key"
@@ -102,7 +120,7 @@ def test_aws_credentials_handling():
 
 def test_plain_string_api_key():
     """Test that plain string API keys are converted to SecretStr."""
-    llm = LLM(model="gpt-4", api_key="my-plain-string-key", usage_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key="my-plain-string-key", usage_id="test-llm")
     assert llm.api_key is not None
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "my-plain-string-key"

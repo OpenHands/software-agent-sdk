@@ -5,10 +5,12 @@ from pydantic import ValidationError, model_validator
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
     prepare_llm_messages,
+    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -17,11 +19,9 @@ from openhands.sdk.conversation import (
     LocalConversation,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
-    LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -67,13 +67,18 @@ from openhands.sdk.tool.builtins import (
 logger = get_logger(__name__)
 maybe_init_laminar()
 
+# Maximum number of events to scan during init_state defensive checks.
+# SystemPromptEvent must appear within this prefix (at index 0 or 1).
+INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
-class Agent(AgentBase):
+
+class Agent(CriticMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
     interact with tools, process messages, and execute actions. It inherits from
-    AgentBase and implements the agent execution logic.
+    AgentBase and implements the agent execution logic. Critic-related functionality
+    is provided by CriticMixin.
 
     Example:
         >>> from openhands.sdk import LLM, Agent, Tool
@@ -102,107 +107,141 @@ class Agent(AgentBase):
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
+        """Initialize conversation state.
+
+        Invariants enforced by this method:
+        - If a SystemPromptEvent is already present, it must be within the first 3
+          events (index 0 or 1 in practice; index 2 is included in the scan window
+          to detect a user message appearing before the system prompt).
+        - A user MessageEvent should not appear before the SystemPromptEvent.
+
+        These invariants keep event ordering predictable for downstream components
+        (condenser, UI, etc.) and also prevent accidentally materializing the full
+        event history during initialization.
+        """
         super().init_state(state, on_event=on_event)
-        # TODO(openhands): we should add test to test this init_state will actually
-        # modify state in-place
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
         # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
-        events = list(state.events)
-        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in events)
-        has_user_message = any(
-            isinstance(e, MessageEvent) and e.source == "user" for e in events
-        )
-        has_any_llm_event = any(isinstance(e, LLMConvertibleEvent) for e in events)
+        #
+        # NOTE: len() is O(1) for EventLog (file-backed implementation).
+        event_count = len(state.events)
 
+        # NOTE: state.events is intentionally an EventsListBase (Sequence-like), not
+        # a plain list. Avoid materializing the full history via list(state.events)
+        # here (conversations can reach 30k+ events).
+        #
+        # Invariant: when init_state is called, SystemPromptEvent (if present) must be
+        # at index 0 or 1.
+        #
+        # Rationale:
+        # - Local conversations start empty and init_state is responsible for adding
+        #   the SystemPromptEvent as the first event.
+        # - Remote conversations may receive an initial ConversationStateUpdateEvent
+        #   from the agent-server immediately after subscription. In a typical remote
+        #   session prefix you may see:
+        #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
+        #
+        # We intentionally only inspect the first few events (cheap for both local and
+        # remote) to enforce this invariant.
+        prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
+
+        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
+        has_user_message = any(
+            isinstance(e, MessageEvent) and e.source == "user" for e in prefix_events
+        )
         # Log state for debugging initialization order issues
         logger.debug(
             f"init_state called: conversation_id={state.id}, "
-            f"event_count={len(events)}, "
+            f"event_count={event_count}, "
             f"has_system_prompt={has_system_prompt}, "
-            f"has_user_message={has_user_message}, "
-            f"has_any_llm_event={has_any_llm_event}"
+            f"has_user_message={has_user_message}"
         )
 
         if has_system_prompt:
-            # SystemPromptEvent already exists - this is unexpected during normal flow
-            # but could happen in persistence/resume scenarios
-            logger.warning(
-                f"init_state called but SystemPromptEvent already exists. "
-                f"conversation_id={state.id}, event_count={len(events)}. "
-                f"This may indicate double initialization or a resume scenario."
+            # Restoring/resuming conversations is normal: a system prompt already
+            # present means this conversation was initialized previously.
+            logger.debug(
+                "init_state: SystemPromptEvent already present; skipping init. "
+                f"conversation_id={state.id}, event_count={event_count}."
             )
             return
 
-        # Assert: If there are user messages but no system prompt, something is wrong
-        # The system prompt should always be added before any user messages
+        # Assert: A user message should never appear before the system prompt.
+        #
+        # NOTE: This is a best-effort check based on the first few events only.
+        # Remote conversations can include a ConversationStateUpdateEvent near the
+        # start, so we scan a small prefix window.
         if has_user_message:
-            event_types = [type(e).__name__ for e in events]
+            event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
-                f"init_state: User message exists without SystemPromptEvent! "
-                f"conversation_id={state.id}, events={event_types}"
+                f"init_state: User message found in prefix before SystemPromptEvent! "
+                f"conversation_id={state.id}, prefix_events={event_types}"
             )
-            assert not has_user_message, (
-                f"Unexpected state: User message exists before SystemPromptEvent. "
-                f"conversation_id={state.id}, event_count={len(events)}, "
-                f"event_types={event_types}. "
-                f"This indicates an initialization order bug - init_state should be "
-                f"called before any user messages are added to the conversation."
+            raise AssertionError(
+                "Unexpected state: user message exists before SystemPromptEvent. "
+                f"conversation_id={state.id}, event_count={event_count}, "
+                f"prefix_event_types={event_types}."
             )
 
-        # Prepare system message
+        # Prepare system message with separate static and dynamic content.
+        # The dynamic_context is included as a second content block in the
+        # system message (without a cache marker) to enable cross-conversation
+        # prompt caching of the static system prompt.
+        #
+        # Agent pulls secrets from conversation's secret_registry to include
+        # them in the dynamic context. This ensures secret names and descriptions
+        # appear in the system prompt.
+        dynamic_context = self.get_dynamic_context(state)
         event = SystemPromptEvent(
             source="agent",
-            system_prompt=TextContent(text=self.system_message),
+            system_prompt=TextContent(text=self.static_system_message),
             # Tools are stored as ToolDefinition objects and converted to
             # OpenAI format with security_risk parameter during LLM completion.
             # See make_llm_completion() in agent/utils.py for details.
             tools=list(self.tools_map.values()),
+            dynamic_context=TextContent(text=dynamic_context)
+            if dynamic_context
+            else None,
         )
         on_event(event)
 
-    def _should_evaluate_with_critic(self, action: Action | None) -> bool:
-        """Determine if critic should evaluate based on action type and mode."""
-        if self.critic is None:
-            return False
+    def get_dynamic_context(self, state: ConversationState) -> str | None:
+        """Get dynamic context for the system prompt, including secrets from state.
 
-        if self.critic.mode == "all_actions":
-            return True
+        This method pulls secrets from the conversation's secret_registry and
+        merges them with agent_context to build the dynamic portion of the
+        system prompt.
 
-        # For "finish_and_message" mode, only evaluate FinishAction
-        # (MessageEvent will be handled separately in step())
-        if isinstance(action, FinishAction):
-            return True
+        Args:
+            state: The conversation state containing the secret_registry.
 
-        return False
+        Returns:
+            The dynamic context string, or None if no context is configured.
+        """
+        # Get secret infos from conversation's secret_registry
+        secret_infos = state.secret_registry.get_secret_infos()
 
-    def _evaluate_with_critic(
-        self, conversation: LocalConversation, event: ActionEvent | MessageEvent
-    ) -> CriticResult | None:
-        """Run critic evaluation on the current event and history."""
-        if self.critic is None:
+        if not self.agent_context:
+            # No agent_context but we might have secrets from registry
+            if secret_infos:
+                from openhands.sdk.context.agent_context import AgentContext
+
+                # Create a minimal context just for secrets
+                temp_context = AgentContext()
+                return temp_context.get_system_message_suffix(
+                    llm_model=self.llm.model,
+                    llm_model_canonical=self.llm.model_canonical_name,
+                    additional_secret_infos=secret_infos,
+                )
             return None
 
-        try:
-            # Build event history including the current event
-            events = list(conversation.state.events) + [event]
-            llm_convertible_events = [
-                e for e in events if isinstance(e, LLMConvertibleEvent)
-            ]
-
-            # Evaluate without git_patch for now
-            critic_result = self.critic.evaluate(
-                events=llm_convertible_events, git_patch=None
-            )
-            logger.info(
-                f"✓ Critic evaluation: score={critic_result.score:.3f}, "
-                f"success={critic_result.success}"
-            )
-            return critic_result
-        except Exception as e:
-            logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
-            return None
+        return self.agent_context.get_system_message_suffix(
+            llm_model=self.llm.model,
+            llm_model_canonical=self.llm.model_canonical_name,
+            additional_secret_infos=secret_infos,
+        )
 
     def _execute_actions(
         self,
@@ -234,14 +273,17 @@ class Agent(AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        for event in reversed(list(state.events)):
-            if isinstance(event, MessageEvent) and event.source == "user":
-                reason = state.pop_blocked_message(event.id)
-                if reason is not None:
-                    logger.info(f"User message blocked by hook: {reason}")
-                    state.execution_status = ConversationExecutionStatus.FINISHED
-                    return
-                break  # Only check the most recent user message
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
@@ -446,7 +488,13 @@ class Agent(AgentBase):
                 f"Failed to provide security_risk field in tool '{tool_name}'"
             )
 
-        # When using weaker models without security analyzer
+        # When no security analyzer is configured, ignore any security_risk field
+        # from LLM and return UNKNOWN. This ensures that security_risk is only
+        # evaluated when a security analyzer is explicitly set.
+        if security_analyzer is None:
+            return risk.SecurityRisk.UNKNOWN
+
+        # When using non-LLM security analyzer without security risk field
         # safely ignore missing security risk fields
         if not requires_sr and raw is None:
             return risk.SecurityRisk.UNKNOWN
@@ -527,7 +575,10 @@ class Agent(AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            arguments = json.loads(tool_call.arguments)
+            # Sanitize raw control characters (U+0000–U+001F) that some
+            # models emit as literal bytes instead of JSON escape sequences.
+            sanitized_args = sanitize_json_control_chars(tool_call.arguments)
+            arguments = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
@@ -625,6 +676,7 @@ class Agent(AgentBase):
                 tool_name=action_event.tool_name,
                 tool_call_id=action_event.tool_call_id,
                 rejection_reason=reason,
+                rejection_source="hook",
             )
             on_event(rejection)
             return rejection
@@ -671,7 +723,22 @@ class Agent(AgentBase):
 
         # Set conversation state
         if tool.name == FinishTool.name:
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            # Check if iterative refinement should continue
+            should_continue, followup = self._check_iterative_refinement(
+                conversation, action_event
+            )
+            if should_continue and followup:
+                # Send follow-up message and continue agent loop
+                followup_msg = MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text=followup)]
+                    ),
+                )
+                on_event(followup_msg)
+                # Don't set FINISHED - let the agent continue
+            else:
+                state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
 
     def _maybe_emit_vllm_tokens(
@@ -692,42 +759,15 @@ class Agent(AgentBase):
     def _log_context_window_exceeded_warning(self) -> None:
         """Log a helpful warning when context window is exceeded without a condenser."""
         if self.condenser is None:
-            logger.warning(
-                "\n"
-                "=" * 80 + "\n"
-                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
-                "=" * 80 + "\n"
-                "\n"
+            situation = (
                 "The LLM's context window has been exceeded, but no condenser is "
-                "configured.\n"
-                "\n"
-                "Current configuration:\n"
-                f"  • Condenser: None\n"
-                f"  • LLM Model: {self.llm.model}\n"
-                "\n"
+                "configured."
+            )
+            config = f"  • Condenser: None\n  • LLM Model: {self.llm.model}"
+            advice = (
                 "To prevent this error, configure a condenser to automatically "
                 "summarize\n"
-                "conversation history when it gets too long.\n"
-                "\n"
-                "Example configuration:\n"
-                "\n"
-                "  from openhands.sdk import Agent, LLM\n"
-                "  from openhands.sdk.context.condenser import "
-                "LLMSummarizingCondenser\n"
-                "\n"
-                "  agent = Agent(\n"
-                "      llm=LLM(model='your-model'),\n"
-                "      condenser=LLMSummarizingCondenser(\n"
-                "          llm=LLM(model='your-model'),  # Can use same or "
-                "cheaper model\n"
-                "          max_size=120,  # Maximum events before condensation\n"
-                "          keep_first=4   # Number of initial events to preserve\n"
-                "      )\n"
-                "  )\n"
-                "\n"
-                "For more information, see: "
-                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
-                "=" * 80
+                "conversation history when it gets too long."
             )
         else:
             condenser_type = type(self.condenser).__name__
@@ -740,21 +780,15 @@ class Agent(AgentBase):
                 condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
             )
 
-            logger.warning(
-                "\n"
-                "=" * 80 + "\n"
-                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
-                "=" * 80 + "\n"
-                "\n"
-                "The LLM's context window has been exceeded.\n"
-                "\n"
-                "Current configuration:\n"
+            situation = "The LLM's context window has been exceeded."
+            config = (
                 f"  • Condenser Type: {condenser_type}\n"
                 f"  • Handles Condensation Requests: {handles_requests}\n"
                 f"  • Condenser LLM: {condenser_llm}\n"
                 f"  • Agent LLM Model: {self.llm.model}\n"
-                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}\n"
-                "\n"
+                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}"
+            )
+            advice = (
                 "Your condenser is configured but does not handle condensation "
                 "requests\n"
                 "(handles_condensation_requests() returned False).\n"
@@ -763,23 +797,38 @@ class Agent(AgentBase):
                 "  1. Use LLMSummarizingCondenser which handles condensation "
                 "requests, OR\n"
                 "  2. Implement handles_condensation_requests() in your custom "
-                "condenser\n"
-                "\n"
-                "Example with LLMSummarizingCondenser:\n"
-                "\n"
-                "  from openhands.sdk.context.condenser import "
-                "LLMSummarizingCondenser\n"
-                "\n"
-                "  agent = Agent(\n"
-                "      llm=LLM(model='your-model'),\n"
-                "      condenser=LLMSummarizingCondenser(\n"
-                "          llm=LLM(model='your-model'),\n"
-                "          max_size=120,\n"
-                "          keep_first=4\n"
-                "      )\n"
-                "  )\n"
-                "\n"
-                "For more information, see: "
-                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
-                "=" * 80
+                "condenser"
             )
+
+        logger.warning(
+            "\n"
+            "=" * 80 + "\n"
+            "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
+            "=" * 80 + "\n"
+            "\n"
+            f"{situation}\n"
+            "\n"
+            "Current configuration:\n"
+            f"{config}\n"
+            "\n"
+            f"{advice}\n"
+            "\n"
+            "Example configuration:\n"
+            "\n"
+            "  from openhands.sdk import Agent, LLM\n"
+            "  from openhands.sdk.context.condenser import "
+            "LLMSummarizingCondenser\n"
+            "\n"
+            "  agent = Agent(\n"
+            "      llm=LLM(model='your-model'),\n"
+            "      condenser=LLMSummarizingCondenser(\n"
+            "          llm=LLM(model='your-model'),\n"
+            "          max_size=240,\n"
+            "          keep_first=2\n"
+            "      )\n"
+            "  )\n"
+            "\n"
+            "For more information, see: "
+            "https://docs.openhands.dev/sdk/guides/context-condenser\n"
+            "=" * 80
+        )

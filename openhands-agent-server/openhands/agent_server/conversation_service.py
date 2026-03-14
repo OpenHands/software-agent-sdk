@@ -3,6 +3,7 @@ import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import httpx
@@ -25,7 +26,13 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.subagent.schema import AgentDefinition
 
 
 logger = logging.getLogger(__name__)
@@ -34,12 +41,50 @@ logger = logging.getLogger(__name__)
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
+    # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
+    # agent.agent_context.secrets) serialize to strings. Without it, validation
+    # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
     return ConversationInfo(
-        **state.model_dump(),
+        **state.model_dump(mode="json"),
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+    )
+
+
+def _register_agent_definitions(
+    agent_defs: list["AgentDefinition"],
+    *,
+    context: str,
+) -> None:
+    """Register agent definitions into the subagent registry.
+
+    Used both when creating new conversations (definitions forwarded from the
+    client) and when resuming persisted ones (definitions stored in meta.json).
+    """
+    from openhands.sdk.subagent.registry import (
+        agent_definition_to_factory,
+        register_agent_if_absent,
+    )
+
+    registered = 0
+    for agent_def in agent_defs:
+        try:
+            factory = agent_definition_to_factory(agent_def)
+            register_agent_if_absent(
+                name=agent_def.name,
+                factory_func=factory,
+                description=agent_def,
+            )
+            registered += 1
+        except Exception as e:
+            logger.warning(
+                f"Failed to register agent definition "
+                f"'{agent_def.name}' ({context}): {e}"
+            )
+    logger.info(
+        f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
     )
 
 
@@ -235,15 +280,27 @@ class ConversationService:
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
 
+        # Register subagent definitions forwarded from the client
+        if request.agent_definitions:
+            _register_agent_definitions(
+                request.agent_definitions,
+                context=f"conversation {conversation_id}",
+            )
+
         # Plugin loading is now handled lazily by LocalConversation.
         # Just pass the plugin specs through to StoredConversation.
         # LocalConversation will:
         # 1. Fetch and load plugins on first run()/send_message()
         # 2. Resolve refs to commit SHAs for deterministic resume
         # 3. Merge plugin skills/MCP/hooks into the agent
+        #
+        # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers)
+        # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
+        # are preserved through the round-trip; the dict is only used in-process to
+        # construct StoredConversation, not sent over the network.
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(),
+            **request.model_dump(mode="json", context={"expose_secrets": True}),
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
@@ -340,8 +397,9 @@ class ConversationService:
         if event_service is None:
             return False
 
-        # Update the title in stored conversation
+        # Update the title and timestamp in stored conversation
         event_service.stored.title = request.title.strip()
+        event_service.stored.updated_at = utc_now()
         # Save the updated metadata to disk
         await event_service.save_meta()
 
@@ -442,6 +500,12 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
+                # Register agent definitions when resuming
+                if stored.agent_definitions:
+                    _register_agent_definitions(
+                        stored.agent_definitions,
+                        context=f"resuming conversation {stored.id}",
+                    )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(
@@ -495,6 +559,10 @@ class ConversationService:
         )
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
+        if stored.autotitle and stored.title is None:
+            await event_service.subscribe_to_events(
+                AutoTitleSubscriber(service=event_service)
+            )
         asyncio.gather(
             *[
                 event_service.subscribe_to_events(
@@ -528,8 +596,43 @@ class _EventSubscriber(Subscriber):
     service: EventService
 
     async def __call__(self, _event: Event):
+        # Skip updating timestamp for ConversationStateUpdateEvent, which is
+        # published during startup/state changes and doesn't represent actual
+        # conversation activity. This prevents updated_at from being reset
+        # on every server restart.
+        if isinstance(_event, ConversationStateUpdateEvent):
+            return
         self.service.stored.updated_at = utc_now()
         update_last_execution_time()
+
+
+@dataclass
+class AutoTitleSubscriber(Subscriber):
+    service: EventService
+
+    async def __call__(self, event: Event) -> None:
+        # Only act on incoming user messages
+        if not isinstance(event, MessageEvent) or event.source != "user":
+            return
+        # Guard: skip if a title was already set (e.g. by a concurrent task)
+        if self.service.stored.title is not None:
+            return
+
+        async def _generate_and_save() -> None:
+            try:
+                title = await self.service.generate_title()
+                if title and self.service.stored.title is None:
+                    self.service.stored.title = title
+                    self.service.stored.updated_at = utc_now()
+                    await self.service.save_meta()
+            except Exception:
+                logger.warning(
+                    f"Auto-title generation failed for "
+                    f"conversation {self.service.stored.id}",
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_generate_and_save())
 
 
 @dataclass
@@ -654,6 +757,7 @@ class ConversationWebhookSubscriber:
         conversation_data = conversation_info.model_dump(mode="json")
 
         # Retry logic
+        response = None
         for attempt in range(self.spec.num_retries + 1):
             try:
                 async with httpx.AsyncClient() as client:
@@ -677,10 +781,14 @@ class ConversationWebhookSubscriber:
                 if attempt < self.spec.num_retries:
                     await asyncio.sleep(self.spec.retry_delay)
                 else:
+                    # Log response content for debugging failures
+                    response_content = (
+                        response.text if response is not None else "No response"
+                    )
                     logger.error(
                         f"Failed to post conversation info to webhook "
                         f"{conversations_url} after {self.spec.num_retries + 1} "
-                        "attempts"
+                        f"attempts. Response: {response_content}"
                     )
 
 

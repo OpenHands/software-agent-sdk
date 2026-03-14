@@ -1,0 +1,149 @@
+---
+name: Python API breakage checks
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    sdk-api:
+        name: Python API
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            pull-requests: write
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+            - name: Install workspace deps (dev)
+              run: uv sync --frozen --group dev
+            - name: Run Python API breakage check
+              id: api_breakage
+              # Let this step fail so CI is visibly red on breakage.
+              # Later reporting steps still run because they use if: always().
+              env:
+                  ACP_VERSION_CHECK_BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
+                  ACP_VERSION_CHECK_SKIP: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.body || '', 'skip-acp-check') 
+                      }}
+              run: |
+                  uv run python .github/scripts/check_sdk_api_breakage.py 2>&1 | tee api-breakage.log
+                  exit_code=${PIPESTATUS[0]}
+                  echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+                  exit "${exit_code}"
+            - name: Write API breakage summary
+              if: ${{ always() }}
+              env:
+                  EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
+                  IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+                  LOG_PATH: api-breakage.log
+                  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              run: |
+                  python3 <<'PY' >> "$GITHUB_STEP_SUMMARY"
+                  import os
+                  from pathlib import Path
+
+                  exit_code = int(os.environ.get('EXIT_CODE', '0') or '0')
+                  is_fork = os.environ.get('IS_FORK', 'false') == 'true'
+                  run_url = os.environ['RUN_URL']
+                  status = '✅ **PASSED**' if exit_code == 0 else '❌ **FAILED**'
+
+                  print(f'## Python API breakage checks — {status}')
+                  print()
+                  print(f"**Result:** {status}")
+                  if exit_code != 0:
+                      print()
+                      print('> ⚠️ Breaking API changes or policy violations detected.')
+                  print()
+
+                  if is_fork:
+                      print(
+                          '_Fork PR detected: sticky PR comment was skipped because '
+                          'the GitHub token is read-only for `pull_request` workflows '
+                          'from forks._'
+                      )
+                      print()
+
+                  if exit_code != 0:
+                      try:
+                          log = Path(os.environ['LOG_PATH']).read_text()
+                      except Exception as exc:
+                          log = f'Unable to read log file: {exc}'
+
+                      excerpt = log[:1000].replace('```', '``\\`')
+                      print('<details><summary>Log excerpt (first 1000 characters)</summary>')
+                      print()
+                      print('```text')
+                      print(excerpt)
+                      print('```')
+                      print()
+                      print('</details>')
+                      print()
+
+                  print(f'[Action log]({run_url})')
+                  PY
+
+            - name: Post API breakage report to PR
+              if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+              uses: actions/github-script@v7
+              env:
+                  EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
+                  LOG_PATH: api-breakage.log
+              with:
+                  script: |
+                      const fs = require('fs');
+
+                      const marker = '<!-- api-breakage-report -->';
+                      const exitCode = Number(process.env.EXIT_CODE || '0');
+                      const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+                      const status = exitCode === 0 ? '✅ **PASSED**' : '❌ **FAILED**';
+
+                      let body = `${marker}\n## Python API breakage checks — ${status}\n\n**Result:** ${status}\n`;
+
+                      if (exitCode !== 0) {
+                        body += `\n> ⚠️ Breaking API changes or policy violations detected.\n`;
+                        let log = '';
+                        try {
+                          log = fs.readFileSync(process.env.LOG_PATH, 'utf8');
+                        } catch (e) {
+                          log = `Unable to read log file: ${e}`;
+                        }
+
+                        const excerpt = log.slice(0, 1000).replace(/```/g, '``\\`');
+                        body += `\n<details><summary>Log excerpt (first 1000 characters)</summary>\n\n\`\`\`text\n${excerpt}\n\`\`\`\n\n</details>\n`;
+                      }
+
+                      body += `\n[Action log](${runUrl})\n`;
+
+                      const { owner, repo } = context.repo;
+                      const issue_number = context.issue.number;
+                      const { data: comments } = await github.rest.issues.listComments({
+                        owner,
+                        repo,
+                        issue_number,
+                        per_page: 100,
+                      });
+
+                      const existing = comments.find((c) => c.body && c.body.includes(marker));
+                      if (existing) {
+                        await github.rest.issues.updateComment({
+                          owner,
+                          repo,
+                          comment_id: existing.id,
+                          body,
+                        });
+                      } else {
+                        await github.rest.issues.createComment({
+                          owner,
+                          repo,
+                          issue_number,
+                          body,
+                        });
+                      }

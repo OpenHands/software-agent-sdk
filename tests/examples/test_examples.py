@@ -26,6 +26,7 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk",
     EXAMPLES_ROOT / "02_remote_agent_server",
     # These examples live under subdirectories (each with a single `main.py`).
+    EXAMPLES_ROOT / "01_standalone_sdk" / "43_mixed_marketplace_skills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
 )
@@ -49,7 +50,9 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/15_browser_use.py",
     "examples/01_standalone_sdk/16_llm_security_analyzer.py",
     "examples/01_standalone_sdk/27_observability_laminar.py",
-    "examples/02_remote_agent_server/04_vscode_with_docker_sandboxed_server.py",
+    "examples/01_standalone_sdk/35_subscription_login.py",
+    # Requires interactive input() which fails in CI with EOFError
+    "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
 }
 
 

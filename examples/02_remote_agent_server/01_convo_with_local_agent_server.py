@@ -1,17 +1,23 @@
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation, RemoteConversation, Workspace, get_logger
-from openhands.sdk.event import ConversationStateUpdateEvent
+from openhands.sdk.event import ConversationStateUpdateEvent, HookExecutionEvent
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.tools.preset.default import get_default_agent
 
 
 logger = get_logger(__name__)
+
+# Hook script directory for this example
+HOOK_SCRIPTS_DIR = Path(__file__).parent / "hook_scripts"
 
 
 def _stream_output(stream, prefix, target_stream):
@@ -158,27 +164,71 @@ with ManagedAPIServer(port=8001) as server:
 
     # Create RemoteConversation with callbacks
     # NOTE: Workspace is required for RemoteConversation
-    workspace = Workspace(host=server.base_url)
+    # Use a temp directory that exists and is accessible in CI environments
+    temp_workspace_dir = tempfile.mkdtemp(prefix="agent_server_demo_")
+    workspace = Workspace(host=server.base_url, working_dir=temp_workspace_dir)
     result = workspace.execute_command("pwd")
     logger.info(
         f"Command '{result.command}' completed with exit code {result.exit_code}"
     )
     logger.info(f"Output: {result.stdout}")
 
+    # Configure hooks - demonstrating the hooks system with RemoteConversation
+    # Server-side hooks (PreToolUse, PostToolUse, UserPromptSubmit, Stop) are
+    # executed by the agent server. Client-side hooks (SessionStart, SessionEnd)
+    # are executed locally.
+
+    hook_config = HookConfig(
+        # Stop hook - run Python syntax check before allowing agent to finish.
+        # If any Python file has syntax errors, the hook returns "deny" with the
+        # error output, which gets sent back to the agent as feedback, and the
+        # agent continues working to fix the issue.
+        stop=[
+            HookMatcher(
+                matcher="*",  # Match all stop reasons
+                hooks=[
+                    HookDefinition(
+                        command=str(HOOK_SCRIPTS_DIR / "pycompile_check.sh"),
+                        timeout=60,
+                    )
+                ],
+            )
+        ],
+    )
+
     conversation = Conversation(
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
+        hook_config=hook_config,
     )
     assert isinstance(conversation, RemoteConversation)
+
+    # Track hook execution events
+    hook_events: list[HookExecutionEvent] = []
+
+    def hook_event_tracker(event):
+        """Additional callback to track hook execution events."""
+        if isinstance(event, HookExecutionEvent):
+            hook_events.append(event)
+            logger.info(f"🪝 HookExecutionEvent captured: {event.hook_event_type}")
+
+    # Append our hook tracker to the existing callbacks
+    conversation._callbacks.append(hook_event_tracker)
 
     try:
         logger.info(f"\n📋 Conversation ID: {conversation.state.id}")
 
-        # Send first message and run
-        logger.info("📝 Sending first message...")
+        # Test scenario: Ask the agent to create a Python file with syntax errors
+        # The stop hook should detect the syntax error and send feedback back
+        # to the agent to fix it
+        logger.info("📝 Sending message to test on_stop hook with syntax check...")
         conversation.send_message(
-            "Read the current repo and write 3 facts about the project into FACTS.txt."
+            "Create a Python file called 'test_broken.py' in the current directory "
+            "with an obvious syntax error (like 'def broken(:\n    pass' - missing "
+            "closing parenthesis). After creating the file, immediately use the "
+            "finish action. If you receive any feedback about errors, fix them and "
+            "try to finish again."
         )
 
         # Generate title using a specific LLM
@@ -186,10 +236,41 @@ with ManagedAPIServer(port=8001) as server:
         logger.info(f"Generated conversation title: {title}")
 
         logger.info("🚀 Running conversation...")
-        conversation.run()
+        logger.info(
+            "Expected behavior: Agent creates broken .py file -> tries to finish "
+            "-> stop hook runs syntax check -> check fails -> hook sends feedback "
+            "-> agent fixes the syntax error -> tries to finish again -> passes"
+        )
 
-        logger.info("✅ First task completed!")
-        logger.info(f"Agent status: {conversation.state.execution_status}")
+        # Keep running until the agent actually finishes
+        # When a stop hook denies, the state goes: running -> finished -> running
+        # The client's run() may return when it sees 'finished', so we need to
+        # check if the agent is still running and continue
+        max_runs = 10  # Allow enough retries for agent to fix issues
+        run_count = 0
+        while run_count < max_runs:
+            run_count += 1
+            logger.info(f"🔄 Run attempt #{run_count}")
+            conversation.run()
+            current_status = conversation.state.execution_status
+            logger.info(f"   After run(), status = {current_status}")
+
+            # Small delay to let any pending state updates arrive
+            time.sleep(0.5)
+            current_status = conversation.state.execution_status
+            logger.info(f"   After delay, status = {current_status}")
+
+            if current_status.value == "finished":
+                logger.info("   ✅ Agent finished!")
+                break
+            elif current_status.value == "running":
+                logger.info("   Agent still running (hook denied stop), continuing...")
+            else:
+                logger.info(f"   Unexpected status: {current_status}, stopping")
+                break
+
+        logger.info("✅ Task completed!")
+        logger.info(f"Final agent status: {conversation.state.execution_status}")
 
         # Wait for events to stop coming (no events for 2 seconds)
         logger.info("⏳ Waiting for events to stop...")
@@ -197,10 +278,50 @@ with ManagedAPIServer(port=8001) as server:
             time.sleep(0.1)
         logger.info("✅ Events have stopped")
 
-        logger.info("🚀 Running conversation again...")
-        conversation.send_message("Great! Now delete that file.")
-        conversation.run()
-        logger.info("✅ Second task completed!")
+        # Analyze hook execution events
+        logger.info("\n" + "=" * 50)
+        logger.info("📊 Hook Execution Events Analysis")
+        logger.info("=" * 50)
+
+        logger.info(f"Total HookExecutionEvents received: {len(hook_events)}")
+        for i, he in enumerate(hook_events, 1):
+            logger.info(f"\n  Hook Event #{i}:")
+            logger.info(f"    Type: {he.hook_event_type}")
+            logger.info(f"    Command: {he.hook_command}")
+            logger.info(f"    Success: {he.success}")
+            logger.info(f"    Blocked: {he.blocked}")
+            logger.info(f"    Exit Code: {he.exit_code}")
+            if he.additional_context:
+                # Truncate for readability
+                ctx = (
+                    he.additional_context[:500] + "..."
+                    if len(he.additional_context) > 500
+                    else he.additional_context
+                )
+                logger.info(f"    Additional Context: {ctx}")
+            if he.error:
+                logger.info(f"    Error: {he.error}")
+
+        # Count stop hooks that were denied (pre-commit failed)
+        stop_events = [e for e in hook_events if e.hook_event_type == "Stop"]
+        denied_stops = [e for e in stop_events if e.blocked]
+
+        logger.info(f"\nStop hook events: {len(stop_events)}")
+        logger.info(f"Denied stops (pre-commit failures): {len(denied_stops)}")
+
+        if denied_stops:
+            logger.info(
+                "\n✅ SUCCESS: Stop hook denied at least once due to "
+                "pre-commit failure!"
+            )
+            logger.info(
+                "   The agent should have received feedback and fixed the issue."
+            )
+        else:
+            logger.info(
+                "\n⚠️  No denied stops detected. Either pre-commit passed on first "
+                "try or the hook didn't work as expected."
+            )
 
         # Demonstrate state.events functionality
         logger.info("\n" + "=" * 50)
@@ -211,10 +332,10 @@ with ManagedAPIServer(port=8001) as server:
         total_events = len(conversation.state.events)
         logger.info(f"📈 Total events in conversation: {total_events}")
 
-        # Get recent events (last 5) using state.events
-        logger.info("\n🔍 Getting last 5 events using state.events...")
+        # Get recent events (last 10) using state.events
+        logger.info("\n🔍 Getting last 10 events using state.events...")
         all_events = conversation.state.events
-        recent_events = all_events[-5:] if len(all_events) >= 5 else all_events
+        recent_events = all_events[-10:] if len(all_events) >= 10 else all_events
 
         for i, event in enumerate(recent_events, 1):
             event_type = type(event).__name__
@@ -222,7 +343,7 @@ with ManagedAPIServer(port=8001) as server:
             logger.info(f"  {i}. {event_type} at {timestamp}")
 
         # Let's see what the actual event types are
-        logger.info("\n🔍 Event types found:")
+        logger.info("\n🔍 Event types found in recent events:")
         event_types = set()
         for event in recent_events:
             event_type = type(event).__name__

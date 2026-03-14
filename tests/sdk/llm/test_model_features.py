@@ -1,7 +1,6 @@
 import pytest
 
 from openhands.sdk.llm.utils.model_features import (
-    get_default_temperature,
     get_features,
     model_matches,
 )
@@ -36,6 +35,11 @@ def test_model_matches(name, pattern, expected):
         # Gemini 3 family
         ("gemini-3-pro-preview", True),
         ("gemini-3-flash-preview", True),
+        ("gemini-3.1-pro-preview", True),
+        # GPT-5 family
+        ("gpt-5.2", True),
+        ("gpt-5.2-codex", True),
+        ("gpt-5.4", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),
@@ -48,6 +52,33 @@ def test_reasoning_effort_support(model, expected_reasoning):
 
 
 @pytest.mark.parametrize(
+    "model,expected_extended_thinking",
+    [
+        # Anthropic extended thinking models
+        ("claude-sonnet-4-5", True),
+        ("claude-sonnet-4-6", True),
+        ("claude-haiku-4-5", True),
+        # Provider prefixed variants
+        ("anthropic/claude-sonnet-4-5", True),
+        ("anthropic/claude-sonnet-4-6", True),
+        ("anthropic/claude-haiku-4-5", True),
+        # Models that don't support extended thinking
+        ("claude-3-7-sonnet", False),
+        ("claude-sonnet-4", False),
+        ("claude-opus-4-5", False),
+        ("claude-opus-4-6", False),
+        ("gpt-4o", False),
+        ("o1", False),
+        ("unknown-model", False),
+    ],
+)
+def test_extended_thinking_support(model, expected_extended_thinking):
+    """Test that extended thinking models are correctly identified."""
+    features = get_features(model)
+    assert features.supports_extended_thinking == expected_extended_thinking
+
+
+@pytest.mark.parametrize(
     "model,expected_cache",
     [
         ("claude-3-5-sonnet", True),
@@ -57,12 +88,14 @@ def test_reasoning_effort_support(model, expected_reasoning):
         # AWS Bedrock model ids (provider-prefixed)
         ("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", True),
         ("bedrock/anthropic.claude-3-haiku-20240307-v1:0", True),
-        # Anthropic 4.5 variants (dash only; official IDs use hyphens)
+        # Anthropic 4.5 and 4.6 variants (dash only; official IDs use hyphens)
         ("claude-haiku-4-5", True),
         ("us.anthropic.claude-haiku-4-5-20251001", True),
         ("bedrock/anthropic.claude-3-opus-20240229-v1:0", True),
         ("claude-sonnet-4-5", True),
+        ("claude-sonnet-4-6", True),
         ("claude-opus-4-5", True),
+        ("claude-opus-4-6", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
@@ -222,6 +255,8 @@ def test_supports_stop_words_false_models(model):
         ("gpt-5.1", True),
         ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
+        ("gpt-5.2", True),
+        ("gpt-5.2-codex", True),
         ("openai/gpt-5-mini", True),
         ("codex-mini-latest", True),
         ("openai/codex-mini-latest", True),
@@ -256,14 +291,18 @@ def test_force_string_serializer_full_model_names():
         ("gpt-5", True),
         # New GPT-5.2 family should support extended retention
         ("gpt-5.2", True),
+        ("gpt-5.2-codex", True),
         ("openai/gpt-5.2-chat-latest", True),
         ("openai/gpt-5.2-pro", True),
         ("openai/gpt-5-mini", False),
         ("gpt-4o", False),
         ("openai/gpt-4.1", True),
+        ("azure/gpt-4.1", False),
+        ("litellm/gpt-4.1", True),
         ("litellm_proxy/gpt-4.1", True),
         ("litellm_proxy/openai/gpt-4.1", True),
         ("litellm_proxy/openai/gpt-5", True),
+        ("azure/gpt-5.1", False),
         ("litellm_proxy/openai/gpt-5-mini", False),
         ("openai/gpt-5.1-mini", False),
         ("openai/gpt-5-mini-2025-08-07", False),
@@ -288,6 +327,8 @@ def test_prompt_cache_retention_support(model, expected_retention):
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive
         ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        ("kimi-k2.5", True),
+        ("Kimi-K2.5", True),  # Case insensitive
         # DeepSeek reasoner model
         ("deepseek/deepseek-reasoner", True),
         ("DeepSeek/deepseek-reasoner", True),
@@ -304,51 +345,3 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
     """Test that models like kimi-k2-thinking require send_reasoning_content."""
     features = get_features(model)
     assert features.send_reasoning_content is expected_send_reasoning
-
-
-@pytest.mark.parametrize(
-    "model,expected_temperature",
-    [
-        # kimi-k2-thinking models should default to 1.0
-        ("kimi-k2-thinking", 1.0),
-        ("kimi-k2-thinking-0905", 1.0),
-        ("Kimi-K2-Thinking", 1.0),  # Case insensitive
-        ("moonshot/kimi-k2-thinking", 1.0),  # With provider prefix
-        ("litellm_proxy/kimi-k2-thinking", 1.0),  # With litellm proxy prefix
-        # All other models should default to 0.0
-        ("kimi-k2-instruct", 0.0),  # Different kimi variant
-        ("gpt-4", 0.0),
-        ("gpt-4o", 0.0),
-        ("gpt-4o-mini", 0.0),
-        ("claude-3-5-sonnet", 0.0),
-        ("claude-3-7-sonnet", 0.0),
-        ("gemini-1.5-pro", 0.0),
-        ("gemini-2.5-pro-experimental", 0.0),
-        ("o1", 0.0),
-        ("o1-mini", 0.0),
-        ("o3", 0.0),
-        ("deepseek-chat", 0.0),
-        ("llama-3.1-70b", 0.0),
-        ("azure/gpt-4", 0.0),
-        ("openai/gpt-4o", 0.0),
-        ("anthropic/claude-3-5-sonnet", 0.0),
-        ("unknown-model", 0.0),
-    ],
-)
-def test_get_default_temperature(model, expected_temperature):
-    """Test that get_default_temperature returns correct values for different models."""
-    assert get_default_temperature(model) == expected_temperature
-
-
-def test_get_default_temperature_fallback():
-    """Test that get_default_temperature returns 0.0 for unknown models."""
-    assert get_default_temperature("completely-unknown-model-12345") == 0.0
-    assert get_default_temperature("some-random-model") == 0.0
-
-
-def test_get_default_temperature_case_insensitive():
-    """Test that get_default_temperature is case insensitive."""
-    assert get_default_temperature("kimi-k2-thinking") == 1.0
-    assert get_default_temperature("KIMI-K2-THINKING") == 1.0
-    assert get_default_temperature("Kimi-K2-Thinking") == 1.0
-    assert get_default_temperature("KiMi-k2-ThInKiNg") == 1.0

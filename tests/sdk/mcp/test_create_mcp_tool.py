@@ -110,7 +110,7 @@ class MCPTestServer:
 
 
 @pytest.fixture
-def http_mcp_server() -> Generator[MCPTestServer, None, None]:
+def http_mcp_server() -> Generator[MCPTestServer]:
     """Fixture providing a running HTTP MCP server with test tools."""
     server = MCPTestServer("http-test-server")
 
@@ -130,7 +130,7 @@ def http_mcp_server() -> Generator[MCPTestServer, None, None]:
 
 
 @pytest.fixture
-def sse_mcp_server() -> Generator[MCPTestServer, None, None]:
+def sse_mcp_server() -> Generator[MCPTestServer]:
     """Fixture providing a running SSE MCP server with test tools."""
     server = MCPTestServer("sse-test-server")
 

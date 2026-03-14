@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 from rich.text import Text
 
@@ -5,6 +7,10 @@ from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
 from openhands.sdk.event.types import EventID, SourceType, ToolCallID
 from openhands.sdk.llm import Message, TextContent, content_to_str
 from openhands.sdk.tool.schema import Observation
+
+
+# Source of action rejection - used to distinguish user rejections from hook blocks
+RejectionSource = Literal["user", "hook"]
 
 
 class ObservationBaseEvent(LLMConvertibleEvent):
@@ -63,11 +69,23 @@ class ObservationEvent(ObservationBaseEvent):
 
 
 class UserRejectObservation(ObservationBaseEvent):
-    """Observation when user rejects an action in confirmation mode."""
+    """Observation when an action is rejected by user or hook.
+
+    This event is emitted when:
+    - User rejects an action during confirmation mode (rejection_source="user")
+    - A PreToolUse hook blocks an action (rejection_source="hook")
+    """
 
     rejection_reason: str = Field(
         default="User rejected the action",
         description="Reason for rejecting the action",
+    )
+    rejection_source: RejectionSource = Field(
+        default="user",
+        description=(
+            "Source of the rejection: 'user' for confirmation mode rejections, "
+            "'hook' for PreToolUse hook blocks"
+        ),
     )
     action_id: EventID = Field(
         ..., description="The action id that this observation is responding to"

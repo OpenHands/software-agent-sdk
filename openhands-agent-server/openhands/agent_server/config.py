@@ -12,6 +12,7 @@ from openhands.sdk.utils.cipher import Cipher
 # Environment variable constants
 V0_SESSION_API_KEY_ENV = "SESSION_API_KEY"
 V1_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
+V0_RUNTIME_URL = "RUNTIME_URL"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
 _logger = logging.getLogger(__name__)
 
@@ -140,6 +141,13 @@ class Config(BaseModel):
         le=65535,
         description="Port on which VSCode server should run",
     )
+    vscode_base_path: str | None = Field(
+        default=None,
+        description=(
+            "Base path for VSCode server (used in path-based routing). "
+            "For example, '/{runtime_id}/vscode' when using path-based routing."
+        ),
+    )
     enable_vnc: bool = Field(
         default=False,
         description="Whether to enable VNC desktop functionality",
@@ -154,6 +162,12 @@ class Config(BaseModel):
             "Secret key used for encrypting sensitive values in all serialized data. "
             "If missing, any sensitive data is redacted, meaning full state cannot"
             "be restored between restarts."
+        ),
+    )
+    web_url: str | None = Field(
+        default_factory=lambda: os.getenv(V0_RUNTIME_URL),
+        description=(
+            "The URL where this agent server instance is available externally"
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}

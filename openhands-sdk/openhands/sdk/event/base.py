@@ -100,7 +100,7 @@ class LLMConvertibleEvent(Event, ABC):
             event = events[i]
 
             if isinstance(event, ActionEvent):
-                # Collect all ActionEvents from same LLM respone
+                # Collect all ActionEvents from same LLM response
                 # This happens when function calling happens
                 batch_events: list[ActionEvent] = [event]
                 response_id = event.llm_response_id

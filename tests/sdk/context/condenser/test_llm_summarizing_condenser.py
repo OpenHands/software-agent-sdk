@@ -4,7 +4,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from litellm.types.utils import ModelResponse
 
-from openhands.sdk.context.condenser.base import CondensationRequirement
+from openhands.sdk.context.condenser.base import (
+    CondensationRequirement,
+    NoCondensationAvailableException,
+)
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
     Reason,
@@ -666,6 +669,7 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
     view = View.from_events(events)
 
     # Mock to return HARD requirement but no events to condense
+    # Also mock hard_context_reset to return None so the exception gets re-raised
     with (
         patch.object(
             LLMSummarizingCondenser,
@@ -673,6 +677,7 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
             return_value={Reason.REQUEST},
         ),
         patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
+        patch.object(LLMSummarizingCondenser, "hard_context_reset", return_value=None),
     ):
         with pytest.raises(NoCondensationAvailableException):
             condenser.condense(view)
@@ -704,3 +709,88 @@ def test_condense_with_soft_requirement_and_no_condensation_available(
         assert result == view
         # LLM should not be called
         cast(MagicMock, mock_llm.completion).assert_not_called()
+
+
+def test_minimum_progress_default_value(mock_llm: LLM) -> None:
+    """Test that minimum_progress has the correct default value."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm)
+    assert condenser.minimum_progress == 0.1
+
+
+def test_minimum_progress_custom_value(mock_llm: LLM) -> None:
+    """Test that minimum_progress accepts custom values."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, minimum_progress=0.2)
+    assert condenser.minimum_progress == 0.2
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        0.0,  # must be > 0.0
+        -0.1,  # must be > 0.0
+        1.0,  # must be < 1.0
+        1.5,  # must be < 1.0
+    ],
+)
+def test_minimum_progress_validation(mock_llm: LLM, invalid_value: float) -> None:
+    """Test that minimum_progress validates the range (0.0 < value < 1.0)."""
+    with pytest.raises(ValueError):
+        LLMSummarizingCondenser(llm=mock_llm, minimum_progress=invalid_value)
+
+
+def test_minimum_progress_threshold_not_met(mock_llm: LLM) -> None:
+    """Test that condensation raises when forgotten events are below minimum_progress.
+
+    When the ratio of forgotten events to total events is less than minimum_progress,
+    should raise NoCondensationAvailableException.
+    """
+    # Create a condenser with a high minimum_progress value
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=10, keep_first=2, minimum_progress=0.8
+    )
+
+    # Create a view with 100 events
+    events: list[Event] = [message_event(f"Event {i}") for i in range(100)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Mock _get_forgotten_events to return a small number of forgotten events
+    # This allows us to directly test the minimum_progress threshold check
+    # without dealing with complex boundary calculations
+    small_forgotten = [events[2], events[3]]  # Only 2 events forgotten
+
+    with patch.object(
+        condenser, "_get_forgotten_events", return_value=(small_forgotten, 2)
+    ):
+        # Forgotten count (2) << minimum_progress (0.8) * len(view) (100)
+        # 2 < 80, so the threshold is not met
+        with pytest.raises(NoCondensationAvailableException, match="minimum progress"):
+            condenser.get_condensation(view)
+
+
+def test_minimum_progress_threshold_met(mock_llm: LLM) -> None:
+    """Test that condensation succeeds when forgotten events meet minimum_progress.
+
+    When the ratio of forgotten events to total events is >= minimum_progress,
+    condensation should proceed normally.
+    """
+    # Use a low minimum_progress so it's easy to meet the threshold
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=20, keep_first=2, minimum_progress=0.1
+    )
+
+    # Set up mock response
+    cast(Any, mock_llm).set_mock_response_content("Summary of forgotten events")
+
+    # Create enough events to trigger EVENTS reason (more than max_size=20)
+    # With 30 events, target_size = 20 // 2 = 10
+    # suffix_to_keep = 10 - keep_first - 1 = 10 - 2 - 1 = 7
+    # forgotten = 30 - 7 = 23 events
+    # 23/30 = 0.77 > 0.1, so minimum_progress is met
+    events: list[Event] = [message_event(f"Event {i}") for i in range(30)]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary of forgotten events"

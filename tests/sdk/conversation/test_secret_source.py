@@ -13,6 +13,8 @@ def lookup_secret():
         url="https://my-oauth-service.com",
         headers={
             "authorization": "Bearer Token",
+            "cookie": "sessionid=abc123;",
+            "x-access-token": "token-abc123",
             "some-key": "a key",
             "not-sensitive": "hello there",
         },
@@ -28,6 +30,8 @@ def test_lookup_secret_serialization_default(lookup_secret):
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "**********",
+            "cookie": "**********",
+            "x-access-token": "**********",
             "some-key": "**********",
             "not-sensitive": "hello there",
         },
@@ -44,6 +48,8 @@ def test_lookup_secret_serialization_expose_secrets(lookup_secret):
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "Bearer Token",
+            "cookie": "sessionid=abc123;",
+            "x-access-token": "token-abc123",
             "some-key": "a key",
             "not-sensitive": "hello there",
         },
@@ -74,6 +80,8 @@ def test_lookup_secret_deserialization_redacted_headers():
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "**********",  # Redacted
+            "cookie": "**********",  # Redacted
+            "x-access-token": "**********",  # Redacted
             "some-key": "**********",  # Redacted
             "not-sensitive": "hello there",  # Not a secret header
         },
@@ -86,6 +94,8 @@ def test_lookup_secret_deserialization_redacted_headers():
     assert validated.url == "https://my-oauth-service.com"
     # Secret headers should be removed (since their values were redacted)
     assert "authorization" not in validated.headers
+    assert "cookie" not in validated.headers
+    assert "x-access-token" not in validated.headers
     assert "some-key" not in validated.headers
     # Non-sensitive headers should be preserved
     assert validated.headers["not-sensitive"] == "hello there"
@@ -128,3 +138,59 @@ def test_static_secret_deserialization_redacted():
     # The value should be None since it was redacted
     assert validated.value is None
     assert validated.get_value() is None
+
+
+def test_lookup_secret_redacts_token_and_cookie_headers():
+    """Test that X-Access-Token and Cookie headers are properly redacted.
+
+    This is a regression test to prevent leaking authentication tokens in
+    trajectory exports. Headers like X-Access-Token and Cookie should be
+    treated as sensitive and redacted during serialization.
+    """
+    secret = LookupSecret(
+        url="https://api.example.com/secrets",
+        headers={
+            "X-Access-Token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+            "Cookie": "session_id=abc123; keycloak_auth=eyJhbGci...",
+            "X-Auth-Token": "bearer_token_value",
+            "Content-Type": "application/json",
+        },
+    )
+
+    # Serialize without expose_secrets context (default behavior)
+    serialized = secret.model_dump(mode="json")
+
+    # Check that token-based headers are redacted
+    assert serialized["headers"]["X-Access-Token"] == "**********"
+    assert serialized["headers"]["Cookie"] == "**********"
+    assert serialized["headers"]["X-Auth-Token"] == "**********"
+
+    # Check that non-secret headers are preserved
+    assert serialized["headers"]["Content-Type"] == "application/json"
+
+
+def test_lookup_secret_author_header_not_redacted():
+    """Test that legitimate 'Author' headers are NOT falsely redacted.
+
+    Regression test to ensure substring pattern matching doesn't cause
+    false positives with headers like Author, Co-Author, GitHub-Author.
+    """
+    secret = LookupSecret(
+        url="https://api.example.com/data",
+        headers={
+            "Author": "john.doe@example.com",
+            "Co-Author": "jane.doe@example.com",
+            "GitHub-Author": "contributor@example.com",
+            "Authorization": "Bearer secret_token",
+        },
+    )
+
+    serialized = secret.model_dump(mode="json")
+
+    # Author-related headers should NOT be redacted (false positive check)
+    assert serialized["headers"]["Author"] == "john.doe@example.com"
+    assert serialized["headers"]["Co-Author"] == "jane.doe@example.com"
+    assert serialized["headers"]["GitHub-Author"] == "contributor@example.com"
+
+    # But Authorization should be redacted
+    assert serialized["headers"]["Authorization"] == "**********"

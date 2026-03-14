@@ -117,6 +117,10 @@ class DockerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to delete the Docker image when cleaning up workspace.",
     )
+    network: str | None = Field(
+        default=None,
+        description="Connect a container to the specified Docker network.",
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
     _image_name: str | None = PrivateAttr(default=None)
@@ -227,6 +231,10 @@ class DockerWorkspace(RemoteWorkspace):
         if self.enable_gpu:
             flags += ["--gpus", "all"]
 
+        # Connect container to the specified Docker network
+        if self.network:
+            flags += ["--network", self.network]
+
         # Run container
         run_cmd = [
             "docker",
@@ -235,6 +243,8 @@ class DockerWorkspace(RemoteWorkspace):
             "--platform",
             self.platform,
             "--rm",
+            "--ulimit",
+            "nofile=65536:65536",  # prevent "too many open files" errors
             "--name",
             f"agent-server-{uuid.uuid4()}",
             *flags,
@@ -261,7 +271,8 @@ class DockerWorkspace(RemoteWorkspace):
         # Set host for RemoteWorkspace to use
         # The container exposes port 8000, mapped to self.host_port
         # Override parent's host initialization
-        object.__setattr__(self, "host", f"http://localhost:{self.host_port}")
+        if not self.host:
+            object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
         object.__setattr__(self, "api_key", None)
 
         # Wait for container to be healthy
@@ -301,7 +312,10 @@ class DockerWorkspace(RemoteWorkspace):
     def _wait_for_health(self, timeout: float = 120.0) -> None:
         """Wait for the Docker container to become healthy."""
         start = time.time()
-        health_url = f"http://127.0.0.1:{self.host_port}/health"
+        # We can construct the health URL based on self.host if available,
+        # or fallback to localhost
+        base_url = self.host.rstrip("/")
+        health_url = f"{base_url}/health"
 
         while time.time() - start < timeout:
             try:

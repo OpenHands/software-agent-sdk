@@ -103,6 +103,23 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
     `View` to be passed to the LLM.
     """
 
+    def hard_context_reset(
+        self,
+        view: View,  # noqa: ARG002
+        agent_llm: LLM | None = None,  # noqa: ARG002
+    ) -> Condensation | None:
+        """Perform a hard context reset, if supported by the condenser.
+
+        By default, rolling condensers do not support hard context resets. Override this
+        method to implement hard context reset logic by returning a `Condensation`
+        object.
+
+        This method is invoked when:
+        - A HARD condensation requirement is triggered (e.g., by user request)
+        - But the condenser raises a NoCondensationAvailableException error
+        """
+        return None
+
     @abstractmethod
     def condensation_requirement(
         self, view: View, agent_llm: LLM | None = None
@@ -142,9 +159,25 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
                     # we do so immediately.
                     return view
 
-                # Otherwise re-raise the exception.
-                else:
-                    raise e
+                elif request == CondensationRequirement.HARD:
+                    # The agent has found itself in a situation where it cannot proceed
+                    # without condensation, but the condenser cannot provide one. We'll
+                    # try to recover from this situation by performing a hard context
+                    # reset, if supported by the condenser.
+                    try:
+                        hard_reset_condensation = self.hard_context_reset(
+                            view, agent_llm=agent_llm
+                        )
+                        if hard_reset_condensation is not None:
+                            return hard_reset_condensation
+
+                    # And if something goes wrong with the hard reset make sure we keep
+                    # both errors in the stack
+                    except Exception as hard_reset_exception:
+                        raise hard_reset_exception from e
+
+                # In all other situations re-raise the exception.
+                raise e
 
         # Otherwise we're safe to just return the view.
         else:

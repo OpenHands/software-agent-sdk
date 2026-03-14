@@ -2,6 +2,7 @@ import asyncio
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -23,9 +24,12 @@ from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
+from openhands.agent_server.hooks_router import hooks_router
+from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.middleware import LocalhostCORSMiddleware
 from openhands.agent_server.server_details_router import (
     get_server_info,
+    mark_initialization_complete,
     server_details_router,
 )
 from openhands.agent_server.skills_router import skills_router
@@ -34,6 +38,9 @@ from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
+from openhands.sdk.agent import (
+    ACPAgent,  # noqa: F401  — register in DiscriminatedUnionMixin
+)
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -83,12 +90,30 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             logger.info("Tool preload service is disabled")
 
     # Start all services concurrently
-    await asyncio.gather(
+    results = await asyncio.gather(
         start_vscode_service(),
         start_desktop_service(),
         start_tool_preload_service(),
         return_exceptions=True,
     )
+
+    # Check for any exceptions during initialization
+    exceptions = [r for r in results if isinstance(r, Exception)]
+    if exceptions:
+        logger.error(
+            "Service initialization failed with %d exception(s): %s",
+            len(exceptions),
+            exceptions,
+        )
+        # Re-raise the first exception to prevent server from starting
+        raise RuntimeError(
+            f"Server initialization failed with {len(exceptions)} exception(s)"
+        ) from exceptions[0]
+
+    # Mark initialization as complete - now the /ready endpoint will return 200
+    # and Kubernetes readiness probes will pass
+    mark_initialization_complete()
+    logger.info("Server initialization complete - ready to serve requests")
 
     async with service:
         # Store the initialized service in app state for dependency injection
@@ -118,7 +143,15 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
 
-def _create_fastapi_instance() -> FastAPI:
+def _get_root_path(config: Config) -> str:
+    root_path = ""
+    if config.web_url:
+        web_url = urlparse(config.web_url)
+        root_path = web_url.path.rstrip("/")
+    return root_path
+
+
+def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
@@ -130,6 +163,7 @@ def _create_fastapi_instance() -> FastAPI:
             "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
         ),
         lifespan=api_lifespan,
+        root_path=_get_root_path(config),
     )
 
 
@@ -175,6 +209,8 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(vscode_router)
     api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
+    api_router.include_router(hooks_router)
+    api_router.include_router(llm_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 
@@ -320,7 +356,9 @@ def create_app(config: Config | None = None) -> FastAPI:
     """
     if config is None:
         config = get_default_config()
-    app = _create_fastapi_instance()
+    app = _create_fastapi_instance(config)
+    app.state.config = config
+
     _add_api_routes(app, config)
     _setup_static_files(app, config)
     app.add_middleware(LocalhostCORSMiddleware, allow_origins=config.allow_cors_origins)

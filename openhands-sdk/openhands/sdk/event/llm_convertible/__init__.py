@@ -4,6 +4,7 @@ from openhands.sdk.event.llm_convertible.observation import (
     AgentErrorEvent,
     ObservationBaseEvent,
     ObservationEvent,
+    RejectionSource,
     UserRejectObservation,
 )
 from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
@@ -17,4 +18,5 @@ __all__ = [
     "MessageEvent",
     "AgentErrorEvent",
     "UserRejectObservation",
+    "RejectionSource",
 ]

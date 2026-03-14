@@ -2,13 +2,13 @@
 
 import asyncio
 import tempfile
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
-from openhands.agent_server.api import api_lifespan, create_app
+from openhands.agent_server.api import _get_root_path, api_lifespan, create_app
 from openhands.agent_server.config import Config
 
 
@@ -223,9 +223,21 @@ class TestServiceParallelization:
         mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
-        # Make each service take 0.1 seconds to start
+        active_starts = 0
+        max_concurrent_starts = 0
+        start_lock = asyncio.Lock()
+
         async def slow_start():
+            nonlocal active_starts, max_concurrent_starts
+            async with start_lock:
+                active_starts += 1
+                max_concurrent_starts = max(max_concurrent_starts, active_starts)
+
             await asyncio.sleep(0.1)
+
+            async with start_lock:
+                active_starts -= 1
+
             return True
 
         mock_vscode_service.start = AsyncMock(side_effect=slow_start)
@@ -255,20 +267,10 @@ class TestServiceParallelization:
             mock_app = AsyncMock()
             mock_app.state = AsyncMock()
 
-            # Measure time for parallel startup
-            start_time = time.time()
             async with api_lifespan(mock_app):
                 pass
-            end_time = time.time()
 
-            # If services were started sequentially, it would take ~0.3 seconds
-            # If parallel, it should take ~0.1 seconds (plus some overhead)
-            # We'll allow up to 0.2 seconds to account for overhead
-            elapsed_time = end_time - start_time
-            assert elapsed_time < 0.2, (
-                f"Services took {elapsed_time:.3f}s, "
-                "expected < 0.2s for parallel startup"
-            )
+            assert max_concurrent_starts == 3
 
             # Verify all services were started
             mock_vscode_service.start.assert_called_once()
@@ -352,3 +354,87 @@ class TestServiceParallelization:
 
             # Verify conversation service was set up
             assert mock_app.state.conversation_service == mock_conversation_service
+
+
+class TestRootPath:
+    """Tests for _get_root_path function and root_path configuration."""
+
+    def test_get_root_path_returns_slash_when_web_url_is_none(self):
+        """Test that _get_root_path returns '' when web_url is not configured."""
+        config = Config(web_url=None)
+        assert _get_root_path(config) == ""
+
+    def test_get_root_path_extracts_path_from_url(self):
+        """Test that _get_root_path extracts the path component from web_url."""
+        config = Config(web_url="https://example.com/runtime/123")
+        assert _get_root_path(config) == "/runtime/123"
+
+    def test_get_root_path_returns_slash_for_root_url(self):
+        """Test that _get_root_path returns '/' for a URL without path."""
+        config = Config(web_url="https://example.com")
+        assert _get_root_path(config) == ""
+
+    def test_get_root_path_with_trailing_slash(self):
+        """Test that _get_root_path preserves trailing slash."""
+        config = Config(web_url="https://example.com/api/")
+        assert _get_root_path(config) == "/api"
+
+    def test_get_root_path_with_complex_path(self):
+        """Test _get_root_path with a complex nested path."""
+        config = Config(
+            web_url="https://work-1-abc123.prod-runtime.all-hands.dev/runtime/456/api"
+        )
+        assert _get_root_path(config) == "/runtime/456/api"
+
+    def test_fastapi_instance_uses_root_path(self):
+        """Test that FastAPI instance is created with correct root_path."""
+        config = Config(web_url="https://example.com/mypath")
+        app = create_app(config)
+        assert app.root_path == "/mypath"
+
+    def test_fastapi_instance_uses_default_root_path_when_no_web_url(self):
+        """Test that FastAPI instance uses '/' root_path when web_url is None."""
+        config = Config(web_url=None)
+        app = create_app(config)
+        assert app.root_path == ""
+
+
+class TestConfigWebUrl:
+    """Tests for web_url configuration field."""
+
+    def test_web_url_default_is_none_when_env_not_set(self):
+        """Test that web_url defaults to None when RUNTIME_URL is not set."""
+        # Ensure the env var is not set
+        with patch.dict("os.environ", {}, clear=True):
+            config = Config()
+            assert config.web_url is None
+
+    def test_web_url_reads_from_runtime_url_env(self):
+        """Test that web_url reads from RUNTIME_URL environment variable."""
+        with patch.dict("os.environ", {"RUNTIME_URL": "https://test.example.com/path"}):
+            config = Config()
+            assert config.web_url == "https://test.example.com/path"
+
+    def test_web_url_can_be_set_explicitly(self):
+        """Test that web_url can be set explicitly, overriding env var."""
+        with patch.dict("os.environ", {"RUNTIME_URL": "https://env.example.com"}):
+            config = Config(web_url="https://explicit.example.com/custom")
+            assert config.web_url == "https://explicit.example.com/custom"
+
+
+@pytest.mark.parametrize(
+    "web_url,expected_root_path",
+    [
+        (None, ""),
+        ("https://example.com", ""),
+        ("https://example.com/", ""),
+        ("https://example.com/api", "/api"),
+        ("https://example.com/api/v1", "/api/v1"),
+        ("http://localhost:8000/test", "/test"),
+        ("https://work-1-xyz.prod-runtime.all-hands.dev/runtime/abc", "/runtime/abc"),
+    ],
+)
+def test_get_root_path_parametrized(web_url, expected_root_path):
+    """Parametrized test for _get_root_path with various URL patterns."""
+    config = Config(web_url=web_url)
+    assert _get_root_path(config) == expected_root_path

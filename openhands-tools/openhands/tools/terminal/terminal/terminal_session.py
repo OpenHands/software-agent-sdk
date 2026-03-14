@@ -5,8 +5,10 @@ import time
 from enum import Enum
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import maybe_truncate
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_END,
+    MAX_CMD_OUTPUT_SIZE,
     NO_CHANGE_TIMEOUT_SECONDS,
     POLL_INTERVAL,
     TIMEOUT_MESSAGE_TEMPLATE,
@@ -183,6 +185,10 @@ class TerminalSession(TerminalSessionBase):
             raw_command_output,
             metadata,
         )
+        command_output = maybe_truncate(
+            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+        )
+
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""  # Reset previous command output
         self._ready_for_next_command()
@@ -221,6 +227,9 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
+        command_output = maybe_truncate(
+            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+        )
         return TerminalObservation.from_text(
             command=command,
             text=command_output,
@@ -256,6 +265,9 @@ class TerminalSession(TerminalSessionBase):
             raw_command_output,
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
+        )
+        command_output = maybe_truncate(
+            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
         )
         return TerminalObservation.from_text(
             command=command,
@@ -390,6 +402,9 @@ class TerminalSession(TerminalSessionBase):
                 raw_command_output,
                 metadata,
                 continue_prefix="[Below is the output of the previous command.]\n",
+            )
+            command_output = maybe_truncate(
+                command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
             )
             obs = TerminalObservation.from_text(
                 command=command,

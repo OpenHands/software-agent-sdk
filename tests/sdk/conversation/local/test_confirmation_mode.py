@@ -107,7 +107,7 @@ class TestConfirmationMode:
 
         # Create a real LLM instance for Agent validation
         self.llm: LLM = LLM(
-            model="gpt-4", api_key=SecretStr("test-key"), usage_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
 
         # Create a MagicMock to override the completion method

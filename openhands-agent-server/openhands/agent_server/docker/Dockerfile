@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
+# NOTE: LC_ALL/LANG must be set to C.UTF-8 for libtmux to work correctly with
+# PyInstaller builds. Without proper locale, tmux converts UTF-8 separator
+# characters to underscores, breaking libtmux's format parsing.
 ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22
 ARG USERNAME=openhands
 ARG UID=10001
@@ -10,7 +13,7 @@ ARG PORT=8000
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
 ####################################################################################
-FROM python:3.13-bullseye AS builder
+FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
@@ -28,7 +31,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python
+    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -39,7 +42,7 @@ ARG USERNAME UID GID
 
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable
+    uv sync --frozen --dev --no-editable --extra boto3
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
@@ -54,6 +57,12 @@ RUN test -x /agent-server/dist/openhands-agent-server
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
+
+
+ARG OPENHANDS_BUILD_GIT_SHA=unknown
+ARG OPENHANDS_BUILD_GIT_REF=unknown
+ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
+ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 
 # Install base packages and create user
 RUN set -eux; \
@@ -76,12 +85,30 @@ RUN set -eux; \
     chown -R ${USERNAME}:${USERNAME} /workspace; \
     rm -rf /var/lib/apt/lists/*
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here, 
+# Pre-install ACP servers for ACPAgent support (Claude Code + Codex)
+# Install Node.js/npm if not present (SWE-bench base images may lack them)
+RUN set -eux; \
+    if ! command -v npm >/dev/null 2>&1; then \
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+        apt-get install -y --no-install-recommends nodejs && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp
+
+# Configure Claude Code managed settings for headless operation:
+# Allow all tool permissions (no human in the loop to approve).
+RUN mkdir -p /etc/claude-code && \
+    echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
+
+# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
 USER ${USERNAME}
 WORKDIR /
+# Locale settings required for libtmux to work with PyInstaller builds
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
 ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
 EXPOSE ${PORT}

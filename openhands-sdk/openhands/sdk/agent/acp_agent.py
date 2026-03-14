@@ -1,0 +1,966 @@
+"""ACPAgent — an AgentBase subclass that delegates to an ACP server.
+
+The Agent Client Protocol (ACP) lets OpenHands power conversations using
+ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
+LLM calls.  The ACP server manages its own LLM, tools, and execution;
+the ACPAgent simply relays user messages and collects the response.
+
+See https://agentclientprotocol.com/protocol/overview
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import threading
+import time
+import uuid
+from collections.abc import Generator
+from typing import TYPE_CHECKING, Any
+
+from acp.client.connection import ClientSideConnection
+from acp.helpers import text_block
+from acp.schema import (
+    AgentMessageChunk,
+    AgentThoughtChunk,
+    AllowedOutcome,
+    PromptResponse,
+    RequestPermissionResponse,
+    TextContentBlock,
+    ToolCallProgress,
+    ToolCallStart,
+    UsageUpdate,
+)
+from acp.transports import default_environment
+from pydantic import Field, PrivateAttr
+
+from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event import (
+    ACPToolCallEvent,
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+    SystemPromptEvent,
+)
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.tool import Tool  # noqa: TC002
+from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
+
+
+logger = get_logger(__name__)
+maybe_init_laminar()
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import (
+        ConversationCallbackType,
+        ConversationState,
+        ConversationTokenCallbackType,
+        LocalConversation,
+    )
+
+
+# Seconds to wait after prompt() for pending session_update notifications
+# to be processed.  This is a best-effort workaround: the ACP protocol does
+# not currently signal when all notifications for a turn have been delivered,
+# so we yield to the event loop and then sleep briefly to allow in-flight
+# handlers to finish.  Override via ACP_NOTIFICATION_DRAIN_DELAY for slow or
+# remote servers.
+# TODO(https://github.com/agentclientprotocol/agent-client-protocol/issues/554):
+#       Replace with protocol-level synchronization once ACP supports a
+#       "turn complete" notification.
+_NOTIFICATION_DRAIN_DELAY: float = float(
+    os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
+)
+
+# Retry configuration for transient ACP connection errors.
+# These errors can occur when the connection drops mid-conversation but the
+# session state is still valid on the server side.
+_ACP_PROMPT_MAX_RETRIES: int = int(os.environ.get("ACP_PROMPT_MAX_RETRIES", "3"))
+_ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
+
+# Exception types that indicate transient connection issues worth retrying
+_RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
+
+# Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
+# The default (64 KiB) is too small for session_update notifications that
+# carry large tool-call outputs (e.g. file contents, test results).  When
+# a single JSON-RPC line exceeds the limit, readline() raises
+# LimitOverrunError, silently killing the filter/receive pipeline and
+# leaving the prompt() future unresolved forever.  100 MiB is generous
+# enough for any realistic message while still bounding memory.
+_STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
+
+
+async def _drain_notifications() -> None:
+    """Best-effort drain of pending ``session_update`` notifications.
+
+    ACP does not yet signal when all notifications for a turn have been
+    delivered (see TODO above).  We yield to the event loop so already-queued
+    handlers run, then sleep briefly to allow in-flight IO handlers to finish.
+    """
+    await asyncio.sleep(0)
+    await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
+
+
+def _make_dummy_llm() -> LLM:
+    """Create a dummy LLM that should never be called directly."""
+    return LLM(model="acp-managed")
+
+
+# ---------------------------------------------------------------------------
+# ACP Client implementation
+# ---------------------------------------------------------------------------
+
+
+# Known ACP server name → bypass-permissions mode ID mappings.
+_BYPASS_MODE_MAP: dict[str, str] = {
+    "claude-agent": "bypassPermissions",
+    "codex-acp": "full-access",
+}
+_DEFAULT_BYPASS_MODE = "full-access"
+
+# ACP auth method ID → environment variable that supplies the credential.
+# When the server reports auth_methods, we pick the first method whose
+# required env var is set.
+# Note: claude-login is intentionally NOT included because Claude Code ACP
+# uses bypassPermissions mode instead of API key authentication.
+_AUTH_METHOD_ENV_MAP: dict[str, str] = {
+    "codex-api-key": "CODEX_API_KEY",
+    "openai-api-key": "OPENAI_API_KEY",
+}
+
+
+def _select_auth_method(
+    auth_methods: list[Any],
+    env: dict[str, str],
+) -> str | None:
+    """Pick an auth method whose required env var is present.
+
+    Returns the ``id`` of the first matching method, or ``None`` if no
+    env-var-based method is available (the server may not require auth).
+    """
+    method_ids = {m.id for m in auth_methods}
+    for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
+        if method_id in method_ids and env_var in env:
+            return method_id
+    return None
+
+
+def _resolve_bypass_mode(agent_name: str) -> str:
+    """Return the session mode ID that bypasses all permission prompts.
+
+    Different ACP servers use different mode IDs for the same concept:
+    - claude-agent-acp → ``bypassPermissions``
+    - codex-acp        → ``full-access``
+
+    Falls back to ``full-access`` for unknown servers.
+    """
+    for key, mode in _BYPASS_MODE_MAP.items():
+        if key in agent_name.lower():
+            return mode
+    return _DEFAULT_BYPASS_MODE
+
+
+async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
+    """Read lines from *source* and forward only JSON-RPC lines to *dest*.
+
+    Some ACP servers (e.g. ``claude-code-acp`` v0.1.x) emit log messages
+    like ``[ACP] ...`` to stdout alongside JSON-RPC traffic.  This coroutine
+    strips those non-protocol lines so the JSON-RPC connection is not confused.
+    """
+    try:
+        while True:
+            line = await source.readline()
+            if not line:
+                dest.feed_eof()
+                break
+            # JSON-RPC messages are single-line JSON objects containing
+            # "jsonrpc". Filter out multi-line pretty-printed JSON from
+            # debug logs that also start with '{'.
+            stripped = line.lstrip()
+            if stripped.startswith(b"{") and b'"jsonrpc"' in line:
+                dest.feed_data(line)
+            else:
+                logger.debug(
+                    "ACP stdout (non-JSON): %s",
+                    line.decode(errors="replace").rstrip(),
+                )
+    except Exception:
+        logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
+        dest.feed_eof()
+
+
+class _OpenHandsACPBridge:
+    """Bridge between OpenHands and ACP that accumulates session updates.
+
+    Implements the ``Client`` protocol from ``agent_client_protocol``.
+    """
+
+    def __init__(self) -> None:
+        self.accumulated_text: list[str] = []
+        self.accumulated_thoughts: list[str] = []
+        self.accumulated_tool_calls: list[dict[str, Any]] = []
+        self.on_token: Any = None  # ConversationTokenCallbackType | None
+        # Telemetry state from UsageUpdate (persists across turns)
+        self._last_cost: float = 0.0  # last cumulative cost seen
+        self._context_window: int = 0  # context window size from ACP
+        self._llm_ref: Any = None  # reference to the sentinel LLM
+        # Fork session state for ask_agent() — guarded by _fork_lock to
+        # prevent concurrent ask_agent() calls from colliding.
+        self._fork_lock = threading.Lock()
+        self._fork_session_id: str | None = None
+        self._fork_accumulated_text: list[str] = []
+
+    def reset(self) -> None:
+        self.accumulated_text.clear()
+        self.accumulated_thoughts.clear()
+        self.accumulated_tool_calls.clear()
+        self.on_token = None
+        # Note: telemetry state (_last_cost, _context_window, etc.)
+        # is intentionally NOT cleared — it accumulates across turns.
+
+    # -- Client protocol methods ------------------------------------------
+
+    async def session_update(
+        self,
+        session_id: str,
+        update: Any,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        logger.debug("ACP session_update: type=%s", type(update).__name__)
+
+        # Route fork session updates to the fork accumulator
+        if self._fork_session_id is not None and session_id == self._fork_session_id:
+            if isinstance(update, AgentMessageChunk):
+                if isinstance(update.content, TextContentBlock):
+                    self._fork_accumulated_text.append(update.content.text)
+            return
+
+        if isinstance(update, AgentMessageChunk):
+            if isinstance(update.content, TextContentBlock):
+                text = update.content.text
+                self.accumulated_text.append(text)
+                if self.on_token is not None:
+                    try:
+                        self.on_token(text)
+                    except Exception:
+                        logger.debug("on_token callback failed", exc_info=True)
+        elif isinstance(update, AgentThoughtChunk):
+            if isinstance(update.content, TextContentBlock):
+                self.accumulated_thoughts.append(update.content.text)
+        elif isinstance(update, UsageUpdate):
+            # Update context window size
+            self._context_window = update.size
+            # Record incremental cost
+            if update.cost is not None and self._llm_ref is not None:
+                delta = update.cost.amount - self._last_cost
+                if delta > 0:
+                    self._llm_ref.metrics.add_cost(delta)
+                self._last_cost = update.cost.amount
+        elif isinstance(update, ToolCallStart):
+            self.accumulated_tool_calls.append(
+                {
+                    "tool_call_id": update.tool_call_id,
+                    "title": update.title,
+                    "tool_kind": update.kind,
+                    "status": update.status,
+                    "raw_input": update.raw_input,
+                    "raw_output": update.raw_output,
+                }
+            )
+            logger.debug("ACP tool call start: %s", update.tool_call_id)
+        elif isinstance(update, ToolCallProgress):
+            # Find the existing tool call entry and merge updates
+            for tc in self.accumulated_tool_calls:
+                if tc["tool_call_id"] == update.tool_call_id:
+                    if update.title is not None:
+                        tc["title"] = update.title
+                    if update.kind is not None:
+                        tc["tool_kind"] = update.kind
+                    if update.status is not None:
+                        tc["status"] = update.status
+                    if update.raw_input is not None:
+                        tc["raw_input"] = update.raw_input
+                    if update.raw_output is not None:
+                        tc["raw_output"] = update.raw_output
+                    break
+            logger.debug("ACP tool call progress: %s", update.tool_call_id)
+        else:
+            logger.debug("ACP session update: %s", type(update).__name__)
+
+    async def request_permission(
+        self,
+        options: list[Any],
+        session_id: str,  # noqa: ARG002
+        tool_call: Any,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Any:
+        """Auto-approve all permission requests from the ACP server."""
+        # Pick the first option (usually "allow once")
+        option_id = options[0].option_id if options else "allow_once"
+        logger.info(
+            "ACP auto-approving permission: %s (option: %s)",
+            tool_call,
+            option_id,
+        )
+        return RequestPermissionResponse(
+            outcome=AllowedOutcome(outcome="selected", option_id=option_id),
+        )
+
+    # fs/terminal methods — raise NotImplementedError; ACP server handles its own
+    async def write_text_file(
+        self, content: str, path: str, session_id: str, **kwargs: Any
+    ) -> None:
+        raise NotImplementedError("ACP server handles file operations")
+
+    async def read_text_file(
+        self,
+        path: str,
+        session_id: str,
+        limit: int | None = None,
+        line: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        raise NotImplementedError("ACP server handles file operations")
+
+    async def create_terminal(
+        self,
+        command: str,
+        session_id: str,
+        args: list[str] | None = None,
+        cwd: str | None = None,
+        env: Any = None,
+        output_byte_limit: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        raise NotImplementedError("ACP server handles terminal operations")
+
+    async def terminal_output(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> Any:
+        raise NotImplementedError("ACP server handles terminal operations")
+
+    async def release_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> None:
+        raise NotImplementedError("ACP server handles terminal operations")
+
+    async def wait_for_terminal_exit(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> Any:
+        raise NotImplementedError("ACP server handles terminal operations")
+
+    async def kill_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> None:
+        raise NotImplementedError("ACP server handles terminal operations")
+
+    async def ext_method(
+        self,
+        method: str,  # noqa: ARG002
+        params: dict[str, Any],  # noqa: ARG002
+    ) -> dict[str, Any]:
+        return {}
+
+    async def ext_notification(
+        self,
+        method: str,  # noqa: ARG002
+        params: dict[str, Any],  # noqa: ARG002
+    ) -> None:
+        pass
+
+    def on_connect(self, conn: Any) -> None:  # noqa: ARG002
+        pass
+
+
+# ---------------------------------------------------------------------------
+# ACPAgent
+# ---------------------------------------------------------------------------
+
+
+class ACPAgent(AgentBase):
+    """Agent that delegates to an ACP-compatible subprocess server."""
+
+    # Override required fields with ACP-appropriate defaults
+    llm: LLM = Field(default_factory=_make_dummy_llm)
+    tools: list[Tool] = Field(default_factory=list)
+    include_default_tools: list[str] = Field(default_factory=list)
+
+    # ACP-specific configuration
+    acp_command: list[str] = Field(
+        ...,
+        description=(
+            "Command to start the ACP server, e.g."
+            " ['npx', '-y', '@zed-industries/claude-agent-acp']"
+        ),
+    )
+    acp_args: list[str] = Field(
+        default_factory=list,
+        description="Additional arguments for the ACP server command",
+    )
+    acp_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Additional environment variables for the ACP server process",
+    )
+    acp_session_mode: str | None = Field(
+        default=None,
+        description=(
+            "Session mode ID to set after creating a session. "
+            "If None (default), auto-detected from the ACP server type: "
+            "'bypassPermissions' for claude-agent-acp, 'full-access' for codex-acp."
+        ),
+    )
+    acp_prompt_timeout: float = Field(
+        default=1800.0,
+        description=(
+            "Timeout in seconds for a single ACP prompt() call. "
+            "Prevents indefinite hangs when the ACP server fails to respond."
+        ),
+    )
+    acp_model: str | None = Field(
+        default=None,
+        description="Model for the ACP server to use (e.g. 'claude-opus-4-6'). "
+        "Passed via session _meta. If None, the server picks its default.",
+    )
+
+    # Private runtime state
+    _executor: Any = PrivateAttr(default=None)
+    _conn: Any = PrivateAttr(default=None)  # ClientSideConnection
+    _session_id: str | None = PrivateAttr(default=None)
+    _process: Any = PrivateAttr(default=None)  # asyncio subprocess
+    _client: Any = PrivateAttr(default=None)  # _OpenHandsACPBridge
+    _filtered_reader: Any = PrivateAttr(default=None)  # StreamReader
+    _closed: bool = PrivateAttr(default=False)
+    _working_dir: str = PrivateAttr(default="")
+    _agent_name: str = PrivateAttr(
+        default=""
+    )  # ACP server name from InitializeResponse
+    _agent_version: str = PrivateAttr(
+        default=""
+    )  # ACP server version from InitializeResponse
+
+    # -- Helpers -----------------------------------------------------------
+
+    def _record_usage(
+        self,
+        response: PromptResponse | None,
+        session_id: str,
+        elapsed: float | None = None,
+    ) -> None:
+        """Record token usage, latency, and notify stats callback from a PromptResponse.
+
+        Args:
+            response: The ACP PromptResponse (may carry a ``usage`` field).
+            session_id: Session identifier used as the response_id for metrics.
+            elapsed: Wall-clock seconds for this prompt round-trip (optional).
+        """
+        if response is not None and response.usage is not None:
+            usage = response.usage
+            self.llm.metrics.add_token_usage(
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cached_read_tokens or 0,
+                cache_write_tokens=usage.cached_write_tokens or 0,
+                reasoning_tokens=usage.thought_tokens or 0,
+                context_window=self._client._context_window,
+                response_id=session_id,
+            )
+
+        if elapsed is not None:
+            self.llm.metrics.add_response_latency(elapsed, session_id)
+
+        if self.llm.telemetry._stats_update_callback is not None:
+            try:
+                self.llm.telemetry._stats_update_callback()
+            except Exception:
+                logger.debug("Stats update callback failed", exc_info=True)
+
+    # -- Override base properties to be no-ops for ACP ---------------------
+
+    @property
+    def system_message(self) -> str:
+        return "ACP-managed agent"
+
+    @property
+    def agent_name(self) -> str:
+        """Name of the ACP server (from InitializeResponse.agent_info)."""
+        return self._agent_name
+
+    @property
+    def agent_version(self) -> str:
+        """Version of the ACP server (from InitializeResponse.agent_info)."""
+        return self._agent_version
+
+    def get_all_llms(self) -> Generator[LLM]:
+        yield self.llm
+
+    # -- Lifecycle ---------------------------------------------------------
+
+    def init_state(
+        self,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Spawn the ACP server and initialize a session."""
+        # Emit a placeholder system prompt so the visualizer shows a section
+        # even though the real system prompt is managed by the ACP server.
+        on_event(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(
+                    text=(
+                        "This conversation is powered by an ACP server. "
+                        "The system prompt and tools are managed by the "
+                        "ACP server and are not available for display."
+                    )
+                ),
+                tools=[],
+            )
+        )
+
+        # Validate no unsupported features
+        if self.tools:
+            raise NotImplementedError(
+                "ACPAgent does not support custom tools; "
+                "the ACP server manages its own tools"
+            )
+        if self.mcp_config:
+            raise NotImplementedError(
+                "ACPAgent does not support mcp_config; "
+                "configure MCP on the ACP server instead"
+            )
+        if self.condenser is not None:
+            raise NotImplementedError(
+                "ACPAgent does not support condenser; "
+                "the ACP server manages its own context"
+            )
+        if self.agent_context is not None:
+            raise NotImplementedError(
+                "ACPAgent does not support agent_context; "
+                "configure the ACP server directly"
+            )
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        self._executor = AsyncExecutor()
+
+        try:
+            self._start_acp_server(state)
+        except Exception as e:
+            logger.error("Failed to start ACP server: %s", e)
+            self._cleanup()
+            raise
+
+        self._initialized = True
+
+    def _start_acp_server(self, state: ConversationState) -> None:
+        """Start the ACP subprocess and initialize the session."""
+        client = _OpenHandsACPBridge()
+        client._llm_ref = self.llm
+        self._client = client
+
+        # Build environment: inherit current env + ACP extras
+        env = default_environment()
+        env.update(os.environ)
+        env.update(self.acp_env)
+        # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
+        env.pop("CLAUDECODE", None)
+
+        command = self.acp_command[0]
+        args = list(self.acp_command[1:]) + list(self.acp_args)
+
+        working_dir = str(state.workspace.working_dir)
+
+        async def _init() -> tuple[Any, Any, Any, str, str, str]:
+            # Spawn the subprocess directly so we can install a
+            # filtering reader that skips non-JSON-RPC lines some
+            # ACP servers (e.g. claude-code-acp v0.1.x) write to
+            # stdout.
+            process = await asyncio.create_subprocess_exec(
+                command,
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                limit=_STREAM_READER_LIMIT,
+            )
+            assert process.stdin is not None
+            assert process.stdout is not None
+
+            # Wrap the subprocess stdout in a filtering reader that
+            # only passes lines starting with '{' (JSON-RPC messages).
+            filtered_reader = asyncio.StreamReader(limit=_STREAM_READER_LIMIT)
+            asyncio.get_event_loop().create_task(
+                _filter_jsonrpc_lines(process.stdout, filtered_reader)
+            )
+
+            conn = ClientSideConnection(
+                client,
+                process.stdin,  # write to subprocess
+                filtered_reader,  # read filtered output
+            )
+
+            # Initialize the protocol and discover server identity
+            init_response = await conn.initialize(protocol_version=1)
+            agent_name = ""
+            agent_version = ""
+            if init_response.agent_info is not None:
+                agent_name = init_response.agent_info.name or ""
+                agent_version = init_response.agent_info.version or ""
+            logger.info(
+                "ACP server initialized: agent_name=%r, agent_version=%r",
+                agent_name,
+                agent_version,
+            )
+
+            # Authenticate if the server requires it.  Some ACP servers
+            # (e.g. codex-acp) require an explicit authenticate call
+            # before session creation.  We auto-detect the method from
+            # the env vars that are available to the process.
+            auth_methods = init_response.auth_methods or []
+            if auth_methods:
+                method_id = _select_auth_method(auth_methods, env)
+                if method_id is not None:
+                    logger.info("Authenticating with ACP method: %s", method_id)
+                    await conn.authenticate(method_id=method_id)
+                else:
+                    logger.warning(
+                        "ACP server offers auth methods %s but no matching "
+                        "env var is set — session creation may fail",
+                        [m.id for m in auth_methods],
+                    )
+
+            # Build _meta content for session options (e.g. model selection).
+            # Extra kwargs to new_session() become the _meta dict in the
+            # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
+            session_meta: dict[str, Any] = {}
+            if self.acp_model and "claude" in agent_name.lower():
+                session_meta["claudeCode"] = {"options": {"model": self.acp_model}}
+
+            # Create a new session
+            response = await conn.new_session(cwd=working_dir, **session_meta)
+            session_id = response.session_id
+
+            # Resolve the permission mode to use.  Different ACP servers
+            # use different mode IDs for the same concept (no-prompts):
+            #   - claude-agent-acp → "bypassPermissions"
+            #   - codex-acp        → "full-access"
+            mode_id = self.acp_session_mode
+            if mode_id is None:
+                mode_id = _resolve_bypass_mode(agent_name)
+            logger.info("Setting ACP session mode: %s", mode_id)
+            await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
+
+            return conn, process, filtered_reader, session_id, agent_name, agent_version
+
+        result = self._executor.run_async(_init)
+        (
+            self._conn,
+            self._process,
+            self._filtered_reader,
+            self._session_id,
+            self._agent_name,
+            self._agent_version,
+        ) = result
+        self._working_dir = working_dir
+
+    @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
+    def step(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
+        """Send the latest user message to the ACP server and emit the response."""
+        state = conversation.state
+
+        # Find the latest user message
+        user_message = None
+        for event in reversed(list(state.events)):
+            if isinstance(event, MessageEvent) and event.source == "user":
+                # Extract text from the message
+                for content in event.llm_message.content:
+                    if isinstance(content, TextContent) and content.text.strip():
+                        user_message = content.text
+                        break
+                if user_message:
+                    break
+
+        if user_message is None:
+            logger.warning("No user message found; finishing conversation")
+            state.execution_status = ConversationExecutionStatus.FINISHED
+            return
+
+        # Reset client accumulators
+        self._client.reset()
+        self._client.on_token = on_token
+
+        t0 = time.monotonic()
+        try:
+
+            async def _prompt() -> PromptResponse:
+                response = await self._conn.prompt(
+                    [text_block(user_message)],
+                    self._session_id,
+                )
+                await _drain_notifications()
+                return response
+
+            # Send prompt to ACP server with retry logic for connection errors.
+            # Transient connection failures (network blips, server restarts) are
+            # retried to preserve session state and avoid losing progress.
+            logger.info(
+                "Sending ACP prompt (timeout=%.0fs, msg=%d chars)",
+                self.acp_prompt_timeout,
+                len(user_message),
+            )
+
+            response: PromptResponse | None = None
+            max_retries = _ACP_PROMPT_MAX_RETRIES
+
+            for attempt in range(max_retries + 1):
+                try:
+                    response = self._executor.run_async(
+                        _prompt, timeout=self.acp_prompt_timeout
+                    )
+                    break  # Success, exit retry loop
+                except TimeoutError:
+                    # Timeout is handled separately below, don't retry
+                    raise
+                except _RETRIABLE_CONNECTION_ERRORS as e:
+                    if attempt < max_retries:
+                        delay = _ACP_PROMPT_RETRY_DELAYS[
+                            min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
+                        ]
+                        logger.warning(
+                            "ACP prompt failed with retriable error (attempt %d/%d), "
+                            "retrying in %.0fs: %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            delay,
+                            e,
+                        )
+                        time.sleep(delay)
+                        # Reset accumulators for retry (partial state may be stale)
+                        self._client.reset()
+                        self._client.on_token = on_token
+                    else:
+                        # Max retries exceeded
+                        raise
+
+            elapsed = time.monotonic() - t0
+            logger.info("ACP prompt returned in %.1fs", elapsed)
+
+            self._record_usage(response, self._session_id or "", elapsed=elapsed)
+
+            # Emit ACPToolCallEvents for each accumulated tool call
+            for tc in self._client.accumulated_tool_calls:
+                tc_event = ACPToolCallEvent(
+                    tool_call_id=tc["tool_call_id"],
+                    title=tc["title"],
+                    status=tc.get("status"),
+                    tool_kind=tc.get("tool_kind"),
+                    raw_input=tc.get("raw_input"),
+                    raw_output=tc.get("raw_output"),
+                    is_error=tc.get("status") == "failed",
+                )
+                on_event(tc_event)
+
+            # Build response message
+            response_text = "".join(self._client.accumulated_text)
+            thought_text = "".join(self._client.accumulated_thoughts)
+
+            if not response_text:
+                response_text = "(No response from ACP server)"
+
+            message = Message(
+                role="assistant",
+                content=[TextContent(text=response_text)],
+                reasoning_content=thought_text if thought_text else None,
+            )
+
+            msg_event = MessageEvent(
+                source="agent",
+                llm_message=message,
+            )
+            on_event(msg_event)
+
+            # Emit FinishAction so evaluation frameworks (SWE-bench, etc.)
+            # recognize that the agent has completed its task.  The regular
+            # Agent emits this when the LLM calls the "finish" tool; for
+            # ACPAgent each step() is a complete turn, so we always finish.
+            finish_action = FinishAction(message=response_text)
+            tc_id = str(uuid.uuid4())
+            action_event = ActionEvent(
+                source="agent",
+                thought=[],
+                action=finish_action,
+                tool_name="finish",
+                tool_call_id=tc_id,
+                tool_call=MessageToolCall(
+                    id=tc_id,
+                    name="finish",
+                    arguments=json.dumps({"message": response_text}),
+                    origin="completion",
+                ),
+                llm_response_id=str(uuid.uuid4()),
+            )
+            on_event(action_event)
+            on_event(
+                ObservationEvent(
+                    observation=FinishObservation.from_text(text=response_text),
+                    action_id=action_event.id,
+                    tool_name="finish",
+                    tool_call_id=tc_id,
+                )
+            )
+
+            state.execution_status = ConversationExecutionStatus.FINISHED
+
+        except TimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.error(
+                "ACP prompt timed out after %.1fs (limit=%.0fs). "
+                "The ACP server may have completed its work but failed to "
+                "send the JSON-RPC response. Accumulated %d text chunks, "
+                "%d tool calls.",
+                elapsed,
+                self.acp_prompt_timeout,
+                len(self._client.accumulated_text),
+                len(self._client.accumulated_tool_calls),
+            )
+            error_message = Message(
+                role="assistant",
+                content=[
+                    TextContent(
+                        text=(
+                            f"ACP prompt timed out after {elapsed:.0f}s. "
+                            "The agent may have completed its work but "
+                            "the response was not received."
+                        )
+                    )
+                ],
+            )
+            on_event(MessageEvent(source="agent", llm_message=error_message))
+            state.execution_status = ConversationExecutionStatus.ERROR
+        except Exception as e:
+            logger.error("ACP prompt failed: %s", e, exc_info=True)
+            error_str = str(e)
+
+            # Emit error as an agent message (existing behavior, preserved for
+            # consumers that inspect MessageEvents)
+            error_message = Message(
+                role="assistant",
+                content=[TextContent(text=f"ACP error: {e}")],
+            )
+            on_event(MessageEvent(source="agent", llm_message=error_message))
+
+            # Emit typed ConversationErrorEvent so RemoteConversation can
+            # report the actual error detail via _get_last_error_detail()
+            # instead of falling back to "Remote conversation ended with error"
+            is_aup = (
+                "usage policy" in error_str.lower()
+                or "content policy" in error_str.lower()
+            )
+            on_event(
+                ConversationErrorEvent(
+                    source="agent",
+                    code="UsagePolicyRefusal" if is_aup else "ACPPromptError",
+                    detail=error_str[:500],
+                )
+            )
+
+            state.execution_status = ConversationExecutionStatus.ERROR
+
+            # Re-raise so LocalConversation.run()'s outer except handler
+            # breaks the loop, emits ConversationErrorEvent, and raises
+            # ConversationRunError — matching how the regular Agent works
+            raise
+
+    def ask_agent(self, question: str) -> str | None:
+        """Fork the ACP session, prompt the fork, and return the response."""
+        if self._conn is None:
+            msg = "ACPAgent has no ACP connection; call init_state() first"
+            raise RuntimeError(msg)
+        if self._session_id is None:
+            msg = "ACPAgent has no session ID; call init_state() first"
+            raise RuntimeError(msg)
+
+        client = self._client
+
+        async def _fork_and_prompt() -> str:
+            fork_response = await self._conn.fork_session(
+                cwd=self._working_dir,
+                session_id=self._session_id,
+            )
+            fork_session_id = fork_response.session_id
+
+            client._fork_session_id = fork_session_id
+            client._fork_accumulated_text.clear()
+            try:
+                fork_t0 = time.monotonic()
+                response = await self._conn.prompt(
+                    [text_block(question)],
+                    fork_session_id,
+                )
+                await _drain_notifications()
+                fork_elapsed = time.monotonic() - fork_t0
+
+                result = "".join(client._fork_accumulated_text)
+                self._record_usage(response, fork_session_id, elapsed=fork_elapsed)
+                return result
+            finally:
+                client._fork_session_id = None
+                client._fork_accumulated_text.clear()
+
+        with client._fork_lock:
+            return self._executor.run_async(_fork_and_prompt)
+
+    def close(self) -> None:
+        """Terminate the ACP subprocess and clean up resources."""
+        if self._closed:
+            return
+        self._closed = True
+        self._cleanup()
+
+    def _cleanup(self) -> None:
+        """Internal cleanup of ACP resources."""
+        # Close the connection first
+        if self._conn is not None and self._executor is not None:
+            try:
+                self._executor.run_async(self._conn.close())
+            except Exception as e:
+                logger.debug("Error closing ACP connection: %s", e)
+            self._conn = None
+
+        # Terminate the subprocess
+        if self._process is not None:
+            try:
+                self._process.terminate()
+            except Exception as e:
+                logger.debug("Error terminating ACP process: %s", e)
+            try:
+                self._process.kill()
+            except Exception as e:
+                logger.debug("Error killing ACP process: %s", e)
+            self._process = None
+
+        if self._executor is not None:
+            try:
+                self._executor.close()
+            except Exception as e:
+                logger.debug("Error closing executor: %s", e)
+            self._executor = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
