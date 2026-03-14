@@ -1,5 +1,5 @@
 ---
-name: Agent server REST API breakage checks
+name: REST API breakage checks
 
 on:
     pull_request:
@@ -7,7 +7,7 @@ on:
 
 jobs:
     agent-server-rest-api:
-        name: Agent server REST API (OpenAPI)
+        name: REST API (OpenAPI)
         runs-on: ubuntu-latest
         permissions:
             contents: read
@@ -58,7 +58,7 @@ jobs:
                   run_url = os.environ['RUN_URL']
                   status = '✅ **PASSED**' if exit_code == 0 else '❌ **FAILED**'
 
-                  print(f'## Agent server REST API breakage checks (OpenAPI) — {status}')
+                  print(f'## REST API breakage checks (OpenAPI) — {status}')
                   print()
                   print(f"**Result:** {status}")
                   if exit_code != 0:
@@ -108,7 +108,7 @@ jobs:
                       const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
                       const status = exitCode === 0 ? '✅ **PASSED**' : '❌ **FAILED**';
 
-                      let body = `${marker}\n## Agent server REST API breakage checks (OpenAPI) — ${status}\n\n**Result:** ${status}\n`;
+                      let body = `${marker}\n## REST API breakage checks (OpenAPI) — ${status}\n\n**Result:** ${status}\n`;
 
                       if (exitCode !== 0) {
                         body += `\n> ⚠️ Breaking REST API changes or policy violations detected.\n`;
