@@ -2,6 +2,8 @@
 name: Python API breakage checks
 
 on:
+    push:
+        branches: [main]
     pull_request:
         branches: [main]
 
@@ -28,8 +30,9 @@ jobs:
               # Let this step fail so CI is visibly red on breakage.
               # Later reporting steps still run because they use if: always().
               env:
-                  ACP_VERSION_CHECK_BASE_REF: ${{ github.base_ref }}
-                  ACP_VERSION_CHECK_SKIP: ${{ contains(github.event.pull_request.body, 'skip-acp-check') }}
+                  ACP_VERSION_CHECK_BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
+                  ACP_VERSION_CHECK_SKIP: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.body || '', 'skip-acp-check') 
+                      }}
               run: |
                   uv run python .github/scripts/check_sdk_api_breakage.py 2>&1 | tee api-breakage.log
                   exit_code=${PIPESTATUS[0]}

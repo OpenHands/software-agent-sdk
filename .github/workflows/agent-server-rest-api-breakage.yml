@@ -2,6 +2,8 @@
 name: REST API breakage checks
 
 on:
+    push:
+        branches: [main]
     pull_request:
         branches: [main]
 
