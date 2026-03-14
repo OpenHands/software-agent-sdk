@@ -1,5 +1,5 @@
 ---
-name: API breakage checks
+name: Python API breakage checks
 
 on:
     pull_request:
@@ -7,7 +7,7 @@ on:
 
 jobs:
     sdk-api:
-        name: SDK programmatic API (Griffe)
+        name: Python API
         runs-on: ubuntu-latest
         permissions:
             contents: read
@@ -53,7 +53,7 @@ jobs:
                   run_url = os.environ['RUN_URL']
                   status = '✅ **PASSED**' if exit_code == 0 else '❌ **FAILED**'
 
-                  print(f'## API breakage checks (Griffe) — {status}')
+                  print(f'## Python API breakage checks — {status}')
                   print()
                   print(f"**Result:** {status}")
                   if exit_code != 0:
@@ -103,7 +103,7 @@ jobs:
                       const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
                       const status = exitCode === 0 ? '✅ **PASSED**' : '❌ **FAILED**';
 
-                      let body = `${marker}\n## API breakage checks (Griffe) — ${status}\n\n**Result:** ${status}\n`;
+                      let body = `${marker}\n## Python API breakage checks — ${status}\n\n**Result:** ${status}\n`;
 
                       if (exitCode !== 0) {
                         body += `\n> ⚠️ Breaking API changes or policy violations detected.\n`;
