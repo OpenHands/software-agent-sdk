@@ -284,7 +284,7 @@ async def generate_conversation_title(
 ) -> GenerateTitleResponse:
     """Generate a title for the conversation using LLM.
 
-    Deprecated since v1.11.5 and scheduled for removal in v1.14.0.
+    Deprecated since v1.11.5 and scheduled for removal in v1.19.0.
 
     Prefer enabling `autotitle` in `StartConversationRequest` to have the server
     generate and persist the title automatically from the first user message.
