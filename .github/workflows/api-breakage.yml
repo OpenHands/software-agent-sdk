@@ -23,12 +23,11 @@ jobs:
                   enable-cache: true
             - name: Install workspace deps (dev)
               run: uv sync --frozen --group dev
-            - name: Run SDK API breakage check
+            - name: Run Python API breakage check
               id: api_breakage
               # Let this step fail so CI is visibly red on breakage.
               # Later reporting steps still run because they use if: always().
               env:
-                  SDK_INCLUDE_PATHS: openhands.sdk
                   ACP_VERSION_CHECK_BASE_REF: ${{ github.base_ref }}
                   ACP_VERSION_CHECK_SKIP: ${{ contains(github.event.pull_request.body, 'skip-acp-check') }}
               run: |
