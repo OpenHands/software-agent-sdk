@@ -196,6 +196,73 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
         dest.feed_eof()
 
 
+def _normalize_cost_model_name(model_name: str | None) -> str | None:
+    """Normalize model names used for ACP cost estimation."""
+    if not model_name or model_name == "acp-managed":
+        return None
+
+    normalized = model_name.split(":", 1)[0]
+    if "/" in normalized:
+        normalized = normalized.split("/", 1)[1]
+    return normalized or None
+
+
+def _estimate_cost_from_tokens(
+    usage: Any,
+    *,
+    model_name: str | None = None,
+    input_cost_per_token: float | None = None,
+    output_cost_per_token: float | None = None,
+) -> float | None:
+    """Estimate cumulative USD cost from ACP token usage.
+
+    ACP servers can omit ``UsageUpdate.cost`` while still returning cumulative
+    token counts on ``PromptResponse.usage``. In that case we estimate cost from
+    the token totals and later reconcile against real cost if it arrives.
+    """
+    prompt_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    cache_read_tokens = int(getattr(usage, "cached_read_tokens", 0) or 0)
+    cache_write_tokens = int(getattr(usage, "cached_write_tokens", 0) or 0)
+
+    if not any(
+        (
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
+    ):
+        return None
+
+    if input_cost_per_token is not None and output_cost_per_token is not None:
+        return (
+            prompt_tokens * input_cost_per_token
+            + completion_tokens * output_cost_per_token
+        )
+
+    normalized_model = _normalize_cost_model_name(model_name)
+    if normalized_model is None:
+        return None
+
+    try:
+        import litellm  # noqa: PLC0415
+
+        info = litellm.model_cost.get(normalized_model)
+        if info is None:
+            return None
+
+        return (
+            prompt_tokens * info.get("input_cost_per_token", 0)
+            + completion_tokens * info.get("output_cost_per_token", 0)
+            + cache_read_tokens * info.get("cache_read_input_token_cost", 0)
+            + cache_write_tokens * info.get("cache_creation_input_token_cost", 0)
+        )
+    except Exception:
+        logger.debug("ACP cost estimation failed", exc_info=True)
+        return None
+
+
 class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
@@ -209,6 +276,7 @@ class _OpenHandsACPBridge:
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
+        self._last_estimated_cost: float = 0.0  # last cumulative estimated cost
         self._context_window: int = 0  # context window size from ACP
         self._llm_ref: Any = None  # reference to the sentinel LLM
         # Fork session state for ask_agent() — guarded by _fork_lock to
@@ -222,7 +290,8 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
         self.on_token = None
-        # Note: telemetry state (_last_cost, _context_window, etc.)
+        # Note: telemetry state (_last_cost, _last_estimated_cost,
+        # _context_window, etc.)
         # is intentionally NOT cleared — it accumulates across turns.
 
     # -- Client protocol methods ------------------------------------------
@@ -259,10 +328,24 @@ class _OpenHandsACPBridge:
             self._context_window = update.size
             # Record incremental cost
             if update.cost is not None and self._llm_ref is not None:
-                delta = update.cost.amount - self._last_cost
+                baseline = max(self._last_cost, self._last_estimated_cost)
+                delta = update.cost.amount - baseline
                 if delta > 0:
                     self._llm_ref.metrics.add_cost(delta)
+                    callback = self._llm_ref.telemetry._stats_update_callback
+                    if callback is not None:
+                        try:
+                            callback()
+                        except Exception:
+                            logger.debug(
+                                "ACP UsageUpdate stats callback failed",
+                                exc_info=True,
+                            )
                 self._last_cost = update.cost.amount
+                self._last_estimated_cost = max(
+                    self._last_estimated_cost,
+                    update.cost.amount,
+                )
         elif isinstance(update, ToolCallStart):
             self.accumulated_tool_calls.append(
                 {
@@ -471,6 +554,21 @@ class ACPAgent(AgentBase):
                 context_window=self._client._context_window,
                 response_id=session_id,
             )
+
+            estimated_cost = _estimate_cost_from_tokens(
+                usage,
+                model_name=self.acp_model or os.environ.get("LLM_MODEL"),
+                input_cost_per_token=self.llm.input_cost_per_token,
+                output_cost_per_token=self.llm.output_cost_per_token,
+            )
+            if (
+                estimated_cost is not None
+                and self._client._llm_ref is not None
+                and estimated_cost > self._client._last_estimated_cost
+            ):
+                delta = estimated_cost - self._client._last_estimated_cost
+                self._client._llm_ref.metrics.add_cost(delta)
+                self._client._last_estimated_cost = estimated_cost
 
         if elapsed is not None:
             self.llm.metrics.add_response_latency(elapsed, session_id)

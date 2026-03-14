@@ -726,6 +726,28 @@ class TestACPAgentTelemetry:
         assert client._last_cost == 0.12
 
     @pytest.mark.asyncio
+    async def test_usage_update_invokes_stats_callback(self):
+        """UsageUpdate cost changes notify stats listeners immediately."""
+        from acp.schema import UsageUpdate
+
+        from openhands.sdk.llm import LLM
+
+        client = _OpenHandsACPBridge()
+        llm = LLM(model="acp-managed")
+        callback = MagicMock()
+        llm.telemetry._stats_update_callback = callback
+        client._llm_ref = llm
+
+        update = MagicMock(spec=UsageUpdate)
+        update.size = 128000
+        update.cost = MagicMock()
+        update.cost.amount = 0.05
+
+        await client.session_update("sess-1", update)
+
+        callback.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_usage_update_updates_context_window(self):
         """UsageUpdate.size updates the client's _context_window."""
         from acp.schema import UsageUpdate
@@ -769,6 +791,99 @@ class TestACPAgentTelemetry:
 
         callback.assert_called_once()
 
+    def test_step_estimates_cost_from_usage_with_acp_model(self, tmp_path, monkeypatch):
+        """PromptResponse.usage still yields cost when ACP omits UsageUpdate.cost."""
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+
+        agent = _make_agent(acp_model="claude-sonnet-4-5-20250929")
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client._context_window = 200000
+        mock_client._llm_ref = agent.llm
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 1000
+        mock_usage.output_tokens = 500
+        mock_usage.cached_read_tokens = 100
+        mock_usage.cached_write_tokens = 50
+        mock_usage.thought_tokens = 0
+
+        mock_response = MagicMock()
+        mock_response.usage = mock_usage
+
+        def _fake_run_async(_coro, **_kwargs):
+            mock_client.accumulated_text.append("response text")
+            return mock_response
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert agent.llm.metrics.accumulated_cost > 0
+        assert mock_client._last_estimated_cost == pytest.approx(
+            agent.llm.metrics.accumulated_cost
+        )
+
+    @pytest.mark.asyncio
+    async def test_usage_update_reconciles_with_estimated_cost(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Real UsageUpdate cost should add only the missing delta after fallback."""
+        from acp.schema import UsageUpdate
+
+        monkeypatch.setenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client._context_window = 200000
+        mock_client._llm_ref = agent.llm
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 1000
+        mock_usage.output_tokens = 500
+        mock_usage.cached_read_tokens = 100
+        mock_usage.cached_write_tokens = 50
+        mock_usage.thought_tokens = 0
+
+        mock_response = MagicMock()
+        mock_response.usage = mock_usage
+
+        def _fake_run_async(_coro, **_kwargs):
+            mock_client.accumulated_text.append("response text")
+            return mock_response
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+        estimated_cost = agent.llm.metrics.accumulated_cost
+        assert estimated_cost > 0
+
+        update = MagicMock(spec=UsageUpdate)
+        update.size = 200000
+        update.cost = MagicMock()
+        update.cost.amount = estimated_cost + 0.05
+
+        await mock_client.session_update("test-session", update)
+
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(update.cost.amount)
+        assert mock_client._last_cost == pytest.approx(update.cost.amount)
+        assert mock_client._last_estimated_cost == pytest.approx(update.cost.amount)
+
     def test_start_acp_server_wires_llm_ref(self, tmp_path):
         """_start_acp_server wires _llm_ref on the client."""
         agent = _make_agent()
@@ -792,6 +907,7 @@ class TestACPAgentTelemetry:
         """reset() clears text/thoughts but preserves telemetry state."""
         client = _OpenHandsACPBridge()
         client._last_cost = 1.23
+        client._last_estimated_cost = 1.20
         client._context_window = 128000
         client._llm_ref = MagicMock()
         client.accumulated_text.append("hello")
@@ -802,6 +918,7 @@ class TestACPAgentTelemetry:
         assert client.accumulated_text == []
         assert client.accumulated_thoughts == []
         assert client._last_cost == 1.23
+        assert client._last_estimated_cost == 1.20
         assert client._context_window == 128000
         assert client._llm_ref is not None
 
