@@ -102,7 +102,9 @@ When reviewing code, provide constructive feedback:
 </ROLE>
 
 ## Package-specific guidance
-When working inside a package or domain, read the closest AGENTS file.
+When reviewing or modifying code, read the closest AGENTS file for the
+package(s) containing the changed files. If a PR spans multiple packages,
+consult each relevant package-level AGENTS.md.
 
 - SDK: [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md)
 - Subagents: [openhands-sdk/openhands/sdk/subagent/AGENTS.md](openhands-sdk/openhands/sdk/subagent/AGENTS.md)
@@ -111,15 +113,17 @@ When working inside a package or domain, read the closest AGENTS file.
 - Agent server: [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md)
 - Eval config: [.github/run-eval/AGENTS.md](.github/run-eval/AGENTS.md)
 
-## Public REST API compatibility
+## API compatibility pointers
 
-For public REST APIs in this repository, all REST contract breaks need a
-deprecation notice and a runway of **5 minor releases** before removing the
-old contract or making an incompatible replacement mandatory.
-
-Prefer additive changes, parallel fields, or versioned endpoints/contracts during
-that runway. If a breaking REST API change still ships, it requires at least a
-**MINOR** SemVer bump.
+- For public REST APIs, read
+  [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
+  REST contract breaks need a deprecation notice and a runway of
+  **5 minor releases** before removing the old contract or making an
+  incompatible replacement mandatory.
+- For SDK Python API deprecation/removal policy, read
+  [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
+  Public API removals require deprecation before removal, and breaking SDK API
+  changes require at least a **MINOR** SemVer bump.
 
 <DEV_SETUP>
 - Make sure you `make build` to configure the dependencies first
