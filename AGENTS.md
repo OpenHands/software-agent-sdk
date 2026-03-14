@@ -115,15 +115,15 @@ consult each relevant package-level AGENTS.md.
 
 ## API compatibility pointers
 
+- For SDK Python API deprecation/removal policy, read
+  [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
+  Public API removals require deprecation before removal, and breaking SDK API
+  changes require at least a **MINOR** SemVer bump.
 - For public REST APIs, read
   [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
   REST contract breaks need a deprecation notice and a runway of
   **5 minor releases** before removing the old contract or making an
   incompatible replacement mandatory.
-- For SDK Python API deprecation/removal policy, read
-  [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
-  Public API removals require deprecation before removal, and breaking SDK API
-  changes require at least a **MINOR** SemVer bump.
 
 <DEV_SETUP>
 - Make sure you `make build` to configure the dependencies first
