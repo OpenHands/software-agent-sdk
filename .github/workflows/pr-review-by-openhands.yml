@@ -3,7 +3,7 @@ name: PR Review by OpenHands
 
 on:
     # Use pull_request so workflow changes can be validated in PRs.
-    # This workflow requires secrets, so the job explicitly skips fork PRs.
+    # This workflow requires secrets, so the job only runs for same-repo PRs.
     # It runs when:
     #   1. A new PR is opened (non-draft), OR
     #   2. A draft PR is marked as ready for review, OR
@@ -27,7 +27,7 @@ jobs:
         #   4. openhands-agent or all-hands-bot is requested as a reviewer
         # Note: FIRST_TIME_CONTRIBUTOR and NONE PRs require manual trigger via label/reviewer request.
         if: |
-            github.event.pull_request.head.repo.fork == false && (
+            github.event.pull_request.head.repo.full_name == github.repository && (
                 (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 github.event.label.name == 'review-this' ||
