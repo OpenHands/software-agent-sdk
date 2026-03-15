@@ -70,7 +70,7 @@ def test_nonexistent_tool_returns_error_and_continues_conversation():
     conversation = Conversation(agent=agent, callbacks=[event_callback])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         # Send a message to start the conversation
         conversation.send_message(
@@ -160,7 +160,7 @@ def test_nonexistent_tool_error_includes_available_tools():
     conversation = Conversation(agent=agent, callbacks=[event_callback])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         conversation.send_message(
             Message(
@@ -271,7 +271,7 @@ def test_conversation_continues_after_tool_error():
     conversation = Conversation(agent=agent, callbacks=[event_callback])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         conversation.send_message(
             Message(

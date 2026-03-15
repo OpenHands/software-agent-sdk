@@ -116,7 +116,7 @@ def test_normalize_responses_kwargs_encrypted_reasoning_disabled():
     assert "text.output_text" in out["include"]
 
 
-@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses")
 def test_llm_responses_end_to_end(mock_responses_call):
     # Configure LLM
     llm = LLM(model="gpt-5-mini")

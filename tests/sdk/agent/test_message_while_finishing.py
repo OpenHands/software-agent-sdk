@@ -335,7 +335,7 @@ class TestMessageWhileFinishing:
         print(f"{elapsed_time()} Test started")
 
         with patch(
-            "openhands.sdk.llm.llm.litellm_completion",
+            "openhands.sdk.llm.llm.litellm_acompletion",
             side_effect=self._mock_llm_response,
         ):
             # Start the conversation with a natural request

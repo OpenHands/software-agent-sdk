@@ -306,7 +306,7 @@ def test_security_risk_param_ignored_when_no_analyzer():
     # Mock LLM response that includes security_risk=HIGH even though
     # llm_security_analyzer=False (the LLM might do this if it's well-trained)
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion",
+        "openhands.sdk.llm.llm.litellm_acompletion",
         return_value=_tool_response(
             "think",
             '{"thought": "This is a test thought", "security_risk": "HIGH"}',

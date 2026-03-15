@@ -128,3 +128,17 @@ class UserCancelledError(Exception):
 class OperationCancelled(Exception):
     def __init__(self, message: str = "Operation was cancelled") -> None:
         super().__init__(message)
+
+
+class LLMCancelledError(Exception):
+    """Raised when an LLM call is cancelled by user interrupt.
+
+    This exception is raised when `LLM.cancel()` is called during an in-flight
+    LLM request. For streaming calls, cancellation happens immediately at the
+    next chunk boundary. For non-streaming calls, cancellation stops the async
+    task and closes the HTTP connection.
+    """
+
+    def __init__(self, message: str = "LLM call was cancelled") -> None:
+        super().__init__(message)
+        self.message = message
