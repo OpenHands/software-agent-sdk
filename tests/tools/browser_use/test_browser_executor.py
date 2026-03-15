@@ -1,5 +1,6 @@
 """Tests for BrowserToolExecutor integration logic."""
 
+import builtins
 from unittest.mock import AsyncMock, patch
 
 from openhands.tools.browser_use.definition import (
@@ -8,7 +9,10 @@ from openhands.tools.browser_use.definition import (
     BrowserNavigateAction,
     BrowserObservation,
 )
-from openhands.tools.browser_use.impl import BrowserToolExecutor
+from openhands.tools.browser_use.impl import (
+    DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS,
+    BrowserToolExecutor,
+)
 
 from .conftest import (
     assert_browser_observation_error,
@@ -121,6 +125,23 @@ def test_browser_executor_async_execution(mock_browser_executor):
 
         assert result is expected_result
         mock_execute.assert_called_once_with(action)
+
+
+def test_browser_executor_timeout_wrapping(mock_browser_executor):
+    """Test that browser action timeouts return BrowserObservation errors."""
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        side_effect=builtins.TimeoutError(),
+    ):
+        action = BrowserNavigateAction(url="https://example.com")
+        result = mock_browser_executor(action)
+
+    assert_browser_observation_error(result, "Browser operation failed")
+    assert (
+        f"timed out after {int(DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS)} seconds"
+        in result.text
+    )
 
 
 async def test_browser_executor_initialization_lazy(mock_browser_executor):
