@@ -533,8 +533,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Metrics object containing token usage, costs, and other statistics.
 
         Example:
-            >>> cost = llm.metrics.accumulated_cost
-            >>> print(f"Total cost: ${cost}")
+            ```python
+            cost = llm.metrics.accumulated_cost
+            print(f"Total cost: ${cost}")
+            ```
         """
         if self._metrics is None:
             self._metrics = Metrics(model_name=self.model)
@@ -548,7 +550,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Telemetry object for managing logging and metrics callbacks.
 
         Example:
-            >>> llm.telemetry.set_log_completions_callback(my_callback)
+            ```python
+            llm.telemetry.set_log_completions_callback(my_callback)
+            ```
         """
         if self._telemetry is None:
             self._telemetry = Telemetry(
@@ -1468,11 +1472,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             RuntimeError: If authentication fails.
 
         Example:
-            >>> from openhands.sdk import LLM
-            >>> # First time: opens browser for OAuth login
-            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
-            >>> # Subsequent calls: reuses cached credentials
-            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            ```python
+            from openhands.sdk import LLM
+
+            # First time: opens browser for OAuth login
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+
+            # Subsequent calls: reuses cached credentials
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            ```
         """
         from openhands.sdk.llm.auth.openai import subscription_login
 
