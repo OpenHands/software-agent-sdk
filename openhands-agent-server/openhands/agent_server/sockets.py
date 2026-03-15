@@ -10,7 +10,7 @@ clients (e.g. Python/Node), we also support authenticating via headers.
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -93,17 +93,34 @@ async def events_socket(
     conversation_id: UUID,
     websocket: WebSocket,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
-    resend_all: Annotated[bool, Query()] = False,
+    resend_mode: Annotated[
+        Literal["all", "since"] | None,
+        Query(
+            description=(
+                "Mode for resending historical events on connect. "
+                "'all' sends all events, 'since' sends events after 'after_timestamp'."
+            )
+        ),
+    ] = None,
     after_timestamp: Annotated[
         datetime | None,
         Query(
             description=(
-                "Filter events to timestamps >= this value when resend_all=True. "
-                "Accepts ISO 8601 format. Timezone-aware datetimes are converted "
-                "to server local time; naive datetimes assumed in server timezone."
+                "Required when resend_mode='since'. Events with timestamp >= this "
+                "value will be sent. Accepts ISO 8601 format. Timezone-aware "
+                "datetimes are converted to server local time; naive datetimes "
+                "assumed in server timezone."
             )
         ),
     ] = None,
+    # Deprecated parameter - kept for backward compatibility
+    resend_all: Annotated[
+        bool,
+        Query(
+            include_in_schema=False,
+            deprecated=True,
+        ),
+    ] = False,
 ):
     """WebSocket endpoint for conversation events.
 
@@ -111,12 +128,17 @@ async def events_socket(
         conversation_id: The conversation ID to subscribe to.
         websocket: The WebSocket connection.
         session_api_key: Optional API key for authentication.
-        resend_all: If True, resend all existing events when connecting.
-        after_timestamp: If provided with resend_all=True, only resend events
-            with timestamps >= this value. Timestamps are interpreted in server
-            local time. Timezone-aware datetimes are converted to server timezone.
-            Enables efficient bi-directional loading where REST fetches historical
-            events and WebSocket handles events after a specific point in time.
+        resend_mode: Mode for resending historical events on connect.
+            - 'all': Resend all existing events
+            - 'since': Resend events after 'after_timestamp' (requires after_timestamp)
+            - None: Don't resend, just subscribe to new events
+        after_timestamp: Required when resend_mode='since'. Events with
+            timestamp >= this value will be sent. Timestamps are interpreted in
+            server local time. Timezone-aware datetimes are converted to server
+            timezone. Enables efficient bi-directional loading where REST fetches
+            historical events and WebSocket handles events after a specific point.
+        resend_all: DEPRECATED. Use resend_mode='all' instead. Kept for backward
+            compatibility - if True and resend_mode is None, behaves as resend_mode='all'.
     """
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
@@ -132,6 +154,15 @@ async def events_socket(
         _WebSocketSubscriber(websocket)
     )
 
+    # Determine effective resend mode (handle deprecated resend_all)
+    effective_mode = resend_mode
+    if effective_mode is None and resend_all:
+        logger.warning(
+            "resend_all is deprecated, use resend_mode='all' instead: "
+            f"{conversation_id}"
+        )
+        effective_mode = "all"
+
     # Normalize timezone-aware datetimes to server timezone
     normalized_after_timestamp = (
         normalize_datetime_to_server_timezone(after_timestamp)
@@ -139,27 +170,28 @@ async def events_socket(
         else None
     )
 
-    # Warn if after_timestamp is provided without resend_all
-    if after_timestamp and not resend_all:
-        logger.warning(
-            f"after_timestamp provided without resend_all=True, "
-            f"will be ignored: {conversation_id}"
-        )
-
     try:
-        # Resend existing events if requested
-        if resend_all:
-            if normalized_after_timestamp:
-                logger.info(
-                    f"Resending events after {normalized_after_timestamp}: "
-                    f"{conversation_id}"
+        # Resend existing events based on mode
+        if effective_mode == "all":
+            logger.info(f"Resending all events: {conversation_id}")
+            async for event in page_iterator(event_service.search_events):
+                await _send_event(event, websocket)
+        elif effective_mode == "since":
+            if not normalized_after_timestamp:
+                logger.warning(
+                    f"resend_mode='since' requires after_timestamp, "
+                    f"no events will be resent: {conversation_id}"
                 )
             else:
-                logger.info(f"Resending all events: {conversation_id}")
-            async for event in page_iterator(
-                event_service.search_events, timestamp__gte=normalized_after_timestamp
-            ):
-                await _send_event(event, websocket)
+                logger.info(
+                    f"Resending events since {normalized_after_timestamp}: "
+                    f"{conversation_id}"
+                )
+                async for event in page_iterator(
+                    event_service.search_events,
+                    timestamp__gte=normalized_after_timestamp,
+                ):
+                    await _send_event(event, websocket)
 
         # Listen for messages over the socket
         while True:
@@ -186,9 +218,31 @@ async def events_socket(
 async def bash_events_socket(
     websocket: WebSocket,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
-    resend_all: Annotated[bool, Query()] = False,
+    resend_mode: Annotated[
+        Literal["all"] | None,
+        Query(
+            description="Mode for resending historical events on connect. 'all' sends all events."
+        ),
+    ] = None,
+    # Deprecated parameter - kept for backward compatibility
+    resend_all: Annotated[
+        bool,
+        Query(
+            include_in_schema=False,
+            deprecated=True,
+        ),
+    ] = False,
 ):
-    """WebSocket endpoint for bash events."""
+    """WebSocket endpoint for bash events.
+
+    Args:
+        websocket: The WebSocket connection.
+        session_api_key: Optional API key for authentication.
+        resend_mode: Mode for resending historical events on connect.
+            - 'all': Resend all existing bash events
+            - None: Don't resend, just subscribe to new events
+        resend_all: DEPRECATED. Use resend_mode='all' instead.
+    """
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
@@ -196,9 +250,16 @@ async def bash_events_socket(
     subscriber_id = await bash_event_service.subscribe_to_events(
         _BashWebSocketSubscriber(websocket)
     )
+
+    # Determine effective resend mode (handle deprecated resend_all)
+    effective_mode = resend_mode
+    if effective_mode is None and resend_all:
+        logger.warning("resend_all is deprecated, use resend_mode='all' instead")
+        effective_mode = "all"
+
     try:
         # Resend all existing events if requested
-        if resend_all:
+        if effective_mode == "all":
             logger.info("Resending bash events")
             async for event in page_iterator(bash_event_service.search_bash_events):
                 await _send_bash_event(event, websocket)

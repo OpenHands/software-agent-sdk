@@ -233,10 +233,10 @@ async def test_websocket_unsubscribe_in_finally_when_no_disconnect(
 
 
 @pytest.mark.asyncio
-async def test_resend_all_false_no_resend(
+async def test_resend_mode_none_no_resend(
     mock_websocket, mock_event_service, sample_conversation_id
 ):
-    """Test that resend_all=False doesn't trigger event resend."""
+    """Test that resend_mode=None doesn't trigger event resend."""
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
     with (
@@ -254,17 +254,17 @@ async def test_resend_all_false_no_resend(
             sample_conversation_id,
             mock_websocket,
             session_api_key=None,
-            resend_all=False,
+            resend_mode=None,
         )
 
     mock_event_service.search_events.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_resend_all_true_resends_events(
+async def test_resend_mode_all_resends_events(
     mock_websocket, mock_event_service, sample_conversation_id
 ):
-    """Test that resend_all=True resends all existing events."""
+    """Test that resend_mode='all' resends all existing events."""
     mock_events = [
         MessageEvent(
             id="event1",
@@ -296,12 +296,10 @@ async def test_resend_all_true_resends_events(
             sample_conversation_id,
             mock_websocket,
             session_api_key=None,
-            resend_all=True,
+            resend_mode="all",
         )
 
-    mock_event_service.search_events.assert_called_once_with(
-        page_id=None, timestamp__gte=None
-    )
+    mock_event_service.search_events.assert_called_once_with(page_id=None)
     assert mock_websocket.send_json.call_count == 2
     sent_events = [call[0][0] for call in mock_websocket.send_json.call_args_list]
     assert sent_events[0]["id"] == "event1"
@@ -309,10 +307,10 @@ async def test_resend_all_true_resends_events(
 
 
 @pytest.mark.asyncio
-async def test_after_timestamp_passed_to_search_events(
+async def test_resend_mode_since_with_timestamp(
     mock_websocket, mock_event_service, sample_conversation_id
 ):
-    """Test that after_timestamp is normalized and passed to search_events."""
+    """Test that resend_mode='since' with after_timestamp filters events."""
     mock_events = [
         MessageEvent(
             id="event1",
@@ -324,7 +322,7 @@ async def test_after_timestamp_passed_to_search_events(
     mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
     mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
-    # Use a naive timestamp (as would typically come from REST API response)
+    # Use a naive timestamp
     test_timestamp = datetime(2024, 1, 15, 10, 30, 0)
 
     with (
@@ -342,7 +340,7 @@ async def test_after_timestamp_passed_to_search_events(
             sample_conversation_id,
             mock_websocket,
             session_api_key=None,
-            resend_all=True,
+            resend_mode="since",
             after_timestamp=test_timestamp,
         )
 
@@ -352,7 +350,41 @@ async def test_after_timestamp_passed_to_search_events(
 
 
 @pytest.mark.asyncio
-async def test_after_timestamp_timezone_aware_is_normalized(
+async def test_resend_mode_since_without_timestamp_logs_warning(
+    mock_websocket, mock_event_service, sample_conversation_id
+):
+    """Test that resend_mode='since' without after_timestamp logs warning."""
+    mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.conversation_service"
+        ) as mock_conv_service,
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.logger") as mock_logger,
+    ):
+        mock_config.return_value.session_api_keys = None
+        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+
+        from openhands.agent_server.sockets import events_socket
+
+        await events_socket(
+            sample_conversation_id,
+            mock_websocket,
+            session_api_key=None,
+            resend_mode="since",
+            after_timestamp=None,
+        )
+
+    # Should log a warning and not call search_events
+    mock_logger.warning.assert_called()
+    warning_call = str(mock_logger.warning.call_args)
+    assert "resend_mode='since' requires after_timestamp" in warning_call
+    mock_event_service.search_events.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resend_mode_since_timezone_aware_is_normalized(
     mock_websocket, mock_event_service, sample_conversation_id
 ):
     """Test that timezone-aware timestamps are normalized to naive server time."""
@@ -385,7 +417,7 @@ async def test_after_timestamp_timezone_aware_is_normalized(
             sample_conversation_id,
             mock_websocket,
             session_api_key=None,
-            resend_all=True,
+            resend_mode="since",
             after_timestamp=test_timestamp,
         )
 
@@ -399,3 +431,130 @@ async def test_after_timestamp_timezone_aware_is_normalized(
     # It should represent the same instant in time (converted to local)
     expected = test_timestamp.astimezone(None).replace(tzinfo=None)
     assert passed_timestamp == expected
+
+
+# Backward compatibility tests for deprecated resend_all parameter
+
+
+@pytest.mark.asyncio
+async def test_deprecated_resend_all_true_still_works(
+    mock_websocket, mock_event_service, sample_conversation_id
+):
+    """Test backward compatibility: resend_all=True still resends all events."""
+    mock_events = [
+        MessageEvent(
+            id="event1",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+        ),
+    ]
+    mock_event_page = EventPage(items=cast(list[Event], mock_events), next_page_id=None)
+    mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
+    mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.conversation_service"
+        ) as mock_conv_service,
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.logger") as mock_logger,
+    ):
+        mock_config.return_value.session_api_keys = None
+        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+
+        from openhands.agent_server.sockets import events_socket
+
+        await events_socket(
+            sample_conversation_id,
+            mock_websocket,
+            session_api_key=None,
+            resend_all=True,
+        )
+
+    # Should log deprecation warning
+    mock_logger.warning.assert_called()
+    warning_call = str(mock_logger.warning.call_args)
+    assert "resend_all is deprecated" in warning_call
+
+    # But still function correctly
+    mock_event_service.search_events.assert_called_once_with(page_id=None)
+    assert mock_websocket.send_json.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_deprecated_resend_all_false_no_resend(
+    mock_websocket, mock_event_service, sample_conversation_id
+):
+    """Test backward compatibility: resend_all=False doesn't trigger event resend."""
+    mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.conversation_service"
+        ) as mock_conv_service,
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+    ):
+        mock_config.return_value.session_api_keys = None
+        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+
+        from openhands.agent_server.sockets import events_socket
+
+        await events_socket(
+            sample_conversation_id,
+            mock_websocket,
+            session_api_key=None,
+            resend_all=False,
+        )
+
+    mock_event_service.search_events.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resend_mode_takes_precedence_over_resend_all(
+    mock_websocket, mock_event_service, sample_conversation_id
+):
+    """Test that resend_mode takes precedence over deprecated resend_all."""
+    mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+
+    with (
+        patch(
+            "openhands.agent_server.sockets.conversation_service"
+        ) as mock_conv_service,
+        patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.logger") as mock_logger,
+    ):
+        mock_config.return_value.session_api_keys = None
+        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
+
+        from openhands.agent_server.sockets import events_socket
+
+        # resend_mode=None should be treated as "no resend", even if resend_all=True
+        # Actually, per the logic: if resend_mode is explicitly None and resend_all=True,
+        # it should fallback to resend_all behavior for backward compat.
+        # But if resend_mode is set, it takes precedence.
+        # Let's test with resend_mode="all" and resend_all=False
+        mock_events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+            ),
+        ]
+        mock_event_page = EventPage(
+            items=cast(list[Event], mock_events), next_page_id=None
+        )
+        mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
+
+        await events_socket(
+            sample_conversation_id,
+            mock_websocket,
+            session_api_key=None,
+            resend_mode="all",
+            resend_all=False,  # This should be ignored since resend_mode is set
+        )
+
+    # resend_mode="all" should trigger resend, not the resend_all=False
+    mock_event_service.search_events.assert_called_once()
+    # No deprecation warning since we're using the new API
+    warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+    assert not any("resend_all is deprecated" in w for w in warning_calls)
