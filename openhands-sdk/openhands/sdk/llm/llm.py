@@ -134,18 +134,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     The LLM class provides a unified interface for interacting with various
     language models through the litellm library. It handles model configuration,
-    API authentication,
-    retry logic, and tool calling capabilities.
+    API authentication, retry logic, and tool calling capabilities.
+
+    Attributes:
+        model: Model name (e.g., "claude-sonnet-4-20250514").
+        api_key: API key for authentication.
+        base_url: Custom API base URL.
+        num_retries: Number of retry attempts for failed requests.
+        timeout: Request timeout in seconds.
 
     Example:
-        >>> from openhands.sdk import LLM
-        >>> from pydantic import SecretStr
-        >>> llm = LLM(
-        ...     model="claude-sonnet-4-20250514",
-        ...     api_key=SecretStr("your-api-key"),
-        ...     usage_id="my-agent"
-        ... )
-        >>> # Use with agent or conversation
+        ```python
+        from openhands.sdk import LLM
+        from pydantic import SecretStr
+
+        llm = LLM(
+            model="claude-sonnet-4-20250514",
+            api_key=SecretStr("your-api-key"),
+            usage_id="my-agent"
+        )
+        # Use with agent or conversation
+        ```
     """
 
     # =========================================================================
@@ -626,12 +635,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         It handles message formatting, tool calling, and response processing.
 
         Args:
-            messages: List of conversation messages
-            tools: Optional list of tools available to the model
-            _return_metrics: Whether to return usage metrics
-            add_security_risk_prediction: Add security_risk field to tool schemas
-            on_token: Optional callback for streaming tokens
-            **kwargs: Additional arguments passed to the LLM API
+            messages: List of conversation messages.
+            tools: Optional list of tools available to the model.
+            _return_metrics: Whether to return usage metrics.
+            add_security_risk_prediction: Add security_risk field to tool schemas.
+            on_token: Optional callback for streaming tokens.
+            **kwargs: Additional arguments passed to the LLM API.
 
         Returns:
             LLMResponse containing the model's response and metadata.
@@ -644,10 +653,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             ValueError: If streaming is requested (not supported).
 
         Example:
-            >>> from openhands.sdk.llm import Message, TextContent
-            >>> messages = [Message(role="user", content=[TextContent(text="Hello")])]
-            >>> response = llm.completion(messages)
-            >>> print(response.content)
+            ```python
+            from openhands.sdk.llm import Message, TextContent
+
+            messages = [Message(role="user", content=[TextContent(text="Hello")])]
+            response = llm.completion(messages)
+            print(response.content)
+            ```
         """
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
