@@ -116,3 +116,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    print("EXAMPLE_COST: 0")

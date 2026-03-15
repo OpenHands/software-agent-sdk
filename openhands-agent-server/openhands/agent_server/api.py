@@ -2,6 +2,7 @@ import asyncio
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -37,6 +38,9 @@ from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
+from openhands.sdk.agent import (
+    ACPAgent,  # noqa: F401  — register in DiscriminatedUnionMixin
+)
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -139,7 +143,15 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
 
-def _create_fastapi_instance() -> FastAPI:
+def _get_root_path(config: Config) -> str:
+    root_path = ""
+    if config.web_url:
+        web_url = urlparse(config.web_url)
+        root_path = web_url.path.rstrip("/")
+    return root_path
+
+
+def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
@@ -151,6 +163,7 @@ def _create_fastapi_instance() -> FastAPI:
             "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
         ),
         lifespan=api_lifespan,
+        root_path=_get_root_path(config),
     )
 
 
@@ -343,7 +356,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     """
     if config is None:
         config = get_default_config()
-    app = _create_fastapi_instance()
+    app = _create_fastapi_instance(config)
     app.state.config = config
 
     _add_api_routes(app, config)
