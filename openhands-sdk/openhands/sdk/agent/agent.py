@@ -223,6 +223,7 @@ class Agent(CriticMixin, AgentBase):
         # Get secret infos from conversation's secret_registry
         secret_infos = state.secret_registry.get_secret_infos()
 
+        base_context = None
         if not self.agent_context:
             # No agent_context but we might have secrets from registry
             if secret_infos:
@@ -230,18 +231,28 @@ class Agent(CriticMixin, AgentBase):
 
                 # Create a minimal context just for secrets
                 temp_context = AgentContext()
-                return temp_context.get_system_message_suffix(
+                base_context = temp_context.get_system_message_suffix(
                     llm_model=self.llm.model,
                     llm_model_canonical=self.llm.model_canonical_name,
                     additional_secret_infos=secret_infos,
                 )
-            return None
+        else:
+            base_context = self.agent_context.get_system_message_suffix(
+                llm_model=self.llm.model,
+                llm_model_canonical=self.llm.model_canonical_name,
+                additional_secret_infos=secret_infos,
+            )
 
-        return self.agent_context.get_system_message_suffix(
-            llm_model=self.llm.model,
-            llm_model_canonical=self.llm.model_canonical_name,
-            additional_secret_infos=secret_infos,
+        # Add budget information to the dynamic context (Option A)
+        budget_info = (
+            f"\n\nYou have a budget of {state.max_iterations} steps for this task. "
+            "Plan your approach to complete the task within this budget."
         )
+
+        if base_context:
+            return base_context + budget_info
+        else:
+            return budget_info
 
     def _execute_actions(
         self,

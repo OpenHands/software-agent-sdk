@@ -51,6 +51,9 @@ class ConversationExecutionStatus(str, Enum):
     FINISHED = "finished"  # Conversation has completed the current task
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
+    MAX_ITERATIONS_REACHED = (
+        "max_iterations_reached"  # Conversation reached maximum iteration limit
+    )
     DELETING = "deleting"  # Conversation is in the process of being deleted
 
     def is_terminal(self) -> bool:
@@ -70,6 +73,7 @@ class ConversationExecutionStatus(str, Enum):
             ConversationExecutionStatus.FINISHED,
             ConversationExecutionStatus.ERROR,
             ConversationExecutionStatus.STUCK,
+            ConversationExecutionStatus.MAX_ITERATIONS_REACHED,
         )
 
 
