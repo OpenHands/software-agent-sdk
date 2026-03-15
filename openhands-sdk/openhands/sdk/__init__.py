@@ -39,6 +39,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
     TokenCallbackType,
+    TokenUsage,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import (
@@ -64,7 +65,9 @@ from openhands.sdk.tool import (
     register_tool,
     resolve_tool,
 )
+from openhands.sdk.utils import page_iterator
 from openhands.sdk.workspace import (
+    AsyncRemoteWorkspace,
     LocalWorkspace,
     RemoteWorkspace,
     Workspace,
@@ -86,6 +89,7 @@ __all__ = [
     "LLMStreamChunk",
     "FallbackStrategy",
     "TokenCallbackType",
+    "TokenUsage",
     "ConversationStats",
     "RegistryEvent",
     "Message",
@@ -125,6 +129,7 @@ __all__ = [
     "Workspace",
     "LocalWorkspace",
     "RemoteWorkspace",
+    "AsyncRemoteWorkspace",
     "register_agent",
     "load_project_agents",
     "load_user_agents",
@@ -133,5 +138,6 @@ __all__ = [
     "load_project_skills",
     "load_skills_from_dir",
     "load_user_skills",
+    "page_iterator",
     "__version__",
 ]
