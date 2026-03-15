@@ -229,7 +229,7 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
         and config.static_files_path.is_dir()
     ):
         # Map the root path to server info if there are no static files
-        app.get("/")(get_server_info)
+        app.get("/", tags=["Server Details"])(get_server_info)
         return
 
     # Mount static files directory
