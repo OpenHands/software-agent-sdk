@@ -22,4 +22,4 @@ jobs:
                   python-version: '3.13'
 
             - name: Check docstring formatting
-              run: python scripts/check_docstrings.py
+              run: python .github/scripts/check_docstrings.py

@@ -214,7 +214,7 @@ def check_file(file: Path, repo_root: Path) -> list[Violation]:
 
 def main() -> int:
     """Run docstring checks on all SDK files."""
-    repo_root = Path(__file__).parent.parent
+    repo_root = Path(__file__).parent.parent.parent
     
     all_violations: list[Violation] = []
     files_checked = 0
