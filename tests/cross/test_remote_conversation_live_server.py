@@ -851,28 +851,20 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     # Server must have persisted the finish ActionEvent.
     assert len(rest_action) >= 1
 
-    # Under WS lag, the client *may* be missing it immediately.
-    # If we already have it, the system behaved correctly without needing
-    # a post-run reconcile for this timing.
-    #
-    # What we must always ensure is that reconcile() is harmless and yields a
-    # complete event list.
-    if len(ws_action) == 0:
-        # Reconcile after completion should fetch the missing event.
-        conv.state.events.reconcile()
-        ws_events_after = list(conv.state.events)
-        ws_action_after = [
-            e
-            for e in ws_events_after
-            if isinstance(e, ActionEvent) and e.tool_name == "finish"
-        ]
-        assert len(ws_action_after) >= 1
-    else:
-        # Still validate reconcile is idempotent / does not drop events.
-        before_ids = {e.id for e in conv.state.events}
-        conv.state.events.reconcile()
-        after_ids = {e.id for e in conv.state.events}
-        assert before_ids.issubset(after_ids)
+    # This test pins the new contract from this PR: even if the WS callback is
+    # lagging, run(blocking=True) should return with the tail already repaired by
+    # the post-run reconcile loop.
+    assert len(ws_action) >= 1, (
+        "run() returned before the post-run tail reconcile filled the missing "
+        f"finish action. Client events: {[type(e).__name__ for e in ws_events]}, "
+        f"REST events: {[type(e).__name__ for e in rest_events]}"
+    )
+
+    # A follow-up reconcile should still be idempotent / additive only.
+    before_ids = {e.id for e in conv.state.events}
+    conv.state.events.reconcile()
+    after_ids = {e.id for e in conv.state.events}
+    assert before_ids.issubset(after_ids)
 
     conv.close()
 

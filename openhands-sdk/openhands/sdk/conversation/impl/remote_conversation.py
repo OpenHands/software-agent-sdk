@@ -963,7 +963,11 @@ class RemoteConversation(BaseConversation):
         settle_interval: float = RECONCILE_SETTLE_INTERVAL,
         max_cycles: int = RECONCILE_MAX_CYCLES,
     ) -> None:
-        """Ensure REST-backed events are fully synced after run completion.
+        """Reconcile any missing post-run tail events from REST.
+
+        This is a bounded tail repair: it fetches events after the last cached
+        event ID and is meant to cover WS timing lag around run completion. It
+        does not attempt to repair arbitrary holes earlier in the event history.
 
         Args:
             timeout: Maximum time to spend reconciling. If <= 0, no reconciliation

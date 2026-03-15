@@ -1,5 +1,6 @@
 """Tests for RemoteConversation."""
 
+import json
 import uuid
 from unittest.mock import Mock, patch
 
@@ -12,8 +13,14 @@ from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.event import (
+    ActionEvent,
+    ConversationStateUpdateEvent,
+    ObservationEvent,
+)
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.workspace import RemoteWorkspace
 
 
@@ -560,6 +567,81 @@ class TestRemoteConversation:
             f"Should have polled 5 times (2 running + 3 finished for fallback "
             f"threshold), got {poll_count[0]}"
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.time.sleep",
+        return_value=None,
+    )
+    @patch.object(RemoteConversation, "_wait_for_run_completion")
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_blocking_reconciles_tail_before_return(
+        self,
+        mock_ws_client,
+        mock_wait_for_run_completion,
+        _mock_sleep,
+    ):
+        """Test blocking run returns with the reconciled post-run tail."""
+        conversation_id = str(uuid.uuid4())
+        self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        initial_event = ConversationStateUpdateEvent(
+            key="execution_status",
+            value="running",
+            timestamp="2026-01-01T00:00:00",
+        )
+        conversation.state.events.add_event(initial_event)
+
+        finish_action = ActionEvent(
+            timestamp="2026-01-01T00:00:01",
+            thought=[TextContent(text="Finishing task")],
+            action=FinishAction(message="Task complete"),
+            tool_name="finish",
+            tool_call_id="call_finish",
+            tool_call=MessageToolCall(
+                id="call_finish",
+                name="finish",
+                arguments=json.dumps({"message": "Task complete"}),
+                origin="completion",
+            ),
+            llm_response_id="resp_finish",
+        )
+        finish_observation = ObservationEvent(
+            timestamp="2026-01-01T00:00:02",
+            tool_name="finish",
+            tool_call_id="call_finish",
+            observation=FinishObservation.from_text(text="Task complete"),
+            action_id=finish_action.id,
+        )
+
+        fetch_events_pages = Mock(
+            side_effect=[
+                ([initial_event, finish_action, finish_observation], False),
+                ([finish_observation], False),
+            ]
+        )
+
+        with patch.object(
+            conversation.state.events,
+            "_fetch_events_pages",
+            fetch_events_pages,
+        ):
+            conversation.run(timeout=1)
+
+        mock_wait_for_run_completion.assert_called_once_with(1.0, 1)
+        cached_event_ids = {event.id for event in conversation.state.events}
+        assert finish_action.id in cached_event_ids
+        assert finish_observation.id in cached_event_ids
+        assert [call.kwargs for call in fetch_events_pages.call_args_list] == [
+            {"page_id": initial_event.id, "ignore_errors": True},
+            {"page_id": finish_observation.id, "ignore_errors": True},
+        ]
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
