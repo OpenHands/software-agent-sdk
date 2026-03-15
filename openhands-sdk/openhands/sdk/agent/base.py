@@ -576,10 +576,3 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             Response string, or ``None`` to use the default LLM-based approach.
         """
         return None
-
-    def close(self) -> None:
-        """Clean up agent resources.
-
-        No-op by default; ACPAgent overrides to terminate subprocess.
-        """
-        pass
