@@ -528,10 +528,9 @@ async def test_resend_mode_takes_precedence_over_resend_all(
 
         from openhands.agent_server.sockets import events_socket
 
-        # resend_mode=None should be treated as "no resend", even if resend_all=True
-        # Actually, per the logic: if resend_mode is explicitly None and resend_all=True,
-        # it should fallback to resend_all behavior for backward compat.
-        # But if resend_mode is set, it takes precedence.
+        # If resend_mode is explicitly None and resend_all=True, it should
+        # fallback to resend_all behavior for backward compat. But if
+        # resend_mode is set, it takes precedence over resend_all.
         # Let's test with resend_mode="all" and resend_all=False
         mock_events = [
             MessageEvent(

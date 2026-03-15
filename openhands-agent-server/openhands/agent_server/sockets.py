@@ -137,8 +137,9 @@ async def events_socket(
             server local time. Timezone-aware datetimes are converted to server
             timezone. Enables efficient bi-directional loading where REST fetches
             historical events and WebSocket handles events after a specific point.
-        resend_all: DEPRECATED. Use resend_mode='all' instead. Kept for backward
-            compatibility - if True and resend_mode is None, behaves as resend_mode='all'.
+        resend_all: DEPRECATED. Use resend_mode='all' instead. Kept for
+            backward compatibility - if True and resend_mode is None, behaves
+            as resend_mode='all'.
     """
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
@@ -221,7 +222,10 @@ async def bash_events_socket(
     resend_mode: Annotated[
         Literal["all"] | None,
         Query(
-            description="Mode for resending historical events on connect. 'all' sends all events."
+            description=(
+                "Mode for resending historical events on connect. "
+                "'all' sends all events."
+            )
         ),
     ] = None,
     # Deprecated parameter - kept for backward compatibility
