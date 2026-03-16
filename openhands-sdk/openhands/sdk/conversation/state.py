@@ -336,6 +336,16 @@ class ConversationState(OpenHandsModel):
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)
 
+            # Reset terminal statuses to IDLE on resume.
+            # This ensures conversations stuck in STUCK, ERROR, or FINISHED
+            # can recover without requiring send_message() or run() to be called first.
+            if state.execution_status in (
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
+            ):
+                state.execution_status = ConversationExecutionStatus.IDLE
+            
             # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
             state.agent = agent
