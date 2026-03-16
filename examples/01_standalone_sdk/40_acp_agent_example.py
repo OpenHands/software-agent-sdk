@@ -7,7 +7,7 @@ and leaves the main conversation untouched.
 
 Prerequisites:
     - Node.js / npx available
-    - ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY set (can point to LiteLLM proxy)
+    - Claude Code CLI authenticated (or CLAUDE_API_KEY set)
 
 Usage:
     uv run python examples/01_standalone_sdk/40_acp_agent_example.py
@@ -38,9 +38,6 @@ try:
         "Based on what you just saw, which agent class is the newest addition?"
     )
     print(f"ask_agent response: {response}")
-    # Report cost (ACP server reports usage via session_update notifications)
-    cost = agent.llm.metrics.accumulated_cost
-    print(f"EXAMPLE_COST: {cost:.4f}")
 finally:
     # Clean up the ACP server subprocess
     agent.close()
