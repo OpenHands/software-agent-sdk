@@ -2,9 +2,12 @@
 
 import base64
 import hashlib
+import logging
+import os
+import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 from pydantic import Field
 
@@ -19,11 +22,16 @@ from openhands.sdk.tool import (
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 
 
+_logger = logging.getLogger(__name__)
+
 # Lazy import to avoid hanging during module import
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.browser_use.impl import BrowserToolExecutor
 
+
+# Directory where browser session recordings are saved
+BROWSER_RECORDING_OUTPUT_DIR = os.path.join(".agent_tmp", "browser_observations")
 
 # Mapping of base64 prefixes to MIME types for image detection
 BASE64_IMAGE_PREFIXES = {
@@ -668,6 +676,103 @@ class BrowserSetStorageTool(
         ]
 
 
+# ============================================
+# `browser_start_recording`
+# ============================================
+class BrowserStartRecordingAction(BrowserAction):
+    """Schema for starting browser session recording."""
+
+    pass
+
+
+BROWSER_START_RECORDING_DESCRIPTION = f"""Start recording the browser session.
+
+This tool starts recording all browser interactions using rrweb. The recording
+captures DOM mutations, mouse movements, clicks, scrolls, and other user interactions.
+
+Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
+Format: Recording events are saved as numbered JSON files (1.json, 2.json, etc.)
+containing rrweb event arrays. Events are flushed every 5 seconds or when they
+exceed 1 MB. These files can be replayed using rrweb-player.
+
+Call browser_stop_recording to stop recording and save any remaining events.
+
+Note: Recording persists across page navigations - the recording will automatically
+restart on new pages.
+"""
+
+
+class BrowserStartRecordingTool(
+    ToolDefinition[BrowserStartRecordingAction, BrowserObservation]
+):
+    """Tool for starting browser session recording."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_START_RECORDING_DESCRIPTION,
+                action_type=BrowserStartRecordingAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_start_recording",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
+# ============================================
+# `browser_stop_recording`
+# ============================================
+class BrowserStopRecordingAction(BrowserAction):
+    """Schema for stopping browser session recording."""
+
+    pass
+
+
+BROWSER_STOP_RECORDING_DESCRIPTION = f"""Stop recording the browser session.
+
+This tool stops the current recording session and saves any remaining events to disk.
+
+Output Location: {BROWSER_RECORDING_OUTPUT_DIR}/recording-<timestamp>/
+Format: Events are saved as numbered JSON files (1.json, 2.json, etc.) containing
+rrweb event arrays. These files can be replayed using rrweb-player to visualize
+the recorded session.
+
+Returns a summary message with the total event count, file count, and save directory.
+"""
+
+
+class BrowserStopRecordingTool(
+    ToolDefinition[BrowserStopRecordingAction, BrowserObservation]
+):
+    """Tool for stopping browser session recording."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_STOP_RECORDING_DESCRIPTION,
+                action_type=BrowserStopRecordingAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_stop_recording",
+                    # Modifies state: stops recording, flushes events to disk
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
 class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
@@ -677,6 +782,11 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     The toolset automatically checks for Chromium availability
     when created and automatically installs it if missing.
     """
+
+    # Shared executor: reuse a single Chromium/CDP instance across parent
+    # and subagents to avoid CDP port conflicts in sandbox containers.
+    _shared_executor: ClassVar["BrowserToolExecutor | None"] = None
+    _shared_executor_lock: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
     def create(
@@ -688,23 +798,35 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         # avoid hanging during module import
         import sys
 
-        # Use Windows-specific executor on Windows systems
-        if sys.platform == "win32":
-            from openhands.tools.browser_use.impl_windows import (
-                WindowsBrowserToolExecutor,
-            )
+        with cls._shared_executor_lock:
+            if cls._shared_executor is not None:
+                if executor_config:
+                    _logger.warning(
+                        "BrowserToolSet.create() called with executor_config but a "
+                        "shared executor already exists. The config %s will be "
+                        "ignored. This typically happens when a subagent requests "
+                        "browser tools — it reuses the parent's browser session.",
+                        list(executor_config.keys()),
+                    )
+                executor = cls._shared_executor
+            elif sys.platform == "win32":
+                from openhands.tools.browser_use.impl_windows import (
+                    WindowsBrowserToolExecutor,
+                )
 
-            executor = WindowsBrowserToolExecutor(
-                full_output_save_dir=conv_state.env_observation_persistence_dir,
-                **executor_config,
-            )
-        else:
-            from openhands.tools.browser_use.impl import BrowserToolExecutor
+                executor = WindowsBrowserToolExecutor(
+                    full_output_save_dir=conv_state.env_observation_persistence_dir,
+                    **executor_config,
+                )
+                cls._shared_executor = executor
+            else:
+                from openhands.tools.browser_use.impl import BrowserToolExecutor
 
-            executor = BrowserToolExecutor(
-                full_output_save_dir=conv_state.env_observation_persistence_dir,
-                **executor_config,
-            )
+                executor = BrowserToolExecutor(
+                    full_output_save_dir=conv_state.env_observation_persistence_dir,
+                    **executor_config,
+                )
+                cls._shared_executor = executor
 
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
@@ -721,6 +843,8 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             BrowserCloseTabTool,
             BrowserGetStorageTool,
             BrowserSetStorageTool,
+            BrowserStartRecordingTool,
+            BrowserStopRecordingTool,
         ]:
             tools.extend(tool_class.create(executor))
         return tools

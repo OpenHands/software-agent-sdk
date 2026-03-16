@@ -5,6 +5,10 @@ from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
     get_unverified_models,
 )
+from openhands.sdk.llm.utils.verified_models import (
+    VERIFIED_MODELS,
+    VERIFIED_OPENHANDS_MODELS,
+)
 
 
 def test_organize_models_and_providers():
@@ -17,7 +21,9 @@ def test_organize_models_and_providers():
         "mistral/devstral-small-2505",
         "anthropic.claude-3-5",  # Ignore dot separator for anthropic
         "unknown-model",
-        "custom-provider/custom-model",
+        "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # invalid provider prefix
+        "1024-x-1024/gpt-image-1.5",  # invalid provider prefix
         "openai/another-model",
     ]
 
@@ -35,8 +41,11 @@ def test_organize_models_and_providers():
         assert len(result["openai"]) == 1
         assert "another-model" in result["openai"]
 
-        assert len(result["other"]) == 1
+        assert len(result["other"]) == 4
         assert "unknown-model" in result["other"]
+        assert "custom-provider/custom-model" in result["other"]
+        assert "us.anthropic.claude-3-5-sonnet-20241022-v2:0" in result["other"]
+        assert "1024-x-1024/gpt-image-1.5" in result["other"]
 
 
 def test_list_bedrock_models_without_boto3(monkeypatch):
@@ -72,3 +81,19 @@ def test_list_bedrock_models_with_boto3(monkeypatch):
     result = _list_bedrock_foundation_models("us-east-1", "key", "secret")
 
     assert result == ["bedrock/anthropic.claude-3"]
+
+
+def test_openhands_models_all_have_provider_list():
+    """Every model in VERIFIED_OPENHANDS_MODELS must also appear in at least one
+    provider-specific list so that the UI can display it under its actual provider.
+    """
+    provider_models = set()
+    for provider, models in VERIFIED_MODELS.items():
+        if provider == "openhands":
+            continue
+        provider_models.update(models)
+
+    missing = [m for m in VERIFIED_OPENHANDS_MODELS if m not in provider_models]
+    assert not missing, (
+        f"Models in VERIFIED_OPENHANDS_MODELS missing from any provider list: {missing}"
+    )

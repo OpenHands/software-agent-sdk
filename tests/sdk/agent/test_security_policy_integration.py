@@ -30,7 +30,7 @@ def test_security_policy_in_system_message():
             base_url="http://test",
         )
     )
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that security policy section is present
     assert "🔐 Security Policy" in system_message
@@ -111,7 +111,7 @@ def test_custom_security_policy_in_system_message():
         )
 
         # Get system message - this should include our custom policy
-        system_message = agent.system_message
+        system_message = agent.static_system_message
 
         # Verify that custom policy content appears in system message
         assert "Custom Test Security Policy" in system_message
@@ -161,7 +161,7 @@ def test_llm_security_analyzer_template_kwargs():
     )
 
     # Get system message (security analyzer context is automatically included)
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that the security risk assessment section is included in the system prompt
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -188,7 +188,7 @@ def test_llm_security_analyzer_sandbox_mode():
     )
 
     # Get system message (security analyzer context is automatically included)
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     print(agent.system_prompt_kwargs)
 
@@ -216,7 +216,7 @@ def test_no_security_analyzer_still_includes_risk_assessment():
     )
 
     # Get the system message with no security analyzer
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that the security risk assessment section is NOT included
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -244,7 +244,7 @@ def test_non_llm_security_analyzer_still_includes_risk_assessment():
     )
 
     # Get the system message
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that the security risk assessment section is NOT included
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -279,7 +279,15 @@ def _tool_response(name: str, args_json: str) -> ModelResponse:
 
 
 def test_security_risk_param_ignored_when_no_analyzer():
-    """Security risk param is ignored when no analyzer is configured."""
+    """Security risk param is ignored when no analyzer is configured.
+
+    This test reproduces the issue from #1957 where the LLM includes
+    security_risk in tool calls even when llm_security_analyzer=False
+    and no security analyzer is configured.
+
+    Expected behavior: security_risk should be UNKNOWN when no analyzer is set.
+    """
+    from openhands.sdk.security.risk import SecurityRisk
 
     llm = LLM(
         usage_id="test-llm",
@@ -287,16 +295,21 @@ def test_security_risk_param_ignored_when_no_analyzer():
         api_key=SecretStr("test-key"),
         base_url="http://test",
     )
-    agent = Agent(llm=llm, tools=[])
+    # Set llm_security_analyzer=False in system_prompt_kwargs
+    agent = Agent(
+        llm=llm, tools=[], system_prompt_kwargs={"llm_security_analyzer": False}
+    )
 
     events = []
     convo = Conversation(agent=agent, callbacks=[events.append])
 
+    # Mock LLM response that includes security_risk=HIGH even though
+    # llm_security_analyzer=False (the LLM might do this if it's well-trained)
     with patch(
         "openhands.sdk.llm.llm.litellm_completion",
         return_value=_tool_response(
             "think",
-            '{"thought": "This is a test thought", "security_risk": "LOW"}',
+            '{"thought": "This is a test thought", "security_risk": "HIGH"}',
         ),
     ):
         convo.send_message(
@@ -306,3 +319,11 @@ def test_security_risk_param_ignored_when_no_analyzer():
 
     # No agent errors
     assert not any(isinstance(e, AgentErrorEvent) for e in events)
+
+    # Find the ActionEvent
+    action_events = [e for e in events if isinstance(e, ActionEvent)]
+    assert len(action_events) == 1
+
+    # Verify that the security_risk is UNKNOWN (ignored) when no analyzer is set
+    # Even though the LLM provided "HIGH", it should be ignored
+    assert action_events[0].security_risk == SecurityRisk.UNKNOWN

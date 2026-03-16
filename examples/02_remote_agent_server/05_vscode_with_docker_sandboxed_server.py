@@ -1,4 +1,5 @@
 import os
+import platform
 import time
 
 import httpx
@@ -26,16 +27,28 @@ llm = LLM(
 # Create a Docker-based remote workspace with extra ports for VSCode access
 def detect_platform():
     """Detects the correct Docker platform string."""
-    import platform
-
     machine = platform.machine().lower()
     if "arm" in machine or "aarch64" in machine:
         return "linux/arm64"
     return "linux/amd64"
 
 
+def get_server_image():
+    """Get the server image tag, using PR-specific image in CI."""
+    platform_str = detect_platform()
+    arch = "arm64" if "arm64" in platform_str else "amd64"
+    # If GITHUB_SHA is set (e.g. running in CI of a PR), use that to ensure consistency
+    # Otherwise, use the latest image from main
+    github_sha = os.getenv("GITHUB_SHA")
+    if github_sha:
+        return f"ghcr.io/openhands/agent-server:{github_sha[:7]}-python-{arch}"
+    return "ghcr.io/openhands/agent-server:latest-python"
+
+
+server_image = get_server_image()
+logger.info(f"Using server image: {server_image}")
 with DockerWorkspace(
-    server_image="ghcr.io/openhands/agent-server:latest-python",
+    server_image=server_image,
     host_port=18010,
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC

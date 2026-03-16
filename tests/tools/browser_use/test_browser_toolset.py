@@ -3,6 +3,7 @@
 import tempfile
 from uuid import uuid4
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
@@ -12,6 +13,14 @@ from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_executor():
+    """Reset the shared executor singleton before and after each test."""
+    BrowserToolSet._shared_executor = None
+    yield
+    BrowserToolSet._shared_executor = None
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
@@ -32,7 +41,7 @@ def test_browser_toolset_create_returns_list():
         tools = BrowserToolSet.create(conv_state=conv_state)
 
         assert isinstance(tools, list)
-        assert len(tools) == 12  # All browser tools
+        assert len(tools) == 14  # All browser tools (including recording tools)
 
         # Verify all items are Tool instances
         for tool in tools:
@@ -62,6 +71,8 @@ def test_browser_toolset_create_includes_all_browser_tools():
             "browser_close_tab",
             "browser_get_storage",
             "browser_set_storage",
+            "browser_start_recording",
+            "browser_stop_recording",
         ]
 
         # Verify all expected tools are present
@@ -108,20 +119,96 @@ def test_browser_toolset_create_tools_are_properly_configured():
         assert navigate_tool.executor is not None
 
 
-def test_browser_toolset_create_multiple_calls_create_separate_executors():
-    """Test that multiple calls to BrowserToolSet.create() create separate executors."""
+def test_browser_toolset_create_multiple_calls_share_executor():
+    """Test that multiple calls to BrowserToolSet.create() share the same executor.
+
+    This is critical for subagent support: subagents call BrowserToolSet.create()
+    independently, but must reuse the parent's executor to avoid CDP port conflicts
+    when multiple Chromium instances try to bind the same debugging port in a
+    sandbox container.
+    """
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
         tools1 = BrowserToolSet.create(conv_state=conv_state)
         tools2 = BrowserToolSet.create(conv_state=conv_state)
 
-        # Executors should be different instances
         executor1 = tools1[0].executor
         executor2 = tools2[0].executor
 
-        assert executor1 is not executor2
+        # Executors MUST be the same instance (shared singleton)
+        assert executor1 is executor2
         assert isinstance(executor1, BrowserToolExecutor)
-        assert isinstance(executor2, BrowserToolExecutor)
+
+
+def test_browser_toolset_shared_executor_survives_multiple_subagents():
+    """Test that N successive BrowserToolSet.create() calls all get the same executor.
+
+    Simulates a parent agent + multiple subagents each resolving browser_tool_set.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+
+        # Parent + 3 subagents
+        all_tools = [BrowserToolSet.create(conv_state=conv_state) for _ in range(4)]
+        executors = [tools[0].executor for tools in all_tools]
+
+        # All must be the exact same instance
+        for executor in executors:
+            assert executor is executors[0]
+
+
+def test_browser_toolset_shared_executor_reset():
+    """Test that resetting _shared_executor allows creating a new executor."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools1 = BrowserToolSet.create(conv_state=conv_state)
+        executor1 = tools1[0].executor
+
+        # Reset the singleton
+        BrowserToolSet._shared_executor = None
+
+        tools2 = BrowserToolSet.create(conv_state=conv_state)
+        executor2 = tools2[0].executor
+
+        # After reset, a new executor should be created
+        assert executor1 is not executor2
+
+
+def test_browser_toolset_warns_when_config_ignored(caplog):
+    """
+    Test that a warning is logged when a second create()
+    passes config that gets ignored.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+
+        # First call sets up the shared executor
+        BrowserToolSet.create(conv_state=conv_state)
+
+        # Second call with different config should warn
+        with caplog.at_level(
+            "WARNING", logger="openhands.tools.browser_use.definition"
+        ):
+            BrowserToolSet.create(conv_state=conv_state, headless=False)
+
+        assert any("shared executor already exists" in msg for msg in caplog.messages)
+
+
+def test_browser_toolset_no_warning_when_no_config(caplog):
+    """Test that no warning is logged when a second create() passes no extra config."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+
+        BrowserToolSet.create(conv_state=conv_state)
+
+        with caplog.at_level(
+            "WARNING", logger="openhands.tools.browser_use.definition"
+        ):
+            BrowserToolSet.create(conv_state=conv_state)
+
+        assert not any(
+            "shared executor already exists" in msg for msg in caplog.messages
+        )
 
 
 def test_browser_toolset_create_tools_can_generate_mcp_schema():

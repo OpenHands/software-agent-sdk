@@ -24,7 +24,7 @@ jobs:
     run-task:
         # Only run scheduled jobs in the main repository, not in forks
         if: github.repository == 'OpenHands/software-agent-sdk' || github.event_name == 'workflow_dispatch'
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         env:
             # Configuration (modify these values as needed)
             AGENT_SCRIPT_URL: https://raw.githubusercontent.com/OpenHands/agent-sdk/main/examples/03_github_workflows/01_basic_action/agent_script.py

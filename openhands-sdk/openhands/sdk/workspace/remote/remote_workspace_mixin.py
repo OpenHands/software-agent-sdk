@@ -25,6 +25,15 @@ class RemoteWorkspaceMixin(BaseModel):
     working_dir: str = Field(
         description="The working directory for agent operations and tool execution."
     )
+    read_timeout: float = Field(
+        default=600.0,
+        description="Timeout in seconds for reading operations of httpx.Client.",
+    )
+    max_connections: int | None = Field(
+        default=None,
+        description="Maximum number of connections for httpx.Client. "
+        "None means no limit, useful for running many conversations in parallel.",
+    )
 
     def model_post_init(self, context: Any) -> None:
         # Set up remote host
@@ -201,14 +210,13 @@ class RemoteWorkspaceMixin(BaseModel):
 
             # Prepare the upload
             files = {"file": (source.name, file_content)}
-            data = {"destination_path": str(destination)}
 
-            # Make HTTP call
+            # Make HTTP call using query parameter for path
             response: httpx.Response = yield {
                 "method": "POST",
-                "url": f"{self.host}/api/file/upload/{destination}",
+                "url": f"{self.host}/api/file/upload",
+                "params": {"path": str(destination)},
                 "files": files,
-                "data": data,
                 "headers": self._headers,
                 "timeout": 60.0,
             }
@@ -255,16 +263,11 @@ class RemoteWorkspaceMixin(BaseModel):
         _logger.debug(f"Remote file download: {source} -> {destination}")
 
         try:
-            # Construct URL with path parameter (not query parameter)
-            # Double slash ensures FastAPI extracts path with leading slash
-            # for absolute path validation
-            source_str = str(source)
-            url = f"/api/file/download//{source_str.lstrip('/')}"
-
-            # Make HTTP call
+            # Make HTTP call using query parameter for path
             response = yield {
                 "method": "GET",
-                "url": url,
+                "url": "/api/file/download",
+                "params": {"path": str(source)},
                 "headers": self._headers,
                 "timeout": 60.0,
             }
