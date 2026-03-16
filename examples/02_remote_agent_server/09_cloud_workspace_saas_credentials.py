@@ -85,11 +85,26 @@ with OpenHandsCloudWorkspace(
         conversation.update_secrets(secrets)
         logger.info(f"Injected {len(secrets)} secrets into conversation")
 
-    try:
-        conversation.send_message(
+    # Build a prompt that exercises the injected secrets by asking the agent to
+    # print the last 50% of each token — proves values resolved without leaking
+    # full secrets in logs.
+    secret_names = list(secrets.keys()) if secrets else []
+    if secret_names:
+        names_str = ", ".join(f"${name}" for name in secret_names)
+        prompt = (
+            f"For each of these environment variables: {names_str} — "
+            "print the variable name and the LAST 50% of its value "
+            "(i.e. the second half of the string). "
+            "Then write a short summary into SECRETS_CHECK.txt."
+        )
+    else:
+        prompt = (
             "List the environment variables that start with SECRET_ or end with _TOKEN, "
             "then write a short summary of what you find into SECRETS_CHECK.txt."
         )
+
+    try:
+        conversation.send_message(prompt)
         conversation.run()
 
         while time.time() - last_event_time["ts"] < 2.0:
