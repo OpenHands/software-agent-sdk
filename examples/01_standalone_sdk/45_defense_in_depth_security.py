@@ -108,20 +108,19 @@ def _walk_json_strings(obj: Any) -> list[str]:
     return []
 
 
-def _extract_segments(action: ActionEvent) -> list[str]:
-    """Extract analyzable segments from an ActionEvent, one per field.
+def _extract_exec_segments(action: ActionEvent) -> list[str]:
+    """Extract segments from fields that describe what the agent will *do*.
 
-    Why segments instead of a flat string: when extraction flattens all fields
-    into one string, tokens from unrelated fields can accidentally satisfy
-    composed rail conditions. An agent whose thought says "rm temp files" and
-    whose tool call runs "sudo ls /root" would falsely trigger the
-    privilege-delete rail on the joined string "sudo ... rm". Preserving
-    field boundaries as separate segments lets rail evaluation require
-    co-occurrence *within* a single field.
+    The key distinction: an agent can *think about* ``rm -rf /`` without
+    *running* it. If you scan thought text for shell-destructive patterns,
+    an agent whose command is ``ls /tmp`` but whose thought says "I should
+    avoid rm -rf /" gets flagged HIGH -- a false positive that blocks safe
+    actions whenever the model reasons about dangerous alternatives.
 
-    Cumulative segment length is capped at ``_EXTRACT_HARD_CAP`` to bound
-    downstream regex runtime and memory (see ``test_payload_past_hard_cap``
-    for the tradeoff this creates).
+    This function extracts only the fields that describe the actual action:
+    tool_name, tool_call.name, and tool_call.arguments (JSON leaf strings).
+    All shell/permission/exec patterns and policy rails scan this corpus
+    exclusively.
     """
     segments: list[str] = []
     total = 0
@@ -150,6 +149,33 @@ def _extract_segments(action: ActionEvent) -> list[str]:
             except (json.JSONDecodeError, TypeError, RecursionError):
                 _add(action.tool_call.arguments)
 
+    return segments
+
+
+def _extract_text_segments(action: ActionEvent) -> list[str]:
+    """Extract segments from fields that describe what the agent *thought*.
+
+    Thought, reasoning_content, and summary reflect the model's reasoning
+    process -- not the action it will execute. These fields are only
+    scanned for injection and social-engineering patterns (instruction
+    overrides, mode switching, identity manipulation), which are textual
+    attacks that make sense in any field. They are never scanned for
+    shell-destructive patterns, because the model routinely reasons about
+    dangerous commands it chose not to run.
+    """
+    segments: list[str] = []
+    total = 0
+
+    def _add(text: str) -> None:
+        nonlocal total
+        remaining = _EXTRACT_HARD_CAP - total
+        if remaining <= 0:
+            return
+        if len(text) > remaining:
+            text = text[:remaining]
+        segments.append(text)
+        total += len(text)
+
     for t in action.thought:
         if t.text:
             _add(t.text)
@@ -163,15 +189,36 @@ def _extract_segments(action: ActionEvent) -> list[str]:
     return segments
 
 
-def _extract_content(action: ActionEvent) -> str:
-    """Extract analyzable text as a flat string for pattern scanning.
+def _extract_segments(action: ActionEvent) -> list[str]:
+    """Extract all segments (executable + reasoning) from an ActionEvent.
 
-    Pattern scanning (``PatternSecurityAnalyzer``) needs a single string to
-    run regex against. This wrapper joins segments and truncates. Rail
-    evaluation uses ``_extract_segments`` directly to preserve field
-    boundaries -- see that function's docstring for why.
+    Combines both corpora into one list. Used by ``_extract_content`` for
+    injection-pattern scanning, which needs the full content surface.
+    """
+    return _extract_exec_segments(action) + _extract_text_segments(action)
+
+
+def _extract_content(action: ActionEvent) -> str:
+    """Flat string from all fields -- the all-field scanning surface.
+
+    Used for injection and social-engineering patterns (instruction
+    overrides, mode switching, identity manipulation) that are textual
+    attacks appearing in any field. Shell/exec patterns use
+    ``_extract_exec_content`` instead to avoid reasoning-text false
+    positives.
     """
     return " ".join(_extract_segments(action))[:_EXTRACT_HARD_CAP]
+
+
+def _extract_exec_content(action: ActionEvent) -> str:
+    """Flat string from executable fields only -- the shell-pattern surface.
+
+    Shell-destructive, permission, and code-execution patterns scan this
+    corpus. Reasoning text is excluded because the model routinely thinks
+    about dangerous commands it chose not to run, and including that text
+    turns safe actions into false positives.
+    """
+    return " ".join(_extract_exec_segments(action))[:_EXTRACT_HARD_CAP]
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +389,9 @@ def _evaluate_rail_segments(segments: list[str]) -> RailDecision:
             )
 
         # Rule 2: raw-disk-op -- dd to device or mkfs
-        if re.search(r"\bdd\s+if=\S+\s+of=/dev/", seg, ci):
+        # dd operands are order-independent (of= before if= is common),
+        # so we match dd + of=/dev/ regardless of operand position.
+        if re.search(r"\bdd\b.{0,100}of=/dev/", seg, ci):
             return RailDecision(
                 RailOutcome.DENY, "raw-disk-op", "Raw disk write via dd"
             )
@@ -443,17 +492,11 @@ DEFAULT_HIGH_PATTERNS: list[tuple[str, str]] = [
     (r"\bsudo\s+rm\b", "Privileged file deletion"),
     (r"\bchmod\b[^;\n]{0,30}\b0?777\b", "World-writable permissions (not 1777)"),
     (r"\bmkfs\.\w+", "Filesystem format command"),
-    (r"\bdd\s+if=\S{1,100}\s+of=/dev/", "Raw disk write"),
+    (r"\bdd\b.{0,100}of=/dev/", "Raw disk write"),
     # Sensitive file access (NOT /etc/passwd -- world-readable, different threat class)
     (r"/etc/shadow\b", "Shadow password file access"),
     (r"~/\.ssh/", "SSH key directory access"),
     (r"~/\.aws/credentials\b", "AWS credentials file access"),
-    # Prompt injection
-    (
-        r"\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+)?"
-        r"(?:previous|prior|above)\s+(?:instructions?|prompts?|rules?|directives?)\b",
-        "Instruction override attempt",
-    ),
     # Code execution
     (r"\beval\s*\(", "eval() call"),
     (r"\bexec\s*\(", "exec() call"),
@@ -494,14 +537,35 @@ DEFAULT_MEDIUM_PATTERNS: list[tuple[str, str]] = [
         r"\$[A-Z_]*(?:SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)\b",
         "Secret env var reference",
     ),
-    # Mode switching / identity manipulation
+    # Large encoded payloads (suspicious indicator)
+    (r"base64[,:]?\s*[A-Za-z0-9+/=]{50,}", "Large base64 payload"),
+]
+
+# ---------------------------------------------------------------------------
+# Injection / social-engineering patterns (scanned against ALL fields)
+#
+# Why a separate list: these are textual attacks, not shell commands.
+# "Ignore all previous instructions" is dangerous whether it appears in
+# tool arguments, thought text, or a summary. Unlike "rm -rf /", which
+# is only dangerous when it describes an action the agent will *execute*,
+# injection language is dangerous wherever it appears because it targets
+# the model's instruction-following behavior, not the operating system.
+# ---------------------------------------------------------------------------
+
+DEFAULT_INJECTION_HIGH_PATTERNS: list[tuple[str, str]] = [
+    (
+        r"\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+)?"
+        r"(?:previous|prior|above)\s+(?:instructions?|prompts?|rules?|directives?)\b",
+        "Instruction override attempt",
+    ),
+]
+
+DEFAULT_INJECTION_MEDIUM_PATTERNS: list[tuple[str, str]] = [
     (r"\byou\s+are\s+now\s+(?:in\s+)?(?:\w+\s+)?mode\b", "Mode switching attempt"),
     (
         r"\bpretend\s+(?:you\s+are|to\s+be)\s+(?:a\s+)?different\b",
         "Identity manipulation",
     ),
-    # Large encoded payloads (suspicious indicator)
-    (r"base64[,:]?\s*[A-Za-z0-9+/=]{50,}", "Large base64 payload"),
 ]
 
 
@@ -511,38 +575,60 @@ DEFAULT_MEDIUM_PATTERNS: list[tuple[str, str]] = [
 
 
 class PatternSecurityAnalyzer(SecurityAnalyzerBase):
-    """Regex-based threat detection with Unicode normalization.
+    """Regex-based threat detection with two scanning corpora.
 
-    This is the "broad net" layer: it scans a flat string of extracted
-    content against categorized patterns (HIGH for dangerous commands,
-    MEDIUM for suspicious indicators). It catches threats that the
-    deterministic rails miss because rails only cover composed conditions,
-    not single-pattern matches like ``eval()`` or ``os.system()``.
+    The central design question: which content should each pattern see?
 
-    Pipeline: extract (flat string) -> normalize (NFKC + strip) -> scan
-    HIGH patterns -> scan MEDIUM patterns -> LOW.
+    An agent whose command is ``ls /tmp`` but whose thought says "I should
+    avoid rm -rf /" must not be flagged HIGH. But an agent whose reasoning
+    says "ignore all previous instructions" *should* be flagged, even if
+    the command itself is benign -- that's a prompt injection attempt hiding
+    in reasoning text.
+
+    The solution: two corpora, two pattern sets.
+
+    - **Executable corpus** (tool_name, tool_call.name, tool_call.arguments):
+      scanned for shell/permission/exec patterns. These patterns are only
+      meaningful when they describe what the agent will actually *do*.
+
+    - **All-field corpus** (executable + thought/reasoning/summary): scanned
+      for injection/social-engineering patterns. These are textual attacks
+      that target the model's instruction-following, not the OS, so they're
+      dangerous wherever they appear.
 
     Normalization is always on. A security control with an off switch sends
     mixed messages -- you either normalize or you don't.
-
-    When to use this vs. rails: rails catch structural threats (sudo + rm
-    in the same command). Patterns catch lexical threats (eval(), pip install,
-    base64 payloads). The ensemble runs both.
     """
 
+    # Exec-only patterns: scanned against executable fields only
     high_patterns: list[tuple[str, str]] = Field(
         default_factory=lambda: list(DEFAULT_HIGH_PATTERNS),
-        description="Patterns that trigger HIGH risk (regex, description)",
+        description="HIGH patterns scanned against executable fields only",
     )
     medium_patterns: list[tuple[str, str]] = Field(
         default_factory=lambda: list(DEFAULT_MEDIUM_PATTERNS),
-        description="Patterns that trigger MEDIUM risk (regex, description)",
+        description="MEDIUM patterns scanned against executable fields only",
+    )
+    # Injection patterns: scanned against all fields (exec + reasoning)
+    injection_high_patterns: list[tuple[str, str]] = Field(
+        default_factory=lambda: list(DEFAULT_INJECTION_HIGH_PATTERNS),
+        description="HIGH patterns scanned against all fields",
+    )
+    injection_medium_patterns: list[tuple[str, str]] = Field(
+        default_factory=lambda: list(DEFAULT_INJECTION_MEDIUM_PATTERNS),
+        description="MEDIUM patterns scanned against all fields",
     )
 
     _compiled_high: list[tuple[re.Pattern[str], str]] = PrivateAttr(
         default_factory=list,
     )
     _compiled_medium: list[tuple[re.Pattern[str], str]] = PrivateAttr(
+        default_factory=list,
+    )
+    _compiled_injection_high: list[tuple[re.Pattern[str], str]] = PrivateAttr(
+        default_factory=list,
+    )
+    _compiled_injection_medium: list[tuple[re.Pattern[str], str]] = PrivateAttr(
         default_factory=list,
     )
 
@@ -554,24 +640,45 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
         self._compiled_medium = [
             (re.compile(p, re.IGNORECASE), d) for p, d in self.medium_patterns
         ]
+        self._compiled_injection_high = [
+            (re.compile(p, re.IGNORECASE), d)
+            for p, d in self.injection_high_patterns
+        ]
+        self._compiled_injection_medium = [
+            (re.compile(p, re.IGNORECASE), d)
+            for p, d in self.injection_medium_patterns
+        ]
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
-        """Evaluate security risk via pattern matching.
+        """Evaluate security risk via two-corpus pattern matching.
 
-        Pipeline: extract -> normalize -> check HIGH -> check MEDIUM -> LOW.
+        Executable corpus: shell/exec/permission patterns.
+        All-field corpus: injection/social-engineering patterns.
         """
-        content = _extract_content(action)
-        if not content:
+        exec_content = _normalize(_extract_exec_content(action))
+        all_content = _normalize(_extract_content(action))
+
+        if not exec_content and not all_content:
             return SecurityRisk.LOW
 
-        content = _normalize(content)
-
+        # HIGH: exec patterns on executable fields only
         for pattern, _desc in self._compiled_high:
-            if pattern.search(content):
+            if pattern.search(exec_content):
                 return SecurityRisk.HIGH
 
+        # HIGH: injection patterns on all fields
+        for pattern, _desc in self._compiled_injection_high:
+            if pattern.search(all_content):
+                return SecurityRisk.HIGH
+
+        # MEDIUM: exec patterns on executable fields only
         for pattern, _desc in self._compiled_medium:
-            if pattern.search(content):
+            if pattern.search(exec_content):
+                return SecurityRisk.MEDIUM
+
+        # MEDIUM: injection patterns on all fields
+        for pattern, _desc in self._compiled_injection_medium:
+            if pattern.search(all_content):
                 return SecurityRisk.MEDIUM
 
         return SecurityRisk.LOW
@@ -637,9 +744,11 @@ class EnsembleSecurityAnalyzer(SecurityAnalyzerBase):
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
         """Evaluate risk via rails + max-severity fusion."""
-        # Step 1-2: Policy rails (on extracted + normalized segments)
+        # Step 1-2: Policy rails (on executable-field segments only)
+        # Rails detect shell-level threats; reasoning text would cause
+        # false positives (e.g. thought "avoid rm -rf" on a safe command).
         if self.enable_policy_rails:
-            segments = [_normalize(s) for s in _extract_segments(action)]
+            segments = [_normalize(s) for s in _extract_exec_segments(action)]
             rail = _evaluate_rail_segments(segments)
             if rail.outcome != RailOutcome.PASS:
                 # Both DENY and CONFIRM -> HIGH at the SDK boundary
