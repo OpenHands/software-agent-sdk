@@ -38,9 +38,6 @@ from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
-from openhands.sdk.agent import (
-    ACPAgent,  # noqa: F401  — register in DiscriminatedUnionMixin
-)
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -229,7 +226,7 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
         and config.static_files_path.is_dir()
     ):
         # Map the root path to server info if there are no static files
-        app.get("/")(get_server_info)
+        app.get("/", tags=["Server Details"])(get_server_info)
         return
 
     # Mount static files directory

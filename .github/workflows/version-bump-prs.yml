@@ -137,8 +137,10 @@ jobs:
                     git checkout -b "$BRANCH"
                   fi
 
-                  # Update versions using uv (--refresh to bypass cache and get fresh PyPI data)
-                  uv add --refresh "openhands-sdk==$VERSION" "openhands-tools==$VERSION"
+                  # OpenHands-CLI currently requires Python 3.12, so resolve with that interpreter.
+                  uv add --python 3.12 --refresh \
+                    "openhands-sdk==$VERSION" \
+                    "openhands-tools==$VERSION"
 
                   # Check if there are changes
                   if git diff --quiet; then
