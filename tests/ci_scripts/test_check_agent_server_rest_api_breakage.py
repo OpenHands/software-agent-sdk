@@ -326,6 +326,54 @@ def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsy
     assert "scheduled removal versions have been reached" in captured.out
 
 
+def test_main_allows_scheduled_removal_when_baseline_matches_current(
+    monkeypatch, capsys
+):
+    prev_schema = _schema_with_operation(
+        "/foo",
+        "get",
+        {
+            "deprecated": True,
+            "description": (
+                "Nice description here.\n\n"
+                " Deprecated since v1.9.0 and scheduled for removal in v1.14.0."
+            ),
+            "responses": {},
+        },
+    )
+
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.14.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: prev_schema
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "removed-operation",
+                    "details": {"path": "/foo", "method": "get", "deprecated": True},
+                    "text": "removed GET /foo",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "scheduled removal versions have been reached" in captured.out
+
+
 def test_main_rejects_non_removal_breakage_even_with_newer_version(monkeypatch, capsys):
     monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
     monkeypatch.setattr(
