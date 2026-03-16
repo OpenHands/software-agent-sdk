@@ -612,6 +612,41 @@ def test_start_conversation_minimal_request(
         client.app.dependency_overrides.clear()
 
 
+def test_start_conversation_legacy_request_without_agent_kind(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """v1 conversation creation should preserve the pre-ACP agent shape."""
+
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        mock_conversation_service.start_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_pause_conversation_success(
     client, mock_conversation_service, sample_conversation_id
 ):
