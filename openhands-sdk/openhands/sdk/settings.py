@@ -60,6 +60,7 @@ class SettingsSchema(BaseModel):
 
 
 CriticMode = Literal["finish_and_message", "all_actions"]
+SecurityAnalyzerType = Literal["llm", "none"]
 
 
 class CondenserSettings(BaseModel):
@@ -146,6 +147,30 @@ class CriticSettings(BaseModel):
     )
 
 
+class SecuritySettings(BaseModel):
+    confirmation_mode: bool = Field(
+        default=False,
+        description="Require user confirmation before executing risky actions.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Confirmation mode",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
+    )
+    security_analyzer: SecurityAnalyzerType | None = Field(
+        default=None,
+        description="Security analyzer that evaluates actions before execution.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Security analyzer",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("confirmation_mode",),
+            ).model_dump()
+        },
+    )
+
+
 def _default_llm_settings() -> LLM:
     model = LLM.model_fields["model"].get_default()
     assert isinstance(model, str)
@@ -153,6 +178,16 @@ def _default_llm_settings() -> LLM:
 
 
 class AgentSettings(BaseModel):
+    agent: str = Field(
+        default="CodeActAgent",
+        description="Agent class to use.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Agent",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
+    )
     llm: LLM = Field(
         default_factory=_default_llm_settings,
         description="LLM settings for the agent.",
@@ -180,6 +215,16 @@ class AgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="critic",
                 label="Critic",
+            ).model_dump()
+        },
+    )
+    security: SecuritySettings = Field(
+        default_factory=SecuritySettings,
+        description="Security settings for the agent.",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="security",
+                label="Security",
             ).model_dump()
         },
     )
@@ -211,59 +256,107 @@ def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
     return SettingsFieldMetadata.model_validate(metadata)
 
 
+_GENERAL_SECTION_KEY = "general"
+_GENERAL_SECTION_LABEL = "General"
+
+
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     sections: list[SettingsSectionSchema] = []
-    for field in model.model_fields.values():
+    general_fields: list[SettingsFieldSchema] = []
+
+    for field_name, field in model.model_fields.items():
         section_metadata = settings_section_metadata(field)
-        if section_metadata is None:
-            continue
 
-        nested_model = _nested_model_type(field.annotation)
-        if nested_model is None:
-            continue
+        # Nested section (e.g., llm, condenser, critic, security)
+        if section_metadata is not None:
+            nested_model = _nested_model_type(field.annotation)
+            if nested_model is None:
+                continue
 
-        section_default = field.get_default(call_default_factory=True)
-        section_label = section_metadata.label or _humanize_name(section_metadata.key)
-        section = SettingsSectionSchema(
-            key=section_metadata.key,
-            label=section_label,
-            fields=[],
-        )
-        for nested_key, nested_field in nested_model.model_fields.items():
-            metadata = settings_metadata(nested_field)
-            default_value = None
-            if isinstance(section_default, BaseModel):
-                default_value = getattr(section_default, nested_key)
-            section.fields.append(
-                SettingsFieldSchema(
-                    key=f"{section_metadata.key}.{nested_key}",
-                    label=(
-                        metadata.label
-                        if metadata is not None and metadata.label is not None
-                        else _humanize_name(nested_key)
-                    ),
-                    description=nested_field.description,
-                    section=section_metadata.key,
-                    section_label=section_label,
-                    value_type=_infer_value_type(nested_field.annotation),
-                    default=_normalize_default(default_value),
-                    required=not _is_optional(nested_field.annotation),
-                    prominence=(
-                        metadata.prominence
-                        if metadata is not None
-                        else SettingProminence.MAJOR
-                    ),
-                    depends_on=[
-                        f"{section_metadata.key}.{dependency}"
-                        for dependency in (
-                            metadata.depends_on if metadata is not None else ()
-                        )
-                    ],
-                    secret=_contains_secret(nested_field.annotation),
-                    choices=_extract_choices(nested_field.annotation),
-                )
+            section_default = field.get_default(call_default_factory=True)
+            section_label = (
+                section_metadata.label or _humanize_name(section_metadata.key)
             )
-        sections.append(section)
+            section = SettingsSectionSchema(
+                key=section_metadata.key,
+                label=section_label,
+                fields=[],
+            )
+            for nested_key, nested_field in nested_model.model_fields.items():
+                if nested_field.exclude:
+                    continue
+                metadata = settings_metadata(nested_field)
+                default_value = None
+                if isinstance(section_default, BaseModel):
+                    default_value = getattr(section_default, nested_key)
+                section.fields.append(
+                    SettingsFieldSchema(
+                        key=f"{section_metadata.key}.{nested_key}",
+                        label=(
+                            metadata.label
+                            if metadata is not None and metadata.label is not None
+                            else _humanize_name(nested_key)
+                        ),
+                        description=nested_field.description,
+                        section=section_metadata.key,
+                        section_label=section_label,
+                        value_type=_infer_value_type(nested_field.annotation),
+                        default=_normalize_default(default_value),
+                        required=not _is_optional(nested_field.annotation),
+                        prominence=(
+                            metadata.prominence
+                            if metadata is not None
+                            else SettingProminence.MAJOR
+                        ),
+                        depends_on=[
+                            f"{section_metadata.key}.{dependency}"
+                            for dependency in (
+                                metadata.depends_on if metadata is not None else ()
+                            )
+                        ],
+                        secret=_contains_secret(nested_field.annotation),
+                        choices=_extract_choices(nested_field.annotation),
+                    )
+                )
+            sections.append(section)
+            continue
+
+        # Top-level scalar field with settings metadata (e.g., agent)
+        metadata = settings_metadata(field)
+        if metadata is None:
+            continue
+
+        default_value = field.get_default(call_default_factory=True)
+        general_fields.append(
+            SettingsFieldSchema(
+                key=field_name,
+                label=(
+                    metadata.label
+                    if metadata.label is not None
+                    else _humanize_name(field_name)
+                ),
+                description=field.description,
+                section=_GENERAL_SECTION_KEY,
+                section_label=_GENERAL_SECTION_LABEL,
+                value_type=_infer_value_type(field.annotation),
+                default=_normalize_default(default_value),
+                required=not _is_optional(field.annotation),
+                prominence=metadata.prominence,
+                depends_on=list(metadata.depends_on),
+                secret=_contains_secret(field.annotation),
+                choices=_extract_choices(field.annotation),
+            )
+        )
+
+    if general_fields:
+        sections.insert(
+            0,
+            SettingsSectionSchema(
+                key=_GENERAL_SECTION_KEY,
+                label=_GENERAL_SECTION_LABEL,
+                fields=general_fields,
+            ),
+        )
 
     return SettingsSchema(model_name=model.__name__, sections=sections)
 

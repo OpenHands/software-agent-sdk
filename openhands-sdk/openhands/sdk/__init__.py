@@ -53,6 +53,7 @@ from openhands.sdk.settings import (
     AgentSettings,
     CondenserSettings,
     CriticSettings,
+    SecuritySettings,
     SettingsChoice,
     SettingsFieldSchema,
     SettingsSchema,
@@ -63,6 +64,7 @@ from openhands.sdk.settings_metadata import (
     SettingProminence,
     SettingsFieldMetadata,
     SettingsSectionMetadata,
+    field_meta,
 )
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
@@ -137,6 +139,7 @@ __all__ = [
     "LLMSummarizingCondenser",
     "CondenserSettings",
     "CriticSettings",
+    "SecuritySettings",
     "AgentSettings",
     "SettingsChoice",
     "SettingProminence",
@@ -146,6 +149,7 @@ __all__ = [
     "SettingsSectionMetadata",
     "SettingsSectionSchema",
     "export_settings_schema",
+    "field_meta",
     "FileStore",
     "LocalFileStore",
     "Plugin",
