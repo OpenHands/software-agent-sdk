@@ -1,10 +1,16 @@
 """Implementation of delegate tool executor."""
 
 import threading
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.tool.tool import ToolExecutor
@@ -12,9 +18,16 @@ from openhands.tools.delegate.definition import DelegateObservation
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.event import ActionEvent
     from openhands.tools.delegate.definition import DelegateAction
 
 logger = get_logger(__name__)
+
+_SUBAGENTS_DIR: Final[str] = "subagents"
+
+# Called when a sub-agent hits WAITING_FOR_CONFIRMATION.
+# Receives (agent_id, pending_actions) and returns True to approve, False to reject.
+ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 
 
 class DelegateExecutor(ToolExecutor):
@@ -25,11 +38,16 @@ class DelegateExecutor(ToolExecutor):
     - Delegating tasks to sub-agents and waiting for results (blocking)
     """
 
-    def __init__(self, max_children: int = 5):
+    def __init__(
+        self,
+        max_children: int = 5,
+        confirmation_handler: ConfirmationHandler | None = None,
+    ):
         self._parent_conversation: LocalConversation | None = None
         # Map from user-friendly identifier to conversation
         self._sub_agents: dict[str, LocalConversation] = {}
         self._max_children: int = max_children
+        self._confirmation_handler = confirmation_handler
 
     @property
     def parent_conversation(self) -> LocalConversation:
@@ -78,6 +96,27 @@ class DelegateExecutor(ToolExecutor):
         if not action.agent_types or index >= len(action.agent_types):
             return "default"
         return action.agent_types[index].strip() or "default"
+
+    def _run_until_finished(
+        self, agent_id: str, conversation: LocalConversation
+    ) -> None:
+        """Run a sub-agent conversation to completion, handling confirmations."""
+        conversation.run()
+        while (
+            conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        ):
+            pending = ConversationState.get_unmatched_actions(conversation.state.events)
+            if not pending:
+                break
+
+            if self._confirmation_handler is None or self._confirmation_handler(
+                agent_id, pending
+            ):
+                conversation.run()
+            else:
+                conversation.reject_pending_actions("User rejected the actions")
+                conversation.run()
 
     def _spawn_agents(self, action: "DelegateAction") -> DelegateObservation:
         """Spawn sub-agents with optional agent types."""
@@ -144,17 +183,43 @@ class DelegateExecutor(ToolExecutor):
                 if parent_visualizer is not None:
                     sub_visualizer = parent_visualizer.create_sub_visualizer(agent_id)
 
+                # Inherit persistence from the parent conversation:
+                # if the parent persists its conversation, subagents persist
+                # theirs under a "subagents" subdirectory.
+                parent_persistence_dir = parent_conversation.state.persistence_dir
+                if parent_persistence_dir is not None:
+                    subagents_persistence_dir: Path | None = (
+                        Path(parent_persistence_dir) / _SUBAGENTS_DIR
+                    )
+                    subagents_persistence_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    subagents_persistence_dir = None
+
                 # Use max_iteration_per_run from agent definition if set
                 conv_kwargs: dict = {
                     "agent": worker_agent,
                     "workspace": workspace_path,
                     "visualizer": sub_visualizer,
+                    "hook_config": factory.definition.hooks,
+                    "persistence_dir": subagents_persistence_dir,
                 }
 
-                if factory.max_iteration_per_run is not None:
-                    conv_kwargs["max_iteration_per_run"] = factory.max_iteration_per_run
+                if factory.definition.max_iteration_per_run is not None:
+                    conv_kwargs["max_iteration_per_run"] = (
+                        factory.definition.max_iteration_per_run
+                    )
 
                 sub_conversation = LocalConversation(**conv_kwargs)
+
+                # Apply permission_mode: explicit mode from definition,
+                # or inherit the parent's policy when None.
+                confirmation_policy = factory.definition.get_confirmation_policy()
+                if confirmation_policy is None:
+                    sub_conversation.set_confirmation_policy(
+                        parent_conversation.state.confirmation_policy
+                    )
+                else:
+                    sub_conversation.set_confirmation_policy(confirmation_policy)
 
                 self._sub_agents[agent_id] = sub_conversation
 
@@ -239,11 +304,9 @@ class DelegateExecutor(ToolExecutor):
                 """Run a single task on a sub-agent."""
                 try:
                     logger.info(f"Sub-agent {agent_id} starting task: {task[:100]}...")
-                    # Pass raw parent_name - visualizer handles formatting
                     conversation.send_message(task, sender=parent_name)
-                    conversation.run()
+                    self._run_until_finished(agent_id, conversation)
 
-                    # Extract the final response using get_agent_final_response
                     final_response = get_agent_final_response(conversation.state.events)
                     if final_response:
                         results[agent_id] = final_response

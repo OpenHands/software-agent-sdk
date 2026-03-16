@@ -117,6 +117,10 @@ class DockerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to delete the Docker image when cleaning up workspace.",
     )
+    network: str | None = Field(
+        default=None,
+        description="Connect a container to the specified Docker network.",
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
     _image_name: str | None = PrivateAttr(default=None)
@@ -226,6 +230,10 @@ class DockerWorkspace(RemoteWorkspace):
         # Add GPU support if enabled
         if self.enable_gpu:
             flags += ["--gpus", "all"]
+
+        # Connect container to the specified Docker network
+        if self.network:
+            flags += ["--network", self.network]
 
         # Run container
         run_cmd = [

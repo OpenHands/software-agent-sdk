@@ -40,17 +40,21 @@ class Conversation:
         is remote.
 
     Example:
-        >>> from openhands.sdk import LLM, Agent, Conversation
-        >>> from openhands.sdk.plugin import PluginSource
-        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> agent = Agent(llm=llm, tools=[])
-        >>> conversation = Conversation(
-        ...     agent=agent,
-        ...     workspace="./workspace",
-        ...     plugins=[PluginSource(source="github:org/security-plugin", ref="v1.0")],
-        ... )
-        >>> conversation.send_message("Hello!")
-        >>> conversation.run()
+        ```python
+        from openhands.sdk import LLM, Agent, Conversation
+        from openhands.sdk.plugin import PluginSource
+        from pydantic import SecretStr
+
+        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        agent = Agent(llm=llm, tools=[])
+        conversation = Conversation(
+            agent=agent,
+            workspace="./workspace",
+            plugins=[PluginSource(source="github:org/security-plugin", ref="v1.0")],
+        )
+        conversation.send_message("Hello!")
+        conversation.run()
+        ```
     """
 
     @overload
@@ -74,7 +78,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
-        delete_on_close: bool = False,
+        delete_on_close: bool = True,
     ) -> "LocalConversation": ...
 
     @overload
@@ -97,7 +101,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
-        delete_on_close: bool = False,
+        delete_on_close: bool = True,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -120,7 +124,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
-        delete_on_close: bool = False,
+        delete_on_close: bool = True,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (

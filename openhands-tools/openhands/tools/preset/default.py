@@ -126,7 +126,7 @@ def register_builtins_agents(cli_mode: bool = False) -> list[str]:
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,
-            description=agent_def.description or f"Agent: {agent_def.name}",
+            description=agent_def,
         )
         if was_registered:
             registered.append(agent_def.name)

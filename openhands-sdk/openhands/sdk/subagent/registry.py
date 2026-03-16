@@ -15,19 +15,19 @@ Example usage:
         )
         return Agent(llm=llm, tools=tools, agent_context=agent_context)
 
-    # Register the agent with a description
+    # Register with a plain description (local-only, no remote metadata)
     register_agent(
         name="security_expert",
         factory_func=create_security_expert,
-        description="Expert in security analysis and vulnerability assessment"
+        description="Expert in security analysis and vulnerability assessment",
     )
 """
 
 from collections.abc import Callable
-from functools import cache
+from functools import lru_cache
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
@@ -46,11 +46,10 @@ logger = get_logger(__name__)
 
 
 class AgentFactory(NamedTuple):
-    """Simple container for an agent factory function and its description."""
+    """Container for an agent factory function and its definition."""
 
     factory_func: Callable[["LLM"], "Agent"]
-    description: str
-    max_iteration_per_run: int | None = None
+    definition: AgentDefinition
 
 
 # Global registry for user-registered agent factories
@@ -58,65 +57,103 @@ _agent_factories: dict[str, AgentFactory] = {}
 _registry_lock = RLock()
 
 
+def _resolve_agent_definition(
+    name: str,
+    description: str | AgentDefinition,
+) -> AgentDefinition:
+    """Build or normalise an `AgentDefinition` for registration.
+
+    When description is a plain string a minimal definition is created
+    from name and description.  When it is already an
+    `AgentDefinition` it is returned as-is.
+
+    Args:
+        name: Agent name used as the registry key.
+        description: Either a human-readable description string (a minimal
+            `AgentDefinition` will be created) or a full
+            `AgentDefinition` instance.
+
+    Returns:
+        An `AgentDefinition` ready for storage.
+    """
+    if isinstance(description, AgentDefinition):
+        return description
+    return AgentDefinition(name=name, description=description)
+
+
 def register_agent(
     name: str,
     factory_func: Callable[["LLM"], "Agent"],
-    description: str,
+    description: str | AgentDefinition,
 ) -> None:
-    """
-    Register a custom agent globally.
+    """Register a custom agent globally.
+
+    The factory_func is the source of truth for local execution —
+    it receives an `LLM` and must return a fully-configured `Agent`.
+
+    The description parameter accepts either a plain string or a full
+    `AgentDefinition`.  A plain string creates a minimal definition
+    from name and description; this is fine for local-only agents but
+    means the remote server will not know about tools or system prompts.
+    Pass an `AgentDefinition` when the agent needs to work in remote
+    workspaces, as the definition's metadata (tools, system_prompt,
+    model, skills, …) is serialised and forwarded to the agent-server.
 
     Args:
-        name: Unique name for the agent
-        factory_func: Function that takes an LLM and returns an Agent
-        description: Human-readable description of what this agent does
+        name: Unique name for the agent (used as the registry key).
+        factory_func: Function that takes an LLM and returns an Agent.
+        description: A human-readable description string, or a full
+            `AgentDefinition` carrying tools, system_prompt, model,
+            and other metadata needed for remote execution.
 
     Raises:
-        ValueError: If an agent with the same name already exists
+        ValueError: If an agent with the same name already exists.
     """
+    definition = _resolve_agent_definition(name, description)
+
     with _registry_lock:
         if name in _agent_factories:
             raise ValueError(f"Agent '{name}' already registered")
 
         _agent_factories[name] = AgentFactory(
-            factory_func=factory_func, description=description
+            factory_func=factory_func, definition=definition
         )
 
 
 def register_agent_if_absent(
     name: str,
     factory_func: Callable[["LLM"], "Agent"],
-    description: str,
+    description: str | AgentDefinition,
 ) -> bool:
-    """
-    Register a custom agent if no agent with that name exists yet.
+    """Register a custom agent if no agent with that name exists yet.
 
-    Unlike register_agent(), this does not raise on duplicates. This is used
-    by file-based and plugin-based agent loading to gracefully skip conflicts
-    with programmatically registered agents.
+    Behaves identically to `register_agent` except that it silently
+    no-ops when an agent with *name* is already registered, instead of
+    raising `ValueError`.  This is used by file-based and plugin-based
+    agent loading to gracefully skip conflicts with programmatically
+    registered agents.
 
-    Args:
-        name: Unique name for the agent
-        factory_func: Function that takes an LLM and returns an Agent
-        description: Human-readable description of what this agent does
+    See `register_agent` for full parameter documentation.
 
     Returns:
-        True if the agent was registered, False if an agent with that name
-        already existed.
+        `True` if the agent was registered, `False` if an agent with
+        that name already existed.
     """
+    definition = _resolve_agent_definition(name, description)
+
     with _registry_lock:
         if name in _agent_factories:
             return False
 
         _agent_factories[name] = AgentFactory(
-            factory_func=factory_func, description=description
+            factory_func=factory_func, definition=definition
         )
         return True
 
 
-@cache
-def _get_profile_store() -> LLMProfileStore:
-    return LLMProfileStore()
+@lru_cache(maxsize=32)
+def _get_profile_store(profile_store_dir: str | None) -> LLMProfileStore:
+    return LLMProfileStore(profile_store_dir)
 
 
 def agent_definition_to_factory(
@@ -174,7 +211,7 @@ def agent_definition_to_factory(
         # Load LLM profile if agent_def.model is different from
         # 'inherit' and empty string
         if agent_def.model and agent_def.model != "inherit":
-            store = _get_profile_store()
+            store = _get_profile_store(agent_def.profile_store_dir)
             available_profiles = [name.removesuffix(".json") for name in store.list()]
             profile_name = agent_def.model.removesuffix(".json")
             if profile_name not in available_profiles:
@@ -208,10 +245,18 @@ def agent_definition_to_factory(
                 )
             tools.append(Tool(name=tool_name))
 
+        # Build MCP config if servers are defined.
+        # Key is "mcpServers" (camelCase) to match the MCPConfig schema
+        # (see sdk/plugin/types.py McpServersDict alias and Agent.mcp_config examples).
+        mcp_config: dict[str, Any] = {}
+        if agent_def.mcp_servers:
+            mcp_config = {"mcpServers": agent_def.mcp_servers}
+
         return Agent(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
+            mcp_config=mcp_config,
         )
 
     return _factory
@@ -253,7 +298,7 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,
-            description=agent_def.description or f"File-based agent: {agent_def.name}",
+            description=agent_def,
         )
         if was_registered:
             registered.append(agent_def.name)
@@ -290,7 +335,7 @@ def register_plugin_agents(
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,
-            description=agent_def.description or f"Plugin agent: {agent_def.name}",
+            description=agent_def,
         )
         if was_registered:
             registered.append(agent_def.name)
@@ -308,7 +353,7 @@ def get_agent_factory(name: str | None) -> AgentFactory:
             the default agent factory is returned.
 
     Returns:
-        AgentFactory: The factory function and description
+        AgentFactory: The factory function and definition
 
     Raises:
         ValueError: If no agent factory with the given name is found
@@ -342,9 +387,18 @@ def get_factory_info() -> str:
 
     info_lines = []
     for name, factory in sorted(user_factories.items()):
-        info_lines.append(f"- **{name}**: {factory.description}")
+        info_lines.append(f"- **{name}**: {factory.definition.description}")
 
     return "\n".join(info_lines)
+
+
+def get_registered_agent_definitions() -> list[AgentDefinition]:
+    """Return the definitions of all registered agents.
+
+    Useful for forwarding agent metadata to a remote agent-server.
+    """
+    with _registry_lock:
+        return [f.definition for f in _agent_factories.values()]
 
 
 def _reset_registry_for_tests() -> None:

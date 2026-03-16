@@ -3,6 +3,7 @@ import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import httpx
@@ -30,6 +31,10 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
 
 
+if TYPE_CHECKING:
+    from openhands.sdk.subagent.schema import AgentDefinition
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +50,41 @@ def _compose_conversation_info(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+    )
+
+
+def _register_agent_definitions(
+    agent_defs: list["AgentDefinition"],
+    *,
+    context: str,
+) -> None:
+    """Register agent definitions into the subagent registry.
+
+    Used both when creating new conversations (definitions forwarded from the
+    client) and when resuming persisted ones (definitions stored in meta.json).
+    """
+    from openhands.sdk.subagent.registry import (
+        agent_definition_to_factory,
+        register_agent_if_absent,
+    )
+
+    registered = 0
+    for agent_def in agent_defs:
+        try:
+            factory = agent_definition_to_factory(agent_def)
+            register_agent_if_absent(
+                name=agent_def.name,
+                factory_func=factory,
+                description=agent_def,
+            )
+            registered += 1
+        except Exception as e:
+            logger.warning(
+                f"Failed to register agent definition "
+                f"'{agent_def.name}' ({context}): {e}"
+            )
+    logger.info(
+        f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
     )
 
 
@@ -239,6 +279,13 @@ class ConversationService:
                     f"tools for conversation {conversation_id}: "
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
+
+        # Register subagent definitions forwarded from the client
+        if request.agent_definitions:
+            _register_agent_definitions(
+                request.agent_definitions,
+                context=f"conversation {conversation_id}",
+            )
 
         # Plugin loading is now handled lazily by LocalConversation.
         # Just pass the plugin specs through to StoredConversation.
@@ -453,6 +500,12 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
+                # Register agent definitions when resuming
+                if stored.agent_definitions:
+                    _register_agent_definitions(
+                        stored.agent_definitions,
+                        context=f"resuming conversation {stored.id}",
+                    )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(
@@ -704,6 +757,7 @@ class ConversationWebhookSubscriber:
         conversation_data = conversation_info.model_dump(mode="json")
 
         # Retry logic
+        response = None
         for attempt in range(self.spec.num_retries + 1):
             try:
                 async with httpx.AsyncClient() as client:
@@ -727,10 +781,14 @@ class ConversationWebhookSubscriber:
                 if attempt < self.spec.num_retries:
                     await asyncio.sleep(self.spec.retry_delay)
                 else:
+                    # Log response content for debugging failures
+                    response_content = (
+                        response.text if response is not None else "No response"
+                    )
                     logger.error(
                         f"Failed to post conversation info to webhook "
                         f"{conversations_url} after {self.spec.num_retries + 1} "
-                        "attempts"
+                        f"attempts. Response: {response_content}"
                     )
 
 

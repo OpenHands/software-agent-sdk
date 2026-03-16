@@ -30,6 +30,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.hooks import HookConfig
 
 
 CallbackType = TypeVar(
@@ -93,6 +94,11 @@ class ConversationStateProtocol(Protocol):
     @property
     def stats(self) -> ConversationStats:
         """The conversation statistics."""
+        ...
+
+    @property
+    def hook_config(self) -> "HookConfig | None":
+        """The hook configuration for this conversation."""
         ...
 
 

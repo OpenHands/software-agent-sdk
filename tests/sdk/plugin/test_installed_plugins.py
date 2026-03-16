@@ -19,6 +19,8 @@ from openhands.sdk.plugin import (
     InstalledPluginsMetadata,
     Plugin,
     PluginFetchError,
+    disable_plugin,
+    enable_plugin,
     get_installed_plugin,
     get_installed_plugins_dir,
     install_plugin,
@@ -380,6 +382,33 @@ def test_load_installed_plugins(sample_plugin_dir: Path, installed_dir: Path) ->
     assert len(plugins[0].skills) == 1
 
 
+def test_disable_plugin_filters_load(
+    sample_plugin_dir: Path, installed_dir: Path
+) -> None:
+    install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
+
+    assert disable_plugin("sample-plugin", installed_dir=installed_dir) is True
+
+    plugins = load_installed_plugins(installed_dir=installed_dir)
+    assert plugins == []
+    info = get_installed_plugin("sample-plugin", installed_dir=installed_dir)
+    assert info is not None
+    assert info.enabled is False
+
+
+def test_enable_plugin_restores_load(
+    sample_plugin_dir: Path, installed_dir: Path
+) -> None:
+    install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
+    disable_plugin("sample-plugin", installed_dir=installed_dir)
+
+    assert enable_plugin("sample-plugin", installed_dir=installed_dir) is True
+
+    plugins = load_installed_plugins(installed_dir=installed_dir)
+    assert len(plugins) == 1
+    assert plugins[0].name == "sample-plugin"
+
+
 # ============================================================================
 # Get Installed Plugin Tests
 # ============================================================================
@@ -423,6 +452,7 @@ def test_update_existing_plugin_local(
 ) -> None:
     """Test updating an installed plugin from local source."""
     install_plugin(source=str(sample_plugin_dir), installed_dir=installed_dir)
+    disable_plugin("sample-plugin", installed_dir=installed_dir)
 
     # Modify the source to new version
     (sample_plugin_dir / ".plugin" / "plugin.json").write_text(
@@ -439,6 +469,7 @@ def test_update_existing_plugin_local(
 
     assert updated is not None
     assert updated.version == "1.0.1"
+    assert updated.enabled is False
 
 
 def test_update_existing_plugin_mocked(

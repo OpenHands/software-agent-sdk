@@ -485,6 +485,7 @@ def test_start_conversation_new(
         # Create request data with proper serialization
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -531,6 +532,7 @@ def test_start_conversation_existing(
         # Create request data with proper serialization
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -590,6 +592,7 @@ def test_start_conversation_minimal_request(
         # Create minimal valid request
         minimal_request = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1201,6 +1204,7 @@ def test_start_conversation_with_tool_module_qualnames(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1261,6 +1265,7 @@ def test_start_conversation_without_tool_module_qualnames(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1303,6 +1308,7 @@ def test_start_conversation_autotitle_defaults_to_true(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1337,6 +1343,7 @@ def test_start_conversation_autotitle_false(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
