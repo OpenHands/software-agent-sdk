@@ -681,8 +681,7 @@ class LocalConversation(BaseConversation):
                                             f"[SYSTEM] You have used {iteration}/"
                                             f"{self.max_iteration_per_run} steps. "
                                             f"{self.max_iteration_per_run - iteration} "
-                                            "steps remaining. Begin wrapping up and "
-                                            "provide your best answer."
+                                            "steps remaining."
                                         )
                                     )
                                 ],
