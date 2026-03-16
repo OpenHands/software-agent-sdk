@@ -39,12 +39,8 @@ def select_chat_options(
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
 
-        # OpenAI reasoning models (o1, o3) ignore temp/top_p
-        # Gemini models DO respect temperature, so we only pop for OpenAI
-        model_lower = llm.model.lower()
-        # Normalize to basename so provider-prefixed IDs like "openai/o1" are handled
-        model_name = model_lower.split("/")[-1]
-        if model_name.startswith(("o1", "o3")):
+        # All reasoning models ignore temp/top_p, except Gemini
+        if "gemini" not in llm.model.lower():
             out.pop("temperature", None)
             out.pop("top_p", None)
 
