@@ -143,9 +143,7 @@ class TestGetSecrets:
         assert gh_secret.url == (
             f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/secrets/GITHUB_TOKEN"
         )
-        # Session key referenced by env var name, not embedded
-        assert gh_secret.env_headers == {"X-Session-API-Key": "SESSION_API_KEY"}
-        assert gh_secret.headers == {}
+        assert gh_secret.headers == {"X-Session-API-Key": SESSION_KEY}
         assert gh_secret.description == "GitHub token"
 
     def test_get_secrets_filters_by_name(self, mock_workspace):

@@ -385,11 +385,6 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         """Headers for settings requests (SESSION_API_KEY auth)."""
         return {"X-Session-API-Key": self._session_api_key or ""}
 
-    @staticmethod
-    def _env_headers() -> dict[str, str]:
-        """env_headers for LookupSecret — resolved inside sandbox only."""
-        return {"X-Session-API-Key": "SESSION_API_KEY"}
-
     def get_llm(self, **llm_kwargs: Any) -> LLM:
         """Fetch LLM settings from the user's SaaS account and return an LLM.
 
@@ -486,7 +481,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 continue
             result[name] = LookupSecret(
                 url=f"{self._settings_base_url}/secrets/{name}",
-                env_headers=self._env_headers(),
+                headers={"X-Session-API-Key": self._session_api_key or ""},
                 description=item.get("description"),
             )
 

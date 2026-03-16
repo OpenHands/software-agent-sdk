@@ -1,6 +1,5 @@
 """Secret sources and types for handling sensitive data."""
 
-import os
 from abc import ABC, abstractmethod
 
 import httpx
@@ -48,34 +47,13 @@ class StaticSecret(SecretSource):
 
 
 class LookupSecret(SecretSource):
-    """A secret looked up from some external url.
-
-    Headers can be supplied directly via ``headers`` or resolved from
-    environment variables at call time via ``env_headers``.  Using
-    ``env_headers`` ensures that the secret header value (e.g. a session
-    key) is never embedded in the serialized object — only the
-    environment variable *name* travels over the wire.  The value is
-    read from the process environment when ``get_value()`` is called,
-    which should happen inside the sandbox where the env var is set.
-    """
+    """A secret looked up from some external url"""
 
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
-    env_headers: dict[str, str] = Field(
-        default_factory=dict,
-        description=(
-            "Mapping of header name → environment variable name. "
-            "Resolved at call time inside get_value()."
-        ),
-    )
 
     def get_value(self) -> str | None:
-        resolved = dict(self.headers)
-        for header_name, env_var in self.env_headers.items():
-            value = os.environ.get(env_var)
-            if value:
-                resolved[header_name] = value
-        response = httpx.get(self.url, headers=resolved, timeout=30.0)
+        response = httpx.get(self.url, headers=self.headers, timeout=30.0)
         response.raise_for_status()
         return response.text
 

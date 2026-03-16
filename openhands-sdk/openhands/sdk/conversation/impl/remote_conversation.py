@@ -1113,8 +1113,12 @@ class RemoteConversation(BaseConversation):
         serializable_secrets: dict[str, str | dict] = {}
         for key, value in secrets.items():
             if isinstance(value, SecretSource):
-                # Pydantic model → dict with "kind" discriminator for server
-                serializable_secrets[key] = value.model_dump(mode="json")
+                # Pydantic model → dict with "kind" discriminator for server.
+                # expose_secrets=True prevents SecretStr fields (e.g. header
+                # values) from being redacted during serialization.
+                serializable_secrets[key] = value.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                )
             elif callable(value):
                 serializable_secrets[key] = value()
             else:
