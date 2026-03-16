@@ -354,7 +354,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             logger.info(f"Deleting sandbox {self._sandbox_id}...")
             self._send_api_request(
                 "DELETE",
-                f"{self.cloud_api_url}/api/v1/sandboxes",
+                f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}",
                 params={"sandbox_id": self._sandbox_id},
                 timeout=30.0,
             )
