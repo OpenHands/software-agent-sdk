@@ -107,6 +107,7 @@ package(s) containing the changed files. If a PR spans multiple packages,
 consult each relevant package-level AGENTS.md.
 
 - SDK: [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md)
+- SDK conversations impl: [openhands-sdk/openhands/sdk/conversation/impl/AGENTS.md](openhands-sdk/openhands/sdk/conversation/impl/AGENTS.md)
 - Subagents: [openhands-sdk/openhands/sdk/subagent/AGENTS.md](openhands-sdk/openhands/sdk/subagent/AGENTS.md)
 - Tools: [openhands-tools/openhands/tools/AGENTS.md](openhands-tools/openhands/tools/AGENTS.md)
 - Workspace: [openhands-workspace/openhands/workspace/AGENTS.md](openhands-workspace/openhands/workspace/AGENTS.md)
