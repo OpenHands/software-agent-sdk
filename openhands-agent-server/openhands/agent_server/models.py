@@ -72,7 +72,7 @@ class SendMessageRequest(BaseModel):
 
 
 class _StartConversationRequestBase(BaseModel):
-    """Common conversation creation fields shared by v1 and v2 contracts."""
+    """Common conversation creation fields shared by conversation contracts."""
 
     workspace: LocalWorkspace = Field(
         ...,
@@ -160,16 +160,13 @@ class StartConversationRequest(_StartConversationRequestBase):
     agent: Agent
 
 
-class StartConversationRequestV2(_StartConversationRequestBase):
-    """Versioned payload to create a new conversation.
-
-    Supports the ACP-capable polymorphic agent contract.
-    """
+class StartACPConversationRequest(_StartConversationRequestBase):
+    """Payload to create a conversation with ACP-capable agent support."""
 
     agent: ACPEnabledAgent
 
 
-class StoredConversation(StartConversationRequestV2):
+class StoredConversation(StartACPConversationRequest):
     """Stored details about a conversation.
 
     Extends StartConversationRequest with server-assigned fields.
@@ -185,7 +182,7 @@ class StoredConversation(StartConversationRequestV2):
 
 
 class _ConversationInfoBase(BaseModel):
-    """Common conversation info fields shared by v1 and v2 contracts."""
+    """Common conversation info fields shared by conversation contracts."""
 
     id: UUID = Field(description="Unique conversation ID")
     workspace: BaseWorkspace = Field(
@@ -287,20 +284,20 @@ class ConversationPage(BaseModel):
     next_page_id: str | None = None
 
 
-class ConversationInfoV2(_ConversationInfoBase):
-    """Versioned conversation info that supports ACP-capable agent configs."""
+class ACPConversationInfo(_ConversationInfoBase):
+    """Conversation info that supports ACP-capable agent configs."""
 
     agent: ACPEnabledAgent = Field(
         ...,
         description=(
             "The agent running in the conversation. "
-            "Version 2 supports both Agent and ACPAgent payloads."
+            "Supports both Agent and ACPAgent payloads."
         ),
     )
 
 
-class ConversationPageV2(BaseModel):
-    items: list[ConversationInfoV2]
+class ACPConversationPage(BaseModel):
+    items: list[ACPConversationInfo]
     next_page_id: str | None = None
 
 

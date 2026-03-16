@@ -166,21 +166,37 @@ def test_action_variants_have_proper_schemas(client):
         )
 
 
-def test_conversation_contracts_are_versioned(client):
-    """v1 conversations stay Agent-only while v2 exposes ACP support."""
+def test_conversation_contracts_keep_v1_stable_and_add_acp_routes(client):
+    """v1 conversations stay Agent-only while ACP endpoints expose polymorphism."""
     response = client.get("/openapi.json")
     assert response.status_code == 200
 
-    schemas = response.json()["components"]["schemas"]
+    openapi_schema = response.json()
+    schemas = openapi_schema["components"]["schemas"]
 
     v1_request = schemas["StartConversationRequest"]
     assert (
         v1_request["properties"]["agent"]["$ref"] == "#/components/schemas/Agent-Input"
     )
+    v1_response = schemas["ConversationInfo"]
+    assert (
+        v1_response["properties"]["agent"]["$ref"]
+        == "#/components/schemas/Agent-Output"
+    )
 
-    v2_request = schemas["StartConversationRequestV2"]
-    agent_schema = v2_request["properties"]["agent"]
+    acp_request = schemas["StartACPConversationRequest"]
+    agent_schema = acp_request["properties"]["agent"]
     assert "oneOf" in agent_schema
     refs = {variant["$ref"] for variant in agent_schema["oneOf"]}
     assert "#/components/schemas/Agent-Input" in refs
     assert "#/components/schemas/ACPAgent-Input" in refs
+
+    acp_response = schemas["ACPConversationInfo"]
+    acp_agent_schema = acp_response["properties"]["agent"]
+    assert "oneOf" in acp_agent_schema
+    acp_refs = {variant["$ref"] for variant in acp_agent_schema["oneOf"]}
+    assert "#/components/schemas/Agent-Output" in acp_refs
+    assert "#/components/schemas/ACPAgent-Output" in acp_refs
+
+    assert "/api/v2/conversations" not in openapi_schema["paths"]
+    assert "/api/acp/conversations" in openapi_schema["paths"]

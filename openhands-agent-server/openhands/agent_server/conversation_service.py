@@ -12,13 +12,13 @@ from pydantic import BaseModel
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ACPConversationInfo,
+    ACPConversationPage,
     ConversationInfo,
-    ConversationInfoV2,
     ConversationPage,
-    ConversationPageV2,
     ConversationSortOrder,
+    StartACPConversationRequest,
     StartConversationRequest,
-    StartConversationRequestV2,
     StoredConversation,
     UpdateConversationRequest,
 )
@@ -58,10 +58,10 @@ def _compose_conversation_info_v1(
     )
 
 
-def _compose_conversation_info_v2(
+def _compose_acp_conversation_info(
     stored: StoredConversation, state: ConversationState
-) -> ConversationInfoV2:
-    return ConversationInfoV2(
+) -> ACPConversationInfo:
+    return ACPConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
         metrics=stored.metrics,
@@ -136,16 +136,16 @@ class ConversationService:
         state = await event_service.get_state()
         return _compose_conversation_info_v1(event_service.stored, state)
 
-    async def get_conversation_v2(
+    async def get_acp_conversation(
         self, conversation_id: UUID
-    ) -> ConversationInfoV2 | None:
+    ) -> ACPConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
         event_service = self._event_services.get(conversation_id)
         if event_service is None:
             return None
         state = await event_service.get_state()
-        return _compose_conversation_info_v2(event_service.stored, state)
+        return _compose_acp_conversation_info(event_service.stored, state)
 
     async def search_conversations(
         self,
@@ -159,29 +159,29 @@ class ConversationService:
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
-            include_v2=False,
+            include_acp=False,
         )
         return ConversationPage(
             items=cast(list[ConversationInfo], items),
             next_page_id=next_page_id,
         )
 
-    async def search_conversations_v2(
+    async def search_acp_conversations(
         self,
         page_id: str | None = None,
         limit: int = 100,
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
-    ) -> ConversationPageV2:
+    ) -> ACPConversationPage:
         items, next_page_id = await self._search_conversations(
             page_id=page_id,
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
-            include_v2=True,
+            include_acp=True,
         )
-        return ConversationPageV2(
-            items=cast(list[ConversationInfoV2], items),
+        return ACPConversationPage(
+            items=cast(list[ACPConversationInfo], items),
             next_page_id=next_page_id,
         )
 
@@ -192,20 +192,20 @@ class ConversationService:
         execution_status: ConversationExecutionStatus | None,
         sort_order: ConversationSortOrder,
         *,
-        include_v2: bool,
-    ) -> tuple[list[ConversationInfo | ConversationInfoV2], str | None]:
+        include_acp: bool,
+    ) -> tuple[list[ConversationInfo | ACPConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
         # Collect all conversations with their info
         all_conversations = []
         for id, event_service in self._event_services.items():
-            if not include_v2 and not _is_v1_conversation(event_service.stored):
+            if not include_acp and not _is_v1_conversation(event_service.stored):
                 continue
             state = await event_service.get_state()
             conversation_info = (
-                _compose_conversation_info_v2(event_service.stored, state)
-                if include_v2
+                _compose_acp_conversation_info(event_service.stored, state)
+                if include_acp
                 else _compose_conversation_info_v1(event_service.stored, state)
             )
             # Apply status filter if provided
@@ -256,23 +256,14 @@ class ConversationService:
     ) -> int:
         return await self._count_conversations(
             execution_status=execution_status,
-            include_v2=False,
-        )
-
-    async def count_conversations_v2(
-        self,
-        execution_status: ConversationExecutionStatus | None = None,
-    ) -> int:
-        return await self._count_conversations(
-            execution_status=execution_status,
-            include_v2=True,
+            include_acp=False,
         )
 
     async def _count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None,
         *,
-        include_v2: bool,
+        include_acp: bool,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
@@ -280,7 +271,7 @@ class ConversationService:
 
         count = 0
         for event_service in self._event_services.values():
-            if not include_v2 and not _is_v1_conversation(event_service.stored):
+            if not include_acp and not _is_v1_conversation(event_service.stored):
                 continue
             state = await event_service.get_state()
 
@@ -308,12 +299,12 @@ class ConversationService:
         )
         return results
 
-    async def batch_get_conversations_v2(
+    async def batch_get_acp_conversations(
         self, conversation_ids: list[UUID]
-    ) -> list[ConversationInfoV2 | None]:
+    ) -> list[ACPConversationInfo | None]:
         results = await asyncio.gather(
             *[
-                self.get_conversation_v2(conversation_id)
+                self.get_acp_conversation(conversation_id)
                 for conversation_id in conversation_ids
             ]
         )
@@ -358,28 +349,28 @@ class ConversationService:
         assert isinstance(conversation_info, ConversationInfo)
         return conversation_info, is_new
 
-    async def start_conversation_v2(
-        self, request: StartConversationRequestV2
-    ) -> tuple[ConversationInfoV2, bool]:
+    async def start_acp_conversation(
+        self, request: StartACPConversationRequest
+    ) -> tuple[ACPConversationInfo, bool]:
         conversation_info, is_new = await self._start_conversation(request)
-        assert isinstance(conversation_info, ConversationInfoV2)
+        assert isinstance(conversation_info, ACPConversationInfo)
         return conversation_info, is_new
 
     async def _start_conversation(
-        self, request: StartConversationRequest | StartConversationRequestV2
-    ) -> tuple[ConversationInfo | ConversationInfoV2, bool]:
+        self, request: StartConversationRequest | StartACPConversationRequest
+    ) -> tuple[ConversationInfo | ACPConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
-        use_v2 = isinstance(request, StartConversationRequestV2)
+        use_acp_contract = isinstance(request, StartACPConversationRequest)
 
         existing_event_service = self._event_services.get(conversation_id)
         if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
             conversation_info = (
-                _compose_conversation_info_v2(existing_event_service.stored, state)
-                if use_v2
+                _compose_acp_conversation_info(existing_event_service.stored, state)
+                if use_acp_contract
                 else _compose_conversation_info_v1(existing_event_service.stored, state)
             )
             return conversation_info, False
@@ -442,14 +433,14 @@ class ConversationService:
 
         state = await event_service.get_state()
         conversation_info = (
-            _compose_conversation_info_v2(event_service.stored, state)
-            if use_v2
+            _compose_acp_conversation_info(event_service.stored, state)
+            if use_acp_contract
             else _compose_conversation_info_v1(event_service.stored, state)
         )
 
         # Notify conversation webhooks about the started conversation
         await self._notify_conversation_webhooks(
-            _compose_conversation_info_v2(event_service.stored, state)
+            _compose_acp_conversation_info(event_service.stored, state)
         )
 
         return conversation_info, True
@@ -462,7 +453,7 @@ class ConversationService:
             await event_service.pause()
             # Notify conversation webhooks about the paused conversation
             state = await event_service.get_state()
-            conversation_info = _compose_conversation_info_v2(
+            conversation_info = _compose_acp_conversation_info(
                 event_service.stored, state
             )
             await self._notify_conversation_webhooks(conversation_info)
@@ -484,7 +475,7 @@ class ConversationService:
             # Notify conversation webhooks about the stopped conversation before closing
             try:
                 state = await event_service.get_state()
-                conversation_info = _compose_conversation_info_v2(
+                conversation_info = _compose_acp_conversation_info(
                     event_service.stored, state
                 )
                 conversation_info.execution_status = (
@@ -543,7 +534,7 @@ class ConversationService:
 
         # Notify conversation webhooks about the updated conversation
         state = await event_service.get_state()
-        conversation_info = _compose_conversation_info_v2(event_service.stored, state)
+        conversation_info = _compose_acp_conversation_info(event_service.stored, state)
         await self._notify_conversation_webhooks(conversation_info)
 
         logger.info(
