@@ -31,7 +31,7 @@ EXPECTED_AGENT_NAMES: Final[set[str]] = {
     "general purpose",
     "explore",
     "bash",
-    "web researcher",
+    "web fetcher",
 }
 
 
@@ -95,12 +95,14 @@ def test_each_builtin_has_nonempty_description() -> None:
         )
 
 
-def test_each_builtin_has_at_least_one_tool() -> None:
-    """Every agent definition must specify at least one tool."""
+def test_each_builtin_has_tools_or_mcp() -> None:
+    """Every agent definition must specify at least one tool or MCP server."""
     agents = load_agents_from_dir(SUBAGENTS_DIR)
     for agent_def in agents:
-        assert len(agent_def.tools) > 0, (
-            f"Agent '{agent_def.name}' has no tools defined"
+        has_tools = len(agent_def.tools) > 0
+        has_mcp = agent_def.mcp_servers is not None and len(agent_def.mcp_servers) > 0
+        assert has_tools or has_mcp, (
+            f"Agent '{agent_def.name}' has no tools or MCP servers defined"
         )
 
 
@@ -113,7 +115,7 @@ def test_register_builtins_agents_with_browser() -> None:
     """With browser enabled, all agents should be registered."""
     registered = register_builtins_agents(enable_browser=True)
     registered_set = set(registered)
-    expected = {"general purpose", "explore", "bash", "web researcher"}
+    expected = {"general purpose", "explore", "bash", "web fetcher"}
     assert expected.issubset(registered_set), (
         f"Missing registrations: {expected - registered_set}"
     )
@@ -148,14 +150,17 @@ def test_bash_agent_tools() -> None:
     assert [t.name for t in agent.tools] == ["terminal"]
 
 
-def test_web_researcher_agent_tools() -> None:
-    """'web researcher' agent must include browser_tool_set."""
+def test_web_fetcher_agent() -> None:
+    """'web fetcher' agent must have no tools and MCP fetch configured."""
     register_builtins_agents(enable_browser=True)
     llm = _make_test_llm()
-    factory = get_agent_factory("web researcher")
+    factory = get_agent_factory("web fetcher")
     agent = factory.factory_func(llm)
     assert isinstance(agent, Agent)
-    assert [t.name for t in agent.tools] == ["browser_tool_set"]
+    assert agent.tools == []
+    assert agent.mcp_config is not None
+    assert "mcpServers" in agent.mcp_config
+    assert "fetch" in agent.mcp_config["mcpServers"]
 
 
 # ---------------------------------------------------------------------------
@@ -170,10 +175,10 @@ def test_register_builtins_agents_no_browser() -> None:
     assert {"general purpose", "explore", "bash"}.issubset(registered_set)
 
 
-def test_no_browser_excludes_web_researcher() -> None:
-    """Without browser, web researcher should not be registered."""
+def test_no_browser_excludes_web_fetcher() -> None:
+    """Without browser/web access, web fetcher should not be registered."""
     registered = register_builtins_agents(enable_browser=False)
-    assert "web researcher" not in registered
+    assert "web fetcher" not in registered
 
 
 # ---------------------------------------------------------------------------

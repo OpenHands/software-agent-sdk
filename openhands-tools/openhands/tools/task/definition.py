@@ -140,9 +140,9 @@ Example 2 — Running tests (good use of bash):
     prompt="Run: cd /workspace/django && python tests/runtests.py
     utils_tests.test_dateformat -v 2. Report the full output."
 
-Example 3 - Research information on a website (good use of web researcher):
-    subagent_type="web researcher"
-    prompt="Navigate to the Stripe API docs and find the parameters for the PaymentIntent create endpoint."
+Example 3 - Fetch a URL and answer a question about it (good use of web fetcher):
+    subagent_type="web fetcher"
+    prompt="Fetch https://docs.stripe.com/api/payment_intents/create and tell me what parameters are required for creating a PaymentIntent."
 
 Example 4 - Perform a multi-step task involving code editing and shell commands:
     subagent_type="general purpose"

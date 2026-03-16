@@ -100,8 +100,7 @@ def register_builtins_agents(enable_browser: bool = True) -> list[str]:
 
     Args:
         enable_browser: Whether browser tools are available. When False,
-            agents that require browser tools (e.g. web researcher) are
-            skipped.
+            agents that require browser tools are skipped.
 
     Returns:
         List of agents which were actually registered.
@@ -111,13 +110,11 @@ def register_builtins_agents(enable_browser: bool = True) -> list[str]:
     subagent_dir = Path(__file__).parent / "subagents"
     builtins_agents_def = load_agents_from_dir(subagent_dir)
 
-    # Filter out browser-dependent agents when browser is not available
+    # Filter out web-facing agents when browser/web access is disabled
     if not enable_browser:
-        _browser_only_agents = {"web researcher"}
+        _web_agents = {"web fetcher"}
         builtins_agents_def = [
-            agent
-            for agent in builtins_agents_def
-            if agent.name not in _browser_only_agents
+            agent for agent in builtins_agents_def if agent.name not in _web_agents
         ]
 
     registered: list[str] = []
