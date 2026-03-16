@@ -69,9 +69,8 @@ Removing an endpoint or a previously supported REST contract is a breaking chang
 
 - Endpoints and legacy contracts must have a deprecation notice for **5 minor
   releases** before removal.
-- Any release that introduces an allowed breaking REST API change should still be
-  at least a **MINOR** SemVer bump, but the version bump does **not** replace the
-  5-minor-release deprecation runway.
+- Any release that introduces an allowed breaking REST API change should be
+  at least a **MINOR** SemVer bump, after a 5-minor-release deprecation runway.
 
 ### CI enforcement
 
