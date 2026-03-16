@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_service import (
     ConversationContractMismatchError,
     ConversationService,
+    SettingsReferenceError,
 )
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
@@ -130,7 +131,10 @@ async def batch_get_conversations(
 
 @conversation_router.post(
     "",
-    responses={409: {"description": "Conversation contract mismatch"}},
+    responses={
+        400: {"description": "Bad request (e.g., missing agent or invalid reference)"},
+        409: {"description": "Conversation contract mismatch"},
+    },
 )
 async def start_conversation(
     request: Annotated[
@@ -139,9 +143,19 @@ async def start_conversation(
     response: Response,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
-    """Start a conversation in the local environment."""
+    """Start a conversation in the local environment.
+
+    The agent can be provided either inline via 'agent' or by reference via
+    'agent_name'. Similarly, secrets can be provided inline or referenced via
+    'secrets_name'. An LLM profile can be applied via 'llm_profile_name'.
+    """
     try:
         info, is_new = await conversation_service.start_conversation(request)
+    except SettingsReferenceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
     except ConversationContractMismatchError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

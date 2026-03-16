@@ -112,6 +112,13 @@ class Config(BaseModel):
             "The location of the directory where conversations and events are stored."
         ),
     )
+    settings_path: Path = Field(
+        default=Path("workspace/settings"),
+        description=(
+            "The location of the directory where persistent settings are stored, "
+            "including LLM profiles, agent configurations, and secret bundles."
+        ),
+    )
     bash_events_dir: Path = Field(
         default=Path("workspace/bash_events"),
         description=(

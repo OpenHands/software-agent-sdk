@@ -108,6 +108,13 @@ class _StartConversationRequestBase(BaseModel):
         default_factory=dict,
         description="Secrets available in the conversation",
     )
+    secrets_name: str | None = Field(
+        default=None,
+        description=(
+            "Name of a stored secrets bundle to use. If provided, these secrets "
+            "are merged with any inline secrets (inline takes precedence)."
+        ),
+    )
     tool_module_qualnames: dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -155,24 +162,75 @@ class StartConversationRequest(_StartConversationRequestBase):
     """Payload to create a new conversation.
 
     Contains an Agent configuration along with conversation-specific options.
+
+    The agent can be provided either:
+    - Inline via the `agent` field
+    - By reference via `agent_name` (referencing a stored agent configuration)
+
+    If both are provided, the inline agent takes precedence.
+    Similarly, `llm_profile_name` can provide an LLM configuration that will be
+    used if the inline agent doesn't specify an LLM.
     """
 
-    agent: Agent
+    agent: Agent | None = Field(
+        default=None,
+        description="Inline agent configuration. If not provided, agent_name is used.",
+    )
+    agent_name: str | None = Field(
+        default=None,
+        description="Name of a stored agent configuration to use.",
+    )
+    llm_profile_name: str | None = Field(
+        default=None,
+        description=(
+            "Name of a stored LLM profile to use. If provided and the agent "
+            "doesn't have an LLM configured, this profile's LLM will be used."
+        ),
+    )
 
 
 class StartACPConversationRequest(_StartConversationRequestBase):
-    """Payload to create a conversation with ACP-capable agent support."""
+    """Payload to create a conversation with ACP-capable agent support.
 
-    agent: ACPEnabledAgent
+    The agent can be provided either:
+    - Inline via the `agent` field
+    - By reference via `agent_name` (referencing a stored agent configuration)
+
+    If both are provided, the inline agent takes precedence.
+    Similarly, `llm_profile_name` can provide an LLM configuration.
+    """
+
+    agent: ACPEnabledAgent | None = Field(
+        default=None,
+        description="Inline agent configuration. If not provided, agent_name is used.",
+    )
+    agent_name: str | None = Field(
+        default=None,
+        description="Name of a stored agent configuration to use.",
+    )
+    llm_profile_name: str | None = Field(
+        default=None,
+        description=(
+            "Name of a stored LLM profile to use. If provided and the agent "
+            "doesn't have an LLM configured, this profile's LLM will be used."
+        ),
+    )
 
 
 class StoredConversation(StartACPConversationRequest):
     """Stored details about a conversation.
 
     Extends StartConversationRequest with server-assigned fields.
+    The agent field is required (not optional) in stored conversations
+    because references have already been resolved.
     """
 
     id: OpenHandsUUID
+    # Override to make agent required (references are resolved before storage)
+    agent: ACPEnabledAgent = Field(  # type: ignore[assignment]
+        ...,
+        description="The resolved agent configuration (references resolved).",
+    )
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
     )

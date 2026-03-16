@@ -14,6 +14,7 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ACPConversationInfo,
     ACPConversationPage,
+    ACPEnabledAgent,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -24,6 +25,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.agent_server.settings_service import SettingsService
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Agent, Event, Message
 from openhands.sdk.conversation.state import (
@@ -32,6 +34,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -129,6 +132,102 @@ def _register_agent_definitions(
     )
 
 
+class SettingsReferenceError(ValueError):
+    """Raised when a referenced setting does not exist."""
+
+
+def _resolve_agent_and_llm(
+    request: StartConversationRequest | StartACPConversationRequest,
+    settings_service: SettingsService | None,
+) -> ACPEnabledAgent:
+    """Resolve agent and LLM references from the request.
+
+    Priority order:
+    1. Inline agent takes precedence over agent_name
+    2. If no agent specified, look up agent_name
+    3. If agent has no LLM, use llm_profile_name to provide one
+
+    Returns the resolved agent configuration.
+    """
+    agent: ACPEnabledAgent | None = request.agent
+
+    # Resolve agent by name if not provided inline
+    if agent is None and request.agent_name:
+        if settings_service is None:
+            raise SettingsReferenceError(
+                f"Cannot resolve agent_name '{request.agent_name}': "
+                "settings service not available"
+            )
+        named_agent = settings_service.get_agent(request.agent_name)
+        if named_agent is None:
+            raise SettingsReferenceError(
+                f"Agent '{request.agent_name}' not found in settings"
+            )
+        agent = named_agent.agent
+        logger.debug(f"Resolved agent from settings: {request.agent_name}")
+
+    if agent is None:
+        raise SettingsReferenceError(
+            "Either 'agent' (inline) or 'agent_name' (reference) must be provided"
+        )
+
+    # Resolve LLM profile if needed
+    if request.llm_profile_name:
+        if settings_service is None:
+            raise SettingsReferenceError(
+                f"Cannot resolve llm_profile_name '{request.llm_profile_name}': "
+                "settings service not available"
+            )
+        named_profile = settings_service.get_llm_profile(request.llm_profile_name)
+        if named_profile is None:
+            raise SettingsReferenceError(
+                f"LLM profile '{request.llm_profile_name}' not found in settings"
+            )
+
+        # Apply LLM profile to agent if agent doesn't have one configured
+        if isinstance(agent, Agent):
+            if agent.llm is None or agent.llm.api_key is None:
+                agent = agent.model_copy(update={"llm": named_profile.llm})
+                logger.debug(
+                    f"Applied LLM profile '{request.llm_profile_name}' to agent"
+                )
+        # For ACPAgent, check if it needs LLM (implementation depends on ACPAgent)
+
+    return agent
+
+
+def _resolve_secrets(
+    request: StartConversationRequest | StartACPConversationRequest,
+    settings_service: SettingsService | None,
+) -> dict[str, SecretSource]:
+    """Resolve and merge secrets from inline and referenced bundles.
+
+    Priority: inline secrets take precedence over secrets from secrets_name.
+    """
+    merged_secrets: dict[str, SecretSource] = {}
+
+    # First, apply secrets from referenced bundle (lower priority)
+    if request.secrets_name:
+        if settings_service is None:
+            raise SettingsReferenceError(
+                f"Cannot resolve secrets_name '{request.secrets_name}': "
+                "settings service not available"
+            )
+        named_secrets = settings_service.get_secrets(request.secrets_name)
+        if named_secrets is None:
+            raise SettingsReferenceError(
+                f"Secrets bundle '{request.secrets_name}' not found in settings"
+            )
+        merged_secrets.update(named_secrets.secrets)
+        logger.debug(f"Loaded {len(named_secrets.secrets)} secrets from bundle")
+
+    # Then, apply inline secrets (higher priority, overrides)
+    if request.secrets:
+        merged_secrets.update(request.secrets)
+
+    return merged_secrets
+
+
 @dataclass
 class ConversationService:
     """
@@ -137,6 +236,7 @@ class ConversationService:
     """
 
     conversations_dir: Path = field()
+    settings_service: SettingsService | None = field(default=None)
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
@@ -412,10 +512,14 @@ class ConversationService:
             )
             return conversation_info, False
 
+        # Resolve agent and LLM from references (if provided)
+        resolved_agent = _resolve_agent_and_llm(request, self.settings_service)
+
+        # Resolve and merge secrets
+        resolved_secrets = _resolve_secrets(request, self.settings_service)
+
         # Dynamically register tools from client's registry
         if request.tool_module_qualnames:
-            import importlib
-
             for tool_name, module_qualname in request.tool_module_qualnames.items():
                 try:
                     # Import the module to trigger tool auto-registration
@@ -456,9 +560,25 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
+        #
+        # Build the stored conversation with resolved agent and secrets
+        # Exclude fields that we're overriding with resolved values
+        request_data = request.model_dump(
+            mode="json",
+            context={"expose_secrets": True},
+            exclude={
+                "agent",
+                "agent_name",
+                "llm_profile_name",
+                "secrets",
+                "secrets_name",
+            },
+        )
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(mode="json", context={"expose_secrets": True}),
+            agent=resolved_agent,
+            secrets=resolved_secrets,
+            **request_data,
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
@@ -705,9 +825,12 @@ class ConversationService:
         )
 
     @classmethod
-    def get_instance(cls, config: Config) -> "ConversationService":
+    def get_instance(
+        cls, config: Config, settings_service: SettingsService | None = None
+    ) -> "ConversationService":
         return ConversationService(
             conversations_dir=config.conversations_path,
+            settings_service=settings_service,
             webhook_specs=config.webhooks,
             session_api_key=(
                 config.session_api_keys[0] if config.session_api_keys else None
@@ -968,10 +1091,10 @@ def get_default_conversation_service() -> ConversationService:
     if _conversation_service:
         return _conversation_service
 
-    from openhands.agent_server.config import (
-        get_default_config,
-    )
+    from openhands.agent_server.config import get_default_config
+    from openhands.agent_server.settings_service import get_default_settings_service
 
     config = get_default_config()
-    _conversation_service = ConversationService.get_instance(config)
+    settings_service = get_default_settings_service()
+    _conversation_service = ConversationService.get_instance(config, settings_service)
     return _conversation_service

@@ -33,6 +33,8 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from openhands.agent_server.settings_router import settings_router
+from openhands.agent_server.settings_service import get_default_settings_service
 from openhands.agent_server.skills_router import skills_router
 from openhands.agent_server.sockets import sockets_router
 from openhands.agent_server.tool_preload_service import get_tool_preload_service
@@ -47,98 +49,104 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
-    service = get_default_conversation_service()
-    vscode_service = get_vscode_service()
-    desktop_service = get_desktop_service()
-    tool_preload_service = get_tool_preload_service()
+    # Initialize settings service first (needed by conversation service)
+    settings_service = get_default_settings_service()
+    async with settings_service:
+        api.state.settings_service = settings_service
+        logger.info("Settings service initialized successfully")
 
-    # Define async functions for starting each service
-    async def start_vscode_service():
-        if vscode_service is not None:
-            vscode_started = await vscode_service.start()
-            if vscode_started:
-                logger.info("VSCode service started successfully")
+        service = get_default_conversation_service()
+        vscode_service = get_vscode_service()
+        desktop_service = get_desktop_service()
+        tool_preload_service = get_tool_preload_service()
+
+        # Define async functions for starting each service
+        async def start_vscode_service():
+            if vscode_service is not None:
+                vscode_started = await vscode_service.start()
+                if vscode_started:
+                    logger.info("VSCode service started successfully")
+                else:
+                    logger.warning(
+                        "VSCode service failed to start, continuing without VSCode"
+                    )
             else:
-                logger.warning(
-                    "VSCode service failed to start, continuing without VSCode"
-                )
-        else:
-            logger.info("VSCode service is disabled")
+                logger.info("VSCode service is disabled")
 
-    async def start_desktop_service():
-        if desktop_service is not None:
-            desktop_started = await desktop_service.start()
-            if desktop_started:
-                logger.info("Desktop service started successfully")
+        async def start_desktop_service():
+            if desktop_service is not None:
+                desktop_started = await desktop_service.start()
+                if desktop_started:
+                    logger.info("Desktop service started successfully")
+                else:
+                    logger.warning(
+                        "Desktop service failed to start, continuing without desktop"
+                    )
             else:
-                logger.warning(
-                    "Desktop service failed to start, continuing without desktop"
-                )
-        else:
-            logger.info("Desktop service is disabled")
+                logger.info("Desktop service is disabled")
 
-    async def start_tool_preload_service():
-        if tool_preload_service is not None:
-            tool_preload_started = await tool_preload_service.start()
-            if tool_preload_started:
-                logger.info("Tool preload service started successfully")
+        async def start_tool_preload_service():
+            if tool_preload_service is not None:
+                tool_preload_started = await tool_preload_service.start()
+                if tool_preload_started:
+                    logger.info("Tool preload service started successfully")
+                else:
+                    logger.warning("Tool preload service failed to start - skipping")
             else:
-                logger.warning("Tool preload service failed to start - skipping")
-        else:
-            logger.info("Tool preload service is disabled")
+                logger.info("Tool preload service is disabled")
 
-    # Start all services concurrently
-    results = await asyncio.gather(
-        start_vscode_service(),
-        start_desktop_service(),
-        start_tool_preload_service(),
-        return_exceptions=True,
-    )
-
-    # Check for any exceptions during initialization
-    exceptions = [r for r in results if isinstance(r, Exception)]
-    if exceptions:
-        logger.error(
-            "Service initialization failed with %d exception(s): %s",
-            len(exceptions),
-            exceptions,
+        # Start all services concurrently
+        results = await asyncio.gather(
+            start_vscode_service(),
+            start_desktop_service(),
+            start_tool_preload_service(),
+            return_exceptions=True,
         )
-        # Re-raise the first exception to prevent server from starting
-        raise RuntimeError(
-            f"Server initialization failed with {len(exceptions)} exception(s)"
-        ) from exceptions[0]
 
-    # Mark initialization as complete - now the /ready endpoint will return 200
-    # and Kubernetes readiness probes will pass
-    mark_initialization_complete()
-    logger.info("Server initialization complete - ready to serve requests")
-
-    async with service:
-        # Store the initialized service in app state for dependency injection
-        api.state.conversation_service = service
-        try:
-            yield
-        finally:
-            # Define async functions for stopping each service
-            async def stop_vscode_service():
-                if vscode_service is not None:
-                    await vscode_service.stop()
-
-            async def stop_desktop_service():
-                if desktop_service is not None:
-                    await desktop_service.stop()
-
-            async def stop_tool_preload_service():
-                if tool_preload_service is not None:
-                    await tool_preload_service.stop()
-
-            # Stop all services concurrently
-            await asyncio.gather(
-                stop_vscode_service(),
-                stop_desktop_service(),
-                stop_tool_preload_service(),
-                return_exceptions=True,
+        # Check for any exceptions during initialization
+        exceptions = [r for r in results if isinstance(r, Exception)]
+        if exceptions:
+            logger.error(
+                "Service initialization failed with %d exception(s): %s",
+                len(exceptions),
+                exceptions,
             )
+            # Re-raise the first exception to prevent server from starting
+            raise RuntimeError(
+                f"Server initialization failed with {len(exceptions)} exception(s)"
+            ) from exceptions[0]
+
+        # Mark initialization as complete - now the /ready endpoint will return 200
+        # and Kubernetes readiness probes will pass
+        mark_initialization_complete()
+        logger.info("Server initialization complete - ready to serve requests")
+
+        async with service:
+            # Store the initialized service in app state for dependency injection
+            api.state.conversation_service = service
+            try:
+                yield
+            finally:
+                # Define async functions for stopping each service
+                async def stop_vscode_service():
+                    if vscode_service is not None:
+                        await vscode_service.stop()
+
+                async def stop_desktop_service():
+                    if desktop_service is not None:
+                        await desktop_service.stop()
+
+                async def stop_tool_preload_service():
+                    if tool_preload_service is not None:
+                        await tool_preload_service.stop()
+
+                # Stop all services concurrently
+                await asyncio.gather(
+                    stop_vscode_service(),
+                    stop_desktop_service(),
+                    stop_tool_preload_service(),
+                    return_exceptions=True,
+                )
 
 
 def _get_root_path(config: Config) -> str:
@@ -210,6 +218,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(skills_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(settings_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 

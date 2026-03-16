@@ -6,7 +6,10 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    SettingsReferenceError,
+)
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
     ACPConversationInfo,
@@ -118,7 +121,12 @@ async def batch_get_acp_conversations(
     return await conversation_service.batch_get_acp_conversations(ids)
 
 
-@conversation_router_acp.post("")
+@conversation_router_acp.post(
+    "",
+    responses={
+        400: {"description": "Bad request (e.g., missing agent or invalid reference)"},
+    },
+)
 async def start_acp_conversation(
     request: Annotated[
         StartACPConversationRequest,
@@ -127,7 +135,18 @@ async def start_acp_conversation(
     response: Response,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ACPConversationInfo:
-    """Start a conversation using the ACP-capable contract."""
-    info, is_new = await conversation_service.start_acp_conversation(request)
+    """Start a conversation using the ACP-capable contract.
+
+    The agent can be provided either inline via 'agent' or by reference via
+    'agent_name'. Similarly, secrets can be provided inline or referenced via
+    'secrets_name'. An LLM profile can be applied via 'llm_profile_name'.
+    """
+    try:
+        info, is_new = await conversation_service.start_acp_conversation(request)
+    except SettingsReferenceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info
