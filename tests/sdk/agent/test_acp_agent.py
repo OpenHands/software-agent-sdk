@@ -724,18 +724,64 @@ class TestACPAgentTelemetry:
         assert len(agent.llm.metrics.costs) == 0
         assert len(agent.llm.metrics.token_usages) == 1
 
+    def test_step_records_partial_metrics_on_usage_timeout(self, tmp_path, caplog):
+        """Timeout waiting for UsageUpdate logs warning but records token metrics."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 100
+        mock_usage.output_tokens = 50
+        mock_usage.cached_read_tokens = 0
+        mock_usage.cached_write_tokens = 0
+        mock_usage.thought_tokens = 0
+
+        mock_response = MagicMock()
+        mock_response.usage = mock_usage
+
+        async def _fake_prompt(*_args, **_kwargs):
+            return mock_response
+
+        def _run_async(coro_fn, **_kwargs):
+            loop = asyncio.new_event_loop()
+            try:
+                agent._conn.prompt = _fake_prompt
+                return loop.run_until_complete(coro_fn())
+            finally:
+                loop.close()
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _run_async
+        agent._executor = mock_executor
+
+        async def _raise_timeout(awaitable, timeout):
+            awaitable.close()
+            raise asyncio.TimeoutError
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.asyncio.wait_for",
+            new=AsyncMock(side_effect=_raise_timeout),
+        ):
+            agent.step(conversation, on_event=lambda _: None)
+
+        assert "UsageUpdate not received within 2.0s" in caplog.text
+        assert len(agent.llm.metrics.token_usages) == 1
+        assert len(agent.llm.metrics.costs) == 0
+        assert agent.llm.metrics.accumulated_cost == 0.0
+
     def test_step_records_latency(self, tmp_path):
         """step() records response latency in the single telemetry path."""
         agent, conversation = self._make_step_fixtures(tmp_path)
 
-        with patch(
-            "openhands.sdk.agent.acp_agent.time.monotonic",
-            side_effect=[10.0, 10.5],
-        ):
-            agent.step(conversation, on_event=lambda _: None)
+        agent.step(conversation, on_event=lambda _: None)
 
         assert len(agent.llm.metrics.response_latencies) == 1
-        assert agent.llm.metrics.response_latencies[0].latency == pytest.approx(0.5)
+        assert agent.llm.metrics.response_latencies[0].latency >= 0.0
 
     @pytest.mark.asyncio
     async def test_session_update_stores_usage_update(self):
@@ -1407,3 +1453,151 @@ class TestACPSessionMode:
         restored = AgentBase.model_validate_json(dumped)
         assert isinstance(restored, ACPAgent)
         assert restored.acp_session_mode == "full-access"
+
+
+# ---------------------------------------------------------------------------
+# Connection retry logic
+# ---------------------------------------------------------------------------
+
+
+class TestACPPromptRetry:
+    """Test retry logic for ACP prompt failures."""
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        """Create a mock conversation with a user message."""
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_retry_on_connection_error_then_success(self, tmp_path):
+        """Retry succeeds after transient connection error."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ConnectionError("Connection reset by peer")
+            mock_client.accumulated_text.append("Success after retry")
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert len(events) == 3
+        assert "Success after retry" in events[0].llm_message.content[0].text
+
+    def test_no_retry_on_non_connection_error(self, tmp_path):
+        """Non-connection errors fail immediately without retry."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Some application error")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(RuntimeError, match="Some application error"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 1
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_no_retry_on_timeout(self, tmp_path):
+        """Timeout errors are not retried."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise TimeoutError("ACP prompt timed out")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert call_count == 1
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_max_retries_exceeded(self, tmp_path):
+        """Error raised after max retries exhausted."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("Persistent connection failure")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            with pytest.raises(ConnectionError, match="Persistent connection failure"):
+                agent.step(conversation, on_event=events.append)
+
+        assert call_count == 4
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR

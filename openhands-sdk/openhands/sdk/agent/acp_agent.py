@@ -74,6 +74,15 @@ _USAGE_UPDATE_TIMEOUT: float = float(
     os.environ.get("ACP_USAGE_UPDATE_TIMEOUT", "2.0")
 )
 
+# Retry configuration for transient ACP connection errors.
+# These errors can occur when the connection drops mid-conversation but the
+# session state is still valid on the server side.
+_ACP_PROMPT_MAX_RETRIES: int = int(os.environ.get("ACP_PROMPT_MAX_RETRIES", "3"))
+_ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
+
+# Exception types that indicate transient connection issues worth retrying
+_RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
+
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
 # carry large tool-call outputs (e.g. file contents, test results).  When
@@ -732,15 +741,45 @@ class ACPAgent(AgentBase):
                         )
                 return response
 
-            # Send prompt to ACP server (with timeout to prevent indefinite hangs)
+            # Send prompt to ACP server with retry logic for connection errors.
+            # Transient connection failures (network blips, server restarts) are
+            # retried to preserve session state and avoid losing progress.
             logger.info(
                 "Sending ACP prompt (timeout=%.0fs, msg=%d chars)",
                 self.acp_prompt_timeout,
                 len(user_message),
             )
-            response = self._executor.run_async(
-                _prompt, timeout=self.acp_prompt_timeout
-            )
+
+            response: PromptResponse | None = None
+            max_retries = _ACP_PROMPT_MAX_RETRIES
+
+            for attempt in range(max_retries + 1):
+                try:
+                    response = self._executor.run_async(
+                        _prompt, timeout=self.acp_prompt_timeout
+                    )
+                    break
+                except TimeoutError:
+                    raise
+                except _RETRIABLE_CONNECTION_ERRORS as e:
+                    if attempt < max_retries:
+                        delay = _ACP_PROMPT_RETRY_DELAYS[
+                            min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
+                        ]
+                        logger.warning(
+                            "ACP prompt failed with retriable error (attempt %d/%d), "
+                            "retrying in %.0fs: %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            delay,
+                            e,
+                        )
+                        time.sleep(delay)
+                        self._client.reset()
+                        self._client.on_token = on_token
+                    else:
+                        raise
+
             elapsed = time.monotonic() - t0
             logger.info("ACP prompt returned in %.1fs", elapsed)
 
