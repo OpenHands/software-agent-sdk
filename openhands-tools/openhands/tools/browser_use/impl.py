@@ -162,6 +162,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+    _action_timeout_seconds: float
 
     def check_chromium_available(self) -> str | None:
         """Check if a Chromium/Chrome binary is available.
@@ -252,6 +253,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         allowed_domains: list[str] | None = None,
         session_timeout_minutes: int = 30,
         init_timeout_seconds: int = 30,
+        action_timeout_seconds: float = DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS,
         full_output_save_dir: str | None = None,
         inject_scripts: list[str] | None = None,
         **config,
@@ -263,6 +265,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             allowed_domains: List of allowed domains for browser operations
             session_timeout_minutes: Browser session timeout in minutes
             init_timeout_seconds: Timeout for browser initialization in seconds
+            action_timeout_seconds: Timeout for each browser action in seconds
             full_output_save_dir: Absolute path to directory to save full output
                 logs and files, used when truncation is needed.
             inject_scripts: List of JavaScript code strings to inject into every
@@ -314,10 +317,14 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 f"Browser tool initialization timed out after {init_timeout_seconds}s"
             )
 
+        if action_timeout_seconds <= 0:
+            raise ValueError("action_timeout_seconds must be greater than 0")
+
         self.full_output_save_dir: str | None = full_output_save_dir
         self._initialized = False
         self._async_executor = AsyncExecutor()
         self._cleanup_initiated = False
+        self._action_timeout_seconds = action_timeout_seconds
 
     def __call__(
         self,
@@ -329,12 +336,12 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             return self._async_executor.run_async(
                 self._execute_action,
                 action,
-                timeout=DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS,
+                timeout=self._action_timeout_seconds,
             )
         except builtins.TimeoutError as error:
             return BrowserObservation.from_text(
                 text=_format_browser_operation_error(
-                    error, timeout_seconds=DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS
+                    error, timeout_seconds=self._action_timeout_seconds
                 ),
                 is_error=True,
                 full_output_save_dir=self.full_output_save_dir,
