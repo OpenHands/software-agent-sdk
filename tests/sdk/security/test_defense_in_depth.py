@@ -37,10 +37,8 @@ see ``test_defense_in_depth_adversarial.py``.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -52,21 +50,8 @@ from openhands.sdk.security.confirmation_policy import ConfirmRisky, NeverConfir
 from openhands.sdk.security.risk import SecurityRisk
 
 
-# ---------------------------------------------------------------------------
-# Import from example file (filename starts with digit, needs importlib)
-# ---------------------------------------------------------------------------
-
-_EXAMPLE_FILE = (
-    Path(__file__).resolve().parents[3]
-    / "examples"
-    / "01_standalone_sdk"
-    / "45_defense_in_depth_security.py"
-)
-_spec = importlib.util.spec_from_file_location("defense_in_depth", _EXAMPLE_FILE)
-assert _spec is not None and _spec.loader is not None
-_mod = importlib.util.module_from_spec(_spec)
-sys.modules["defense_in_depth"] = _mod  # dataclass needs module in sys.modules
-_spec.loader.exec_module(_mod)
+# Module loaded by conftest.py (handles digit-prefixed filename via importlib)
+_mod = sys.modules["defense_in_depth"]
 
 PatternSecurityAnalyzer = _mod.PatternSecurityAnalyzer
 EnsembleSecurityAnalyzer = _mod.EnsembleSecurityAnalyzer
