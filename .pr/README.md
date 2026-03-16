@@ -5,7 +5,8 @@
 **Date:** 2026-03-16
 **Target:** `https://ohpr-13383-240.staging.all-hands.dev` (deploy PR [#3436](https://github.com/OpenHands/deploy/pull/3436))
 **Server PR:** [OpenHands/OpenHands#13383](https://github.com/OpenHands/OpenHands/pull/13383) (companion)
-**Agent-server image:** `ghcr.io/openhands/agent-server:1.13.0-python` (stock, no custom build needed)
+**SaaS server:** Custom build from [OpenHands/OpenHands#13383](https://github.com/OpenHands/OpenHands/pull/13383) (provides `/sandboxes/{id}/settings/secrets` endpoints)
+**Sandbox agent-server:** `ghcr.io/openhands/agent-server:1.13.0-python` (stock — no SDK PR changes needed in sandbox)
 
 ## Final Results (all passing âœ…)
 
