@@ -74,6 +74,14 @@ def _is_v1_conversation(stored: StoredConversation) -> bool:
     return isinstance(stored.agent, Agent)
 
 
+def _compose_webhook_conversation_info(
+    stored: StoredConversation, state: ConversationState
+) -> ConversationInfo | ACPConversationInfo:
+    if _is_v1_conversation(stored):
+        return _compose_conversation_info_v1(stored, state)
+    return _compose_acp_conversation_info(stored, state)
+
+
 def _register_agent_definitions(
     agent_defs: list["AgentDefinition"],
     *,
@@ -440,7 +448,7 @@ class ConversationService:
 
         # Notify conversation webhooks about the started conversation
         await self._notify_conversation_webhooks(
-            _compose_acp_conversation_info(event_service.stored, state)
+            _compose_webhook_conversation_info(event_service.stored, state)
         )
 
         return conversation_info, True
@@ -453,7 +461,7 @@ class ConversationService:
             await event_service.pause()
             # Notify conversation webhooks about the paused conversation
             state = await event_service.get_state()
-            conversation_info = _compose_acp_conversation_info(
+            conversation_info = _compose_webhook_conversation_info(
                 event_service.stored, state
             )
             await self._notify_conversation_webhooks(conversation_info)
@@ -475,7 +483,7 @@ class ConversationService:
             # Notify conversation webhooks about the stopped conversation before closing
             try:
                 state = await event_service.get_state()
-                conversation_info = _compose_acp_conversation_info(
+                conversation_info = _compose_webhook_conversation_info(
                     event_service.stored, state
                 )
                 conversation_info.execution_status = (
@@ -534,7 +542,9 @@ class ConversationService:
 
         # Notify conversation webhooks about the updated conversation
         state = await event_service.get_state()
-        conversation_info = _compose_acp_conversation_info(event_service.stored, state)
+        conversation_info = _compose_webhook_conversation_info(
+            event_service.stored, state
+        )
         await self._notify_conversation_webhooks(conversation_info)
 
         logger.info(

@@ -14,6 +14,8 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ACPConversationInfo,
+    ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
     StartConversationRequest,
@@ -22,6 +24,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, Message
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -958,6 +961,48 @@ class TestConversationServiceUpdateConversation:
             call_args = mock_notify.call_args[0]
             conversation_info = call_args[0]
             assert conversation_info.title == new_title
+            assert isinstance(conversation_info, ConversationInfo)
+
+    @pytest.mark.asyncio
+    async def test_update_acp_conversation_notifies_webhooks_with_acp_shape(
+        self, conversation_service
+    ):
+        stored_conversation = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = stored_conversation
+        mock_state = ConversationState(
+            id=stored_conversation.id,
+            agent=stored_conversation.agent,
+            workspace=stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ) as mock_notify:
+            result = await conversation_service.update_conversation(
+                conversation_id, UpdateConversationRequest(title="ACP Title")
+            )
+
+            assert result is True
+            mock_notify.assert_called_once()
+            conversation_info = mock_notify.call_args[0][0]
+            assert isinstance(conversation_info, ACPConversationInfo)
+            assert conversation_info.agent.kind == "ACPAgent"
 
     @pytest.mark.asyncio
     async def test_update_conversation_persists_changes(
@@ -1188,6 +1233,7 @@ class TestConversationServiceDeleteConversation:
                     conversation_info.execution_status
                     == ConversationExecutionStatus.DELETING
                 )
+                assert isinstance(conversation_info, ConversationInfo)
 
                 # Verify event service was closed
                 mock_service.close.assert_called_once()
