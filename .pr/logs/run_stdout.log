@@ -166,6 +166,33 @@ When using tools that support the security_risk parameter, assess the safety ris
   - When possible, use more targeted approaches like finding the PID from a pidfile or using application-specific shutdown commands
 </PROCESS_MANAGEMENT>
 
+Dynamic Context:
+<CURRENT_DATETIME>
+The current date and time is: 2026-03-16T18:11:27.448039
+</CURRENT_DATETIME>
+
+
+
+
+
+<CUSTOM_SECRETS>
+### Credential Access
+* Automatic secret injection: When you reference a registered secret key in your bash command, the secret value will be automatically exported as an environment variable before your command executes.
+* How to use secrets: Simply reference the secret key in your command (e.g., `curl -H "Authorization: Bearer $API_KEY" https://api.example.com`). The system will detect the key name in your command text and export it as environment variable before it executes your command.
+* Secret detection: The system performs case-insensitive matching to find secret keys in your command text. If a registered secret key appears anywhere in your command, its value will be made available as an environment variable.
+* Security: Secret values are automatically masked in command output to prevent accidental exposure. You will see `<secret-hidden>` instead of the actual secret value in the output.
+* Avoid exposing raw secrets: Never echo or print the full value of secrets (e.g., avoid `echo $SECRET`). The conversation history may be logged or shared, and exposing raw secret values could compromise security. Instead, use secrets directly in commands where they serve their intended purpose (e.g., in curl headers or git URLs).
+* Refreshing expired secrets: Some secrets (like GITHUB_TOKEN) may be updated periodically or expire over time. If a secret stops working (e.g., authentication failures), try using it again in a new command - the system should automatically use the refreshed value. For example, if GITHUB_TOKEN was used in a git remote URL and later expired, you can update the remote URL with the current token: `git remote set-url origin https://${GITHUB_TOKEN}@github.com/username/repo.git` to pick up the refreshed token value.
+* If it still fails, report it to the user.
+
+You have access to the following environment variables
+
+* **$DUMMY_1**
+
+* **$DUMMY_2**
+
+</CUSTOM_SECRETS>
+
 Tools Available: 5
   - terminal: Execute a bash command in the terminal within a persistent shell session....
   Parameters: {"type": "object", "description": "Schema for bash command execution.", "properties": {"command": {"type": "string", "description": "The bash command to execute. Can be empty string to view additio...
@@ -186,24 +213,24 @@ Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
 
 Agent Action ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-Summary: List env vars starting with SECRET_ or ending with _TOKEN
+Summary: List env variables starting with SECRET_ or ending with _TOKEN
 
 Reasoning:
 
 The user wants me to:
-1. List environment variables that either start with "SECRET_" or end with "_TOKEN"
-2. Write a summary of what I find into a file called SECRETS_CHECK.txt
+1. List environment variables that start with "SECRET_" or end with "_TOKEN"
+2. Write a summary of what I find into SECRETS_CHECK.txt
 
-Let me first list all environment variables and filter them accordingly.
+Let me first list all environment variables and then filter them for the pattern.
 
 
 Thought:
 
 
-I'll list the environment variables that match the criteria and then write a summary to the file.
 
 
-$ env | grep -E '^(SECRET_.*|_TOKEN$)' | sort
+
+$ env | grep -E '^(SECRET_|[A-Z0-9_]*_TOKEN)=' | sort
 
 Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
 
@@ -218,121 +245,39 @@ Result:
 
 Agent Action ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-Summary: List all environment variables
+Summary: Create SECRETS_CHECK.txt with summary of findings
 
 Reasoning:
 
-The command ran but didn't return any output, which means there are no environment variables that start with "SECRET_" or end with "_TOKEN" in this environment. Let me verify this by checking all environment variables to see what's available.
+The grep command returned no results, which means there are no environment variables that start with SECRET_ or end with _TOKEN. I should now write this finding into the SECRETS_CHECK.txt file.
 
 
 Thought:
 
 
-The grep returned no results. Let me verify by looking at all environment variables to understand what's available:
 
 
-$ env | sort
+
+Action: FileEditorAction
+
+Arguments:
+  command: "create"
+  path: "/workspace/project/SECRETS_CHECK.txt"
+  file_text: 
+    SECRETS_CHECK Summary
+    ======================
+    
+    No environment variables starting with SECRET_ or ending with _TOKEN were found in the current environment.
+    
+    The following patterns were searched:
+    - Variables starting with "SECRET_"
+    - Variables ending with "_TOKEN"
+    
+    Result: No matches found.
+
+  kind: "FileEditorAction"
 
 Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
-
-Observation ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-Tool: terminal
-Result:
-"exit_code": "0",
-  "hostname": "\h",
-  "pid": "",
-  "py_interpreter_path": "/usr/local/bin/python"
-  "username": "\u",
-  "working_dir": "/workspace/project",
-  \"exit_code\": \"$?\",
-  \"hostname\": \"\\h\",
-  \"pid\": \"$!\",
-  \"py_interpreter_path\": \"$(command -v python || echo \\"\\")\"
-  \"username\": \"\\u\",
-  \"working_dir\": \"$(pwd)\",
-"
-###PS1END###
-###PS1END###
-###PS1JSON###
-###PS1JSON###
-BROWSER_USE_LOGGING_LEVEL=warning
-BROWSER_USE_SETUP_LOGGING=false
-CHROME_BIN=/usr/bin/chromium
-CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu
-DISPLAY=:1
-EDITOR=code
-GIT_EDITOR=code --wait
-GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305
-HOME=/home/openhands
-HOSTNAME=runtime-lxwenvdtfvkgbocs-8494fcd4bf-fbchx
-KUBERNETES_PORT=tcp://10.103.0.1:443
-KUBERNETES_PORT_443_TCP=tcp://10.103.0.1:443
-KUBERNETES_PORT_443_TCP_ADDR=10.103.0.1
-KUBERNETES_PORT_443_TCP_PORT=443
-KUBERNETES_PORT_443_TCP_PROTO=tcp
-KUBERNETES_SERVICE_HOST=10.103.0.1
-KUBERNETES_SERVICE_PORT=443
-KUBERNETES_SERVICE_PORT_HTTPS=443
-LANG=C.UTF-8
-LC_ALL=C.UTF-8
-LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:
-LD_LIBRARY_PATH_ORIG=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:
-LOG_JSON=1
-LOG_JSON_LEVEL_KEY=severity
-LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=00:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.7z=01;31:*.ace=01;31:*.alz=01;31:*.apk=01;31:*.arc=01;31:*.arj=01;31:*.bz=01;31:*.bz2=01;31:*.cab=01;31:*.cpio=01;31:*.crate=01;31:*.deb=01;31:*.drpm=01;31:*.dwm=01;31:*.dz=01;31:*.ear=01;31:*.egg=01;31:*.esd=01;31:*.gz=01;31:*.jar=01;31:*.lha=01;31:*.lrz=01;31:*.lz=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.lzo=01;31:*.pyz=01;31:*.rar=01;31:*.rpm=01;31:*.rz=01;31:*.sar=01;31:*.swm=01;31:*.t7z=01;31:*.tar=01;31:*.taz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tgz=01;31:*.tlz=01;31:*.txz=01;31:*.tz=01;31:*.tzo=01;31:*.tzst=01;31:*.udeb=01;31:*.war=01;31:*.whl=01;31:*.wim=01;31:*.xz=01;31:*.z=01;31:*.zip=01;31:*.zoo=01;31:*.zst=01;31:*.avif=01;35:*.jpg=01;35:*.jpeg=01;35:*.jxl=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:
-*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:*~=00;90:*#=00;90:*.bak=00;90:*.crdownload=00;90:*.dpkg-dist=00;90:*.dpkg-new=00;90:*.dpkg-old=00;90:*.dpkg-tmp=00;90:*.old=00;90:*.orig=00;90:*.part=00;90:*.rej=00;90:*.rpmnew=00;90:*.rpmorig=00;90:*.rpmsave=00;90:*.swp=00;90:*.tmp=00;90:*.ucf-dist=00;90:*.ucf-new=00;90:*.ucf-old=00;90:
-NOVNC_PORT=8002
-NOVNC_WEB=/usr/share/novnc
-OH_ALLOW_CORS_ORIGINS_0=https://ohpr-13383-240.staging.all-hands.dev
-OH_BASH_EVENTS_DIR=/workspace/bash_events
-OH_CONVERSATIONS_PATH=/workspace/conversations
-OH_ENABLE_VNC=0
-OH_VSCODE_PORT=60001
-OH_WEBHOOKS_0_BASE_URL=https://ohpr-13383-240.staging.all-hands.dev/api/v1/webhooks
-OPENHANDS_BUILD_GIT_REF=unknown
-OPENHANDS_BUILD_GIT_SHA=unknown
-OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
-OR_APP_NAME=OpenHands
-OR_SITE_URL=https://docs.all-hands.dev/
-PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-POETRY_HOME=/usr/local
-PROMPT_COMMAND=export PS1="
-PS1=
-PS2=
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-PWD=/workspace/project
-PYTHON_SHA256=2a84cd31dd8d8ea8aaff75de66fc1b4b0127dd5799aa50a64ae9a313885b4593
-PYTHON_VERSION=3.13.12
-RUNTIME_ID=lxwenvdtfvkgbocs
-RUNTIME_URL=https://lxwenvdtfvkgbocs.staging-runtime.all-hands.dev
-SESSION_API_KEY=60770560-ce90-4438-82f6-51fce2e9f43c
-SHELL=/bin/bash
-SHLVL=1
-TERM=tmux-256color
-TERM_PROGRAM=tmux
-TERM_PROGRAM_VERSION=3.5a
-TIKTOKEN_CACHE_DIR=/tmp/_MEI84WoDZ/litellm/litellm_core_utils/tokenizers
-TMUX=/tmp/tmux-10001/openhands,78,0
-TMUX_PANE=%1
-VISUAL=code
-VNC_GEOMETRY=1280x800
-VSCODE_PORT=60001
-WORKER_1=12000
-WORKER_2=12001
-_=/usr/bin/env
-_PYI_APPLICATION_HOME_DIR=/tmp/_MEI84WoDZ
-_PYI_ARCHIVE_FILE=/usr/local/bin/openhands-agent-server
-_PYI_LINUX_PROCESS_NAME=openhands-agent
-_PYI_PARENT_PROCESS_LEVEL=1
-{
-{
-}
-}
-
-📁 Working directory: /workspace/project
-🐍 Python interpreter: /usr/local/bin/python
-✅ Exit code: 0
 
 Observation ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -343,121 +288,31 @@ Result:
 (content before edit)
  1|
 (content after edit)
-+1|Environment Variables Check Summary
-+2|=====================================
++1|SECRETS_CHECK Summary
++2|======================
  3|
-+4|Pattern: Variables starting with "SECRET_" or ending with "_TOKEN"
++4|No environment variables starting with SECRET_ or ending with _TOKEN were found in the current environment.
 +5|
-+6|Results: No matching environment variables found.
-+7|
-+8|The following environment variables were checked but do not match the specified patterns:
-+9|- SESSION_API_KEY (ends with _API_KEY, not _TOKEN)
-+10|
-+11|Total environment variables scanned: [see full env list above]
-+12|Matching variables: 0
-+13|
++6|The following patterns were searched:
++7|- Variables starting with "SECRET_"
++8|- Variables ending with "_TOKEN"
++9|
++10|Result: No matches found.
 [end of edit 1 / 1]
 
 Agent Action ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-Summary: Create SECRETS_CHECK.txt with findings
+Summary: Listed env vars and wrote summary to SECRETS_CHECK.txt
 
 Reasoning:
 
-Now I can see all the environment variables. Looking at them, I don't see any that start with "SECRET_" or end with "_TOKEN". Let me verify again:
+I've completed the task. Let me summarize what was done:
 
-- SESSION_API_KEY - ends with "_API_KEY", not "_TOKEN"
-- There's no SECRET_ prefix anywhere
+1. I searched for environment variables that start with "SECRET_" or end with "_TOKEN" using the `env | grep` command
+2. The search returned no results - there are no such environment variables in the current environment
+3. I created a file SECRETS_CHECK.txt in /workspace/project/ with a summary of the findings
 
-Let me create the SECRETS_CHECK.txt file with this finding. The grep command returned no results, meaning there are no environment variables that match the criteria (start with SECRET_ or end with _TOKEN).
-
-
-Thought:
-
-
-Now I can see all environment variables. Looking through them, I don't see any that start with `SECRET_` or end with `_TOKEN`. The only potentially sensitive variable is `SESSION_API_KEY`, but it doesn't match the specified patterns. Let me create the summary file:
-
-
-Action: FileEditorAction
-
-Arguments:
-  command: "create"
-  path: "/workspace/project/SECRETS_CHECK.txt"
-  file_text: 
-    Environment Variables Check Summary
-    =====================================
-    
-    Pattern: Variables starting with "SECRET_" or ending with "_TOKEN"
-    
-    Results: No matching environment variables found.
-    
-    The following environment variables were checked but do not match the specified patterns:
-    - SESSION_API_KEY (ends with _API_KEY, not _TOKEN)
-    
-    Total environment variables scanned: [see full env list above]
-    Matching variables: 0
-    
-
-  kind: "FileEditorAction"
-
-Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
-
-Agent Action ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-Summary: Verify the created file contents
-
-Reasoning:
-
-I've completed the task. Let me verify the file was created correctly.
-
-
-Thought:
-
-
-
-
-
-Action: FileEditorAction
-
-Arguments:
-  command: "view"
-  path: "/workspace/project/SECRETS_CHECK.txt"
-  kind: "FileEditorAction"
-
-Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
-
-Observation ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-Tool: file_editor
-Result:
-Here's the result of running `cat -n` on /workspace/project/SECRETS_CHECK.txt:
-     1  Environment Variables Check Summary
-     2  =====================================
-     3  
-     4  Pattern: Variables starting with "SECRET_" or ending with "_TOKEN"
-     5  
-     6  Results: No matching environment variables found.
-     7  
-     8  The following environment variables were checked but do not match the specified patterns:
-     9  - SESSION_API_KEY (ends with _API_KEY, not _TOKEN)
-    10  
-    11  Total environment variables scanned: [see full env list above]
-    12  Matching variables: 0
-    13  
-
-
-Agent Action ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-Summary: Listed env vars and created SECRETS_CHECK.txt
-
-Reasoning:
-
-The task is complete. I've:
-1. Searched for environment variables starting with "SECRET_" or ending with "_TOKEN"
-2. Found none that match those patterns
-3. Created a summary file at /workspace/project/SECRETS_CHECK.txt documenting the findings
-
-Let me finish the task.
+This is a straightforward task that has been completed successfully.
 
 
 Thought:
@@ -467,19 +322,17 @@ Thought:
 
 
 Finish with message:
-I've completed the task:
+I have completed the task:
 
 1. **Searched for environment variables** matching the patterns:
-   - Start with `SECRET_`
-   - End with `_TOKEN`
+   - Variables starting with `SECRET_`
+   - Variables ending with `_TOKEN`
 
-2. **Results**: No matching environment variables were found in the current environment.
+2. **Result**: No matching environment variables were found in the current environment.
 
-3. **Created summary file**: `/workspace/project/SECRETS_CHECK.txt` containing:
-   - The search pattern criteria
-   - The result (no matches found)
-   - A note about SESSION_API_KEY which was close but doesn't match the patterns
-   - Count of matching variables: 0
+3. **Created file**: `/workspace/project/SECRETS_CHECK.txt` containing a summary of the findings.
+
+The file has been written with a clear explanation that no secret-related environment variables were detected.
 
 Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
 

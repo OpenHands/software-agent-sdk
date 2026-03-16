@@ -1108,15 +1108,16 @@ class RemoteConversation(BaseConversation):
         _send_request(self._client, "POST", f"/api/conversations/{self._id}/pause")
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
-        # Convert SecretValue to strings for JSON serialization
-        # SecretValue can be str or callable, we need to handle both
-        serializable_secrets = {}
+        from openhands.sdk.secret.secrets import SecretSource
+
+        serializable_secrets: dict[str, str | dict] = {}
         for key, value in secrets.items():
-            if callable(value):
-                # If it's a callable, call it to get the actual secret
+            if isinstance(value, SecretSource):
+                # Pydantic model → dict with "kind" discriminator for server
+                serializable_secrets[key] = value.model_dump(mode="json")
+            elif callable(value):
                 serializable_secrets[key] = value()
             else:
-                # If it's already a string, use it directly
                 serializable_secrets[key] = value
 
         payload = {"secrets": serializable_secrets}
