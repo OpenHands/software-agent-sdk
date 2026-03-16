@@ -47,6 +47,9 @@ async def foo():
     """
 ```
 
+That exact sentence shape is what the CI checks look for, so keep the wording
+close to the example above.
+
 ### Deprecating a REST contract change
 
 If an existing endpoint's request or response schema needs an incompatible change:
@@ -66,7 +69,8 @@ Removing an endpoint or a previously supported REST contract is a breaking chang
 
 - Endpoints and legacy contracts must have a deprecation notice for **5 minor
   releases** before removal.
-- Any breaking REST API change requires at least a **MINOR** SemVer bump.
+- Any release that introduces an allowed breaking REST API change should be
+  at least a **MINOR** SemVer bump, after a 5-minor-release deprecation runway.
 
 ### CI enforcement
 
@@ -79,11 +83,19 @@ It currently enforces:
 - FastAPI route handlers must not use `openhands.sdk.utils.deprecation.deprecated`.
 - Endpoints that document deprecation in their OpenAPI description must also set
   `deprecated: true`.
-- No removal of operations (path + method) unless they were already marked
-  `deprecated: true` in the previous release.
-- Breaking changes require a MINOR (or MAJOR) version bump.
+- Removed operations must already be marked `deprecated: true` in the previous
+  release and must have reached the scheduled removal version documented in the
+  baseline OpenAPI description.
+- The recognized removal note uses the same wording as the deprecation checks,
+  for example: `Deprecated since v1.14.0 and scheduled for removal in v1.19.0.`
+- Other breaking REST contract changes fail the check; the replacement must ship
+  additively or behind a versioned contract until the 5-minor-release runway has
+  elapsed.
+- The CI check enforces the deprecation runway, not release-wide SemVer policy.
+  Whether a release also needs a MINOR bump still depends on the full scope of
+  changes in that release.
 
-Some contract-level deprecation requirements above are a policy expectation even
-where current OpenAPI automation cannot yet enforce every migration-path detail.
+Some contract-level migration-path details still rely on human review because
+OpenAPI automation cannot fully infer every compatible rollout strategy.
 
 WebSocket/SSE endpoints are not covered by this policy (OpenAPI only).
