@@ -243,7 +243,10 @@ class RemoteEventsList(EventsListBase):
     _lock: threading.RLock
 
     def __init__(
-        self, client: httpx.Client, conversation_id: str, conversation_base_path: str
+        self,
+        client: httpx.Client,
+        conversation_id: str,
+        conversation_base_path: str = V1_CONVERSATIONS_PATH,
     ):
         self._client = client
         self._conversation_id = conversation_id
@@ -406,7 +409,10 @@ class RemoteState(ConversationStateProtocol):
     _lock: threading.RLock
 
     def __init__(
-        self, client: httpx.Client, conversation_id: str, conversation_base_path: str
+        self,
+        client: httpx.Client,
+        conversation_id: str,
+        conversation_base_path: str = V1_CONVERSATIONS_PATH,
     ):
         self._client = client
         self._conversation_id = conversation_id
