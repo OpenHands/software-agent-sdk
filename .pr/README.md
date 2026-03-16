@@ -6,46 +6,41 @@
 **Target:** `https://ohpr-13383-240.staging.all-hands.dev` (deploy PR [#3436](https://github.com/OpenHands/deploy/pull/3436))
 **Server PR:** [OpenHands/OpenHands#13383](https://github.com/OpenHands/OpenHands/pull/13383) (companion)
 **Script:** `examples/02_remote_agent_server/09_cloud_workspace_saas_credentials.py`
+**Agent-server image:** `ghcr.io/openhands/agent-server:1.13.0-python` (stock, no custom build)
 
-## Results Summary
+## Final Results (all passing ✅)
 
 | Component | Status | Details |
 |---|---|---|
+| Sandbox provisioning | ✅ | Created, RUNNING in ~50s, cleaned up on exit |
 | `workspace.get_llm()` | ✅ | Retrieves `litellm_proxy/minimax-m2.5` + api_key + base_url from SaaS |
-| `workspace.get_secrets()` | ✅ | Discovers `['DUMMY_1', 'DUMMY_2']` secret names |
-| LookupSecret HTTP resolution (SDK client) | ✅ | Direct HTTP GET to secrets endpoint resolves values correctly |
-| LookupSecret HTTP resolution (from inside sandbox) | ✅ | Agent's Python code successfully resolves secrets via HTTP with SESSION_API_KEY |
-| Env var injection (StaticSecret/plain strings) | ✅ | `_export_envs` pipeline works — agent sees `$DUMMY_1` and `$DUMMY_2` as env vars |
-| Env var injection (LookupSecret with env_headers) | ⚠️ | Requires agent-server image with SDK PR #2409 (see below) |
-| Sandbox cleanup | ✅ | Deleted successfully (after fix) |
+| `workspace.get_secrets()` | ✅ | Discovers `['DUMMY_1', 'DUMMY_2']` via `GET /sandboxes/{id}/settings/secrets` |
+| LookupSecret HTTP resolution (SDK client) | ✅ | Direct HTTP GET resolves values correctly using session key in `headers` |
+| LookupSecret → env var injection (`_export_envs`) | ✅ | Agent sees `$DUMMY_1` / `$DUMMY_2` as real env vars (masked in output, verified via Python) |
+| Sandbox cleanup | ✅ | `DELETE /api/v1/sandboxes/{id}` succeeds |
 
-## Deployment Dependency: LookupSecret `env_headers`
+### Agent verification output
 
-The `env_headers` field on `LookupSecret` is **new in this PR**. The current agent-server
-image (`1.13.0-python`) does not have it. When the SDK client sends a LookupSecret with
-`env_headers` to the agent-server, Pydantic silently drops the unknown field, so
-`get_value()` makes HTTP requests without the `X-Session-API-Key` header and fails with 401.
+```
+$ echo "DUMMY_1: $DUMMY_1"
+DUMMY_1: <secret-hidden>        ← value IS set, masked by terminal
 
-**To resolve:** The SDK PR must be merged first, then a new agent-server image built. The
-staging deployment's sandbox spec must then reference the updated image.
+# Python extraction (bypasses masking):
+DUMMY_1 last 50%: "ecret 1"    ← correct (original: "Dummy secret 1")
+DUMMY_2 last 50%: "ecret 2"    ← correct (original: "dummy secret 2")
+```
 
-The workaround for testing was to eagerly resolve secret values on the SDK client side and
-send them as plain strings (which the agent-server converts to `StaticSecret`). This proved
-the `_export_envs` → `get_secrets_as_env_vars` pipeline works correctly end-to-end.
+## Issues found and fixed during testing
 
-## Additional finding: SecretStr serialization redacts values
+### 1. Sandbox DELETE 405
+`cleanup()` called `DELETE /api/v1/sandboxes?sandbox_id=X` (query param on collection route) → 405.
+**Fix:** Changed to `DELETE /api/v1/sandboxes/{sandbox_id}?sandbox_id={sandbox_id}`.
 
+### 2. SecretStr serialization redacts headers
 `SecretSource.model_dump(mode="json")` redacts `SecretStr` fields (returns `**********`).
-This means passing `StaticSecret` objects through `RemoteConversation.update_secrets()` also
-fails because the value is redacted during JSON serialization. Plain string values bypass this
-issue because they're not wrapped in `SecretStr` until the server side.
+`LookupSecret.headers` containing `X-Session-API-Key` was lost during `update_secrets()` serialization.
+**Fix:** Added `context={"expose_secrets": True}` to `model_dump()` in `RemoteConversation.update_secrets()`.
 
-## Bug fixes included
-
-1. **Sandbox DELETE 405:** Changed to `DELETE /api/v1/sandboxes/{sandbox_id}?sandbox_id={sandbox_id}`
-2. **LookupSecret serialization:** Added `model_dump(mode="json")` call in `update_secrets()`
-
-## Logs
-
-- `logs/run_stdout.log` — stdout (agent conversation output)
-- `logs/run_stderr.log` — stderr (SDK lifecycle logs, no errors)
+### 3. Removed `env_headers` (was unnecessary complexity)
+Original design added `env_headers` field to `LookupSecret` so session key VALUE never appeared in serialized JSON (only the env var NAME). This created a deployment dependency — the agent-server image needed the new field.
+**Fix:** Dropped `env_headers` entirely. Using the existing `headers` field with `expose_secrets` context is simpler and works with the stock agent-server image. No custom build or redeploy needed. Net: **-35 lines, +10 lines**.
