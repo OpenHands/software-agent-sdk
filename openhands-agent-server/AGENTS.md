@@ -79,11 +79,14 @@ It currently enforces:
 - FastAPI route handlers must not use `openhands.sdk.utils.deprecation.deprecated`.
 - Endpoints that document deprecation in their OpenAPI description must also set
   `deprecated: true`.
-- No removal of operations (path + method) unless they were already marked
-  `deprecated: true` in the previous release.
-- Breaking changes require a MINOR (or MAJOR) version bump.
+- Removed operations must already be marked `deprecated: true` in the previous
+  release and must have reached the scheduled removal version documented in the
+  baseline OpenAPI description.
+- Other breaking REST contract changes fail the check; the replacement must ship
+  additively or behind a versioned contract until the 5-minor-release runway has
+  elapsed.
 
-Some contract-level deprecation requirements above are a policy expectation even
-where current OpenAPI automation cannot yet enforce every migration-path detail.
+Some contract-level migration-path details still rely on human review because
+OpenAPI automation cannot fully infer every compatible rollout strategy.
 
 WebSocket/SSE endpoints are not covered by this policy (OpenAPI only).

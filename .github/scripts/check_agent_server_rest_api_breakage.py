@@ -14,13 +14,17 @@ Policies enforced:
    - Endpoints documented as deprecated in their OpenAPI description must also be
      marked `deprecated: true` in the generated schema.
 
-2) Deprecation-before-removal
+2) Deprecation runway before removal
    - If a REST operation (path + HTTP method) is removed, it must have been marked
-     `deprecated: true` in the baseline release.
+     `deprecated: true` in the baseline release and its OpenAPI description must
+     declare a scheduled removal version that has been reached by the current
+     package version.
 
-3) MINOR version bump
-   - If a breaking REST change is detected, the current version must be at least a
-     MINOR bump compared to the baseline release.
+3) No in-place contract breakage
+   - Breaking REST contract changes that are not removals of previously-deprecated
+     operations fail the check. REST clients need 5 minor releases of runway, so
+     incompatible replacements must ship additively or behind a versioned contract
+     until the scheduled removal version.
 
 If the baseline release schema can't be generated (e.g., missing tag / repo issues),
 the script emits a warning and exits successfully to avoid flaky CI.
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,6 +48,11 @@ from packaging import version as pkg_version
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_SERVER_PYPROJECT = REPO_ROOT / "openhands-agent-server" / "pyproject.toml"
 PYPI_DISTRIBUTION = "openhands-agent-server"
+REST_ROUTE_DEPRECATION_RE = re.compile(
+    r"Deprecated since v(?P<deprecated>[0-9A-Za-z.+-]+)\s+"
+    r"and scheduled for removal in v(?P<removed>[0-9A-Za-z.+-]+)\.?",
+    re.IGNORECASE,
+)
 HTTP_METHODS = {
     "get",
     "put",
@@ -292,6 +302,124 @@ def _find_deprecation_policy_errors(schema: dict) -> list[str]:
     return errors
 
 
+def _parse_openapi_deprecation_description(
+    description: str | None,
+) -> tuple[str, str] | None:
+    if not description:
+        return None
+
+    match = REST_ROUTE_DEPRECATION_RE.search(" ".join(description.split()))
+    if match is None:
+        return None
+
+    return match.group("deprecated").rstrip("."), match.group("removed").rstrip(".")
+
+
+def _version_ge(current: str, target: str) -> bool:
+    try:
+        return pkg_version.parse(current) >= pkg_version.parse(target)
+    except pkg_version.InvalidVersion as exc:
+        raise SystemExit(
+            f"Invalid semantic version comparison: {current=} {target=}"
+        ) from exc
+
+
+def _get_openapi_operation(schema: dict, path: str, method: str) -> dict | None:
+    path_item = schema.get("paths", {}).get(path)
+    if not isinstance(path_item, dict):
+        return None
+
+    operation = path_item.get(method.lower())
+    if not isinstance(operation, dict):
+        return None
+
+    return operation
+
+
+def _validate_removed_operations(
+    removed_operations: list[dict],
+    prev_schema: dict,
+    current_version: str,
+) -> list[str]:
+    errors: list[str] = []
+
+    for operation in removed_operations:
+        path = str(operation.get("path", ""))
+        method = str(operation.get("method", "")).lower()
+        method_label = method.upper() or "<unknown method>"
+
+        if not operation.get("deprecated", False):
+            errors.append(
+                f"Removed {method_label} {path} without prior deprecation "
+                "(deprecated=true)."
+            )
+            continue
+
+        baseline_operation = _get_openapi_operation(prev_schema, path, method)
+        if baseline_operation is None:
+            errors.append(
+                f"Removed {method_label} {path} was marked deprecated in the "
+                "baseline release, but the previous OpenAPI schema could not be "
+                "inspected for its scheduled removal version."
+            )
+            continue
+
+        deprecation_details = _parse_openapi_deprecation_description(
+            baseline_operation.get("description")
+        )
+        if deprecation_details is None:
+            errors.append(
+                f"Removed {method_label} {path} was marked deprecated in the "
+                "baseline release, but its OpenAPI description does not declare "
+                "a scheduled removal version. REST API removals require 5 minor "
+                "releases of deprecation runway."
+            )
+            continue
+
+        _, removed_in = deprecation_details
+        if not _version_ge(current_version, removed_in):
+            errors.append(
+                f"Removed {method_label} {path} before its scheduled removal "
+                f"version v{removed_in} (current version: v{current_version}). "
+                "REST API removals require 5 minor releases of deprecation "
+                "runway."
+            )
+            continue
+
+        print(
+            f"::notice title={PYPI_DISTRIBUTION} REST API::Removed previously-"
+            f"deprecated {method_label} {path} after its scheduled removal "
+            f"version v{removed_in}."
+        )
+
+    return errors
+
+
+def _split_breaking_changes(
+    breaking_changes: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    removed_operations: list[dict] = []
+    other_breaking_changes: list[dict] = []
+
+    for change in breaking_changes:
+        change_id = str(change.get("id", ""))
+        details = change.get("details", {})
+
+        if "removed" in change_id.lower() and "operation" in change_id.lower():
+            removed_operations.append(
+                {
+                    "path": details.get("path", ""),
+                    "method": details.get("method", ""),
+                    "deprecated": details.get("deprecated", False),
+                }
+            )
+            continue
+
+        other_breaking_changes.append(change)
+
+    return removed_operations, other_breaking_changes
+
+
 def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
     """Normalize OpenAPI 3.1 schema for oasdiff compatibility.
 
@@ -373,14 +501,6 @@ def _run_oasdiff_breakage_check(
     return breaking_changes, result.returncode
 
 
-def _is_minor_or_major_bump(current: str, previous: str) -> bool:
-    cur = pkg_version.parse(current)
-    prev = pkg_version.parse(previous)
-    if cur <= prev:
-        return False
-    return (cur.major, cur.minor) != (prev.major, prev.minor)
-
-
 def main() -> int:
     current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
     baseline_version = _get_baseline_version(PYPI_DISTRIBUTION, current_version)
@@ -434,47 +554,38 @@ def main() -> int:
                 "in JSON format. There may be warnings only."
             )
     else:
-        removed_operations = []
+        removed_operations, other_breaking_changes = _split_breaking_changes(
+            breaking_changes
+        )
+        removal_errors = _validate_removed_operations(
+            removed_operations,
+            prev_schema,
+            current_version,
+        )
 
-        for change in breaking_changes:
-            change_id = change.get("id", "")
-            details = change.get("details", {})
+        for error in removal_errors:
+            print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
 
-            if "removed" in change_id.lower() and "operation" in change_id.lower():
-                removed_operations.append(
-                    {
-                        "path": details.get("path", ""),
-                        "method": details.get("method", ""),
-                        "deprecated": details.get("deprecated", False),
-                    }
-                )
-
-        undeprecated_removals = [
-            op for op in removed_operations if not op.get("deprecated", False)
-        ]
-
-        for op in undeprecated_removals:
-            print(
-                f"::error title={PYPI_DISTRIBUTION} REST API::Removed "
-                f"{op['method'].upper()} {op['path']} without prior deprecation "
-                "(deprecated=true)."
-            )
-
-        if not _is_minor_or_major_bump(current_version, baseline_version):
+        if other_breaking_changes:
             print(
                 "::error "
-                f"title={PYPI_DISTRIBUTION} REST API::Breaking REST API change "
-                f"detected without MINOR version bump ({baseline_version} -> "
-                f"{current_version})."
+                f"title={PYPI_DISTRIBUTION} REST API::Detected breaking REST API "
+                "changes other than removing previously-deprecated operations. "
+                "REST contract changes must preserve compatibility for 5 minor "
+                "releases; keep the old contract available until its scheduled "
+                "removal version."
             )
 
         print("\nBreaking REST API changes detected compared to baseline release:")
         for text in breaking_changes:
             print(f"- {text.get('text', str(text))}")
 
-        if undeprecated_removals or not _is_minor_or_major_bump(
-            current_version, baseline_version
-        ):
+        if not (removal_errors or other_breaking_changes):
+            print(
+                "Breaking changes are limited to previously-deprecated operations "
+                "whose scheduled removal versions have been reached."
+            )
+        else:
             return 1
 
     return 1 if (static_policy_errors or deprecation_policy_errors) else 0

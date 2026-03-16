@@ -28,8 +28,9 @@ _find_sdk_deprecated_fastapi_routes_in_file = (
     _prod._find_sdk_deprecated_fastapi_routes_in_file
 )
 _get_baseline_version = _prod._get_baseline_version
-_is_minor_or_major_bump = _prod._is_minor_or_major_bump
 _normalize_openapi_for_oasdiff = _prod._normalize_openapi_for_oasdiff
+_parse_openapi_deprecation_description = _prod._parse_openapi_deprecation_description
+_validate_removed_operations = _prod._validate_removed_operations
 
 
 def _schema_with_operation(path: str, method: str, operation: dict) -> dict:
@@ -167,10 +168,163 @@ def test_get_baseline_version_warns_and_returns_none_when_pypi_fails(
     assert "Failed to fetch PyPI metadata" in captured.out
 
 
-def test_is_minor_or_major_bump():
-    assert _is_minor_or_major_bump("1.0.1", "1.0.0") is False
-    assert _is_minor_or_major_bump("1.1.0", "1.0.0") is True
-    assert _is_minor_or_major_bump("2.0.0", "1.9.9") is True
+def test_parse_openapi_deprecation_description_extracts_versions():
+    description = "Deprecated since v1.14.0\nand scheduled for removal in v1.19.0."
+
+    assert _parse_openapi_deprecation_description(description) == ("1.14.0", "1.19.0")
+
+
+def test_validate_removed_operations_requires_scheduled_removal_version():
+    prev_schema = _schema_with_operation(
+        "/foo",
+        "get",
+        {
+            "deprecated": True,
+            "description": "Deprecated endpoint.",
+            "responses": {},
+        },
+    )
+
+    errors = _validate_removed_operations(
+        [{"path": "/foo", "method": "get", "deprecated": True}],
+        prev_schema,
+        "1.19.0",
+    )
+
+    assert errors == [
+        "Removed GET /foo was marked deprecated in the baseline release, but its "
+        "OpenAPI description does not declare a scheduled removal version. REST "
+        "API removals require 5 minor releases of deprecation runway."
+    ]
+
+
+def test_validate_removed_operations_requires_removal_target_to_be_reached():
+    prev_schema = _schema_with_operation(
+        "/foo",
+        "get",
+        {
+            "deprecated": True,
+            "description": (
+                "Deprecated since v1.14.0 and scheduled for removal in v1.19.0."
+            ),
+            "responses": {},
+        },
+    )
+
+    errors = _validate_removed_operations(
+        [{"path": "/foo", "method": "get", "deprecated": True}],
+        prev_schema,
+        "1.18.0",
+    )
+
+    assert errors == [
+        "Removed GET /foo before its scheduled removal version v1.19.0 (current "
+        "version: v1.18.0). REST API removals require 5 minor releases of "
+        "deprecation runway."
+    ]
+
+
+def test_validate_removed_operations_allows_scheduled_removal(capsys):
+    prev_schema = _schema_with_operation(
+        "/foo",
+        "get",
+        {
+            "deprecated": True,
+            "description": (
+                "Deprecated since v1.14.0 and scheduled for removal in v1.19.0."
+            ),
+            "responses": {},
+        },
+    )
+
+    errors = _validate_removed_operations(
+        [{"path": "/foo", "method": "get", "deprecated": True}],
+        prev_schema,
+        "1.19.0",
+    )
+
+    assert errors == []
+    assert "scheduled removal version v1.19.0" in capsys.readouterr().out
+
+
+def test_main_allows_scheduled_removal_without_minor_bump(monkeypatch, capsys):
+    prev_schema = _schema_with_operation(
+        "/foo",
+        "get",
+        {
+            "deprecated": True,
+            "description": (
+                "Deprecated since v1.9.0 and scheduled for removal in v1.14.0."
+            ),
+            "responses": {},
+        },
+    )
+
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.14.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: prev_schema
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "removed-operation",
+                    "details": {"path": "/foo", "method": "get", "deprecated": True},
+                    "text": "removed GET /foo",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "MINOR version bump" not in captured.out
+    assert "scheduled removal versions have been reached" in captured.out
+
+
+def test_main_rejects_non_removal_breakage_even_with_newer_version(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-body-changed",
+                    "details": {},
+                    "text": "response body changed",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 1
+
+    captured = capsys.readouterr()
+    assert "MINOR version bump" not in captured.out
+    assert "other than removing previously-deprecated operations" in captured.out
 
 
 def test_normalize_openapi_converts_numeric_exclusive_bounds():
