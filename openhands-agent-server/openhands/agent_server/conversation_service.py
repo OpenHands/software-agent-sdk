@@ -42,6 +42,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ConversationContractMismatchError(ValueError):
+    """Raised when a conversation ID exists under a different REST contract."""
+
+
+def _conversation_contract_mismatch_message(conversation_id: UUID) -> str:
+    return (
+        f"Conversation {conversation_id} exists but is only available through the "
+        "ACP conversation contract. Use /api/acp/conversations or attach with "
+        "ACPAgent."
+    )
+
+
 def _compose_conversation_info_v1(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -267,6 +279,15 @@ class ConversationService:
             include_acp=False,
         )
 
+    async def count_acp_conversations(
+        self,
+        execution_status: ConversationExecutionStatus | None = None,
+    ) -> int:
+        return await self._count_conversations(
+            execution_status=execution_status,
+            include_acp=True,
+        )
+
     async def _count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None,
@@ -374,6 +395,14 @@ class ConversationService:
         use_acp_contract = isinstance(request, StartACPConversationRequest)
 
         existing_event_service = self._event_services.get(conversation_id)
+        if (
+            existing_event_service is not None
+            and not use_acp_contract
+            and not _is_v1_conversation(existing_event_service.stored)
+        ):
+            raise ConversationContractMismatchError(
+                _conversation_contract_mismatch_message(conversation_id)
+            )
         if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
             conversation_info = (

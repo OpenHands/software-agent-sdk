@@ -81,6 +81,18 @@ async def search_acp_conversations(
     )
 
 
+@conversation_router_acp.get("/count")
+async def count_acp_conversations(
+    status: Annotated[
+        ConversationExecutionStatus | None,
+        Query(title="Optional filter by conversation execution status"),
+    ] = None,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> int:
+    """Count conversations using the ACP-capable contract."""
+    return await conversation_service.count_acp_conversations(status)
+
+
 @conversation_router_acp.get(
     "/{conversation_id}",
     responses={404: {"description": "Item not found"}},

@@ -200,3 +200,4 @@ def test_conversation_contracts_keep_v1_stable_and_add_acp_routes(client):
 
     assert "/api/v2/conversations" not in openapi_schema["paths"]
     assert "/api/acp/conversations" in openapi_schema["paths"]
+    assert "/api/acp/conversations/count" in openapi_schema["paths"]

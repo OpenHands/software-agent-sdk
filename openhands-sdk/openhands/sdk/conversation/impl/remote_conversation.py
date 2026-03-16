@@ -64,6 +64,14 @@ def _uses_acp_conversation_contract(agent: AgentBase) -> bool:
     return getattr(agent, "kind", agent.__class__.__name__) == "ACPAgent"
 
 
+def _conversation_contract_mismatch_message(conversation_id: ConversationID) -> str:
+    return (
+        f"Conversation {conversation_id} exists but is only available through the "
+        "ACP conversation contract. Attach with ACPAgent or use "
+        "/api/acp/conversations."
+    )
+
+
 def _validate_remote_agent(agent_data: dict) -> AgentBase:
     if agent_data.get("kind") == "ACPAgent":
         from openhands.sdk.agent.acp_agent import ACPAgent
@@ -670,6 +678,17 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
+                if not _uses_acp_conversation_contract(agent):
+                    acp_resp = _send_request(
+                        self._client,
+                        "GET",
+                        f"{ACP_CONVERSATIONS_PATH}/{conversation_id}",
+                        acceptable_status_codes={404},
+                    )
+                    if acp_resp.status_code != 404:
+                        raise ValueError(
+                            _conversation_contract_mismatch_message(conversation_id)
+                        )
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:

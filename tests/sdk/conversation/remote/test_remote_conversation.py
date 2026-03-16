@@ -311,6 +311,11 @@ class TestRemoteConversation:
                 response.status_code = 404
                 response.raise_for_status.side_effect = None
                 return response
+            elif method == "GET" and url == f"/api/acp/conversations/{conversation_id}":
+                response = Mock()
+                response.status_code = 404
+                response.raise_for_status.side_effect = None
+                return response
             elif method == "POST" and url == "/api/conversations":
                 return mock_conv_response
             elif method == "GET" and "/events/search" in url:
@@ -372,6 +377,60 @@ class TestRemoteConversation:
         assert payload.get("conversation_id") == str(conversation_id), (
             "POST payload should contain the specified conversation_id"
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_existing_acp_id_raises_clear_error(
+        self, mock_ws_client
+    ):
+        conversation_id = uuid.uuid4()
+        mock_client_instance = Mock()
+        self.workspace._client = mock_client_instance
+
+        def request_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                response = Mock()
+                response.status_code = 404
+                response.raise_for_status.side_effect = None
+                return response
+            if method == "GET" and url == f"/api/acp/conversations/{conversation_id}":
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": str(conversation_id),
+                    "execution_status": "idle",
+                    "agent": {
+                        "kind": "ACPAgent",
+                        "acp_command": ["echo", "test"],
+                    },
+                }
+                return response
+            response = Mock()
+            response.status_code = 200
+            response.raise_for_status.return_value = None
+            response.json.return_value = {}
+            return response
+
+        mock_client_instance.request.side_effect = request_side_effect
+
+        with pytest.raises(
+            ValueError, match="only available through the ACP conversation contract"
+        ):
+            RemoteConversation(
+                agent=self.agent,
+                workspace=self.workspace,
+                conversation_id=conversation_id,
+            )
+
+        mock_ws_client.assert_not_called()
+        post_create_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST"
+        ]
+        assert post_create_calls == []
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

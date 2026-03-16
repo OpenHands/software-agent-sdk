@@ -116,6 +116,22 @@ def test_search_acp_conversations_returns_acp_page(
         client.app.dependency_overrides.clear()
 
 
+def test_count_acp_conversations_returns_count(client, mock_conversation_service):
+    mock_conversation_service.count_acp_conversations.return_value = 2
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.get("/api/acp/conversations/count")
+
+        assert response.status_code == 200
+        assert response.json() == 2
+        mock_conversation_service.count_acp_conversations.assert_called_once_with(None)
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_batch_get_acp_conversations_returns_acp_agents(
     client, mock_conversation_service, sample_acp_conversation_info
 ):
