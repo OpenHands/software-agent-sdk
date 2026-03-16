@@ -599,10 +599,10 @@ class LocalConversation(BaseConversation):
                     # Pause attempts to acquire the state lock
                     # Before value can be modified step can be taken
                     # Ensure step conditions are checked when lock is already acquired
-                    if self._state.execution_status in [
-                        ConversationExecutionStatus.PAUSED,
-                        ConversationExecutionStatus.STUCK,
-                    ]:
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.PAUSED
+                    ):
                         break
 
                     # Handle stop hooks on FINISHED
