@@ -6,13 +6,12 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
 
-def _load_prod_module():
+
+def _load_script_module(name: str):
     repo_root = Path(__file__).resolve().parents[2]
-    script_path = (
-        repo_root / ".github" / "scripts" / "check_agent_server_rest_api_breakage.py"
-    )
-    name = "check_agent_server_rest_api_breakage"
+    script_path = repo_root / ".github" / "scripts" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, script_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -21,7 +20,8 @@ def _load_prod_module():
     return mod
 
 
-_prod = _load_prod_module()
+_prod = _load_script_module("check_agent_server_rest_api_breakage")
+_deprecations_prod = _load_script_module("check_deprecations")
 
 _find_deprecation_policy_errors = _prod._find_deprecation_policy_errors
 _find_sdk_deprecated_fastapi_routes_in_file = (
@@ -31,6 +31,8 @@ _get_baseline_version = _prod._get_baseline_version
 _normalize_openapi_for_oasdiff = _prod._normalize_openapi_for_oasdiff
 _parse_openapi_deprecation_description = _prod._parse_openapi_deprecation_description
 _validate_removed_operations = _prod._validate_removed_operations
+_rest_route_deprecation_re = _prod.REST_ROUTE_DEPRECATION_RE
+_deprecation_check_re = _deprecations_prod.REST_ROUTE_DEPRECATION_RE
 
 
 def _schema_with_operation(path: str, method: str, operation: dict) -> dict:
@@ -168,6 +170,11 @@ def test_get_baseline_version_warns_and_returns_none_when_pypi_fails(
     assert "Failed to fetch PyPI metadata" in captured.out
 
 
+def test_rest_deprecation_regex_matches_deprecation_check_regex():
+    assert _rest_route_deprecation_re.pattern == _deprecation_check_re.pattern
+    assert _rest_route_deprecation_re.flags == _deprecation_check_re.flags
+
+
 def test_parse_openapi_deprecation_description_extracts_versions_from_example():
     description = (
         "Nice description here with more context for API consumers.\n\n"
@@ -175,6 +182,28 @@ def test_parse_openapi_deprecation_description_extracts_versions_from_example():
     )
 
     assert _parse_openapi_deprecation_description(description) == ("1.14.0", "1.19.0")
+
+
+def test_validate_removed_operations_rejects_malformed_removal_version():
+    prev_schema = _schema_with_operation(
+        "/foo",
+        "get",
+        {
+            "deprecated": True,
+            "description": (
+                "Nice description here.\n\n"
+                " Deprecated since v1.14.0 and scheduled for removal in v1.x.0."
+            ),
+            "responses": {},
+        },
+    )
+
+    with pytest.raises(SystemExit, match="Invalid semantic version comparison"):
+        _validate_removed_operations(
+            [{"path": "/foo", "method": "get", "deprecated": True}],
+            prev_schema,
+            "1.19.0",
+        )
 
 
 def test_validate_removed_operations_requires_scheduled_removal_version():
@@ -250,14 +279,15 @@ def test_validate_removed_operations_allows_scheduled_removal(capsys):
     assert "scheduled removal version v1.19.0" in capsys.readouterr().out
 
 
-def test_main_allows_scheduled_removal_without_minor_bump(monkeypatch, capsys):
+def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsys):
     prev_schema = _schema_with_operation(
         "/foo",
         "get",
         {
             "deprecated": True,
             "description": (
-                "Deprecated since v1.9.0 and scheduled for removal in v1.14.0."
+                "Nice description here.\n\n"
+                " Deprecated since v1.9.0 and scheduled for removal in v1.14.0."
             ),
             "responses": {},
         },
@@ -265,7 +295,7 @@ def test_main_allows_scheduled_removal_without_minor_bump(monkeypatch, capsys):
 
     monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.14.0")
     monkeypatch.setattr(
-        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.13.0"
     )
     monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
     monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})

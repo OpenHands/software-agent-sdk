@@ -92,6 +92,9 @@ It currently enforces:
 - Other breaking REST contract changes fail the check; the replacement must ship
   additively or behind a versioned contract until the 5-minor-release runway has
   elapsed.
+- The CI check enforces the deprecation runway, not release-wide SemVer policy.
+  Whether a release also needs a MINOR bump still depends on the full scope of
+  changes in that release.
 
 Some contract-level migration-path details still rely on human review because
 OpenAPI automation cannot fully infer every compatible rollout strategy.
