@@ -386,7 +386,7 @@ class TomConsultExecutor(
             from tom_swe.memory.locations import get_usermodeling_dir
 
             history_file = f"{get_usermodeling_dir(self.user_id)}/processed_sessions_timestamps.json"  # noqa: E501
-            content = self.file_store.read(history_file)
+            content = self.file_store.read(history_file, cache=False)
             return json.loads(content)
         except FileNotFoundError:
             return {}
@@ -417,7 +417,9 @@ class TomConsultExecutor(
 
             history_file = f"{get_usermodeling_dir(self.user_id)}/processed_sessions_timestamps.json"  # noqa: E501
 
-            self.file_store.write(history_file, json.dumps(history, indent=2))
+            self.file_store.write(
+                history_file, json.dumps(history, indent=2), cache=False
+            )
             logger.info(
                 f"📝 Tom: Updated processing history for {len(session_ids)} sessions"
             )  # noqa: E501

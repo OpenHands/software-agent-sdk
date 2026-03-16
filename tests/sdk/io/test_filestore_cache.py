@@ -312,3 +312,34 @@ def test_cache_with_evict_correct():
     total_len = len(cache["key2"]) + len(cache["key3"])
     # Verify memory statistics match the total size of key2 and key3
     assert total_len == cache.current_memory
+
+
+def test_cache_enable_and_disable():
+    """Test that cache can be enabled and disabled via constructor."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Cache enabled
+        # When cache is allowed (enabled):
+        # - Data will be stored in the in-memory cache after write/read operations.
+        # - The cache dictionary will contain the data, and its length will be
+        # greater than 0.
+        store_with_cache = LocalFileStore(temp_dir, cache_limit_size=0)
+        store_with_cache.write("test.txt", "content")
+        assert len(store_with_cache.cache) == 1
+        store_with_cache.read("test.txt")
+        assert len(store_with_cache.cache) == 1
+        store_with_cache.cache.clear()
+        assert len(store_with_cache.cache) == 0
+        store_with_cache.read("test.txt")
+        assert len(store_with_cache.cache) == 1
+
+        # Cache disabled
+        # When cache is disallowed (disabled):
+        # - Data will NOT be stored in the in-memory cache, even after
+        # write/read operations.
+        # - The cache dictionary will remain empty (length = 0) regardless
+        # of file operations.
+        store_no_cache = LocalFileStore(temp_dir, cache_limit_size=10)
+        store_no_cache.write("test.txt", "content", cache=False)
+        assert len(store_no_cache.cache) == 0
+        store_no_cache.read("test.txt", cache=False)
+        assert len(store_no_cache.cache) == 0

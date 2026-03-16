@@ -256,7 +256,7 @@ class ConversationState(OpenHandsModel):
                 "preserve secrets."
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        fs.write(BASE_STATE, payload, cache=False)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
@@ -311,7 +311,7 @@ class ConversationState(OpenHandsModel):
         )
 
         try:
-            base_text = file_store.read(BASE_STATE)
+            base_text = file_store.read(BASE_STATE, cache=False)
         except FileNotFoundError:
             base_text = None
 
