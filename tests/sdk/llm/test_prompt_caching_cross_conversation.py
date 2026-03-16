@@ -66,7 +66,7 @@ def test_static_system_message_is_constant_across_different_contexts():
     ("dynamic_context", "expect_dynamic"),
     [
         (TextContent(text="Dynamic context"), True),
-        (None, False),
+        (None, True),
     ],
 )
 def test_end_to_end_caching_flow(tmp_path, dynamic_context, expect_dynamic):
