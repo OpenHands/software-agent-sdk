@@ -40,7 +40,7 @@ class TestGetLLM:
     """Tests for OpenHandsCloudWorkspace.get_llm()."""
 
     def test_get_llm_returns_usable_llm(self, mock_workspace):
-        """get_llm calls /users/me?expose_secrets=true with session key and returns a real LLM."""
+        """get_llm fetches SaaS config and returns a usable LLM."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "llm_model": "anthropic/claude-sonnet-4-20250514",

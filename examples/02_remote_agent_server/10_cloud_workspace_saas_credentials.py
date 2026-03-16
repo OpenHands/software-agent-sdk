@@ -13,7 +13,7 @@ Raw secret values never transit through the SDK client. The agent-server
 inside the sandbox resolves them on demand.
 
 Usage:
-  uv run examples/02_remote_agent_server/09_cloud_workspace_saas_credentials.py
+  uv run examples/02_remote_agent_server/10_cloud_workspace_saas_credentials.py
 
 Requirements:
   - OPENHANDS_CLOUD_API_KEY: API key for OpenHands Cloud (the only credential needed)
@@ -51,9 +51,10 @@ with OpenHandsCloudWorkspace(
     cloud_api_key=cloud_api_key,
 ) as workspace:
     # --- LLM from SaaS account settings ---
-    # get_llm() calls GET /users/me?expose_secrets=true (dual auth: Bearer + session key)
-    # and returns a fully configured LLM instance.
-    # You can override any parameter, e.g. workspace.get_llm(model="gpt-4o")
+    # get_llm() calls GET /users/me?expose_secrets=true
+    # (dual auth: Bearer + session key) and returns a
+    # fully configured LLM instance.
+    # Override any parameter: workspace.get_llm(model="gpt-4o")
     llm_kwargs = {}
     if os.getenv("LLM_MODEL"):
         llm_kwargs["model"] = os.getenv("LLM_MODEL")
@@ -99,8 +100,9 @@ with OpenHandsCloudWorkspace(
         )
     else:
         prompt = (
-            "List the environment variables that start with SECRET_ or end with _TOKEN, "
-            "then write a short summary of what you find into SECRETS_CHECK.txt."
+            "List the environment variables that start with "
+            "SECRET_ or end with _TOKEN, then write a short "
+            "summary of what you find into SECRETS_CHECK.txt."
         )
 
     try:
