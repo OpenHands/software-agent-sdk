@@ -43,7 +43,12 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
-from openhands.sdk.hooks import HookConfig
+from openhands.sdk.hooks import (
+    HookConfig,
+    HookEventProcessor,
+    HookEventType,
+    HookManager,
+)
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -399,10 +404,15 @@ class RemoteState(ConversationStateProtocol):
                 return self._cached_state
 
             # Fallback to REST API if no cached state
-            resp = _send_request(
-                self._client, "GET", f"/api/conversations/{self._conversation_id}"
-            )
-            state = resp.json()
+            return self.refresh_from_server()
+
+    def refresh_from_server(self) -> dict:
+        """Fetch and cache the latest authoritative conversation state."""
+        resp = _send_request(
+            self._client, "GET", f"/api/conversations/{self._conversation_id}"
+        )
+        state = resp.json()
+        with self._lock:
             self._cached_state = state
             return state
 
@@ -526,15 +536,6 @@ class RemoteState(ConversationStateProtocol):
         stats_data = info.get("stats", {})
         return ConversationStats.model_validate(stats_data)
 
-    @property
-    def hook_config(self) -> HookConfig | None:
-        """Get hook configuration (fetched from remote)."""
-        info = self._get_conversation_info()
-        hook_config_data = info.get("hook_config")
-        if hook_config_data is not None:
-            return HookConfig.model_validate(hook_config_data)
-        return None
-
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
         info = self._get_conversation_info()
@@ -562,6 +563,7 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
+    _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
     _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
     delete_on_close: bool = False
@@ -602,8 +604,7 @@ class RemoteConversation(BaseConversation):
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
-            hook_config: Optional hook configuration sent to the server.
-                      All hooks are executed server-side.
+            hook_config: Optional hook configuration for session hooks
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -617,6 +618,7 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
+        self._hook_processor = None
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
 
@@ -665,8 +667,6 @@ class RemoteConversation(BaseConversation):
                 "agent_definitions": serialized_defs,
                 # Include plugins to load on server
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
-                # Include hook_config for server-side hooks
-                "hook_config": hook_config.model_dump() if hook_config else None,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -781,8 +781,25 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
-        # All hooks (including SessionStart/SessionEnd) are executed server-side.
-        # hook_config is sent in the creation payload.
+        if hook_config is not None:
+            unsupported = (
+                HookEventType.PRE_TOOL_USE,
+                HookEventType.POST_TOOL_USE,
+                HookEventType.USER_PROMPT_SUBMIT,
+                HookEventType.STOP,
+            )
+            if any(hook_config.has_hooks_for_event(t) for t in unsupported):
+                logger.warning(
+                    "RemoteConversation only supports SessionStart/SessionEnd hooks; "
+                    "other hook types will not be enforced."
+                )
+            hook_manager = HookManager(
+                config=hook_config,
+                working_dir=os.getcwd(),
+                session_id=str(self._id),
+            )
+            self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
+            self._hook_processor.run_session_start()
         self.delete_on_close = delete_on_close
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
@@ -969,6 +986,7 @@ class RemoteConversation(BaseConversation):
                     ws_status,
                     elapsed,
                 )
+                self._state.refresh_from_server()
                 return
             except Empty:
                 pass  # Queue.get() timed out, fall through to REST polling
@@ -994,10 +1012,14 @@ class RemoteConversation(BaseConversation):
                         logger.info(
                             "Run completed via REST fallback after %d consecutive "
                             "terminal polls (status: %s, elapsed: %.1fs). "
-                            "Reconciling events...",
+                            "Refreshing final state and reconciling events...",
                             consecutive_terminal_polls,
                             status,
                             elapsed,
+                        )
+                        final_info = self._state.refresh_from_server()
+                        self._handle_conversation_status(
+                            final_info.get("execution_status")
                         )
                         # Reconcile events to catch any that were missed via WS.
                         # This is only called in the fallback path, so it doesn't
@@ -1227,7 +1249,8 @@ class RemoteConversation(BaseConversation):
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
-        # SessionEnd hooks are executed server-side (via hook_config in payload).
+        if self._hook_processor is not None:
+            self._hook_processor.run_session_end()
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:

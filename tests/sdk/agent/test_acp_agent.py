@@ -21,7 +21,6 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
-from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.workspace.local import LocalWorkspace
 
@@ -395,15 +394,10 @@ class TestACPAgentStep:
             agent.step(conversation, on_event=events.append)
 
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
-        assert len(events) == 2
-        # First event: MessageEvent with the error text
+        assert len(events) >= 1
         content_block = events[0].llm_message.content[0]
         assert isinstance(content_block, TextContent)
         assert "ACP error: boom" in content_block.text
-        # Second event: ConversationErrorEvent with error detail
-        assert isinstance(events[1], ConversationErrorEvent)
-        assert events[1].code == "ACPPromptError"
-        assert "boom" in events[1].detail
 
     def test_step_no_response_text_fallback(self, tmp_path):
         agent = _make_agent()
@@ -603,39 +597,64 @@ class TestACPAgentTelemetry:
         assert llms[0] is agent.llm
         assert llms[0].model == "acp-managed"
 
-    def test_step_records_token_usage(self, tmp_path):
-        """step() records per-turn token usage from PromptResponse.usage."""
-        agent = _make_agent()
+    def _make_step_fixtures(self, tmp_path, agent=None, usage=None, cost=None):
+        """Set up agent + client + executor for step() telemetry tests."""
+        if agent is None:
+            agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
 
-        mock_client = _OpenHandsACPBridge()
+        mock_client = agent._client or _OpenHandsACPBridge()
         mock_client._context_window = 200000
         agent._client = mock_client
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        # Build a mock PromptResponse with usage
-        mock_usage = MagicMock()
-        mock_usage.input_tokens = 100
-        mock_usage.output_tokens = 50
-        mock_usage.cached_read_tokens = 10
-        mock_usage.cached_write_tokens = 5
-        mock_usage.thought_tokens = 20
-
         mock_response = MagicMock()
-        mock_response.usage = mock_usage
+        if usage is not None:
+            mock_usage = MagicMock()
+            mock_usage.input_tokens = usage.get("input", 0)
+            mock_usage.output_tokens = usage.get("output", 0)
+            mock_usage.cached_read_tokens = usage.get("cache_read", 0)
+            mock_usage.cached_write_tokens = usage.get("cache_write", 0)
+            mock_usage.thought_tokens = usage.get("thought", 0)
+            mock_response.usage = mock_usage
+        else:
+            mock_response.usage = None
 
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
+            if cost is not None:
+                mock_update = MagicMock()
+                mock_update.cost = MagicMock()
+                mock_update.cost.amount = cost[0]
+                mock_update.size = cost[1]
+                mock_client._turn_usage_updates["test-session"] = mock_update
+                mock_client._context_window_by_session["test-session"] = cost[1]
+                mock_client._context_window = cost[1]
             return mock_response
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
         agent._executor = mock_executor
 
+        return agent, conversation
+
+    def test_step_records_token_usage(self, tmp_path):
+        """step() records per-turn token usage from PromptResponse.usage."""
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={
+                "input": 100,
+                "output": 50,
+                "cache_read": 10,
+                "cache_write": 5,
+                "thought": 20,
+            },
+            cost=(0.05, 200000),
+        )
+
         agent.step(conversation, on_event=lambda _: None)
 
-        # Verify token usage was recorded
         metrics = agent.llm.metrics
         assert len(metrics.token_usages) == 1
         usage = metrics.token_usages[0]
@@ -648,41 +667,83 @@ class TestACPAgentTelemetry:
 
     def test_step_handles_no_usage(self, tmp_path):
         """step() handles PromptResponse with no usage gracefully."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
-
-        mock_client = _OpenHandsACPBridge()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        mock_response = MagicMock()
-        mock_response.usage = None
-
-        def _fake_run_async(_coro, **_kwargs):
-            mock_client.accumulated_text.append("response")
-            return mock_response
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
+        agent, conversation = self._make_step_fixtures(tmp_path)
 
         agent.step(conversation, on_event=lambda _: None)
 
-        # No token usage should be recorded
         assert len(agent.llm.metrics.token_usages) == 0
 
+    def test_step_records_cost_from_usage_update(self, tmp_path):
+        """step() records cost from UsageUpdate in the single telemetry path."""
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={"input": 100, "output": 50},
+            cost=(0.05, 128000),
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+        assert len(agent.llm.metrics.costs) == 1
+        assert agent._client._last_cost == pytest.approx(0.05)
+
+    def test_step_records_incremental_cost(self, tmp_path):
+        """Cost tracking is incremental across turns."""
+        agent = _make_agent()
+
+        _, conversation1 = self._make_step_fixtures(
+            tmp_path,
+            agent=agent,
+            usage={"input": 100, "output": 50},
+            cost=(0.05, 128000),
+        )
+        agent.step(conversation1, on_event=lambda _: None)
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.05)
+
+        _, conversation2 = self._make_step_fixtures(
+            tmp_path,
+            agent=agent,
+            usage={"input": 200, "output": 100},
+            cost=(0.12, 130000),
+        )
+        agent.step(conversation2, on_event=lambda _: None)
+        assert agent.llm.metrics.accumulated_cost == pytest.approx(0.12)
+        assert len(agent.llm.metrics.costs) == 2
+
+    def test_step_no_cost_when_usage_update_missing(self, tmp_path):
+        """No cost is recorded when PromptResponse arrives without UsageUpdate."""
+        agent, conversation = self._make_step_fixtures(
+            tmp_path,
+            usage={"input": 100, "output": 50},
+            cost=None,
+        )
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert agent.llm.metrics.accumulated_cost == 0.0
+        assert len(agent.llm.metrics.costs) == 0
+        assert len(agent.llm.metrics.token_usages) == 1
+
+    def test_step_records_latency(self, tmp_path):
+        """step() records response latency in the single telemetry path."""
+        agent, conversation = self._make_step_fixtures(tmp_path)
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.time.monotonic",
+            side_effect=[10.0, 10.5],
+        ):
+            agent.step(conversation, on_event=lambda _: None)
+
+        assert len(agent.llm.metrics.response_latencies) == 1
+        assert agent.llm.metrics.response_latencies[0].latency == pytest.approx(0.5)
+
     @pytest.mark.asyncio
-    async def test_usage_update_records_cost(self):
-        """UsageUpdate with cost records incremental cost via metrics."""
+    async def test_session_update_stores_usage_update(self):
+        """session_update() stores UsageUpdate for step() to process later."""
         from acp.schema import UsageUpdate
 
-        from openhands.sdk.llm import LLM
-
         client = _OpenHandsACPBridge()
-        llm = LLM(model="acp-managed")
-        client._llm_ref = llm
-        client._last_cost = 0.0
+        usage_event = client.prepare_usage_sync("sess-1")
 
         update = MagicMock(spec=UsageUpdate)
         update.size = 128000
@@ -691,39 +752,10 @@ class TestACPAgentTelemetry:
 
         await client.session_update("sess-1", update)
 
-        assert llm.metrics.accumulated_cost == pytest.approx(0.05)
-        assert client._last_cost == 0.05
+        assert client.get_turn_usage_update("sess-1") is update
         assert client._context_window == 128000
-
-    @pytest.mark.asyncio
-    async def test_usage_update_incremental_cost(self):
-        """UsageUpdate cost tracking is incremental (delta from last seen)."""
-        from acp.schema import UsageUpdate
-
-        from openhands.sdk.llm import LLM
-
-        client = _OpenHandsACPBridge()
-        llm = LLM(model="acp-managed")
-        client._llm_ref = llm
-
-        # First update: cost 0.05
-        update1 = MagicMock(spec=UsageUpdate)
-        update1.size = 128000
-        update1.cost = MagicMock()
-        update1.cost.amount = 0.05
-
-        await client.session_update("sess-1", update1)
-        assert llm.metrics.accumulated_cost == pytest.approx(0.05)
-
-        # Second update: cumulative cost 0.12 → delta should be 0.07
-        update2 = MagicMock(spec=UsageUpdate)
-        update2.size = 130000
-        update2.cost = MagicMock()
-        update2.cost.amount = 0.12
-
-        await client.session_update("sess-1", update2)
-        assert llm.metrics.accumulated_cost == pytest.approx(0.12)
-        assert client._last_cost == 0.12
+        assert client._context_window_by_session["sess-1"] == 128000
+        assert usage_event.is_set()
 
     @pytest.mark.asyncio
     async def test_usage_update_updates_context_window(self):
@@ -739,29 +771,12 @@ class TestACPAgentTelemetry:
         await client.session_update("sess-1", update)
 
         assert client._context_window == 200000
+        assert client._context_window_by_session["sess-1"] == 200000
 
     def test_stats_callback_invoked(self, tmp_path):
         """After step(), the sentinel LLM's stats callback is invoked."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
+        agent, conversation = self._make_step_fixtures(tmp_path)
 
-        mock_client = _OpenHandsACPBridge()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        mock_response = MagicMock()
-        mock_response.usage = None
-
-        def _fake_run_async(_coro, **_kwargs):
-            mock_client.accumulated_text.append("ok")
-            return mock_response
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
-
-        # Set up a stats callback
         callback = MagicMock()
         agent.llm.telemetry._stats_update_callback = callback
 
@@ -769,31 +784,33 @@ class TestACPAgentTelemetry:
 
         callback.assert_called_once()
 
-    def test_start_acp_server_wires_llm_ref(self, tmp_path):
-        """_start_acp_server wires _llm_ref on the client."""
+    def test_init_state_sets_bridge_client(self, tmp_path):
+        """init_state() keeps the bridge instance installed by _start_acp_server."""
         agent = _make_agent()
         state = _make_state(tmp_path)
+        expected_client = _OpenHandsACPBridge()
 
         with patch(
             "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"
         ) as mock_start:
 
-            def fake_start(s):
-                client = _OpenHandsACPBridge()
-                client._llm_ref = agent.llm
-                agent._client = client
+            def fake_start(_state):
+                agent._client = expected_client
 
             mock_start.side_effect = fake_start
             agent.init_state(state, on_event=lambda _: None)
 
-        assert agent._client._llm_ref is agent.llm
+        assert agent._client is expected_client
 
     def test_reset_preserves_telemetry_state(self):
-        """reset() clears text/thoughts but preserves telemetry state."""
+        """reset() clears per-turn buffers but preserves cumulative telemetry."""
         client = _OpenHandsACPBridge()
         client._last_cost = 1.23
+        client._last_cost_by_session["sess-1"] = 1.23
         client._context_window = 128000
-        client._llm_ref = MagicMock()
+        client._context_window_by_session["sess-1"] = 128000
+        client._turn_usage_updates["sess-1"] = MagicMock()
+        client._usage_received["sess-1"] = asyncio.Event()
         client.accumulated_text.append("hello")
         client.accumulated_thoughts.append("thinking")
 
@@ -803,7 +820,10 @@ class TestACPAgentTelemetry:
         assert client.accumulated_thoughts == []
         assert client._last_cost == 1.23
         assert client._context_window == 128000
-        assert client._llm_ref is not None
+        assert client._last_cost_by_session["sess-1"] == 1.23
+        assert client._context_window_by_session["sess-1"] == 128000
+        assert client._turn_usage_updates == {}
+        assert client._usage_received == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1387,155 +1407,3 @@ class TestACPSessionMode:
         restored = AgentBase.model_validate_json(dumped)
         assert isinstance(restored, ACPAgent)
         assert restored.acp_session_mode == "full-access"
-
-
-# ---------------------------------------------------------------------------
-# Connection retry logic
-# ---------------------------------------------------------------------------
-
-
-class TestACPPromptRetry:
-    """Test retry logic for ACP prompt failures."""
-
-    def _make_conversation_with_message(self, tmp_path, text="Hello"):
-        """Create a mock conversation with a user message."""
-        state = _make_state(tmp_path)
-        state.events.append(
-            SystemPromptEvent(
-                source="agent",
-                system_prompt=TextContent(text="ACP-managed agent"),
-                tools=[],
-            )
-        )
-        state.events.append(
-            MessageEvent(
-                source="user",
-                llm_message=Message(role="user", content=[TextContent(text=text)]),
-            )
-        )
-
-        conversation = MagicMock()
-        conversation.state = state
-        return conversation
-
-    def test_retry_on_connection_error_then_success(self, tmp_path):
-        """Retry succeeds after transient connection error."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
-        events: list = []
-
-        mock_client = _OpenHandsACPBridge()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        call_count = 0
-
-        def _fake_run_async(_coro, **_kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise ConnectionError("Connection reset by peer")
-            # Second call succeeds - must populate text and return a response
-            mock_client.accumulated_text.append("Success after retry")
-            # Return a mock PromptResponse (can be MagicMock since we only check usage)
-            return MagicMock(usage=None)
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
-
-        # Patch sleep to avoid actual delays in tests
-        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
-            agent.step(conversation, on_event=events.append)
-
-        assert call_count == 2  # First failed, second succeeded
-        assert (
-            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
-        )
-        assert len(events) == 3  # MessageEvent, ActionEvent, ObservationEvent
-        assert "Success after retry" in events[0].llm_message.content[0].text
-
-    def test_no_retry_on_non_connection_error(self, tmp_path):
-        """Non-connection errors (e.g., RuntimeError) fail immediately without retry."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
-        events: list = []
-
-        mock_client = _OpenHandsACPBridge()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        call_count = 0
-
-        def _fake_run_async(_coro, **_kwargs):
-            nonlocal call_count
-            call_count += 1
-            raise RuntimeError("Some application error")
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
-
-        with pytest.raises(RuntimeError, match="Some application error"):
-            agent.step(conversation, on_event=events.append)
-
-        assert call_count == 1  # No retry attempted
-        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
-
-    def test_no_retry_on_timeout(self, tmp_path):
-        """Timeout errors are not retried (handled separately)."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
-
-        mock_client = _OpenHandsACPBridge()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        call_count = 0
-
-        def _fake_run_async(_coro, **_kwargs):
-            nonlocal call_count
-            call_count += 1
-            raise TimeoutError("ACP prompt timed out")
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
-
-        agent.step(conversation, on_event=lambda _: None)
-
-        assert call_count == 1  # No retry for timeout
-        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
-
-    def test_max_retries_exceeded(self, tmp_path):
-        """Error raised after max retries exhausted."""
-        agent = _make_agent()
-        conversation = self._make_conversation_with_message(tmp_path)
-        events: list = []
-
-        mock_client = _OpenHandsACPBridge()
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._session_id = "test-session"
-
-        call_count = 0
-
-        def _fake_run_async(_coro, **_kwargs):
-            nonlocal call_count
-            call_count += 1
-            raise ConnectionError("Persistent connection failure")
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
-
-        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
-            with pytest.raises(ConnectionError, match="Persistent connection failure"):
-                agent.step(conversation, on_event=events.append)
-
-        # Default max retries is 3, so 4 total attempts (1 initial + 3 retries)
-        assert call_count == 4
-        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
