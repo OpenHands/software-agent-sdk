@@ -7,27 +7,43 @@
 **Server PR:** [OpenHands/OpenHands#13383](https://github.com/OpenHands/OpenHands/pull/13383) (companion)
 **Script:** `examples/02_remote_agent_server/09_cloud_workspace_saas_credentials.py`
 
-## Results
+## Results Summary
 
-| Step | Status | Details |
+| Component | Status | Details |
 |---|---|---|
-| Sandbox provisioning | ✅ | `6vCNUFNBqGOQlgCyPar4yZ`, RUNNING in ~60s |
-| `workspace.get_llm()` | ✅ | Retrieved `litellm_proxy/minimax-m2.5` + api_key + base_url from SaaS |
-| `workspace.get_secrets()` | ✅ | Returned `[]` (correct — no secrets configured on staging account) |
-| Conversation execution | ✅ | Agent ran task, 17 events, 39.2s |
-| Sandbox cleanup | ✅ | Deleted successfully (after fix — see below) |
+| `workspace.get_llm()` | ✅ | Retrieves `litellm_proxy/minimax-m2.5` + api_key + base_url from SaaS |
+| `workspace.get_secrets()` | ✅ | Discovers `['DUMMY_1', 'DUMMY_2']` secret names |
+| LookupSecret HTTP resolution (SDK client) | ✅ | Direct HTTP GET to secrets endpoint resolves values correctly |
+| LookupSecret HTTP resolution (from inside sandbox) | ✅ | Agent's Python code successfully resolves secrets via HTTP with SESSION_API_KEY |
+| Env var injection (StaticSecret/plain strings) | ✅ | `_export_envs` pipeline works — agent sees `$DUMMY_1` and `$DUMMY_2` as env vars |
+| Env var injection (LookupSecret with env_headers) | ⚠️ | Requires agent-server image with SDK PR #2409 (see below) |
+| Sandbox cleanup | ✅ | Deleted successfully (after fix) |
 
-## Bug fix included: sandbox DELETE 405
+## Deployment Dependency: LookupSecret `env_headers`
 
-During testing, discovered the `cleanup()` method was calling
-`DELETE /api/v1/sandboxes?sandbox_id=X` (query param on collection route), which
-returned 405 Method Not Allowed.
+The `env_headers` field on `LookupSecret` is **new in this PR**. The current agent-server
+image (`1.13.0-python`) does not have it. When the SDK client sends a LookupSecret with
+`env_headers` to the agent-server, Pydantic silently drops the unknown field, so
+`get_value()` makes HTTP requests without the `X-Session-API-Key` header and fails with 401.
 
-The server's delete endpoint is `DELETE /api/v1/sandboxes/{id}` with a required
-`sandbox_id` query parameter (a FastAPI routing quirk where the path variable
-name `{id}` doesn't match the function parameter name `sandbox_id`).
+**To resolve:** The SDK PR must be merged first, then a new agent-server image built. The
+staging deployment's sandbox spec must then reference the updated image.
 
-**Fix:** Changed to `DELETE /api/v1/sandboxes/{sandbox_id}?sandbox_id={sandbox_id}`.
+The workaround for testing was to eagerly resolve secret values on the SDK client side and
+send them as plain strings (which the agent-server converts to `StaticSecret`). This proved
+the `_export_envs` → `get_secrets_as_env_vars` pipeline works correctly end-to-end.
+
+## Additional finding: SecretStr serialization redacts values
+
+`SecretSource.model_dump(mode="json")` redacts `SecretStr` fields (returns `**********`).
+This means passing `StaticSecret` objects through `RemoteConversation.update_secrets()` also
+fails because the value is redacted during JSON serialization. Plain string values bypass this
+issue because they're not wrapped in `SecretStr` until the server side.
+
+## Bug fixes included
+
+1. **Sandbox DELETE 405:** Changed to `DELETE /api/v1/sandboxes/{sandbox_id}?sandbox_id={sandbox_id}`
+2. **LookupSecret serialization:** Added `model_dump(mode="json")` call in `update_secrets()`
 
 ## Logs
 
