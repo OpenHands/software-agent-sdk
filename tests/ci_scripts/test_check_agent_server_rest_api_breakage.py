@@ -168,8 +168,11 @@ def test_get_baseline_version_warns_and_returns_none_when_pypi_fails(
     assert "Failed to fetch PyPI metadata" in captured.out
 
 
-def test_parse_openapi_deprecation_description_extracts_versions():
-    description = "Deprecated since v1.14.0\nand scheduled for removal in v1.19.0."
+def test_parse_openapi_deprecation_description_extracts_versions_from_example():
+    description = (
+        "List conversations.\n\n"
+        "Deprecated since v1.14.0 and scheduled for removal in v1.19.0."
+    )
 
     assert _parse_openapi_deprecation_description(description) == ("1.14.0", "1.19.0")
 

@@ -7,6 +7,11 @@ baseline schema is generated from the matching git tag under the current workspa
 locked dependency set. This keeps the comparison focused on API changes in our code,
 not schema drift from newer FastAPI/Pydantic releases.
 
+The deprecation note it recognizes intentionally matches the phrasing used by the
+Python deprecation checks, for example:
+
+    Deprecated since v1.14.0 and scheduled for removal in v1.19.0.
+
 Policies enforced:
 
 1) REST deprecations must use FastAPI/OpenAPI metadata
@@ -48,6 +53,8 @@ from packaging import version as pkg_version
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_SERVER_PYPROJECT = REPO_ROOT / "openhands-agent-server" / "pyproject.toml"
 PYPI_DISTRIBUTION = "openhands-agent-server"
+# Keep this in sync with REST_ROUTE_DEPRECATION_RE in check_deprecations.py so
+# the REST breakage and deprecation checks recognize the same wording.
 REST_ROUTE_DEPRECATION_RE = re.compile(
     r"Deprecated since v(?P<deprecated>[0-9A-Za-z.+-]+)\s+"
     r"and scheduled for removal in v(?P<removed>[0-9A-Za-z.+-]+)\.?",
@@ -305,6 +312,13 @@ def _find_deprecation_policy_errors(schema: dict) -> list[str]:
 def _parse_openapi_deprecation_description(
     description: str | None,
 ) -> tuple[str, str] | None:
+    """Extract ``(deprecated_in, removed_in)`` from an OpenAPI description.
+
+    The accepted wording intentionally matches ``check_deprecations.py`` so both
+    CI checks recognize the same note, for example:
+
+        Deprecated since v1.14.0 and scheduled for removal in v1.19.0.
+    """
     if not description:
         return None
 
@@ -341,6 +355,7 @@ def _validate_removed_operations(
     prev_schema: dict,
     current_version: str,
 ) -> list[str]:
+    """Validate removed operations against the baseline deprecation metadata."""
     errors: list[str] = []
 
     for operation in removed_operations:
@@ -398,6 +413,7 @@ def _validate_removed_operations(
 def _split_breaking_changes(
     breaking_changes: list[dict],
 ) -> tuple[list[dict], list[dict]]:
+    """Split oasdiff results into removals and all other breakages."""
     removed_operations: list[dict] = []
     other_breaking_changes: list[dict] = []
 
