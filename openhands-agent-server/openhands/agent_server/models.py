@@ -172,7 +172,7 @@ class StoredConversation(StartACPConversationRequest):
     Extends StartConversationRequest with server-assigned fields.
     """
 
-    id: UUID
+    id: OpenHandsUUID
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
     )
