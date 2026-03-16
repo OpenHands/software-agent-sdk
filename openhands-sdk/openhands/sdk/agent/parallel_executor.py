@@ -91,8 +91,8 @@ class ParallelToolExecutor:
         if not action_events:
             return []
 
-        if len(action_events) == 1:
-            return [self._run_safe(action_events[0], tool_runner)]
+        if len(action_events) == 1 or self._max_workers == 1:
+            return [self._run_safe(action, tool_runner) for action in action_events]
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = [

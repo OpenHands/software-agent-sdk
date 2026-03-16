@@ -51,6 +51,29 @@ def test_single_action_bypasses_thread_pool():
     assert results[0] == [event]
 
 
+def test_multi_action_limit_one_runs_sequentially_on_caller_thread():
+    """
+    When max_workers=1, multiple actions run on the calling thread,
+    not a pool thread.
+    """
+    executor = ParallelToolExecutor()
+    executor._max_workers = 1
+    actions: list[Any] = [MagicMock() for _ in range(3)]
+    caller_thread = threading.current_thread().name
+    observed_threads: list[str] = []
+
+    def tool_runner(action: Any) -> list:
+        observed_threads.append(threading.current_thread().name)
+        return [MagicMock()]
+
+    executor.execute_batch(actions, tool_runner)
+
+    # All calls should have run on the caller's thread, not a pool thread
+    assert all(t == caller_thread for t in observed_threads), (
+        f"Expected all calls on {caller_thread}, got {observed_threads}"
+    )
+
+
 def test_result_ordering_preserved_despite_variable_duration():
     """Results are in input order even when later actions finish first."""
     executor = ParallelToolExecutor()

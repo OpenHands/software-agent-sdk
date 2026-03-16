@@ -213,6 +213,58 @@ def test_sequential_execution_with_default_limit():
     assert obs_events[1].tool_call_id == "call_1"
 
 
+def test_limit_one_preserves_sequential_semantics():
+    """Regression: TOOL_CONCURRENCY_LIMIT=1 must preserve old sequential behavior.
+
+    With the default limit of 1, multi-tool batches must:
+    1. Run each tool on the caller's thread (not a pool thread).
+    2. Execute tools strictly in order.
+
+    SlowTool already records threading.current_thread().name in its
+    observation, so we can verify thread affinity end-to-end.
+    """
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    _tool_call("call_0", "slow_tool", '{"delay": 0.0, "label": "a"}'),
+                    _tool_call("call_1", "slow_tool", '{"delay": 0.0, "label": "b"}'),
+                    _tool_call("call_2", "slow_tool", '{"delay": 0.0, "label": "c"}'),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        ]
+    )
+    # No monkeypatch — default TOOL_CONCURRENCY_LIMIT=1
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+
+    collected = []
+    conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
+    conversation.send_message(Message(role="user", content=[TextContent(text="Go")]))
+
+    caller_thread = threading.current_thread().name
+    _run_step(agent, conversation, collected)
+
+    obs_events = [e for e in collected if isinstance(e, ObservationEvent)]
+    assert len(obs_events) == 3
+
+    # Property 1: every tool ran on the caller's thread, not a pool thread
+    labels: list[str] = []
+    for obs in obs_events:
+        observation = obs.observation
+        assert isinstance(observation, SlowObservation)
+        assert observation.thread_name == caller_thread, (
+            f"Tool '{observation.label}' ran on "
+            f"{observation.thread_name}, expected {caller_thread}"
+        )
+        labels.append(observation.label)
+
+    # Property 2: tools executed in original order
+    assert labels == ["a", "b", "c"]
+
+
 def test_finish_tool_truncates_subsequent_tools(monkeypatch):
     """Tools after FinishTool are discarded and never executed."""
     monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
