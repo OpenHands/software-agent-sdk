@@ -71,7 +71,13 @@ logger = get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_EXTRACT_HARD_CAP = 30_000  # chars -- bounds regex runtime and memory
+# Maximum characters extracted from an ActionEvent before normalization and
+# pattern matching. Bounds regex runtime and memory, but content beyond this
+# limit is invisible to the analyzer. If your agent processes large inputs
+# (e.g. file contents, long code blocks), consider raising this -- but note
+# that higher caps increase exposure to regex denial-of-service on adversarial
+# input. See test_payload_past_hard_cap in the adversarial test suite.
+_EXTRACT_HARD_CAP = 30_000
 
 
 # ---------------------------------------------------------------------------
