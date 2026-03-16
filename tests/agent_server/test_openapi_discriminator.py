@@ -164,3 +164,23 @@ def test_action_variants_have_proper_schemas(client):
         assert "title" in type_schema, (
             f"{action_type} should have title for better docs"
         )
+
+
+def test_conversation_contracts_are_versioned(client):
+    """v1 conversations stay Agent-only while v2 exposes ACP support."""
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    schemas = response.json()["components"]["schemas"]
+
+    v1_request = schemas["StartConversationRequest"]
+    assert (
+        v1_request["properties"]["agent"]["$ref"] == "#/components/schemas/Agent-Input"
+    )
+
+    v2_request = schemas["StartConversationRequestV2"]
+    agent_schema = v2_request["properties"]["agent"]
+    assert "oneOf" in agent_schema
+    refs = {variant["$ref"] for variant in agent_schema["oneOf"]}
+    assert "#/components/schemas/Agent-Input" in refs
+    assert "#/components/schemas/ACPAgent-Input" in refs

@@ -3,25 +3,29 @@ import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import httpx
+from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationInfo,
+    ConversationInfoV2,
     ConversationPage,
+    ConversationPageV2,
     ConversationSortOrder,
     StartConversationRequest,
+    StartConversationRequestV2,
     StoredConversation,
     UpdateConversationRequest,
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Event, Message
+from openhands.sdk import LLM, Agent, Event, Message
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -38,9 +42,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _compose_conversation_info(
+def _compose_conversation_info_v1(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
+    assert isinstance(stored.agent, Agent)
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
@@ -51,6 +56,22 @@ def _compose_conversation_info(
         created_at=stored.created_at,
         updated_at=stored.updated_at,
     )
+
+
+def _compose_conversation_info_v2(
+    stored: StoredConversation, state: ConversationState
+) -> ConversationInfoV2:
+    return ConversationInfoV2(
+        **state.model_dump(mode="json"),
+        title=stored.title,
+        metrics=stored.metrics,
+        created_at=stored.created_at,
+        updated_at=stored.updated_at,
+    )
+
+
+def _is_v1_conversation(stored: StoredConversation) -> bool:
+    return isinstance(stored.agent, Agent)
 
 
 def _register_agent_definitions(
@@ -110,8 +131,21 @@ class ConversationService:
         event_service = self._event_services.get(conversation_id)
         if event_service is None:
             return None
+        if not _is_v1_conversation(event_service.stored):
+            return None
         state = await event_service.get_state()
-        return _compose_conversation_info(event_service.stored, state)
+        return _compose_conversation_info_v1(event_service.stored, state)
+
+    async def get_conversation_v2(
+        self, conversation_id: UUID
+    ) -> ConversationInfoV2 | None:
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+        state = await event_service.get_state()
+        return _compose_conversation_info_v2(event_service.stored, state)
 
     async def search_conversations(
         self,
@@ -120,14 +154,60 @@ class ConversationService:
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
     ) -> ConversationPage:
+        items, next_page_id = await self._search_conversations(
+            page_id=page_id,
+            limit=limit,
+            execution_status=execution_status,
+            sort_order=sort_order,
+            include_v2=False,
+        )
+        return ConversationPage(
+            items=cast(list[ConversationInfo], items),
+            next_page_id=next_page_id,
+        )
+
+    async def search_conversations_v2(
+        self,
+        page_id: str | None = None,
+        limit: int = 100,
+        execution_status: ConversationExecutionStatus | None = None,
+        sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
+    ) -> ConversationPageV2:
+        items, next_page_id = await self._search_conversations(
+            page_id=page_id,
+            limit=limit,
+            execution_status=execution_status,
+            sort_order=sort_order,
+            include_v2=True,
+        )
+        return ConversationPageV2(
+            items=cast(list[ConversationInfoV2], items),
+            next_page_id=next_page_id,
+        )
+
+    async def _search_conversations(
+        self,
+        page_id: str | None,
+        limit: int,
+        execution_status: ConversationExecutionStatus | None,
+        sort_order: ConversationSortOrder,
+        *,
+        include_v2: bool,
+    ) -> tuple[list[ConversationInfo | ConversationInfoV2], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
         # Collect all conversations with their info
         all_conversations = []
         for id, event_service in self._event_services.items():
+            if not include_v2 and not _is_v1_conversation(event_service.stored):
+                continue
             state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
+            conversation_info = (
+                _compose_conversation_info_v2(event_service.stored, state)
+                if include_v2
+                else _compose_conversation_info_v1(event_service.stored, state)
+            )
             # Apply status filter if provided
             if (
                 execution_status is not None
@@ -168,11 +248,31 @@ class ConversationService:
                 break
             items.append(all_conversations[i][1])
 
-        return ConversationPage(items=items, next_page_id=next_page_id)
+        return items, next_page_id
 
     async def count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None = None,
+    ) -> int:
+        return await self._count_conversations(
+            execution_status=execution_status,
+            include_v2=False,
+        )
+
+    async def count_conversations_v2(
+        self,
+        execution_status: ConversationExecutionStatus | None = None,
+    ) -> int:
+        return await self._count_conversations(
+            execution_status=execution_status,
+            include_v2=True,
+        )
+
+    async def _count_conversations(
+        self,
+        execution_status: ConversationExecutionStatus | None,
+        *,
+        include_v2: bool,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
@@ -180,6 +280,8 @@ class ConversationService:
 
         count = 0
         for event_service in self._event_services.values():
+            if not include_v2 and not _is_v1_conversation(event_service.stored):
+                continue
             state = await event_service.get_state()
 
             # Apply status filter if provided
@@ -206,7 +308,18 @@ class ConversationService:
         )
         return results
 
-    async def _notify_conversation_webhooks(self, conversation_info: ConversationInfo):
+    async def batch_get_conversations_v2(
+        self, conversation_ids: list[UUID]
+    ) -> list[ConversationInfoV2 | None]:
+        results = await asyncio.gather(
+            *[
+                self.get_conversation_v2(conversation_id)
+                for conversation_id in conversation_ids
+            ]
+        )
+        return results
+
+    async def _notify_conversation_webhooks(self, conversation_info: BaseModel):
         """Notify all conversation webhook subscribers about conversation changes."""
         if not self._conversation_webhook_subscribers:
             return
@@ -241,16 +354,33 @@ class ConversationService:
     async def start_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
+        conversation_info, is_new = await self._start_conversation(request)
+        assert isinstance(conversation_info, ConversationInfo)
+        return conversation_info, is_new
+
+    async def start_conversation_v2(
+        self, request: StartConversationRequestV2
+    ) -> tuple[ConversationInfoV2, bool]:
+        conversation_info, is_new = await self._start_conversation(request)
+        assert isinstance(conversation_info, ConversationInfoV2)
+        return conversation_info, is_new
+
+    async def _start_conversation(
+        self, request: StartConversationRequest | StartConversationRequestV2
+    ) -> tuple[ConversationInfo | ConversationInfoV2, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
+        use_v2 = isinstance(request, StartConversationRequestV2)
 
         existing_event_service = self._event_services.get(conversation_id)
         if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
-            conversation_info = _compose_conversation_info(
-                existing_event_service.stored, state
+            conversation_info = (
+                _compose_conversation_info_v2(existing_event_service.stored, state)
+                if use_v2
+                else _compose_conversation_info_v1(existing_event_service.stored, state)
             )
             return conversation_info, False
 
@@ -311,10 +441,16 @@ class ConversationService:
             await event_service.send_message(message, True)
 
         state = await event_service.get_state()
-        conversation_info = _compose_conversation_info(event_service.stored, state)
+        conversation_info = (
+            _compose_conversation_info_v2(event_service.stored, state)
+            if use_v2
+            else _compose_conversation_info_v1(event_service.stored, state)
+        )
 
         # Notify conversation webhooks about the started conversation
-        await self._notify_conversation_webhooks(conversation_info)
+        await self._notify_conversation_webhooks(
+            _compose_conversation_info_v2(event_service.stored, state)
+        )
 
         return conversation_info, True
 
@@ -326,7 +462,9 @@ class ConversationService:
             await event_service.pause()
             # Notify conversation webhooks about the paused conversation
             state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
+            conversation_info = _compose_conversation_info_v2(
+                event_service.stored, state
+            )
             await self._notify_conversation_webhooks(conversation_info)
         return bool(event_service)
 
@@ -346,7 +484,7 @@ class ConversationService:
             # Notify conversation webhooks about the stopped conversation before closing
             try:
                 state = await event_service.get_state()
-                conversation_info = _compose_conversation_info(
+                conversation_info = _compose_conversation_info_v2(
                     event_service.stored, state
                 )
                 conversation_info.execution_status = (
@@ -405,7 +543,7 @@ class ConversationService:
 
         # Notify conversation webhooks about the updated conversation
         state = await event_service.get_state()
-        conversation_info = _compose_conversation_info(event_service.stored, state)
+        conversation_info = _compose_conversation_info_v2(event_service.stored, state)
         await self._notify_conversation_webhooks(conversation_info)
 
         logger.info(
@@ -743,7 +881,7 @@ class ConversationWebhookSubscriber:
     spec: WebhookSpec
     session_api_key: str | None = None
 
-    async def post_conversation_info(self, conversation_info: ConversationInfo):
+    async def post_conversation_info(self, conversation_info: BaseModel):
         """Post conversation info to the webhook immediately (no batching)."""
         # Prepare headers
         headers = self.spec.headers.copy()

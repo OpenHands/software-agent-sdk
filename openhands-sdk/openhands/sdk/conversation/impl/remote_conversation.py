@@ -56,6 +56,21 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 logger = get_logger(__name__)
 
+V1_CONVERSATIONS_PATH = "/api/conversations"
+V2_CONVERSATIONS_PATH = "/api/v2/conversations"
+
+
+def _uses_v2_conversation_contract(agent: AgentBase) -> bool:
+    return getattr(agent, "kind", agent.__class__.__name__) == "ACPAgent"
+
+
+def _validate_remote_agent(agent_data: dict) -> AgentBase:
+    if agent_data.get("kind") == "ACPAgent":
+        from openhands.sdk.agent.acp_agent import ACPAgent
+
+        return ACPAgent.model_validate(agent_data)
+    return AgentBase.model_validate(agent_data)
+
 
 def _send_request(
     client: httpx.Client,
@@ -222,13 +237,17 @@ class RemoteEventsList(EventsListBase):
 
     _client: httpx.Client
     _conversation_id: str
+    _conversation_base_path: str
     _cached_events: list[Event]
     _cached_event_ids: set[str]
     _lock: threading.RLock
 
-    def __init__(self, client: httpx.Client, conversation_id: str):
+    def __init__(
+        self, client: httpx.Client, conversation_id: str, conversation_base_path: str
+    ):
         self._client = client
         self._conversation_id = conversation_id
+        self._conversation_base_path = conversation_base_path
         self._cached_events: list[Event] = []
         self._cached_event_ids: set[str] = set()
         self._lock = threading.RLock()
@@ -250,7 +269,7 @@ class RemoteEventsList(EventsListBase):
             resp = _send_request(
                 self._client,
                 "GET",
-                f"/api/conversations/{self._conversation_id}/events/search",
+                f"{self._conversation_base_path}/{self._conversation_id}/events/search",
                 params=params,
             )
             data = resp.json()
@@ -292,7 +311,10 @@ class RemoteEventsList(EventsListBase):
                 resp = _send_request(
                     self._client,
                     "GET",
-                    f"/api/conversations/{self._conversation_id}/events/search",
+                    (
+                        f"{self._conversation_base_path}/"
+                        f"{self._conversation_id}/events/search"
+                    ),
                     params=params,
                 )
                 data = resp.json()
@@ -378,14 +400,18 @@ class RemoteState(ConversationStateProtocol):
 
     _client: httpx.Client
     _conversation_id: str
+    _conversation_base_path: str
     _events: RemoteEventsList
     _cached_state: dict | None
     _lock: threading.RLock
 
-    def __init__(self, client: httpx.Client, conversation_id: str):
+    def __init__(
+        self, client: httpx.Client, conversation_id: str, conversation_base_path: str
+    ):
         self._client = client
         self._conversation_id = conversation_id
-        self._events = RemoteEventsList(client, conversation_id)
+        self._conversation_base_path = conversation_base_path
+        self._events = RemoteEventsList(client, conversation_id, conversation_base_path)
 
         # Cache for state information to avoid REST calls
         self._cached_state = None
@@ -400,7 +426,9 @@ class RemoteState(ConversationStateProtocol):
 
             # Fallback to REST API if no cached state
             resp = _send_request(
-                self._client, "GET", f"/api/conversations/{self._conversation_id}"
+                self._client,
+                "GET",
+                f"{self._conversation_base_path}/{self._conversation_id}",
             )
             state = resp.json()
             self._cached_state = state
@@ -497,7 +525,7 @@ class RemoteState(ConversationStateProtocol):
         agent_data = info.get("agent")
         if agent_data is None:
             raise RuntimeError("agent missing in conversation info: " + str(info))
-        return AgentBase.model_validate(agent_data)
+        return _validate_remote_agent(agent_data)
 
     @property
     def workspace(self):
@@ -564,6 +592,7 @@ class RemoteConversation(BaseConversation):
     _client: httpx.Client
     _cleanup_initiated: bool
     _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
+    _conversation_base_path: str
     delete_on_close: bool = False
 
     def __init__(
@@ -617,6 +646,11 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
+        self._conversation_base_path = (
+            V2_CONVERSATIONS_PATH
+            if _uses_v2_conversation_contract(agent)
+            else V1_CONVERSATIONS_PATH
+        )
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
 
@@ -626,7 +660,7 @@ class RemoteConversation(BaseConversation):
             resp = _send_request(
                 self._client,
                 "GET",
-                f"/api/conversations/{conversation_id}",
+                f"{self._conversation_base_path}/{conversation_id}",
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
@@ -681,7 +715,10 @@ class RemoteConversation(BaseConversation):
             if conversation_id is not None:
                 payload["conversation_id"] = str(conversation_id)
             resp = _send_request(
-                self._client, "POST", "/api/conversations", json=payload
+                self._client,
+                "POST",
+                self._conversation_base_path,
+                json=payload,
             )
             data = resp.json()
             # Expect a ConversationInfo
@@ -693,7 +730,11 @@ class RemoteConversation(BaseConversation):
             self._id = uuid.UUID(cid)
 
         # Initialize the remote state
-        self._state = RemoteState(self._client, str(self._id))
+        self._state = RemoteState(
+            self._client,
+            str(self._id),
+            conversation_base_path=self._conversation_base_path,
+        )
 
         # Add default callback to maintain local event state
         default_callback = self._state.events.create_default_callback()
@@ -855,7 +896,10 @@ class RemoteConversation(BaseConversation):
         if sender is not None:
             payload["sender"] = sender
         _send_request(
-            self._client, "POST", f"/api/conversations/{self._id}/events", json=payload
+            self._client,
+            "POST",
+            f"{self._conversation_base_path}/{self._id}/events",
+            json=payload,
         )
 
     @observe(name="conversation.run")
@@ -892,7 +936,7 @@ class RemoteConversation(BaseConversation):
             resp = _send_request(
                 self._client,
                 "POST",
-                f"/api/conversations/{self._id}/run",
+                f"{self._conversation_base_path}/{self._id}/run",
                 acceptable_status_codes={200, 201, 204, 409},
                 timeout=30,  # Short timeout for trigger request
             )
@@ -1012,7 +1056,7 @@ class RemoteConversation(BaseConversation):
         resp = _send_request(
             self._client,
             "GET",
-            f"/api/conversations/{self._id}",
+            f"{self._conversation_base_path}/{self._id}",
             timeout=30,
         )
         info = resp.json()
@@ -1081,7 +1125,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"/api/conversations/{self._id}/confirmation_policy",
+            f"{self._conversation_base_path}/{self._id}/confirmation_policy",
             json=payload,
         )
 
@@ -1091,7 +1135,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"/api/conversations/{self._id}/security_analyzer",
+            f"{self._conversation_base_path}/{self._id}/security_analyzer",
             json=payload,
         )
 
@@ -1100,12 +1144,16 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"/api/conversations/{self._id}/events/respond_to_confirmation",
+            f"{self._conversation_base_path}/{self._id}/events/respond_to_confirmation",
             json={"accept": False, "reason": reason},
         )
 
     def pause(self) -> None:
-        _send_request(self._client, "POST", f"/api/conversations/{self._id}/pause")
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_base_path}/{self._id}/pause",
+        )
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         # Convert SecretValue to strings for JSON serialization
@@ -1121,7 +1169,10 @@ class RemoteConversation(BaseConversation):
 
         payload = {"secrets": serializable_secrets}
         _send_request(
-            self._client, "POST", f"/api/conversations/{self._id}/secrets", json=payload
+            self._client,
+            "POST",
+            f"{self._conversation_base_path}/{self._id}/secrets",
+            json=payload,
         )
 
     def ask_agent(self, question: str) -> str:
@@ -1145,7 +1196,7 @@ class RemoteConversation(BaseConversation):
         resp = _send_request(
             self._client,
             "POST",
-            f"/api/conversations/{self._id}/ask_agent",
+            f"{self._conversation_base_path}/{self._id}/ask_agent",
             json=payload,
         )
         data = resp.json()
@@ -1174,7 +1225,7 @@ class RemoteConversation(BaseConversation):
         resp = _send_request(
             self._client,
             "POST",
-            f"/api/conversations/{self._id}/generate_title",
+            f"{self._conversation_base_path}/{self._id}/generate_title",
             json=payload,
         )
         data = resp.json()
@@ -1193,7 +1244,11 @@ class RemoteConversation(BaseConversation):
         Raises:
             HTTPError: If the server returns an error (e.g., no condenser configured).
         """
-        _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_base_path}/{self._id}/condense",
+        )
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.
@@ -1241,7 +1296,11 @@ class RemoteConversation(BaseConversation):
             try:
                 # trigger server-side delete_conversation to release resources
                 # like tmux sessions
-                _send_request(self._client, "DELETE", f"/api/conversations/{self.id}")
+                _send_request(
+                    self._client,
+                    "DELETE",
+                    f"{self._conversation_base_path}/{self.id}",
+                )
             except Exception:
                 pass
 

@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -169,6 +170,64 @@ class TestRemoteConversation:
             "Should have made at least one GET call to /events/search "
             "to fetch initial events"
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_acp_remote_conversation_uses_v2_conversation_contract(
+        self, mock_ws_client
+    ):
+        acp_agent = ACPAgent(acp_command=["echo", "test"])
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = Mock()
+        self.workspace._client = mock_client_instance
+
+        mock_conv_response = self.create_mock_conversation_response(conversation_id)
+        mock_events_response = self.create_mock_events_response()
+
+        def request_side_effect(method, url, **kwargs):
+            if method == "POST" and url == "/api/v2/conversations":
+                return mock_conv_response
+            if method == "GET" and "/api/v2/conversations/" in url and "/events" in url:
+                return mock_events_response
+            if method == "GET" and url.startswith("/api/v2/conversations/"):
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                conv_info = mock_conv_response.json.return_value.copy()
+                conv_info["execution_status"] = "finished"
+                conv_info["agent"] = {
+                    "kind": "ACPAgent",
+                    "acp_command": ["echo", "test"],
+                }
+                response.json.return_value = conv_info
+                return response
+            response = Mock()
+            response.status_code = 200
+            response.raise_for_status.return_value = None
+            response.json.return_value = {}
+            return response
+
+        mock_client_instance.request.side_effect = request_side_effect
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        RemoteConversation(agent=acp_agent, workspace=self.workspace)
+
+        post_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "/api/v2/conversations"
+        ]
+        assert len(post_calls) == 1
+
+        get_events_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "GET" and "/api/v2/conversations/" in call[0][1]
+        ]
+        assert len(get_events_calls) >= 1
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
