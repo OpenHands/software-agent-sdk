@@ -24,6 +24,8 @@ def maybe_init_laminar():
     """Initialize Laminar if the environment variables are set.
 
     Example configuration:
+
+    ```bash
     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4317/v1/traces
 
     # comma separated, key=value url-encoded pairs
@@ -33,6 +35,7 @@ def maybe_init_laminar():
     OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf # or grpc/protobuf
     # or
     OTEL_EXPORTER=otlp_http # or otlp_grpc
+    ```
     """
     if should_enable_observability():
         if _is_otel_backend_laminar():
