@@ -418,7 +418,6 @@ def test_send_message_resets_stuck_to_idle():
 
 def test_execution_status_error_on_max_iterations():
     """Test that status is set to ERROR with clear message when max iterations hit."""
-    from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
     status_during_execution: list[ConversationExecutionStatus] = []
     events_received: list = []
@@ -468,10 +467,14 @@ def test_execution_status_error_on_max_iterations():
     conversation.run()
 
     # Status should be MAX_ITERATIONS_REACHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
 
     # Should have emitted a ConversationIterationLimitEvent
-    limit_events = [e for e in events_received if isinstance(e, ConversationIterationLimitEvent)]
+    limit_events = [
+        e for e in events_received if isinstance(e, ConversationIterationLimitEvent)
+    ]
     assert len(limit_events) == 1
-    assert limit_events[0].iteration == 2  # max_iterations
     assert limit_events[0].max_iterations == 2

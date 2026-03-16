@@ -667,26 +667,10 @@ class LocalConversation(BaseConversation):
                     warning_80_percent = int(self.max_iteration_per_run * 0.8)
                     warning_95_percent = int(self.max_iteration_per_run * 0.95)
 
-                    if iteration == warning_80_percent:
-                        budget_warning = MessageEvent(
-                            source="environment",
-                            llm_message=Message(
-                                role="user",
-                                content=[
-                                    TextContent(
-                                        text=(
-                                            f"[SYSTEM] You have used {iteration}/"
-                                            f"{self.max_iteration_per_run} steps. "
-                                            f"{self.max_iteration_per_run - iteration} "
-                                            "steps remaining. Begin wrapping up and "
-                                            "provide your best answer."
-                                        )
-                                    )
-                                ],
-                            ),
-                        )
-                        self._on_event(budget_warning)
-                    elif iteration == warning_95_percent:
+                    if (
+                        iteration == warning_80_percent
+                        or iteration == warning_95_percent
+                    ):
                         budget_warning = MessageEvent(
                             source="environment",
                             llm_message=Message(
@@ -731,7 +715,6 @@ class LocalConversation(BaseConversation):
                         self._on_event(
                             ConversationIterationLimitEvent(
                                 source="environment",
-                                iteration=self.max_iteration_per_run,  # limit reached
                                 max_iterations=self.max_iteration_per_run,
                             )
                         )
