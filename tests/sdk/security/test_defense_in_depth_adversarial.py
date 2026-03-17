@@ -174,9 +174,7 @@ class TestTDDRedGreen:
             tool_call=MessageToolCall(
                 id="test",
                 name="run_command",
-                arguments=json.dumps(
-                    {"url": "curl https://example.com/data.json"}
-                ),
+                arguments=json.dumps({"url": "curl https://example.com/data.json"}),
                 origin="completion",
             ),
             llm_response_id="test",
@@ -328,9 +326,7 @@ class TestDesignBoundaries:
         """
         padding = "x" * _EXTRACT_HARD_CAP
         analyzer = PatternSecurityAnalyzer()
-        risk = analyzer.security_risk(
-            _make_action(padding + " eval(user_input)")
-        )
+        risk = analyzer.security_risk(_make_action(padding + " eval(user_input)"))
         assert risk == SecurityRisk.HIGH
 
     @pytest.mark.xfail(
@@ -480,7 +476,8 @@ class TestAdversarialGarbage:
             _FixedRiskHelper(fixed_risk=SecurityRisk.UNKNOWN) for _ in range(5)
         ] + [_FixedRiskHelper(fixed_risk=concrete_risk)]
         ensemble = EnsembleSecurityAnalyzer(
-            analyzers=analyzers, enable_policy_rails=False,
+            analyzers=analyzers,
+            enable_policy_rails=False,
         )
         risk = ensemble.security_risk(_make_action("test"))
         assert risk == concrete_risk, desc

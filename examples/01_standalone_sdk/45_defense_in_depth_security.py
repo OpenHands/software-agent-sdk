@@ -283,9 +283,7 @@ def _normalize(text: str) -> str:
 
     # Strip C0 controls (except tab 0x09, newline 0x0A, CR 0x0D) and DEL
     text = "".join(
-        c
-        for c in text
-        if (ord(c) > 0x1F or c in "\t\n\r") and ord(c) != 0x7F
+        c for c in text if (ord(c) > 0x1F or c in "\t\n\r") and ord(c) != 0x7F
     )
 
     # NFKC normalization (fullwidth ASCII -> ASCII, ligatures decomposed, etc.)
@@ -641,12 +639,10 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
             (re.compile(p, re.IGNORECASE), d) for p, d in self.medium_patterns
         ]
         self._compiled_injection_high = [
-            (re.compile(p, re.IGNORECASE), d)
-            for p, d in self.injection_high_patterns
+            (re.compile(p, re.IGNORECASE), d) for p, d in self.injection_high_patterns
         ]
         self._compiled_injection_medium = [
-            (re.compile(p, re.IGNORECASE), d)
-            for p, d in self.injection_medium_patterns
+            (re.compile(p, re.IGNORECASE), d) for p, d in self.injection_medium_patterns
         ]
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
@@ -765,9 +761,7 @@ class EnsembleSecurityAnalyzer(SecurityAnalyzerBase):
             try:
                 results.append(analyzer.security_risk(action))
             except Exception:
-                logger.exception(
-                    "Analyzer %s raised -- fail-closed to HIGH", analyzer
-                )
+                logger.exception("Analyzer %s raised -- fail-closed to HIGH", analyzer)
                 results.append(SecurityRisk.HIGH)
 
         # Step 5: UNKNOWN handling

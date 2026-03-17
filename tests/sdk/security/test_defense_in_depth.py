@@ -129,6 +129,7 @@ class TestExtraction:
     adversarial test suite's cross-field tests matter (see
     ``TestTDDRedGreen`` in the adversarial file).
     """
+
     def test_whitelisted_fields_included(self):
         """Every whitelisted field appears in extracted content.
 
@@ -411,6 +412,7 @@ class TestNormalization:
     For evasions that normalization *cannot* handle (Cyrillic homoglyphs,
     combining marks), see ``TestDesignBoundaries`` in the adversarial suite.
     """
+
     def test_fullwidth_ascii(self):
         """NFKC compatibility decomposition: fullwidth rm -> ASCII rm.
 
@@ -475,6 +477,7 @@ class TestPolicyRails:
     bit doesn't fire) are as important as the positive matches -- they
     verify that rails don't generate false positives on benign commands.
     """
+
     def test_safe_command_passes(self):
         decision = _evaluate_rail("ls /tmp")
         assert decision.outcome == RailOutcome.PASS
@@ -727,6 +730,7 @@ class TestEnsemble:
        and not "high in disguise." It propagates only when ALL analyzers
        return UNKNOWN; otherwise concrete results take precedence.
     """
+
     def test_max_severity_low_low(self):
         ensemble = EnsembleSecurityAnalyzer(
             analyzers=[
@@ -855,6 +859,7 @@ class TestConfirmationPolicy:
     (safe), but setting ``confirm_unknown=False`` makes it fail-open. If
     you're configuring this in production, understand the tradeoff.
     """
+
     def test_confirm_risky_confirms_unknown(self):
         """Default ConfirmRisky(confirm_unknown=True) confirms UNKNOWN."""
         policy = ConfirmRisky()
