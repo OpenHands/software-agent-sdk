@@ -18,6 +18,7 @@ from ``openhands.tools.browser_use``.
 
 from importlib.metadata import PackageNotFoundError, version
 
+from openhands.tools.codebase_search import register_codebase_search_tools
 from openhands.tools.delegate import DelegationVisualizer
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import (
@@ -39,6 +40,7 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "DelegationVisualizer",
+    "register_codebase_search_tools",
     "FileEditorTool",
     "TaskTrackerTool",
     "TerminalTool",
