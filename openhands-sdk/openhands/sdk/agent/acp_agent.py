@@ -5,6 +5,10 @@ ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
 LLM calls.  The ACP server manages its own LLM, tools, and execution;
 the ACPAgent simply relays user messages and collects the response.
 
+Unlike the built-in Agent, one ACP ``step()`` maps to one complete remote
+assistant turn. ACPAgent therefore emits a terminal ``FinishAction`` at the
+end of each step to delimit that completed turn for downstream consumers.
+
 See https://agentclientprotocol.com/protocol/overview
 """
 
@@ -70,9 +74,7 @@ if TYPE_CHECKING:
 # PromptResponse, so under normal conditions the notification handler
 # completes almost immediately. This timeout is a safety net for slow
 # or remote servers.
-_USAGE_UPDATE_TIMEOUT: float = float(
-    os.environ.get("ACP_USAGE_UPDATE_TIMEOUT", "2.0")
-)
+_USAGE_UPDATE_TIMEOUT: float = float(os.environ.get("ACP_USAGE_UPDATE_TIMEOUT", "2.0"))
 
 # Retry configuration for transient ACP connection errors.
 # These errors can occur when the connection drops mid-conversation but the
@@ -88,8 +90,10 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # carry large tool-call outputs (e.g. file contents, test results).  When
 # a single JSON-RPC line exceeds the limit, readline() raises
 # LimitOverrunError, silently killing the filter/receive pipeline and
-# leaving the prompt() future unresolved forever.  100 MiB is generous
-# enough for any realistic message while still bounding memory.
+# leaving the prompt() future unresolved forever.  100 MiB is a pragmatic
+# compatibility limit for current ACP servers, not an endorsement of huge
+# JSON-RPC payloads; the long-term fix is protocol-level chunking/streaming
+# for large tool output.
 _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 
 
@@ -733,7 +737,7 @@ class ACPAgent(AgentBase):
                         await asyncio.wait_for(
                             usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.warning(
                             "UsageUpdate not received within %.1fs for session %s",
                             _USAGE_UPDATE_TIMEOUT,
@@ -824,10 +828,9 @@ class ACPAgent(AgentBase):
             )
             on_event(msg_event)
 
-            # Emit FinishAction so evaluation frameworks (SWE-bench, etc.)
-            # recognize that the agent has completed its task.  The regular
-            # Agent emits this when the LLM calls the "finish" tool; for
-            # ACPAgent each step() is a complete turn, so we always finish.
+            # ACP step() boundaries are full remote assistant turns, not
+            # partial planning steps. Emit FinishAction to delimit that
+            # completed turn for eval/remote consumers, matching #2190.
             finish_action = FinishAction(message=response_text)
             tc_id = str(uuid.uuid4())
             action_event = ActionEvent(
@@ -948,7 +951,7 @@ class ACPAgent(AgentBase):
                         await asyncio.wait_for(
                             usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.warning(
                             "UsageUpdate not received within %.1fs for fork session %s",
                             _USAGE_UPDATE_TIMEOUT,

@@ -761,7 +761,7 @@ class TestACPAgentTelemetry:
 
         async def _raise_timeout(awaitable, timeout):
             awaitable.close()
-            raise asyncio.TimeoutError
+            raise TimeoutError
 
         with patch(
             "openhands.sdk.agent.acp_agent.asyncio.wait_for",
