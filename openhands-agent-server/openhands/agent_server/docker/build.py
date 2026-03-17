@@ -758,6 +758,12 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     # Cache export mode: "off" (default), "max", or "min"
     # Set to "off" by default to avoid contention when building many images in parallel
     cache_export_mode = os.environ.get("OPENHANDS_BUILDKIT_CACHE_MODE", "off").lower()
+    if cache_export_mode not in ("off", "max", "min"):
+        logger.warning(
+            f"[build] Invalid OPENHANDS_BUILDKIT_CACHE_MODE='{cache_export_mode}', "
+            "defaulting to 'off'"
+        )
+        cache_export_mode = "off"
 
     if push:
         # Remote/CI builds: always read from registry cache
