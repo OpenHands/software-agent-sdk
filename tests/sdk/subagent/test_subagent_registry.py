@@ -381,40 +381,6 @@ def test_factory_info() -> None:
     assert info.index("alpha-agent") < info.index("beta-agent")
 
 
-def test_factory_info_with_tools() -> None:
-    """get_factory_info includes tool names when an agent has tools."""
-
-    def dummy(llm: LLM) -> Agent:  # type: ignore[unused-argument]
-        return cast(Agent, MagicMock())
-
-    agent_def = AgentDefinition(
-        name="tooled-agent",
-        description="Agent with tools",
-        tools=["ReadTool", "WriteTool"],
-    )
-    register_agent(name="tooled-agent", factory_func=dummy, description=agent_def)
-
-    info = get_factory_info()
-    assert info == "- **tooled-agent**: Agent with tools (tools: ReadTool, WriteTool)"
-
-
-def test_factory_info_without_tools() -> None:
-    """get_factory_info omits tools suffix when agent has no tools."""
-
-    def dummy(llm: LLM) -> Agent:  # type: ignore[unused-argument]
-        return cast(Agent, MagicMock())
-
-    agent_def = AgentDefinition(
-        name="no-tools-agent",
-        description="Agent without tools",
-        tools=[],
-    )
-    register_agent(name="no-tools-agent", factory_func=dummy, description=agent_def)
-
-    info = get_factory_info()
-    assert info == "- **no-tools-agent**: Agent without tools"
-
-
 def test_factory_info_mixed_tools_and_no_tools() -> None:
     """get_factory_info correctly shows tools only for agents that have them."""
 
