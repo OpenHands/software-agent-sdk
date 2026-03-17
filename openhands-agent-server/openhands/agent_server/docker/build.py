@@ -430,12 +430,12 @@ class BuildOptions(BaseModel):
     @property
     def cache_tags(self) -> tuple[str, str]:
         base = f"buildcache-{self.target}-{self.base_image_slug}"
-        if self.git_ref in ("main", "refs/heads/main"):
-            return f"{base}-main", base
-        elif self.git_ref != "unknown":
-            return f"{base}-{_sanitize_branch(self.git_ref)}", base
-        else:
-            return base, base
+        return _scoped_cache_tags(base, self.git_ref)
+
+    @property
+    def shared_cache_tags(self) -> tuple[str, str]:
+        base = f"buildcache-shared-{self.target}"
+        return _scoped_cache_tags(base, self.git_ref)
 
     @property
     def all_tags(self) -> list[str]:
@@ -596,6 +596,39 @@ def _get_dockerfile_path(sdk_project_root: Path) -> Path:
     return dockerfile_path
 
 
+def _scoped_cache_tags(base: str, git_ref: str) -> tuple[str, str]:
+    if git_ref in ("main", "refs/heads/main"):
+        return f"{base}-main", f"{base}-main"
+    if git_ref != "unknown":
+        return f"{base}-{_sanitize_branch(git_ref)}", f"{base}-main"
+    return base, f"{base}-main"
+
+
+def _shared_registry_cache_export_enabled() -> bool:
+    raw = os.getenv("OPENHANDS_SHARED_REGISTRY_CACHE_EXPORT", "").strip().lower()
+    if raw in ("", "0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    logger.warning(
+        "[build] Unknown OPENHANDS_SHARED_REGISTRY_CACHE_EXPORT=%r; "
+        "defaulting to disabled",
+        raw,
+    )
+    return False
+
+
+def _cache_to_mode() -> str:
+    raw = os.getenv("OPENHANDS_BUILDKIT_CACHE_MODE", "max").strip().lower()
+    if raw in {"max", "min", "off"}:
+        return raw
+    logger.warning(
+        "[build] Unknown OPENHANDS_BUILDKIT_CACHE_MODE=%r; defaulting to 'max'",
+        raw,
+    )
+    return "max"
+
+
 def _round_seconds(value: float) -> float:
     return round(value, 3)
 
@@ -717,7 +750,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         push = IN_CI
 
     tags = opts.all_tags
-    cache_tag, cache_tag_base = opts.cache_tags
+    cache_tag, cache_tag_fallback = opts.cache_tags
+    shared_cache_tag, shared_cache_tag_fallback = opts.shared_cache_tags
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
@@ -754,18 +788,43 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     driver = _active_buildx_driver() or "unknown"
     local_cache_dir = _default_local_cache_dir()
     cache_args: list[str] = []
+    cache_to_mode = _cache_to_mode()
 
     if push:
         # Remote/CI builds: use registry cache + inline for maximum reuse.
-        cache_args += [
-            "--cache-from",
-            f"type=registry,ref={opts.image}:{cache_tag}",
-            "--cache-from",
-            f"type=registry,ref={opts.image}:{cache_tag_base}-main",
-            "--cache-to",
-            f"type=registry,ref={opts.image}:{cache_tag},mode=max",
-        ]
-        logger.info("[build] Cache: registry (remote/CI) + inline")
+        seen_cache_from: set[str] = set()
+        for cache_ref in (
+            cache_tag,
+            cache_tag_fallback,
+            shared_cache_tag,
+            shared_cache_tag_fallback,
+        ):
+            if cache_ref in seen_cache_from:
+                continue
+            seen_cache_from.add(cache_ref)
+            cache_args += [
+                "--cache-from",
+                f"type=registry,ref={opts.image}:{cache_ref}",
+            ]
+
+        cache_to_refs = []
+        if cache_to_mode != "off":
+            cache_to_refs.append(cache_tag)
+            if _shared_registry_cache_export_enabled():
+                cache_to_refs.append(shared_cache_tag)
+
+        for cache_ref in dict.fromkeys(cache_to_refs):
+            cache_args += [
+                "--cache-to",
+                f"type=registry,ref={opts.image}:{cache_ref},mode={cache_to_mode}",
+            ]
+        logger.info(
+            "[build] Cache: registry (remote/CI), cache-to=%s, shared cache export=%s",
+            "disabled" if cache_to_mode == "off" else cache_to_mode,
+            "enabled"
+            if shared_cache_tag in cache_to_refs and cache_to_mode != "off"
+            else "disabled",
+        )
     else:
         # Local/dev builds: prefer local dir cache if
         # driver supports it; otherwise inline-only.
@@ -774,11 +833,17 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
             cache_args += [
                 "--cache-from",
                 f"type=local,src={str(local_cache_dir)}",
-                "--cache-to",
-                f"type=local,dest={str(local_cache_dir)},mode=max",
             ]
+            if cache_to_mode != "off":
+                cache_args += [
+                    "--cache-to",
+                    f"type=local,dest={str(local_cache_dir)},mode={cache_to_mode}",
+                ]
             logger.info(
-                f"[build] Cache: local dir at {local_cache_dir} (driver={driver})"
+                "[build] Cache: local dir at %s (driver=%s, cache-to=%s)",
+                local_cache_dir,
+                driver,
+                "disabled" if cache_to_mode == "off" else cache_to_mode,
             )
         else:
             logger.warning(
@@ -805,7 +870,11 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         f"[build] Git ref='{opts.git_ref}' sha='{opts.git_sha}' "
         f"package_version='{opts.sdk_version}'"
     )
-    logger.info(f"[build] Cache tag: {cache_tag}")
+    logger.info(
+        "[build] Cache tags: "
+        f"image={cache_tag} fallback={cache_tag_fallback} "
+        f"shared={shared_cache_tag} shared_fallback={shared_cache_tag_fallback}"
+    )
 
     buildx_started = time.monotonic()
     try:
