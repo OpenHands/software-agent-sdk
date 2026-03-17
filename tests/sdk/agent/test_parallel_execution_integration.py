@@ -1,7 +1,7 @@
 """Integration tests for parallel tool execution within the agent.
 
 These tests verify that the agent correctly executes tool calls in parallel
-when TOOL_CONCURRENCY_LIMIT > 1, including event ordering, state transitions,
+when tool_concurrency_limit > 1, including event ordering, state transitions,
 FinishTool truncation, and blocked action handling.
 """
 
@@ -10,10 +10,10 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Self
 
-from pydantic import Field
+import pytest
+from pydantic import Field, ValidationError
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.agent.parallel_executor import ENV_TOOL_CONCURRENCY_LIMIT
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
@@ -119,10 +119,8 @@ def _run_step(agent, conversation, collected_events):
 # --- Tests ---
 
 
-def test_parallel_execution_multiple_tools(monkeypatch):
+def test_parallel_execution_multiple_tools():
     """Multiple tool calls execute in parallel and events are emitted in order."""
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
-
     llm = TestLLM.from_messages(
         [
             Message(
@@ -137,7 +135,7 @@ def test_parallel_execution_multiple_tools(monkeypatch):
             Message(role="assistant", content=[TextContent(text="Done")]),
         ]
     )
-    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")], tool_concurrency_limit=4)
 
     collected = []
     conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
@@ -152,10 +150,8 @@ def test_parallel_execution_multiple_tools(monkeypatch):
     assert obs_events[2].tool_call_id == "call_2"
 
 
-def test_parallel_execution_faster_than_sequential(monkeypatch):
+def test_parallel_execution_faster_than_sequential():
     """Parallel execution completes faster than sequential would."""
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
-
     llm = TestLLM.from_messages(
         [
             Message(
@@ -171,7 +167,7 @@ def test_parallel_execution_faster_than_sequential(monkeypatch):
             Message(role="assistant", content=[TextContent(text="Done")]),
         ]
     )
-    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")], tool_concurrency_limit=4)
 
     collected = []
     conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
@@ -186,7 +182,7 @@ def test_parallel_execution_faster_than_sequential(monkeypatch):
 
 
 def test_sequential_execution_with_default_limit():
-    """With default TOOL_CONCURRENCY_LIMIT=1, tools execute sequentially."""
+    """With default tool_concurrency_limit=1, tools execute sequentially."""
     llm = TestLLM.from_messages(
         [
             Message(
@@ -214,7 +210,7 @@ def test_sequential_execution_with_default_limit():
 
 
 def test_limit_one_preserves_sequential_semantics():
-    """Regression: TOOL_CONCURRENCY_LIMIT=1 must preserve old sequential behavior.
+    """Regression: tool_concurrency_limit=1 must preserve old sequential behavior.
 
     With the default limit of 1, multi-tool batches must:
     1. Run each tool on the caller's thread (not a pool thread).
@@ -237,7 +233,7 @@ def test_limit_one_preserves_sequential_semantics():
             Message(role="assistant", content=[TextContent(text="Done")]),
         ]
     )
-    # No monkeypatch — default TOOL_CONCURRENCY_LIMIT=1
+    # Default tool_concurrency_limit=1
     agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
 
     collected = []
@@ -265,10 +261,8 @@ def test_limit_one_preserves_sequential_semantics():
     assert labels == ["a", "b", "c"]
 
 
-def test_finish_tool_truncates_subsequent_tools(monkeypatch):
+def test_finish_tool_truncates_subsequent_tools():
     """Tools after FinishTool are discarded and never executed."""
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
-
     llm = TestLLM.from_messages(
         [
             Message(
@@ -286,7 +280,7 @@ def test_finish_tool_truncates_subsequent_tools(monkeypatch):
             ),
         ]
     )
-    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")], tool_concurrency_limit=4)
 
     collected = []
     conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
@@ -311,13 +305,11 @@ def test_finish_tool_truncates_subsequent_tools(monkeypatch):
         )
 
 
-def test_error_in_parallel_batch_preserves_other_results(monkeypatch):
+def test_error_in_parallel_batch_preserves_other_results():
     """
     A failing tool in a parallel batch doesn't
     prevent other tools from completing.
     """
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
-
     llm = TestLLM.from_messages(
         [
             Message(
@@ -336,7 +328,11 @@ def test_error_in_parallel_batch_preserves_other_results(monkeypatch):
             Message(role="assistant", content=[TextContent(text="Recovered")]),
         ]
     )
-    agent = Agent(llm=llm, tools=[Tool(name="SlowTool"), Tool(name="FailingTool")])
+    agent = Agent(
+        llm=llm,
+        tools=[Tool(name="SlowTool"), Tool(name="FailingTool")],
+        tool_concurrency_limit=4,
+    )
 
     collected = []
     conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
@@ -366,13 +362,11 @@ def test_error_in_parallel_batch_preserves_other_results(monkeypatch):
         )
 
 
-def test_blocked_action_with_parallel_execution(monkeypatch):
+def test_blocked_action_with_parallel_execution():
     """
     Blocked actions produce rejections while
     non-blocked actions execute in parallel.
     """
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
-
     llm = TestLLM.from_messages(
         [
             Message(
@@ -386,7 +380,7 @@ def test_blocked_action_with_parallel_execution(monkeypatch):
             Message(role="assistant", content=[TextContent(text="Done")]),
         ]
     )
-    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")], tool_concurrency_limit=4)
 
     collected = []
     conversation = Conversation(agent=agent, callbacks=[lambda e: collected.append(e)])
@@ -399,3 +393,25 @@ def test_blocked_action_with_parallel_execution(monkeypatch):
     # both observations were emitted (no blocking configured).
     obs_events = [e for e in collected if isinstance(e, ObservationEvent)]
     assert len(obs_events) == 2
+
+
+def test_tool_concurrency_limit_wires_to_executor():
+    """Agent.tool_concurrency_limit is wired through to the ParallelToolExecutor."""
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="Done")])]
+    )
+    agent = Agent(llm=llm, tools=[], tool_concurrency_limit=6)
+    assert agent._parallel_executor._max_workers == 6
+
+    agent_default = Agent(llm=llm, tools=[])
+    assert agent_default._parallel_executor._max_workers == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, -100])
+def test_tool_concurrency_limit_rejects_invalid_values(value):
+    """Pydantic validates tool_concurrency_limit >= 1 at construction time."""
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="Done")])]
+    )
+    with pytest.raises(ValidationError):
+        Agent(llm=llm, tools=[], tool_concurrency_limit=value)

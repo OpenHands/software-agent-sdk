@@ -5,34 +5,18 @@ import time
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
-from openhands.sdk.agent.parallel_executor import (
-    DEFAULT_TOOL_CONCURRENCY_LIMIT,
-    ENV_TOOL_CONCURRENCY_LIMIT,
-    ParallelToolExecutor,
-    _get_max_concurrency,
-)
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.event.llm_convertible import AgentErrorEvent
 
 
-def test_get_max_concurrency_default():
-    assert _get_max_concurrency() == DEFAULT_TOOL_CONCURRENCY_LIMIT
+def test_default_max_workers():
+    executor = ParallelToolExecutor()
+    assert executor._max_workers == 1
 
 
-@pytest.mark.parametrize(
-    "env_value, expected",
-    [
-        ("4", 4),
-        ("1", 1),
-        ("not_a_number", DEFAULT_TOOL_CONCURRENCY_LIMIT),
-        ("0", DEFAULT_TOOL_CONCURRENCY_LIMIT),
-        ("-1", DEFAULT_TOOL_CONCURRENCY_LIMIT),
-    ],
-)
-def test_get_max_concurrency_from_env(monkeypatch, env_value, expected):
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, env_value)
-    assert _get_max_concurrency() == expected
+def test_custom_max_workers():
+    executor = ParallelToolExecutor(max_workers=4)
+    assert executor._max_workers == 4
 
 
 def test_empty_batch():
@@ -56,8 +40,7 @@ def test_multi_action_limit_one_runs_sequentially_on_caller_thread():
     When max_workers=1, multiple actions run on the calling thread,
     not a pool thread.
     """
-    executor = ParallelToolExecutor()
-    executor._max_workers = 1
+    executor = ParallelToolExecutor(max_workers=1)
     actions: list[Any] = [MagicMock() for _ in range(3)]
     caller_thread = threading.current_thread().name
     observed_threads: list[str] = []
@@ -95,10 +78,9 @@ def test_result_ordering_preserved_despite_variable_duration():
     ]
 
 
-def test_actions_run_concurrently(monkeypatch):
+def test_actions_run_concurrently():
     """Verify that actions actually run in parallel, not sequentially."""
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "4")
-    executor = ParallelToolExecutor()
+    executor = ParallelToolExecutor(max_workers=4)
     actions: list[Any] = [MagicMock() for _ in range(4)]
     max_concurrent = [0]
     current = [0]
@@ -118,11 +100,9 @@ def test_actions_run_concurrently(monkeypatch):
     assert max_concurrent[0] > 1
 
 
-def test_concurrency_limited_by_max_workers(monkeypatch):
+def test_concurrency_limited_by_max_workers():
     """Concurrency does not exceed the configured limit."""
-    monkeypatch.setenv(ENV_TOOL_CONCURRENCY_LIMIT, "2")
-
-    executor = ParallelToolExecutor()
+    executor = ParallelToolExecutor(max_workers=2)
     actions: list[Any] = [MagicMock() for _ in range(6)]
     concurrent_count: list[int] = []
     lock = threading.Lock()
@@ -237,16 +217,14 @@ def test_nested_execution_no_deadlock():
     The outer executor has max_workers=1. The subagent tool creates its
     own executor — since pools are per-instance, no thread starvation.
     """
-    outer_executor = ParallelToolExecutor()
-    outer_executor._max_workers = 1
+    outer_executor = ParallelToolExecutor(max_workers=1)
 
     def inner_tool_runner(action: Any) -> list:
         return [f"inner-{action}"]
 
     def outer_tool_runner(action: Any) -> list:
         if action == "subagent":
-            inner_executor = ParallelToolExecutor()
-            inner_executor._max_workers = 2
+            inner_executor = ParallelToolExecutor(max_workers=2)
             inner_results = inner_executor.execute_batch(
                 ["a", "b"],  # type: ignore[arg-type]
                 inner_tool_runner,

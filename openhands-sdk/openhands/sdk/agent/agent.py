@@ -232,6 +232,12 @@ class Agent(CriticMixin, AgentBase):
         default_factory=ParallelToolExecutor
     )
 
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        self._parallel_executor = ParallelToolExecutor(
+            max_workers=self.tool_concurrency_limit
+        )
+
     @model_validator(mode="before")
     @classmethod
     def _add_security_prompt_as_default(cls, data):

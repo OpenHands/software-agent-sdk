@@ -5,7 +5,7 @@ with a configurable per-agent concurrency limit.
 
 .. warning:: Thread safety of individual tools
 
-   When ``TOOL_CONCURRENCY_LIMIT > 1``, multiple tools run in parallel
+   When ``tool_concurrency_limit > 1``, multiple tools run in parallel
    threads sharing the same ``conversation`` object. Tools are **not**
    thread-safe by default — concurrent mutations to working directory,
    filesystem, or conversation state can race. Callers opting into
@@ -15,11 +15,9 @@ with a configurable per-agent concurrency limit.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from openhands.sdk.event.llm_convertible import AgentErrorEvent
 from openhands.sdk.logger import get_logger
@@ -31,36 +29,12 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Default concurrency limit for tool executions (per agent)
-DEFAULT_TOOL_CONCURRENCY_LIMIT: Final[int] = 1
-
-# Environment variable name for configuring concurrency limit
-ENV_TOOL_CONCURRENCY_LIMIT: Final[str] = "TOOL_CONCURRENCY_LIMIT"
-
-
-def _get_max_concurrency() -> int:
-    """Resolve max concurrency from environment variable or default."""
-    env_value = os.environ.get(ENV_TOOL_CONCURRENCY_LIMIT)
-    if env_value:
-        with suppress(ValueError):
-            val = int(env_value)
-            if val > 0:
-                return val
-        logger.warning(
-            f"{ENV_TOOL_CONCURRENCY_LIMIT}={env_value} is invalid, "
-            f"using default {DEFAULT_TOOL_CONCURRENCY_LIMIT}"
-        )
-    return DEFAULT_TOOL_CONCURRENCY_LIMIT
-
 
 class ParallelToolExecutor:
     """Executes a batch of tool calls concurrently.
 
     Each instance has its own thread pool and concurrency limit, so
     nested execution (e.g., subagents) cannot deadlock the parent.
-
-    Concurrency is configured via TOOL_CONCURRENCY_LIMIT
-    environment variable (default: 1, no concurrency).
 
     .. warning::
 
@@ -70,8 +44,8 @@ class ParallelToolExecutor:
        can cause race conditions.
     """
 
-    def __init__(self) -> None:
-        self._max_workers = _get_max_concurrency()
+    def __init__(self, max_workers: int = 1) -> None:
+        self._max_workers = max_workers
 
     def execute_batch(
         self,
