@@ -96,11 +96,8 @@ with OpenHandsCloudWorkspace(
             "Then write a short summary into SECRETS_CHECK.txt."
         )
     else:
-        prompt = (
-            "List the environment variables that start with "
-            "SECRET_ or end with _TOKEN, then write a short "
-            "summary of what you find into SECRETS_CHECK.txt."
-        )
+        # No secret was configured on OpenHands Cloud
+        prompt = "Tell me, is there any secret configured for you?"
 
     try:
         conversation.send_message(prompt)
