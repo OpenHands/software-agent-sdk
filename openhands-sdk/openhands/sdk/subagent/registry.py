@@ -385,16 +385,13 @@ def get_factory_info() -> str:
     if not user_factories:
         return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
+    def get_agent_info(name, factory):
+        defn = factory.definition
+        tools = f" (tools: {', '.join(defn.tools)})" if defn.tools else ""
+        return f"- **{name}**: {defn.description}{tools}"
+
     return "\n".join(
-        [
-            f"- **{name}**: {factory.definition.description}"
-            + (
-                f" (tools: {', '.join(factory.definition.tools)})"
-                if factory.definition.tools
-                else ""
-            )
-            for name, factory in sorted(user_factories.items())
-        ]
+        get_agent_info(name, f) for name, f in sorted(user_factories.items())
     )
 
 
