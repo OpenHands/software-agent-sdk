@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Static analysis for deprecation deadlines.
 
-This script scans the OpenHands SDK for uses of the `deprecated` decorator and
-`warn_deprecated` helper. If the current project version has reached or passed a
-feature's `removed_in` marker, the script fails with a helpful summary so that
-legacy shims are cleaned up before release.
+This script scans Python deprecation metadata (`deprecated`, `warn_deprecated`,
+`warn_cleanup`) and agent-server REST routes marked `deprecated=True`. If the
+current project version has reached or passed a feature's removal marker, the
+script fails with a helpful summary so legacy shims and overdue deprecated REST
+endpoints are cleaned up before release.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 import sys
 import tomllib
 from collections.abc import Iterable, Iterator, Sequence
@@ -20,6 +22,24 @@ from typing import Literal
 
 from packaging import version as pkg_version
 
+
+REST_ROUTE_DEPRECATION_RE = re.compile(
+    r"Deprecated since v(?P<deprecated>[0-9A-Za-z.+-]+)\s+"
+    r"and scheduled for removal in v(?P<removed>[0-9A-Za-z.+-]+)\.?",
+    re.IGNORECASE,
+)
+ROUTE_DECORATOR_NAMES = {
+    "get",
+    "put",
+    "post",
+    "delete",
+    "patch",
+    "options",
+    "head",
+    "trace",
+    "api_route",
+}
+HTTP_METHODS = ROUTE_DECORATOR_NAMES - {"api_route"}
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -64,7 +84,7 @@ class DeprecationRecord:
     deprecated_in: str | None
     path: Path
     line: int
-    kind: Literal["decorator", "warn_call", "cleanup_call"]
+    kind: Literal["decorator", "warn_call", "cleanup_call", "rest_route"]
     package: str
 
 
@@ -187,6 +207,122 @@ def _extract_kw(call: ast.Call, name: str) -> ast.AST | None:
         if kw.arg == name:
             return kw.value
     return None
+
+
+def _extract_string_literal(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _extract_string_sequence(node: ast.AST | None) -> tuple[str, ...] | None:
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return None
+
+    values: list[str] = []
+    for item in node.elts:
+        value = _extract_string_literal(item)
+        if value is None:
+            return None
+        values.append(value)
+    return tuple(values)
+
+
+def _extract_route_details(call: ast.Call) -> tuple[tuple[str, str], ...]:
+    target = call.func
+    if not isinstance(target, ast.Attribute):
+        return ()
+
+    decorator_name = target.attr
+    if decorator_name not in ROUTE_DECORATOR_NAMES:
+        return ()
+
+    path = _extract_string_literal(call.args[0] if call.args else None)
+    if path is None:
+        path = _extract_string_literal(_extract_kw(call, "path"))
+    if path is None:
+        return ()
+
+    if decorator_name in HTTP_METHODS:
+        return ((decorator_name.upper(), path),)
+
+    methods = _extract_string_sequence(_extract_kw(call, "methods"))
+    if methods is None:
+        return (("GET", path),)
+
+    return tuple(
+        (method.upper(), path) for method in methods if method.lower() in HTTP_METHODS
+    )
+
+
+def _parse_rest_route_deprecation_docstring(
+    docstring: str | None,
+    *,
+    path: Path,
+    line: int,
+    route_identifiers: Sequence[str],
+) -> tuple[str, str]:
+    if not docstring:
+        raise SystemExit(
+            "Deprecated REST route(s) "
+            f"{', '.join(route_identifiers)} at {path}:{line} must include a "
+            "docstring note like 'Deprecated since vX.Y.Z and scheduled for "
+            "removal in vA.B.C.'"
+        )
+
+    match = REST_ROUTE_DEPRECATION_RE.search(" ".join(docstring.split()))
+    if match is None:
+        raise SystemExit(
+            "Deprecated REST route(s) "
+            f"{', '.join(route_identifiers)} at {path}:{line} must include a "
+            "docstring note like 'Deprecated since vX.Y.Z and scheduled for "
+            "removal in vA.B.C.'"
+        )
+
+    return match.group("deprecated").rstrip("."), match.group("removed").rstrip(".")
+
+
+def _gather_rest_route_deprecations(
+    tree: ast.AST, path: Path, *, package: str
+) -> Iterator[DeprecationRecord]:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+
+        routes: list[tuple[str, str]] = []
+        for deco in node.decorator_list:
+            if not isinstance(deco, ast.Call):
+                continue
+            deprecated_value = _extract_kw(deco, "deprecated")
+            if (
+                not isinstance(deprecated_value, ast.Constant)
+                or deprecated_value.value is not True
+            ):
+                continue
+            routes.extend(_extract_route_details(deco))
+
+        if not routes:
+            continue
+
+        deprecated_in, removed_in = _parse_rest_route_deprecation_docstring(
+            ast.get_docstring(node),
+            path=path,
+            line=node.lineno,
+            route_identifiers=[
+                f"{method} {route_path}" for method, route_path in routes
+            ],
+        )
+
+        for method, route_path in routes:
+            yield DeprecationRecord(
+                identifier=f"{method} {route_path}",
+                removed_in=removed_in,
+                deprecated_in=deprecated_in,
+                path=path,
+                line=node.lineno,
+                kind="rest_route",
+                package=package,
+            )
 
 
 def _gather_decorators(
@@ -318,6 +454,16 @@ def _collect_records(files: Iterable[Path], *, package: str) -> list[Deprecation
     return records
 
 
+def _collect_rest_route_records(
+    files: Iterable[Path], *, package: str
+) -> list[DeprecationRecord]:
+    records: list[DeprecationRecord] = []
+    for path in files:
+        tree = ast.parse(path.read_text())
+        records.extend(_gather_rest_route_deprecations(tree, path, package=package))
+    return records
+
+
 def _version_ge(current: str, target: str) -> bool:
     try:
         return pkg_version.parse(current) >= pkg_version.parse(target)
@@ -392,6 +538,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             files.extend(_iter_python_files(root))
 
         records = _collect_records(files, package=package.name)
+        if package.name == "openhands-agent-server":
+            records.extend(_collect_rest_route_records(files, package=package.name))
 
         overdue.extend(r for r in records if _should_fail(current_version, r))
         total_records += len(records)
