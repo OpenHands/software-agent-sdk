@@ -13,7 +13,7 @@ Raw secret values never transit through the SDK client. The agent-server
 inside the sandbox resolves them on demand.
 
 Usage:
-  uv run examples/02_remote_agent_server/10_cloud_workspace_saas_credentials.py
+  uv run examples/02_remote_agent_server/10_cloud_workspace_share_credentials.py
 
 Requirements:
   - OPENHANDS_CLOUD_API_KEY: API key for OpenHands Cloud (the only credential needed)
