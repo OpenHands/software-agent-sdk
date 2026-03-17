@@ -769,7 +769,7 @@ def test_build_with_telemetry_preserves_telemetry_on_failure(tmp_path: Path):
         ("off", False, None),
         ("max", True, "max"),
         ("min", True, "min"),
-        ("invalid", False, None),  # Invalid values should default to "off"
+        ("invalid", True, "max"),  # Invalid values default to "max" (preserve behavior)
     ],
 )
 def test_cache_export_modes(
