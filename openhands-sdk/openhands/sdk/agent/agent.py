@@ -211,11 +211,21 @@ class Agent(CriticMixin, AgentBase):
     AgentBase and implements the agent execution logic. Critic-related functionality
     is provided by CriticMixin.
 
+    Attributes:
+        llm: The language model instance used for reasoning.
+        tools: List of tools available to the agent.
+        name: Optional agent identifier.
+        system_prompt: Custom system prompt (uses default if not provided).
+
     Example:
-        >>> from openhands.sdk import LLM, Agent, Tool
-        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
-        >>> agent = Agent(llm=llm, tools=tools)
+        ```python
+        from openhands.sdk import LLM, Agent, Tool
+        from pydantic import SecretStr
+
+        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = Agent(llm=llm, tools=tools)
+        ```
     """
 
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
