@@ -23,6 +23,16 @@ logger = get_logger(__name__)
 # Standard exposed URL names from OpenHands Cloud
 AGENT_SERVER = "AGENT_SERVER"
 
+# Number of retry attempts for transient API failures
+_MAX_RETRIES = 3
+
+
+def _is_retryable_error(error: BaseException) -> bool:
+    """Return True for transient errors that are worth retrying."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code >= 500
+    return isinstance(error, (httpx.ConnectError, httpx.TimeoutException))
+
 
 class OpenHandsCloudWorkspace(RemoteWorkspace):
     """Remote workspace using OpenHands Cloud API.
@@ -385,12 +395,19 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         """Headers for settings requests (SESSION_API_KEY auth)."""
         return {"X-Session-API-Key": self._session_api_key or ""}
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
     def get_llm(self, **llm_kwargs: Any) -> LLM:
         """Fetch LLM settings from the user's SaaS account and return an LLM.
 
         Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
         user's LLM configuration (model, api_key, base_url) and returns a
-        fully usable ``LLM`` instance.
+        fully usable ``LLM`` instance.  Retries up to 3 times on transient
+        errors (network issues, server 5xx).
 
         Args:
             **llm_kwargs: Additional keyword arguments passed to the LLM
@@ -487,10 +504,19 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         return result
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
     def _send_settings_request(
         self, method: str, url: str, **kwargs: Any
     ) -> httpx.Response:
-        """Send a request to sandbox settings endpoints (SESSION_API_KEY auth)."""
+        """Send a request to sandbox settings endpoints (SESSION_API_KEY auth).
+
+        Retries up to 3 times on transient errors (network issues, server 5xx).
+        """
         headers = kwargs.pop("headers", {})
         headers.update(self._session_headers)
 

@@ -7,6 +7,7 @@ SaaS→sandbox, never to the SDK client.
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -184,3 +185,78 @@ class TestGetSecrets:
         mock_workspace._sandbox_id = None
         with pytest.raises(RuntimeError, match="Sandbox is not running"):
             mock_workspace.get_secrets()
+
+
+class TestRetry:
+    """Tests for retry behaviour on get_llm and get_secrets."""
+
+    def test_get_llm_retries_on_server_error(self, mock_workspace):
+        """get_llm retries on 5xx and succeeds on the next attempt."""
+        error_response = httpx.Response(
+            status_code=502, request=httpx.Request("GET", "http://x")
+        )
+        ok_response = MagicMock()
+        ok_response.json.return_value = {
+            "llm_model": "gpt-4o",
+            "llm_api_key": "sk-ok",
+            "llm_base_url": None,
+        }
+        ok_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace,
+            "_send_api_request",
+            side_effect=[
+                httpx.HTTPStatusError(
+                    "Bad Gateway",
+                    request=error_response.request,
+                    response=error_response,
+                ),
+                ok_response,
+            ],
+        ):
+            llm = mock_workspace.get_llm()
+
+        assert llm.model == "gpt-4o"
+
+    def test_get_llm_no_retry_on_client_error(self, mock_workspace):
+        """get_llm does NOT retry on 4xx errors."""
+        error_response = httpx.Response(
+            status_code=401, request=httpx.Request("GET", "http://x")
+        )
+
+        with patch.object(
+            mock_workspace,
+            "_send_api_request",
+            side_effect=httpx.HTTPStatusError(
+                "Unauthorized",
+                request=error_response.request,
+                response=error_response,
+            ),
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                mock_workspace.get_llm()
+
+    def test_get_secrets_retries_on_server_error(self, mock_workspace):
+        """_send_settings_request retries on 5xx for get_secrets."""
+        ok_response = MagicMock()
+        ok_response.json.return_value = {
+            "secrets": [{"name": "TOK", "description": None}]
+        }
+        ok_response.raise_for_status = MagicMock()
+
+        with patch("httpx.Client") as MockClient:
+            mock_client = MagicMock()
+            MockClient.return_value.__enter__ = MagicMock(return_value=mock_client)
+            MockClient.return_value.__exit__ = MagicMock(return_value=False)
+            mock_client.request.side_effect = [
+                httpx.Response(
+                    status_code=503,
+                    request=httpx.Request("GET", "http://x"),
+                ),
+                ok_response,
+            ]
+            # The first call raises on raise_for_status, second succeeds
+            secrets = mock_workspace.get_secrets()
+
+        assert "TOK" in secrets
