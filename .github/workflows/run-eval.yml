@@ -19,7 +19,6 @@ on:
                     - swebench
                     - swtbench
                     - commit0
-                    - multiswebench
                     - swebenchmultimodal
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
