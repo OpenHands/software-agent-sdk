@@ -55,10 +55,7 @@ with OpenHandsCloudWorkspace(
     # (dual auth: Bearer + session key) and returns a
     # fully configured LLM instance.
     # Override any parameter: workspace.get_llm(model="gpt-4o")
-    llm_kwargs = {}
-    if os.getenv("LLM_MODEL"):
-        llm_kwargs["model"] = os.getenv("LLM_MODEL")
-    llm = workspace.get_llm(**llm_kwargs)
+    llm = workspace.get_llm()
     logger.info(f"LLM configured: model={llm.model}")
 
     # --- Secrets from SaaS account ---
