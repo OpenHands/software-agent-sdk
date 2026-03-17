@@ -249,6 +249,15 @@ def test_gpt_oss_20b_config():
     assert model["llm_config"]["model"] == "litellm_proxy/gpt-oss-20b"
 
 
+def test_gpt_5_3_codex_config():
+    """Test that gpt-5-3-codex has correct configuration."""
+    model = MODELS["gpt-5-3-codex"]
+
+    assert model["id"] == "gpt-5-3-codex"
+    assert model["display_name"] == "GPT-5.3 Codex"
+    assert model["llm_config"]["model"] == "litellm_proxy/gpt-5-3-codex"
+
+
 def test_glm_5_config():
     """Test that glm-5 has correct configuration."""
     model = MODELS["glm-5"]
@@ -288,7 +297,9 @@ class TestTestModel:
             "llm_config": {"model": "litellm_proxy/test-model"},
         }
         mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=MagicMock(content=""))]
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="", reasoning_content=None))
+        ]
 
         with patch("litellm.completion", return_value=mock_response):
             success, message = test_model(model_config, "test-key", "https://test.com")
@@ -296,6 +307,48 @@ class TestTestModel:
         assert success is False
         assert "✗" in message
         assert "Empty response" in message
+
+    def test_thinking_model_success(self):
+        """Test that a thinking model with only reasoning_content passes."""
+        model_config = {
+            "display_name": "Thinking Model",
+            "llm_config": {"model": "litellm_proxy/thinking-model"},
+        }
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(content="", reasoning_content="Let me think...")
+            )
+        ]
+
+        with patch("litellm.completion", return_value=mock_response):
+            success, message = test_model(model_config, "test-key", "https://test.com")
+
+        assert success is True
+        assert "✓" in message
+
+    def test_model_without_reasoning_content_attribute(self):
+        """Test that models whose Message object lacks reasoning_content don't raise."""
+        from types import SimpleNamespace
+
+        model_config = {
+            "display_name": "Standard Model",
+            "llm_config": {"model": "litellm_proxy/standard-model"},
+        }
+        mock_response = MagicMock()
+        # SimpleNamespace has only the attributes we give it - no reasoning_content
+        message = SimpleNamespace(content="2")
+        choice = MagicMock()
+        choice.message = message
+        mock_response.choices = [choice]
+
+        with patch("litellm.completion", return_value=mock_response):
+            success, message_str = test_model(
+                model_config, "test-key", "https://test.com"
+            )
+
+        assert success is True
+        assert "✓" in message_str
 
     def test_timeout_error(self):
         """Test that timeout errors are handled correctly."""
@@ -482,3 +535,26 @@ print(f"SUCCESS: Imported {len(MODELS)} models without litellm")
         f"stderr: {result.stderr}"
     )
     assert "SUCCESS" in result.stdout
+
+
+def test_gpt_5_4_config():
+    """Test that gpt-5.4 has correct configuration."""
+    model = MODELS["gpt-5.4"]
+
+    assert model["id"] == "gpt-5.4"
+    assert model["display_name"] == "GPT-5.4"
+    assert model["llm_config"]["model"] == "litellm_proxy/openai/gpt-5.4"
+    assert model["llm_config"]["reasoning_effort"] == "high"
+
+
+def test_nemotron_3_super_120b_a12b_config():
+    """Test that nemotron-3-super-120b-a12b has correct configuration."""
+    model = MODELS["nemotron-3-super-120b-a12b"]
+
+    assert model["id"] == "nemotron-3-super-120b-a12b"
+    assert model["display_name"] == "NVIDIA Nemotron-3 Super 120B"
+    assert (
+        model["llm_config"]["model"]
+        == "litellm_proxy/nvidia/nemotron-3-super-120b-a12b"
+    )
+    assert model["llm_config"]["temperature"] == 0.0

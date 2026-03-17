@@ -27,7 +27,10 @@ from openhands.sdk import (
 )
 from openhands.sdk.tool import Tool
 from openhands.tools.browser_use import BrowserToolSet
-from openhands.tools.browser_use.definition import BROWSER_RECORDING_OUTPUT_DIR
+from openhands.tools.browser_use.definition import (
+    BROWSER_RECORDING_OUTPUT_DIR,
+    BrowserNavigateAction,
+)
 
 
 logger = get_logger(__name__)
@@ -71,31 +74,39 @@ conversation = Conversation(
 
 # The prompt instructs the agent to:
 # 1. Start recording the browser session
-# 2. Browse to a website and perform some actions
+# 2. Navigate to a page and get its content
 # 3. Stop recording (auto-saves to file)
 PROMPT = """
 Please complete the following task to demonstrate browser session recording:
 
-1. First, use `browser_start_recording` to begin recording the browser session.
-
-2. Then navigate to https://docs.openhands.dev/ and:
-   - Get the page content
-   - Scroll down the page
-   - Get the browser state to see interactive elements
-
-3. Next, navigate to https://docs.openhands.dev/openhands/usage/cli/installation and:
-   - Get the page content
-   - Scroll down to see more content
-
-4. Finally, use `browser_stop_recording` to stop the recording.
-   Events are automatically saved.
+1. Use `browser_start_recording` to begin recording.
+2. Navigate to https://docs.openhands.dev/ and:
+    - Get the page content
+    - Scroll down the page
+    - Get the browser state to see interactive elements
+3. Use `browser_stop_recording` to stop and save the recording.
 """
 
 print("=" * 80)
 print("Browser Session Recording Example")
 print("=" * 80)
 print("\nTask: Record an agent's browser session and save it for replay")
-print("\nStarting conversation with agent...\n")
+
+# Pre-initialize the browser so CDP is ready before the agent starts.
+# This avoids wasting LLM calls if the browser fails to connect.
+print("\nInitializing browser...")
+
+init_obs = conversation.execute_tool(
+    "browser_navigate",
+    BrowserNavigateAction(url="about:blank"),
+)
+if init_obs.is_error:
+    print(f"Browser initialization failed: {init_obs.text}")
+    print("Ensure Chrome/Chromium is installed and accessible.")
+    exit(1)
+print("Browser initialized successfully.\n")
+
+print("Starting conversation with agent...\n")
 
 conversation.send_message(PROMPT)
 conversation.run()
@@ -176,3 +187,6 @@ print("=" * 100)
 cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
 print(f"Conversation ID: {conversation.id}")
 print(f"EXAMPLE_COST: {cost}")
+
+# Close conversation to shut down browser and other tool executors
+conversation.close()

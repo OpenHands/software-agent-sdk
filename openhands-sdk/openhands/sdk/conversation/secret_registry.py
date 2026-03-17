@@ -116,6 +116,22 @@ class SecretRegistry(OpenHandsModel):
 
         return masked_text
 
+    def get_secret_infos(self) -> list[dict[str, str | None]]:
+        """Get secret information (name and description) for prompt inclusion.
+
+        Returns:
+            List of dictionaries with 'name' and 'description' keys.
+            Returns an empty list if no secrets are registered.
+            Description will be None if not available.
+        """
+        if not self.secret_sources:
+            return []
+        secret_infos = []
+        for name, source in self.secret_sources.items():
+            description = source.description
+            secret_infos.append({"name": name, "description": description})
+        return secret_infos
+
 
 def _wrap_secret(value: SecretValue) -> SecretSource:
     """Convert the value given to a secret source"""

@@ -93,7 +93,7 @@ from openhands.sdk.llm.streaming import (
 )
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
+from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -122,24 +122,39 @@ MIN_CONTEXT_WINDOW_TOKENS: Final[int] = 16384
 # Environment variable to override the minimum context window check
 ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 
+# Default max output tokens when model info only provides 'max_tokens' (ambiguous).
+# Some providers use 'max_tokens' for the total context window, not output limit.
+# This cap prevents requesting output that exceeds the context window.
+# 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
+DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
+
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
 
     The LLM class provides a unified interface for interacting with various
     language models through the litellm library. It handles model configuration,
-    API authentication,
-    retry logic, and tool calling capabilities.
+    API authentication, retry logic, and tool calling capabilities.
+
+    Attributes:
+        model: Model name (e.g., "claude-sonnet-4-20250514").
+        api_key: API key for authentication.
+        base_url: Custom API base URL.
+        num_retries: Number of retry attempts for failed requests.
+        timeout: Request timeout in seconds.
 
     Example:
-        >>> from openhands.sdk import LLM
-        >>> from pydantic import SecretStr
-        >>> llm = LLM(
-        ...     model="claude-sonnet-4-20250514",
-        ...     api_key=SecretStr("your-api-key"),
-        ...     usage_id="my-agent"
-        ... )
-        >>> # Use with agent or conversation
+        ```python
+        from openhands.sdk import LLM
+        from pydantic import SecretStr
+
+        llm = LLM(
+            model="claude-sonnet-4-20250514",
+            api_key=SecretStr("your-api-key"),
+            usage_id="my-agent"
+        )
+        # Use with agent or conversation
+        ```
     """
 
     # =========================================================================
@@ -182,10 +197,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description=(
             "Sampling temperature for response generation. "
-            "Defaults to 0 for most models and provider default for reasoning models."
+            "Defaults to None (uses provider default temperature). "
+            "Set to 0.0 for deterministic outputs, "
+            "or higher values (0.7-1.0) for more creative responses."
         ),
     )
-    top_p: float | None = Field(default=1.0, ge=0, le=1)
+    top_p: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Nucleus sampling parameter. "
+            "Defaults to None (uses provider default). "
+            "Set to a value between 0 and 1 to control diversity of outputs."
+        ),
+    )
     top_k: float | None = Field(default=None, ge=0)
 
     max_input_tokens: int | None = Field(
@@ -294,12 +320,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
-    # Prompt cache retention only applies to GPT-5+ models; filtered in chat options
+    # Prompt cache retention is filtered per model features in chat options.
     prompt_cache_retention: str | None = Field(
         default="24h",
         description=(
-            "Retention policy for prompt cache. Only sent for GPT-5+ models; "
-            "explicitly stripped for all other models."
+            "Retention policy for prompt cache. Only sent for supported models "
+            "(GPT-5+ and GPT-4.1, excluding Azure deployments); explicitly "
+            "stripped for all others."
         ),
     )
     extended_thinking_budget: int | None = Field(
@@ -429,11 +456,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
-        # HF doesn't support the OpenAI default value for top_p (1)
-        if model_val.startswith("huggingface"):
-            if d.get("top_p", 1.0) == 1.0:
-                d["top_p"] = 0.9
-
         return d
 
     @model_validator(mode="after")
@@ -473,9 +495,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Capabilities + model info
         self._init_model_info_and_caps()
 
-        if self.temperature is None:
-            self.temperature = get_default_temperature(self.model)
-
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
             f"reasoning_effort={self.reasoning_effort} "
@@ -514,8 +533,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Metrics object containing token usage, costs, and other statistics.
 
         Example:
-            >>> cost = llm.metrics.accumulated_cost
-            >>> print(f"Total cost: ${cost}")
+            ```python
+            cost = llm.metrics.accumulated_cost
+            print(f"Total cost: ${cost}")
+            ```
         """
         if self._metrics is None:
             self._metrics = Metrics(model_name=self.model)
@@ -529,7 +550,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Telemetry object for managing logging and metrics callbacks.
 
         Example:
-            >>> llm.telemetry.set_log_completions_callback(my_callback)
+            ```python
+            llm.telemetry.set_log_completions_callback(my_callback)
+            ```
         """
         if self._telemetry is None:
             self._telemetry = Telemetry(
@@ -616,12 +639,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         It handles message formatting, tool calling, and response processing.
 
         Args:
-            messages: List of conversation messages
-            tools: Optional list of tools available to the model
-            _return_metrics: Whether to return usage metrics
-            add_security_risk_prediction: Add security_risk field to tool schemas
-            on_token: Optional callback for streaming tokens
-            **kwargs: Additional arguments passed to the LLM API
+            messages: List of conversation messages.
+            tools: Optional list of tools available to the model.
+            _return_metrics: Whether to return usage metrics.
+            add_security_risk_prediction: Add security_risk field to tool schemas.
+            on_token: Optional callback for streaming tokens.
+            **kwargs: Additional arguments passed to the LLM API.
 
         Returns:
             LLMResponse containing the model's response and metadata.
@@ -634,10 +657,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             ValueError: If streaming is requested (not supported).
 
         Example:
-            >>> from openhands.sdk.llm import Message, TextContent
-            >>> messages = [Message(role="user", content=[TextContent(text="Hello")])]
-            >>> response = llm.completion(messages)
-            >>> print(response.content)
+            ```python
+            from openhands.sdk.llm import Message, TextContent
+
+            messages = [Message(role="user", content=[TextContent(text="Hello")])]
+            response = llm.completion(messages)
+            print(response.content)
+            ```
         """
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
@@ -1109,7 +1135,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
                 elif isinstance(self._model_info.get("max_tokens"), int):
-                    self.max_output_tokens = self._model_info.get("max_tokens")
+                    # 'max_tokens' is ambiguous: some providers use it for total
+                    # context window, not output limit. Cap it to avoid requesting
+                    # output that exceeds the context window.
+                    max_tokens_value = self._model_info.get("max_tokens")
+                    assert isinstance(max_tokens_value, int)  # for type checker
+                    self.max_output_tokens = min(
+                        max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                    )
+                    if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s for %s "
+                            "(max_tokens may be context window, not output)",
+                            max_tokens_value,
+                            self.max_output_tokens,
+                            self.model,
+                        )
 
         if "o3" in self.model:
             o3_limit = 100000
@@ -1431,11 +1472,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             RuntimeError: If authentication fails.
 
         Example:
-            >>> from openhands.sdk import LLM
-            >>> # First time: opens browser for OAuth login
-            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
-            >>> # Subsequent calls: reuses cached credentials
-            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            ```python
+            from openhands.sdk import LLM
+
+            # First time: opens browser for OAuth login
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+
+            # Subsequent calls: reuses cached credentials
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            ```
         """
         from openhands.sdk.llm.auth.openai import subscription_login
 

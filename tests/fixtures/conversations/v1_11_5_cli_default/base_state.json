@@ -1,0 +1,120 @@
+{
+  "id": "11111111-2222-3333-4444-555555555555",
+  "agent": {
+    "llm": {
+      "model": "gpt-4o-mini",
+      "api_key": "**********",
+      "openrouter_site_url": "https://docs.all-hands.dev/",
+      "openrouter_app_name": "OpenHands",
+      "num_retries": 5,
+      "retry_multiplier": 8.0,
+      "retry_min_wait": 8,
+      "retry_max_wait": 64,
+      "timeout": 300,
+      "max_message_chars": 30000,
+      "temperature": 0.0,
+      "top_p": 1.0,
+      "max_input_tokens": 128000,
+      "max_output_tokens": 16384,
+      "stream": false,
+      "drop_params": true,
+      "modify_params": true,
+      "disable_stop_word": false,
+      "caching_prompt": true,
+      "log_completions": false,
+      "log_completions_folder": "logs/completions",
+      "native_tool_calling": true,
+      "reasoning_effort": "high",
+      "enable_encrypted_reasoning": true,
+      "prompt_cache_retention": "24h",
+      "extended_thinking_budget": 200000,
+      "usage_id": "test-llm",
+      "litellm_extra_body": {}
+    },
+    "tools": [
+      {
+        "name": "terminal",
+        "params": {}
+      },
+      {
+        "name": "file_editor",
+        "params": {}
+      },
+      {
+        "name": "task_tracker",
+        "params": {}
+      }
+    ],
+    "mcp_config": {},
+    "include_default_tools": [
+      "FinishTool",
+      "ThinkTool"
+    ],
+    "system_prompt_filename": "system_prompt.j2",
+    "security_policy_filename": "security_policy.j2",
+    "system_prompt_kwargs": {
+      "cli_mode": true,
+      "llm_security_analyzer": true
+    },
+    "condenser": {
+      "llm": {
+        "model": "gpt-4o-mini",
+        "api_key": "**********",
+        "openrouter_site_url": "https://docs.all-hands.dev/",
+        "openrouter_app_name": "OpenHands",
+        "num_retries": 5,
+        "retry_multiplier": 8.0,
+        "retry_min_wait": 8,
+        "retry_max_wait": 64,
+        "timeout": 300,
+        "max_message_chars": 30000,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 16384,
+        "stream": false,
+        "drop_params": true,
+        "modify_params": true,
+        "disable_stop_word": false,
+        "caching_prompt": true,
+        "log_completions": false,
+        "log_completions_folder": "logs/completions",
+        "native_tool_calling": true,
+        "reasoning_effort": "high",
+        "enable_encrypted_reasoning": true,
+        "prompt_cache_retention": "24h",
+        "extended_thinking_budget": 200000,
+        "usage_id": "condenser",
+        "litellm_extra_body": {}
+      },
+      "max_size": 80,
+      "keep_first": 4,
+      "minimum_progress": 0.1,
+      "hard_context_reset_max_retries": 5,
+      "hard_context_reset_context_scaling": 0.8,
+      "kind": "LLMSummarizingCondenser"
+    },
+    "kind": "Agent"
+  },
+  "workspace": {
+    "working_dir": "/workspace/project/software-agent-sdk/.agent_tmp/repro/persistence",
+    "kind": "LocalWorkspace"
+  },
+  "persistence_dir": "/workspace/project/software-agent-sdk/.agent_tmp/repro/persistence/11111111222233334444555555555555",
+  "max_iterations": 500,
+  "stuck_detection": true,
+  "execution_status": "idle",
+  "confirmation_policy": {
+    "kind": "NeverConfirm"
+  },
+  "activated_knowledge_skills": [],
+  "blocked_actions": {},
+  "blocked_messages": {},
+  "stats": {
+    "usage_to_metrics": {}
+  },
+  "secret_registry": {
+    "secret_sources": {}
+  },
+  "agent_state": {}
+}

@@ -4,13 +4,11 @@ Animal Quiz with Task Tool Set
 Demonstrates the TaskToolSet with a main agent delegating to an
 animal-expert sub-agent. The flow is:
 
-1. User names an animal.
-2. Main agent delegates to the "animal_expert" sub-agent to generate
-   a multiple-choice question about that animal.
-3. Main agent shows the question to the user.
-4. User picks an answer.
-5. Main agent delegates again to the same sub-agent type to check
-   whether the answer is correct and explain why.
+1. Main agent picks an animal and delegates to the "animal_expert"
+   sub-agent to generate a multiple-choice question about it.
+2. Main agent thinks about the question and picks an answer.
+3. Main agent resumes the same sub-agent conversation to ask whether
+   its answer is correct. The sub-agent confirms or corrects it.
 """
 
 import os
@@ -81,28 +79,22 @@ conversation = Conversation(
 
 # ── Round 1: generate the question ──────────────────────────────────
 
-animal = input("Pick an animal: ")
-
 conversation.send_message(
-    f"The user chose the animal: {animal}. "
-    "Use the task tool to delegate to the 'animal_expert' sub-agent "
-    "and ask it to generate a single multiple-choice question (A-D) "
-    f"about {animal}. "
-    "Once you get the question back, display it to the user exactly "
-    "as the sub-agent returned it and ask the user to pick A, B, C, or D."
+    "Pick any animal you like and use the task tool to delegate to the "
+    "'animal_expert' sub-agent. Ask it to generate a single "
+    "multiple-choice question (A-D) about that animal. "
+    "Once you get the question back, think step-by-step about which "
+    "answer is correct and pick one (A, B, C, or D). Tell the user "
+    "the question and your chosen answer."
 )
 conversation.run()
 
 # ── Round 2: verify the answer ──────────────────────────────────────
 
-answer = input("Your answer (A/B/C/D): ")
-
 conversation.send_message(
-    f"The user answered: {answer}. "
-    "Use the task tool to delegate to the 'animal_expert' sub-agent again "
-    f"and ask it whether '{answer}' is the correct answer to the question "
-    "it generated earlier. Don't include the question; instead, use the "
-    "'resume' parameter to continue the previous conversation."
+    "Now use the task tool to resume the previous 'animal_expert' "
+    "sub-agent conversation. Tell it which answer you picked and ask "
+    "it whether that answer is correct. Report the result to the user."
 )
 conversation.run()
 
