@@ -1,4 +1,5 @@
 import json
+import re
 import types
 from collections.abc import Sequence
 from typing import (
@@ -17,6 +18,41 @@ from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
+
+
+# Regex matching raw ASCII control characters (U+0000–U+001F) that are
+# illegal inside JSON strings per RFC 8259 §7.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f]")
+
+# Mapping from raw control-char ordinals to their JSON-legal two-character
+# escape sequences.  Characters without a short alias fall back to \uXXXX.
+_CTRL_ESCAPE_TABLE: dict[int, str] = {
+    0x08: "\\b",
+    0x09: "\\t",
+    0x0A: "\\n",
+    0x0C: "\\f",
+    0x0D: "\\r",
+}
+
+
+def _escape_control_char(m: re.Match[str]) -> str:
+    """Replace a single raw control character with its JSON escape."""
+    ch = m.group(0)
+    return _CTRL_ESCAPE_TABLE.get(ord(ch), f"\\u{ord(ch):04x}")
+
+
+def sanitize_json_control_chars(raw: str) -> str:
+    """Escape raw control characters in a JSON string produced by an LLM.
+
+    Some models (e.g. kimi-k2.5, minimax-m2.5) emit literal control
+    characters (newline, tab, …) inside ``tool_call.arguments`` instead of
+    their proper two-character JSON escape sequences (``\\n``, ``\\t``, …).
+    ``json.loads`` rejects these per RFC 8259.
+
+    This function replaces every raw U+0000–U+001F byte with the correct
+    escape sequence so the string becomes valid JSON.
+    """
+    return _CONTROL_CHAR_RE.sub(_escape_control_char, raw)
 
 
 def fix_malformed_tool_arguments(
@@ -99,7 +135,10 @@ def fix_malformed_tool_arguments(
         if any(exp in (list, dict) for exp in expected_origins):
             # Try to parse the string as JSON
             try:
-                parsed_value = json.loads(value)
+                # `strict=False` allows control characters (e.g. newlines) that
+                # the outer json.loads decoded from escape sequences.
+                # https://docs.python.org/3/library/json.html#json.JSONDecoder
+                parsed_value = json.loads(value, strict=False)
                 # json.loads() returns dict, list, str, int, float, bool, or None
                 # Only use parsed value if it matches expected collection types
                 if isinstance(parsed_value, (list, dict)):

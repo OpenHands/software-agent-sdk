@@ -229,3 +229,83 @@ class TestHookConfig:
             HookConfig.from_dict(
                 {"PreToolExecute": [{"hooks": [{"command": "test.sh"}]}]}
             )
+
+
+class TestAsyncHooks:
+    """Tests for async hook configuration."""
+
+    def test_async_field_defaults_false(self):
+        """Test that async defaults to False."""
+        hook = HookDefinition(command="echo test")
+        assert hook.async_ is False
+
+    def test_async_field_set_true(self):
+        """Test that async can be set to True using async alias."""
+        hook = HookDefinition.model_validate({"command": "echo test", "async": True})
+        assert hook.async_ is True
+
+    def test_async_field_parsed_from_json_alias(self):
+        """Test that 'async' key in JSON is parsed correctly via alias."""
+        data = {
+            "hooks": {
+                "PostToolUse": [
+                    {"matcher": "*", "hooks": [{"command": "test.sh", "async": True}]}
+                ]
+            }
+        }
+        config = HookConfig.from_dict(data)
+        hooks = config.get_hooks_for_event(HookEventType.POST_TOOL_USE, "AnyTool")
+        assert len(hooks) == 1
+        assert hooks[0].async_ is True
+
+    def test_async_field_serialization_by_alias(self):
+        """Test that async field serializes correctly using alias."""
+        hook = HookDefinition.model_validate({"command": "test.sh", "async": True})
+        output = hook.model_dump(mode="json", by_alias=True)
+        assert output["async"] is True
+        assert "async_" not in output
+
+    def test_async_field_serialization_without_alias(self):
+        """Test that async field serializes as async_ without by_alias."""
+        hook = HookDefinition.model_validate({"command": "test.sh", "async": True})
+        output = hook.model_dump(mode="json")
+        assert output["async_"] is True
+
+    def test_async_hook_in_config_round_trip(self):
+        """Test that async hooks survive a JSON round-trip."""
+        data = {
+            "PostToolUse": [
+                {
+                    "matcher": "terminal",
+                    "hooks": [
+                        {"command": "sync-hook.sh", "async": False},
+                        {"command": "async-hook.sh", "async": True, "timeout": 30},
+                    ],
+                }
+            ]
+        }
+        config = HookConfig.from_dict(data)
+        hooks = config.get_hooks_for_event(HookEventType.POST_TOOL_USE, "terminal")
+
+        assert len(hooks) == 2
+        assert hooks[0].async_ is False
+        assert hooks[1].async_ is True
+        assert hooks[1].timeout == 30
+
+    def test_multiple_async_hooks_across_events(self):
+        """Test async hooks configured across multiple event types."""
+        data = {
+            "PostToolUse": [
+                {"matcher": "*", "hooks": [{"command": "log.sh", "async": True}]}
+            ],
+            "SessionStart": [{"hooks": [{"command": "notify.sh", "async": True}]}],
+        }
+        config = HookConfig.from_dict(data)
+
+        post_hooks = config.get_hooks_for_event(HookEventType.POST_TOOL_USE, "test")
+        assert len(post_hooks) == 1
+        assert post_hooks[0].async_ is True
+
+        start_hooks = config.get_hooks_for_event(HookEventType.SESSION_START)
+        assert len(start_hooks) == 1
+        assert start_hooks[0].async_ is True

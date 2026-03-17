@@ -40,9 +40,10 @@ def select_chat_options(
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
 
-        # All reasoning models ignore temp/top_p
-        out.pop("temperature", None)
-        out.pop("top_p", None)
+        # All reasoning models ignore temp/top_p, except Gemini
+        if "gemini" not in llm.model.lower():
+            out.pop("temperature", None)
+            out.pop("top_p", None)
 
     # Gemini 2.5-pro should default to low when not set.
     if "gemini-2.5-pro" in llm.model and llm.reasoning_effort in {None, "none"}:

@@ -7,6 +7,7 @@ from fastapi import (
     File,
     HTTPException,
     Path as FastApiPath,
+    Query,
     UploadFile,
     status,
 )
@@ -28,12 +29,8 @@ conversation_service = get_default_conversation_service()
 bash_event_service = get_default_bash_event_service()
 
 
-@file_router.post("/upload/{path:path}")
-async def upload_file(
-    path: Annotated[str, FastApiPath(alias="path", description="Absolute file path.")],
-    file: Annotated[UploadFile, File(...)],
-) -> Success:
-    """Upload a file to the workspace."""
+async def _upload_file(path: str, file: UploadFile) -> Success:
+    """Internal helper to upload a file to the workspace."""
     update_last_execution_time()
     logger.info(f"Uploading file: {path}")
     try:
@@ -55,6 +52,8 @@ async def upload_file(
         logger.info(f"Uploaded file to {target_path}")
         return Success()
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to upload file: {e}")
         raise HTTPException(
@@ -63,11 +62,8 @@ async def upload_file(
         )
 
 
-@file_router.get("/download/{path:path}")
-async def download_file(
-    path: Annotated[str, FastApiPath(description="Absolute file path.")],
-) -> FileResponse:
-    """Download a file from the workspace."""
+async def _download_file(path: str) -> FileResponse:
+    """Internal helper to download a file from the workspace."""
     update_last_execution_time()
     logger.info(f"Downloading file: {path}")
     try:
@@ -102,6 +98,52 @@ async def download_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to download file: {str(e)}",
         )
+
+
+@file_router.post("/upload")
+async def upload_file_query(
+    path: Annotated[str, Query(description="Absolute file path")],
+    file: Annotated[UploadFile, File()],
+) -> Success:
+    """Upload a file to the workspace using query parameter (preferred method)."""
+    return await _upload_file(path, file)
+
+
+@file_router.post("/upload/{path:path}", deprecated=True)
+async def upload_file_path(
+    path: Annotated[str, FastApiPath(alias="path", description="Absolute file path.")],
+    file: Annotated[UploadFile, File(...)],
+) -> Success:
+    """Upload a file using path parameter (legacy, for backwards compatibility).
+
+    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
+
+    Prefer `/file/upload?path=...` to avoid path-encoding issues and align with
+    other file endpoints.
+    """
+    return await _upload_file(path, file)
+
+
+@file_router.get("/download")
+async def download_file_query(
+    path: Annotated[str, Query(description="Absolute file path")],
+) -> FileResponse:
+    """Download a file from the workspace using query parameter (preferred method)."""
+    return await _download_file(path)
+
+
+@file_router.get("/download/{path:path}", deprecated=True)
+async def download_file_path(
+    path: Annotated[str, FastApiPath(description="Absolute file path.")],
+) -> FileResponse:
+    """Download a file using path parameter (legacy, for backwards compatibility).
+
+    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
+
+    Prefer `/file/download?path=...` to avoid path-encoding issues and align with
+    other file endpoints.
+    """
+    return await _download_file(path)
 
 
 @file_router.get("/download-trajectory/{conversation_id}")

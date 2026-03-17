@@ -6,7 +6,10 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationContractMismatchError,
+    ConversationService,
+)
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
     AskAgentRequest,
@@ -125,7 +128,10 @@ async def batch_get_conversations(
 # Write Methods
 
 
-@conversation_router.post("")
+@conversation_router.post(
+    "",
+    responses={409: {"description": "Conversation contract mismatch"}},
+)
 async def start_conversation(
     request: Annotated[
         StartConversationRequest, Body(examples=START_CONVERSATION_EXAMPLES)
@@ -134,7 +140,13 @@ async def start_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
-    info, is_new = await conversation_service.start_conversation(request)
+    try:
+        info, is_new = await conversation_service.start_conversation(request)
+    except ConversationContractMismatchError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info
 
@@ -275,13 +287,20 @@ async def update_conversation(
 @conversation_router.post(
     "/{conversation_id}/generate_title",
     responses={404: {"description": "Item not found"}},
+    deprecated=True,
 )
 async def generate_conversation_title(
     conversation_id: UUID,
     request: GenerateTitleRequest,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> GenerateTitleResponse:
-    """Generate a title for the conversation using LLM."""
+    """Generate a title for the conversation using LLM.
+
+    Deprecated since v1.11.5 and scheduled for removal in v1.19.0.
+
+    Prefer enabling `autotitle` in `StartConversationRequest` to have the server
+    generate and persist the title automatically from the first user message.
+    """
     title = await conversation_service.generate_conversation_title(
         conversation_id, request.max_length, request.llm
     )

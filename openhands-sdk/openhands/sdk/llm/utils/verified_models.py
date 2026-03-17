@@ -24,6 +24,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
     "claude-opus-4-6",
+    "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
     "claude-opus-4-1-20250805",
@@ -42,6 +43,23 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-medium-2507",
     "devstral-2512",
     "devstral-medium-2512",
+]
+
+VERIFIED_GEMINI_MODELS = [
+    "gemini-3-pro-preview",
+]
+
+VERIFIED_DEEPSEEK_MODELS = [
+    "deepseek-chat",
+]
+
+VERIFIED_MOONSHOT_MODELS = [
+    "kimi-k2-thinking",
+    "kimi-k2.5",
+]
+
+VERIFIED_MINIMAX_MODELS = [
+    "minimax-m2.5",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
@@ -68,4 +86,8 @@ VERIFIED_MODELS = {
     "anthropic": VERIFIED_ANTHROPIC_MODELS,
     "openai": VERIFIED_OPENAI_MODELS,
     "mistral": VERIFIED_MISTRAL_MODELS,
+    "gemini": VERIFIED_GEMINI_MODELS,
+    "deepseek": VERIFIED_DEEPSEEK_MODELS,
+    "moonshot": VERIFIED_MOONSHOT_MODELS,
+    "minimax": VERIFIED_MINIMAX_MODELS,
 }

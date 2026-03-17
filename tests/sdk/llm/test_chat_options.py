@@ -100,6 +100,24 @@ def test_extra_body_is_forwarded():
     assert out.get("extra_body") == {"x": 1}
 
 
+def test_claude_sonnet_4_6_strips_temp_and_top_p():
+    """Test that claude-sonnet-4-6 strips temperature and top_p.
+
+    This is a regression test for issue #2137 where Claude Sonnet 4.6
+    rejects requests with both temperature AND top_p specified.
+    """
+    llm = DummyLLM(
+        model="claude-sonnet-4-6",
+        top_p=1.0,  # SDK default
+        temperature=0.1,  # Often overridden by benchmarks
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    # Extended thinking models should strip temperature/top_p to avoid API errors
+    assert "temperature" not in out
+    assert "top_p" not in out
+
+
 def test_extended_thinking_budget_clamped_below_max_tokens():
     """Test that thinking.budget_tokens is clamped to max_output_tokens - 1."""
     # Case 1: extended_thinking_budget exceeds max_output_tokens

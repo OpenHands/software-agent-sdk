@@ -79,9 +79,19 @@ class EventLog(EventsListBase):
             i += self._length
         if i < 0 or i >= self._length:
             raise IndexError("Event index out of range")
-        txt = self._fs.read(self._path(i))
+        try:
+            path = self._path(i)
+        except KeyError:
+            # In-memory index is stale (e.g., external file modifications
+            # or concurrent writes).  Rebuild from disk and retry once.
+            logger.warning("Stale EventLog index at %d; rebuilding from disk.", i)
+            self._length = self._scan_and_build_index()
+            if i >= self._length:
+                raise IndexError("Event index out of range")
+            path = self._path(i)
+        txt = self._fs.read(path)
         if not txt:
-            raise FileNotFoundError(f"Missing event file: {self._path(i)}")
+            raise FileNotFoundError(f"Missing event file: {path}")
         return Event.model_validate_json(txt)
 
     def __iter__(self) -> Iterator[Event]:
