@@ -642,7 +642,11 @@ class LocalConversation(BaseConversation):
                             self._state.execution_status = (
                                 ConversationExecutionStatus.STUCK
                             )
-                            continue
+                            # Exit the loop when stuck is detected, rather than
+                            # continuing. Continuing would cause an infinite loop
+                            # because is_stuck() would return true again.
+                            # The caller can then decide how to handle it.
+                            break
 
                     # clear the flag before calling agent.step() (user approved)
                     if (
