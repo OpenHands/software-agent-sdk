@@ -51,6 +51,8 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/16_llm_security_analyzer.py",
     "examples/01_standalone_sdk/27_observability_laminar.py",
     "examples/01_standalone_sdk/35_subscription_login.py",
+    # Requires a running Morph MCP server and MORPH_API_KEY
+    "examples/01_standalone_sdk/45_codebase_search.py",
     # Requires interactive input() which fails in CI with EOFError
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
 }
