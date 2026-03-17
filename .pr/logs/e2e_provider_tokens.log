@@ -1,0 +1,26 @@
+=== E2E Test: SDK credential inheritance ===
+Cloud URL: https://ohpr-13383-240.staging.all-hands.dev
+Deploy commit: c0ed13f374ec647bf5349984961823650c8928c8 (server PR #13383)
+Deploy PR: https://github.com/OpenHands/deploy/pull/3436 (branch ohpr-13383-240)
+Date: 2026-03-17
+
+--- Phase 1: get_llm() ---
+Sandbox ID: 5vwSsTFHIIjxie4pvjN3fQ
+Session key: set
+✅ get_llm() succeeded: model=litellm_proxy/minimax-m2.5
+   api_key: ***w86g
+   base_url: https://llm-proxy.staging.all-hands.dev
+
+--- Phase 2: get_secrets() ---
+✅ get_secrets() returned 3 secrets: ['secret_1', 'secret_2', 'github_token']
+   🎉 Provider tokens found: ['github_token']
+   Custom secrets: ['secret_1', 'secret_2']
+
+--- Phase 3: LookupSecret resolution ---
+✅ secret_1: resolved, len=5, last4=...est1
+✅ secret_2: resolved, len=5, last4=...est2
+✅ github_token: resolved, len=40, last4=...4eur
+
+Sandbox 5vwSsTFHIIjxie4pvjN3fQ deleted
+
+=== E2E Test Complete ===
