@@ -22,9 +22,7 @@ _EXAMPLE_FILE = (
 )
 
 if "defense_in_depth" not in sys.modules:
-    _spec = importlib.util.spec_from_file_location(
-        "defense_in_depth", _EXAMPLE_FILE
-    )
+    _spec = importlib.util.spec_from_file_location("defense_in_depth", _EXAMPLE_FILE)
     assert _spec is not None and _spec.loader is not None
     _mod = importlib.util.module_from_spec(_spec)
     sys.modules["defense_in_depth"] = _mod
