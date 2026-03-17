@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationContractMismatchError,
+    ConversationService,
+)
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -485,6 +488,7 @@ def test_start_conversation_new(
         # Create request data with proper serialization
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -531,6 +535,7 @@ def test_start_conversation_existing(
         # Create request data with proper serialization
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -549,6 +554,43 @@ def test_start_conversation_existing(
 
         # Verify service was called
         mock_conversation_service.start_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_contract_mismatch_returns_409(
+    client, mock_conversation_service
+):
+    mock_conversation_service.start_conversation.side_effect = (
+        ConversationContractMismatchError(
+            "Conversation 123 exists but is only available through the ACP "
+            "conversation contract. Use /api/acp/conversations or attach with "
+            "ACPAgent."
+        )
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "kind": "Agent",
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 409
+        assert "ACP conversation contract" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
@@ -590,6 +632,7 @@ def test_start_conversation_minimal_request(
         # Create minimal valid request
         minimal_request = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -605,6 +648,41 @@ def test_start_conversation_minimal_request(
         assert response.status_code == 201
         data = response.json()
         assert data["id"] == str(sample_conversation_info.id)
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_legacy_request_without_agent_kind(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """v1 conversation creation should preserve the pre-ACP agent shape."""
+
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        mock_conversation_service.start_conversation.assert_called_once()
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1201,6 +1279,7 @@ def test_start_conversation_with_tool_module_qualnames(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1261,6 +1340,7 @@ def test_start_conversation_without_tool_module_qualnames(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1303,6 +1383,7 @@ def test_start_conversation_autotitle_defaults_to_true(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1337,6 +1418,7 @@ def test_start_conversation_autotitle_false(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",

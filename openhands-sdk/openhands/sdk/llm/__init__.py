@@ -21,7 +21,7 @@ from openhands.sdk.llm.message import (
 )
 from openhands.sdk.llm.router import RouterLLM
 from openhands.sdk.llm.streaming import LLMStreamChunk, TokenCallbackType
-from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
+from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot, TokenUsage
 from openhands.sdk.llm.utils.unverified_models import (
     UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
     get_unverified_models,
@@ -58,6 +58,7 @@ __all__ = [
     # Metrics
     "Metrics",
     "MetricsSnapshot",
+    "TokenUsage",
     # Models
     "VERIFIED_MODELS",
     "UNVERIFIED_MODELS_EXCLUDING_BEDROCK",
