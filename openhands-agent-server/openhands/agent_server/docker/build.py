@@ -755,17 +755,29 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     local_cache_dir = _default_local_cache_dir()
     cache_args: list[str] = []
 
+    # Cache export mode: "off" (default), "max", or "min"
+    # Set to "off" by default to avoid contention when building many images in parallel
+    cache_export_mode = os.environ.get("OPENHANDS_BUILDKIT_CACHE_MODE", "off").lower()
+
     if push:
-        # Remote/CI builds: use registry cache + inline for maximum reuse.
+        # Remote/CI builds: always read from registry cache
         cache_args += [
             "--cache-from",
             f"type=registry,ref={opts.image}:{cache_tag}",
             "--cache-from",
             f"type=registry,ref={opts.image}:{cache_tag_base}-main",
-            "--cache-to",
-            f"type=registry,ref={opts.image}:{cache_tag},mode=max",
         ]
-        logger.info("[build] Cache: registry (remote/CI) + inline")
+        # Only export cache if explicitly enabled (avoids contention in batch builds)
+        if cache_export_mode in ("max", "min"):
+            cache_args += [
+                "--cache-to",
+                f"type=registry,ref={opts.image}:{cache_tag},mode={cache_export_mode}",
+            ]
+            logger.info(
+                f"[build] Cache: registry read + export mode={cache_export_mode}"
+            )
+        else:
+            logger.info("[build] Cache: registry read only (export disabled)")
     else:
         # Local/dev builds: prefer local dir cache if
         # driver supports it; otherwise inline-only.
