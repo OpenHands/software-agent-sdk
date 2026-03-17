@@ -1,50 +1,124 @@
-"""Codebase search tool registration backed by @morphllm/morphmcp.
+"""Codebase search tools powered by Morph's WarpGrep SDK.
 
-This module registers ``codebase_search`` and ``github_codebase_search`` as
-native OpenHands tools.  Under the hood they are MCP tools served by the
-``@morphllm/morphmcp`` npm package (started via ``npx``).
-
-The ``edit_file`` tool exposed by the same MCP server is intentionally
-filtered out to avoid conflicts with the built-in ``FileEditorTool``.
-
-.. note::
-    Unlike most tools that subclass :class:`ToolDefinition` and implement
-    ``create()``, these tools use **callable resolver functions** registered
-    directly with :func:`register_tool`.  The registry invokes them as
-    ``factory(conv_state=conv_state, **params)``; see
-    :func:`_resolver_from_callable` in ``openhands.sdk.tool.registry``.
+Registers ``codebase_search`` and ``github_codebase_search`` as native
+OpenHands tools.  Each tool calls ``@morphllm/morphsdk`` via a small
+Node.js bridge script (``bridge.js``), which handles the multi-turn
+WarpGrep agent loop internally and returns aggregated results.
 """
 
 from __future__ import annotations
 
-import atexit
+import json
 import os
-import threading
+import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import Field
+
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.utils import create_mcp_tools
-from openhands.sdk.tool import ToolDefinition, register_tool
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    ToolAnnotations,
+    ToolDefinition,
+    ToolExecutor,
+    register_tool,
+)
 
 if TYPE_CHECKING:
+    from openhands.sdk.conversation import LocalConversation
     from openhands.sdk.conversation.state import ConversationState
 
 logger = get_logger(__name__)
 
-# ── Shared MCP client cache ────────────────────────────────────────────
-# Both resolvers share a single MCP server process per API key so that
-# agents using both tools don't spawn two ``npx`` processes.
-_lock = threading.Lock()
-_morph_clients: dict[tuple[str, str | None, int | None], tuple[object, list[ToolDefinition]]] = {}
+_BRIDGE_SCRIPT = Path(__file__).parent / "bridge.js"
 
-_SEARCH_TOOL_NAMES = frozenset({"codebase_search", "github_codebase_search"})
+_CODEBASE_SEARCH_DESCRIPTION = """\
+Search the local codebase using natural language. This tool uses a \
+specialised code-search sub-agent (WarpGrep) that runs ripgrep and file \
+reads internally, then returns the most relevant code snippets.
+
+Pass a natural-language question — do NOT pass regex or symbol-only queries.
+
+Good: "Where does authentication get handled?"
+Bad:  "auth()" or "grep -r auth"
+"""
+
+_GITHUB_CODEBASE_SEARCH_DESCRIPTION = """\
+Search a public GitHub repository using natural language. Provide either \
+a full GitHub URL or an owner/repo shorthand (e.g. "expressjs/express"). \
+The tool clones and searches the repo remotely — no local checkout needed.
+
+Pass a natural-language question — do NOT pass regex or symbol-only queries.
+"""
 
 
-def _validate_api_key(params: dict) -> str:
+# ── Actions ─────────────────────────────────────────────────────────────
+
+
+class CodebaseSearchAction(Action):
+    """Search a local repository with a natural-language query."""
+
+    search_string: str = Field(
+        description=(
+            "Natural-language question about the code you want to understand. "
+            "Good: 'Where does auth get handled?' "
+            "Bad: 'auth()'"
+        ),
+    )
+    repo_path: str = Field(
+        description="Absolute path to the repository root to search.",
+    )
+
+
+class GitHubCodebaseSearchAction(Action):
+    """Search a public GitHub repository with a natural-language query."""
+
+    search_string: str = Field(
+        description=(
+            "Natural-language question about the code you want to understand. "
+            "Good: 'Where does auth get handled?' "
+            "Bad: 'auth()'"
+        ),
+    )
+    github_url: str | None = Field(
+        default=None,
+        description=(
+            "Full GitHub URL (e.g. 'https://github.com/expressjs/express'). "
+            "Provide either github_url or owner_repo."
+        ),
+    )
+    owner_repo: str | None = Field(
+        default=None,
+        description=(
+            "Repository shorthand (e.g. 'expressjs/express'). "
+            "Provide either github_url or owner_repo."
+        ),
+    )
+    branch: str | None = Field(
+        default=None,
+        description="Branch to search. Defaults to the repo's default branch.",
+    )
+
+
+# ── Observations ────────────────────────────────────────────────────────
+
+
+class CodebaseSearchObservation(Observation):
+    """Results from a codebase search."""
+
+    pass  # Uses base Observation's text field
+
+
+# ── Executors ───────────────────────────────────────────────────────────
+
+
+def _validate_api_key(api_key: str | None) -> str:
     """Return a validated MORPH_API_KEY or raise with a helpful message."""
-    api_key: str | None = params.get("api_key") or os.environ.get("MORPH_API_KEY")
-    if not api_key:
+    key = api_key or os.environ.get("MORPH_API_KEY")
+    if not key:
         raise ValueError(
             "MORPH_API_KEY is required for codebase_search.\n"
             "Set it as an environment variable:\n"
@@ -53,112 +127,191 @@ def _validate_api_key(params: dict) -> str:
             "  Tool(name='codebase_search', params={'api_key': 'sk-morph-...'})\n\n"
             "Get your key at https://morphllm.com/dashboard/api-keys"
         )
-    return api_key
+    return key
 
 
-def _get_morph_search_tools(
-    api_key: str,
-    api_url: str | None = None,
-    timeout_ms: int | None = None,
-) -> list[ToolDefinition]:
-    """Start (or reuse) the Morph MCP server and return search tools only."""
-    cache_key = (api_key, api_url, timeout_ms)
+def _run_bridge(payload: dict, api_key: str) -> dict:
+    """Call the Node.js bridge script and return parsed JSON."""
+    env = {**os.environ, "MORPH_API_KEY": api_key}
 
-    with _lock:
-        if cache_key in _morph_clients:
-            _, tools = _morph_clients[cache_key]
-            return tools
+    try:
+        proc = subprocess.run(
+            ["node", str(_BRIDGE_SCRIPT)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+    except FileNotFoundError:
+        raise ValueError(
+            "Node.js is required for codebase_search but 'node' was not found.\n"
+            "Install Node.js 18+ from https://nodejs.org/"
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Search timed out after 120 seconds."}
 
-        # Build environment for the MCP server process
-        env: dict[str, str] = {"MORPH_API_KEY": api_key}
-        if api_url or os.environ.get("MORPH_API_URL"):
-            env["MORPH_API_URL"] = api_url or os.environ["MORPH_API_URL"]
-        if timeout_ms or os.environ.get("MORPH_WARP_GREP_TIMEOUT"):
-            env["MORPH_WARP_GREP_TIMEOUT"] = str(
-                timeout_ms or os.environ["MORPH_WARP_GREP_TIMEOUT"]
-            )
-
-        mcp_config = {
-            "mcpServers": {
-                "morph": {
-                    "command": "npx",
-                    "args": ["-y", "@morphllm/morphmcp"],
-                    "env": env,
-                }
+    if proc.returncode != 0 and not proc.stdout.strip():
+        stderr = proc.stderr.strip()
+        # Check for missing SDK
+        if "Cannot find module" in stderr or "MODULE_NOT_FOUND" in stderr:
+            return {
+                "success": False,
+                "error": (
+                    "@morphllm/morphsdk is not installed. Run:\n"
+                    "  npm install -g @morphllm/morphsdk"
+                ),
             }
-        }
+        return {"success": False, "error": stderr[:500] if stderr else "Bridge process failed."}
 
-        # Timeout for the MCP handshake (seconds).  The WarpGrep model timeout
-        # (MORPH_WARP_GREP_TIMEOUT) is separate and controls per-search duration
-        # inside the MCP server.
-        handshake_timeout = 60.0
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"success": False, "error": f"Invalid JSON from bridge: {proc.stdout[:200]}"}
 
-        client = create_mcp_tools(mcp_config, timeout=handshake_timeout)
-        search_tools: list[ToolDefinition] = [
-            t for t in client if t.name in _SEARCH_TOOL_NAMES
+
+def _format_result(result: dict) -> str:
+    """Format a WarpGrep result dict into readable text for the LLM."""
+    if not result.get("success"):
+        return f"Search failed: {result.get('error', 'Unknown error')}"
+
+    contexts = result.get("contexts", [])
+    if not contexts:
+        return "No relevant code found."
+
+    parts: list[str] = []
+    if result.get("summary"):
+        parts.append(result["summary"])
+        parts.append("")
+
+    for ctx in contexts:
+        file_path = ctx.get("file", "unknown")
+        content = ctx.get("content", "")
+        if content:
+            parts.append(f"--- {file_path} ---")
+            parts.append(content)
+            parts.append("")
+
+    return "\n".join(parts).strip()
+
+
+class CodebaseSearchExecutor(ToolExecutor[CodebaseSearchAction, CodebaseSearchObservation]):
+    """Execute local codebase search via the Morph SDK."""
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    def __call__(
+        self,
+        action: CodebaseSearchAction,
+        conversation: LocalConversation | None = None,
+    ) -> CodebaseSearchObservation:
+        result = _run_bridge(
+            {"type": "local", "query": action.search_string, "repo_path": action.repo_path},
+            self._api_key,
+        )
+        return CodebaseSearchObservation.from_text(text=_format_result(result))
+
+
+class GitHubCodebaseSearchExecutor(ToolExecutor[GitHubCodebaseSearchAction, CodebaseSearchObservation]):
+    """Execute GitHub codebase search via the Morph SDK."""
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    def __call__(
+        self,
+        action: GitHubCodebaseSearchAction,
+        conversation: LocalConversation | None = None,
+    ) -> CodebaseSearchObservation:
+        result = _run_bridge(
+            {
+                "type": "github",
+                "query": action.search_string,
+                "github_url": action.github_url,
+                "owner_repo": action.owner_repo,
+                "branch": action.branch,
+            },
+            self._api_key,
+        )
+        return CodebaseSearchObservation.from_text(text=_format_result(result))
+
+
+# ── Tool Definitions ────────────────────────────────────────────────────
+
+
+class CodebaseSearchTool(ToolDefinition[CodebaseSearchAction, CodebaseSearchObservation]):
+    """Local codebase search powered by Morph WarpGrep."""
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: ConversationState,
+        api_key: str | None = None,
+        **kwargs: Any,
+    ) -> Sequence[CodebaseSearchTool]:
+        key = _validate_api_key(api_key)
+        working_dir = conv_state.workspace.working_dir
+        description = (
+            f"{_CODEBASE_SEARCH_DESCRIPTION}\n"
+            f"Your current working directory is: {working_dir}"
+        )
+        return [
+            cls(
+                description=description,
+                action_type=CodebaseSearchAction,
+                observation_type=CodebaseSearchObservation,
+                executor=CodebaseSearchExecutor(api_key=key),
+                annotations=ToolAnnotations(
+                    title="codebase_search",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=True,
+                ),
+            )
         ]
 
-        logger.info(
-            "Morph MCP server started — exposing tools: %s",
-            [t.name for t in search_tools],
-        )
 
-        _morph_clients[cache_key] = (client, search_tools)
-        return search_tools
+class GitHubCodebaseSearchTool(ToolDefinition[GitHubCodebaseSearchAction, CodebaseSearchObservation]):
+    """GitHub codebase search powered by Morph WarpGrep."""
 
+    name = "github_codebase_search"  # override auto-naming of "git_hub_codebase_search"
 
-# ── MCP client cleanup ─────────────────────────────────────────────────
-
-def _cleanup_morph_clients() -> None:
-    """Close all cached MCP clients on process exit."""
-    with _lock:
-        for client, _ in _morph_clients.values():
-            try:
-                client.sync_close()
-            except Exception:
-                pass
-        _morph_clients.clear()
-
-
-atexit.register(_cleanup_morph_clients)
-
-
-# ── Resolvers ───────────────────────────────────────────────────────────
-
-def _codebase_search_resolver(
-    conv_state: "ConversationState | None" = None,  # noqa: ARG001
-    **params: Any,
-) -> Sequence[ToolDefinition]:
-    api_key = _validate_api_key(params)
-    tools = _get_morph_search_tools(
-        api_key=api_key,
-        api_url=params.get("api_url"),
-        timeout_ms=params.get("timeout"),
-    )
-    return [t for t in tools if t.name == "codebase_search"]
+    @classmethod
+    def create(
+        cls,
+        conv_state: ConversationState,
+        api_key: str | None = None,
+        **kwargs: Any,
+    ) -> Sequence[GitHubCodebaseSearchTool]:
+        key = _validate_api_key(api_key)
+        return [
+            cls(
+                description=_GITHUB_CODEBASE_SEARCH_DESCRIPTION,
+                action_type=GitHubCodebaseSearchAction,
+                observation_type=CodebaseSearchObservation,
+                executor=GitHubCodebaseSearchExecutor(api_key=key),
+                annotations=ToolAnnotations(
+                    title="github_codebase_search",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=True,
+                ),
+            )
+        ]
 
 
-def _github_codebase_search_resolver(
-    conv_state: "ConversationState | None" = None,  # noqa: ARG001
-    **params: Any,
-) -> Sequence[ToolDefinition]:
-    api_key = _validate_api_key(params)
-    tools = _get_morph_search_tools(
-        api_key=api_key,
-        api_url=params.get("api_url"),
-        timeout_ms=params.get("timeout"),
-    )
-    return [t for t in tools if t.name == "github_codebase_search"]
+# ── Registration ────────────────────────────────────────────────────────
 
-
-# ── Public registration ─────────────────────────────────────────────────
 
 def register_codebase_search_tools() -> None:
     """Register ``codebase_search`` and ``github_codebase_search`` tools.
 
     Call this once before creating an Agent that uses these tools.
-    Registration is explicit (not at import time) to avoid starting MCP
-    server processes when the module is merely imported.
+    Registration is explicit (not at import time) to avoid import-time
+    side-effects.
     """
-    register_tool("codebase_search", _codebase_search_resolver)
-    register_tool("github_codebase_search", _github_codebase_search_resolver)
+    register_tool(CodebaseSearchTool.name, CodebaseSearchTool)
+    register_tool(GitHubCodebaseSearchTool.name, GitHubCodebaseSearchTool)
