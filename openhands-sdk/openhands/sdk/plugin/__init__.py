@@ -29,6 +29,13 @@ from openhands.sdk.plugin.installed import (
 )
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
+from openhands.sdk.plugin.registry import (
+    AmbiguousPluginError,
+    MarketplaceNotFoundError,
+    MarketplaceRegistry,
+    PluginNotFoundError,
+    PluginResolutionError,
+)
 from openhands.sdk.plugin.source import (
     GitHubURLComponents,
     is_local_path,
@@ -44,6 +51,7 @@ from openhands.sdk.plugin.types import (
     MarketplaceOwner,
     MarketplacePluginEntry,
     MarketplacePluginSource,
+    MarketplaceRegistration,
     PluginAuthor,
     PluginManifest,
     PluginSource,
@@ -70,6 +78,13 @@ __all__ = [
     "MarketplacePluginEntry",
     "MarketplacePluginSource",
     "MarketplaceMetadata",
+    # Marketplace registration and resolution
+    "MarketplaceRegistration",
+    "MarketplaceRegistry",
+    "PluginResolutionError",
+    "PluginNotFoundError",
+    "AmbiguousPluginError",
+    "MarketplaceNotFoundError",
     # Source path utilities
     "GitHubURLComponents",
     "parse_github_url",
