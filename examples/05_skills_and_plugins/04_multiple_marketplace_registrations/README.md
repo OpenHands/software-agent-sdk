@@ -1,28 +1,34 @@
 # Multiple Marketplace Registrations
 
-Register multiple marketplaces with different auto-load behaviors.
+Register multiple marketplaces and use their skills in a conversation.
 
 ## Usage
 
 ```bash
+export LLM_API_KEY=your-api-key
 python main.py
 ```
 
 ## Key Concepts
 
 ```python
-registry = MarketplaceRegistry([
-    MarketplaceRegistration(
-        name="primary",
-        source="github:company/plugins",
-        auto_load="all",  # Load at conversation start
-    ),
-    MarketplaceRegistration(
-        name="secondary",
-        source="github:company/experimental",
-        # auto_load=None - available but not auto-loaded
-    ),
-])
+agent_context = AgentContext(
+    registered_marketplaces=[
+        MarketplaceRegistration(
+            name="company",
+            source="github:company/plugins",
+            auto_load="all",  # Load skills at conversation start
+        ),
+        MarketplaceRegistration(
+            name="experimental",
+            source="github:company/experimental",
+            # auto_load=None - registered but not auto-loaded
+        ),
+    ],
+)
+
+agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
+conversation = Conversation(agent=agent, workspace=workspace)
 ```
 
 ## Related
