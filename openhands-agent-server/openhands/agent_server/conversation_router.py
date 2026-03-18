@@ -19,6 +19,7 @@ from openhands.agent_server.models import (
     ConversationSortOrder,
     GenerateTitleRequest,
     GenerateTitleResponse,
+    LoadPluginRequest,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
@@ -335,6 +336,22 @@ async def condense_conversation(
 ) -> Success:
     """Force condensation of the conversation history."""
     success = await conversation_service.condense(conversation_id)
+    if not success:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/plugins/load",
+    responses={404: {"description": "Item not found"}},
+)
+async def load_plugin(
+    conversation_id: UUID,
+    request: LoadPluginRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Load a plugin from a registered marketplace into the conversation."""
+    success = await conversation_service.load_plugin(conversation_id, request.plugin_ref)
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()

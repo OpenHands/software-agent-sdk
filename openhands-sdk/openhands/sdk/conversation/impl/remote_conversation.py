@@ -1316,6 +1316,33 @@ class RemoteConversation(BaseConversation):
             "tool execution."
         )
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Resolves the plugin reference against the agent's registered marketplaces
+        on the server and loads the plugin into the conversation.
+
+        Plugin references can be:
+        - "plugin-name@marketplace-name" - Explicit marketplace qualifier
+        - "plugin-name" - Search all registered marketplaces (errors if ambiguous)
+
+        Args:
+            plugin_ref: Plugin reference to resolve and load.
+
+        Raises:
+            PluginNotFoundError: If the plugin is not found.
+            AmbiguousPluginError: If the plugin name matches multiple marketplaces.
+            MarketplaceNotFoundError: If a specified marketplace is not registered.
+            ValueError: If no marketplaces are registered.
+        """
+        payload = {"plugin_ref": plugin_ref}
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/plugins/load",
+            json=payload,
+        )
+
     def close(self) -> None:
         """Close the conversation and clean up resources.
 

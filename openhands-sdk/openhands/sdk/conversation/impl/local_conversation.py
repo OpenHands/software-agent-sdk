@@ -42,6 +42,7 @@ from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
+    MarketplaceRegistry,
     Plugin,
     PluginSource,
     ResolvedPluginSource,
@@ -82,6 +83,7 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    _marketplace_registry: MarketplaceRegistry | None  # Lazy-initialized from agent_context
 
     def __init__(
         self,
@@ -156,6 +158,7 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
+        self._marketplace_registry = None  # Lazy-initialized from agent_context
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -1123,6 +1126,79 @@ class LocalConversation(BaseConversation):
         if not tool.executor:
             raise NotImplementedError(f"Tool '{tool_name}' has no executor")
         return tool(action, self)
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Resolves the plugin reference against the agent's registered marketplaces
+        and loads the plugin into the conversation. The plugin's skills, hooks,
+        and MCP configuration will be merged into the agent.
+
+        Plugin references can be:
+        - "plugin-name@marketplace-name" - Explicit marketplace qualifier
+        - "plugin-name" - Search all registered marketplaces (errors if ambiguous)
+
+        Args:
+            plugin_ref: Plugin reference to resolve and load.
+
+        Raises:
+            PluginNotFoundError: If the plugin is not found.
+            AmbiguousPluginError: If the plugin name matches multiple marketplaces.
+            MarketplaceNotFoundError: If a specified marketplace is not registered.
+            ValueError: If no marketplaces are registered.
+        """
+        # Ensure plugins loaded first (initializes agent context)
+        self._ensure_plugins_loaded()
+
+        # Lazy-initialize the marketplace registry from agent_context
+        if self._marketplace_registry is None:
+            registrations = self.agent.agent_context.registered_marketplaces
+            if not registrations:
+                raise ValueError(
+                    "No marketplaces registered. Configure registered_marketplaces "
+                    "in AgentContext to use load_plugin()."
+                )
+            self._marketplace_registry = MarketplaceRegistry(registrations)
+
+        # Resolve the plugin reference
+        resolved_source = self._marketplace_registry.resolve_plugin(plugin_ref)
+
+        # Fetch and load the plugin
+        path, resolved_ref = fetch_plugin_with_resolution(
+            source=resolved_source.source,
+            ref=resolved_source.ref,
+            repo_path=resolved_source.repo_path,
+        )
+
+        plugin = Plugin.load(path)
+        logger.info(
+            f"Loaded plugin '{plugin.manifest.name}' from {resolved_source.source}"
+            + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
+        )
+
+        # Merge plugin contents into agent
+        merged_context = plugin.add_skills_to(self.agent.agent_context)
+        merged_mcp = plugin.add_mcp_config_to(
+            dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+        )
+
+        # Update agent with merged content
+        self.agent = self.agent.model_copy(
+            update={
+                "agent_context": merged_context,
+                "mcp_config": merged_mcp,
+            }
+        )
+
+        # Update agent in state for API observability
+        with self._state:
+            self._state.agent = self.agent
+
+        # Track resolved plugin
+        resolved = ResolvedPluginSource.from_plugin_source(resolved_source, resolved_ref)
+        if self._resolved_plugins is None:
+            self._resolved_plugins = []
+        self._resolved_plugins.append(resolved)
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""

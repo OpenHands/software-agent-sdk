@@ -469,3 +469,128 @@ This is a skill provided by the test-plugin plugin.
         
         source = registry.resolve_plugin("claude-plugin@claude")
         assert "claude-plugin" in source.source
+
+
+class TestConversationLoadPlugin:
+    """Test Conversation.load_plugin() integration with MarketplaceRegistry."""
+
+    def test_load_plugin_from_marketplace(self, tmp_path):
+        """Test loading a plugin via conversation.load_plugin()."""
+        from openhands.sdk import LLM, Agent, AgentContext
+        from openhands.sdk.conversation import Conversation
+        
+        # Create a marketplace with a plugin
+        marketplace_dir = create_marketplace(
+            tmp_path,
+            name="test-marketplace",
+            plugins=[{"name": "test-plugin", "description": "A test plugin"}],
+        )
+        
+        # Create agent with registered marketplace (use dummy LLM - won't make calls)
+        llm = LLM(model="test/model", api_key="test-key")
+        
+        agent_context = AgentContext(
+            registered_marketplaces=[
+                MarketplaceRegistration(
+                    name="test",
+                    source=str(marketplace_dir),
+                ),
+            ],
+        )
+        
+        agent = Agent(
+            llm=llm,
+            tools=[],
+            agent_context=agent_context,
+        )
+        
+        # Create conversation
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        
+        conversation = Conversation(
+            agent=agent,
+            workspace=str(workspace_dir),
+        )
+        
+        # Verify no resolved_plugins yet
+        assert conversation.resolved_plugins is None
+        
+        # Load the plugin
+        conversation.load_plugin("test-plugin@test")
+        
+        # Verify resolved_plugins was updated
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+        assert conversation.resolved_plugins[0].source == f"{marketplace_dir}/plugins/test-plugin"
+        
+        conversation.close()
+
+    def test_load_plugin_no_marketplaces_registered(self, tmp_path):
+        """Test that load_plugin raises ValueError when no marketplaces registered."""
+        from openhands.sdk import LLM, Agent, AgentContext
+        from openhands.sdk.conversation import Conversation
+        
+        # Create agent without registered marketplaces
+        llm = LLM(model="test/model", api_key="test-key")
+        
+        agent = Agent(
+            llm=llm,
+            tools=[],
+            agent_context=AgentContext(),
+        )
+        
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        
+        conversation = Conversation(
+            agent=agent,
+            workspace=str(workspace_dir),
+        )
+        
+        with pytest.raises(ValueError, match="No marketplaces registered"):
+            conversation.load_plugin("some-plugin")
+        
+        conversation.close()
+
+    def test_load_plugin_not_found(self, tmp_path):
+        """Test that load_plugin raises PluginNotFoundError for missing plugins."""
+        from openhands.sdk import LLM, Agent, AgentContext
+        from openhands.sdk.conversation import Conversation
+        
+        # Create a marketplace with a plugin
+        marketplace_dir = create_marketplace(
+            tmp_path,
+            name="test-marketplace",
+            plugins=[{"name": "existing-plugin"}],
+        )
+        
+        llm = LLM(model="test/model", api_key="test-key")
+        
+        agent_context = AgentContext(
+            registered_marketplaces=[
+                MarketplaceRegistration(
+                    name="test",
+                    source=str(marketplace_dir),
+                ),
+            ],
+        )
+        
+        agent = Agent(
+            llm=llm,
+            tools=[],
+            agent_context=agent_context,
+        )
+        
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        
+        conversation = Conversation(
+            agent=agent,
+            workspace=str(workspace_dir),
+        )
+        
+        with pytest.raises(PluginNotFoundError):
+            conversation.load_plugin("nonexistent-plugin@test")
+        
+        conversation.close()
