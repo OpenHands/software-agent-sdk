@@ -80,21 +80,11 @@ class Agent(CriticMixin, AgentBase):
     AgentBase and implements the agent execution logic. Critic-related functionality
     is provided by CriticMixin.
 
-    Attributes:
-        llm: The language model instance used for reasoning.
-        tools: List of tools available to the agent.
-        name: Optional agent identifier.
-        system_prompt: Custom system prompt (uses default if not provided).
-
     Example:
-        ```python
-        from openhands.sdk import LLM, Agent, Tool
-        from pydantic import SecretStr
-
-        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
-        agent = Agent(llm=llm, tools=tools)
-        ```
+        >>> from openhands.sdk import LLM, Agent, Tool
+        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        >>> agent = Agent(llm=llm, tools=tools)
     """
 
     @model_validator(mode="before")
@@ -233,7 +223,6 @@ class Agent(CriticMixin, AgentBase):
         # Get secret infos from conversation's secret_registry
         secret_infos = state.secret_registry.get_secret_infos()
 
-        base_context = None
         if not self.agent_context:
             # No agent_context but we might have secrets from registry
             if secret_infos:
@@ -241,19 +230,18 @@ class Agent(CriticMixin, AgentBase):
 
                 # Create a minimal context just for secrets
                 temp_context = AgentContext()
-                base_context = temp_context.get_system_message_suffix(
+                return temp_context.get_system_message_suffix(
                     llm_model=self.llm.model,
                     llm_model_canonical=self.llm.model_canonical_name,
                     additional_secret_infos=secret_infos,
                 )
-        else:
-            base_context = self.agent_context.get_system_message_suffix(
-                llm_model=self.llm.model,
-                llm_model_canonical=self.llm.model_canonical_name,
-                additional_secret_infos=secret_infos,
-            )
+            return None
 
-        return base_context
+        return self.agent_context.get_system_message_suffix(
+            llm_model=self.llm.model,
+            llm_model_canonical=self.llm.model_canonical_name,
+            additional_secret_infos=secret_infos,
+        )
 
     def _execute_actions(
         self,
