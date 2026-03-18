@@ -1,19 +1,17 @@
 """Example: Multiple Marketplace Registrations
 
-Register multiple marketplaces and use their skills in a conversation.
+Register multiple marketplaces and load plugins on-demand.
 
-- auto_load="all": Load all skills at conversation start
-- auto_load=None: Register but don't auto-load (available for explicit use)
+- auto_load="all": Load all plugins at conversation start  
+- auto_load=None: Register but don't auto-load (use conversation.load_plugin())
 """
 
-import os
 from pathlib import Path
 
-from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool
-from openhands.sdk.plugin import MarketplaceRegistration
-from openhands.tools.terminal import TerminalTool
+from openhands.sdk import AgentContext
+from openhands.sdk.plugin import MarketplaceRegistration, MarketplaceRegistry
 
-# Reuse the existing example marketplace
+# Reuse the existing example marketplace (has skills, not plugins)
 EXAMPLE_MARKETPLACE = (
     Path(__file__).parent.parent.parent
     / "01_standalone_sdk"
@@ -22,19 +20,13 @@ EXAMPLE_MARKETPLACE = (
 
 
 def main():
-    llm = LLM(
-        model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
-        api_key=os.getenv("LLM_API_KEY"),
-        base_url=os.getenv("LLM_BASE_URL"),
-    )
-
     # Register multiple marketplaces with different auto-load settings
     agent_context = AgentContext(
         registered_marketplaces=[
             MarketplaceRegistration(
                 name="company",
                 source=str(EXAMPLE_MARKETPLACE),
-                auto_load="all",  # Load skills at conversation start
+                auto_load="all",  # Load all plugins at conversation start
             ),
             MarketplaceRegistration(
                 name="experimental",
@@ -44,24 +36,38 @@ def main():
         ],
     )
 
-    agent = Agent(
-        llm=llm,
-        tools=[Tool(name=TerminalTool.name)],
-        agent_context=agent_context,
-    )
+    print("Configured AgentContext with registered_marketplaces:")
+    for reg in agent_context.registered_marketplaces:
+        status = "auto-load" if reg.auto_load == "all" else "on-demand"
+        print(f"  {reg.name}: {status}")
 
-    conversation = Conversation(agent=agent, workspace=os.getcwd())
+    # The registry can be used to inspect/resolve plugins before conversation
+    registry = MarketplaceRegistry(agent_context.registered_marketplaces)
+    
+    # List available skills from the marketplace
+    marketplace, _ = registry.get_marketplace("company")
+    print(f"\nSkills in '{marketplace.name}':")
+    for skill in marketplace.skills:
+        print(f"  - {skill.name}: {skill.description}")
 
-    # The "greeting-helper" skill from the marketplace should be available
-    conversation.send_message("Use the greeting helper skill to greet me!")
+    # Example usage with Conversation (requires LLM_API_KEY):
+    print("""
+To use in a conversation:
+
+    from openhands.sdk import LLM, Agent, Conversation
+    
+    agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
+    conversation = Conversation(agent=agent, workspace=workspace)
+    
+    # Load a plugin on-demand from registered marketplace
+    conversation.load_plugin("plugin-name@experimental")
+    
+    # Use the loaded plugin's skills
+    conversation.send_message("...")
     conversation.run()
-
-    print(f"\nEXAMPLE_COST: {llm.metrics.accumulated_cost:.4f}")
+""")
 
 
 if __name__ == "__main__":
-    if not os.getenv("LLM_API_KEY"):
-        print("Set LLM_API_KEY to run this example")
-        print("EXAMPLE_COST: 0")
-    else:
-        main()
+    main()
+    print("EXAMPLE_COST: 0")

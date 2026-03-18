@@ -1,23 +1,23 @@
 # Multiple Marketplace Registrations
 
-Register multiple marketplaces and use their skills in a conversation.
+Register multiple marketplaces and load plugins on-demand.
 
 ## Usage
 
 ```bash
-export LLM_API_KEY=your-api-key
 python main.py
 ```
 
 ## Key Concepts
 
 ```python
+# Configure marketplaces in AgentContext
 agent_context = AgentContext(
     registered_marketplaces=[
         MarketplaceRegistration(
             name="company",
             source="github:company/plugins",
-            auto_load="all",  # Load skills at conversation start
+            auto_load="all",  # Load all plugins at conversation start
         ),
         MarketplaceRegistration(
             name="experimental",
@@ -27,8 +27,12 @@ agent_context = AgentContext(
     ],
 )
 
+# Create agent and conversation
 agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
 conversation = Conversation(agent=agent, workspace=workspace)
+
+# Load a plugin on-demand from registered marketplace
+conversation.load_plugin("beta-tool@experimental")
 ```
 
 ## Related
