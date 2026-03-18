@@ -1,11 +1,6 @@
 ---
 name: cross-repo-testing
 description: This skill should be used when the user asks to "test a cross-repo feature", "deploy a feature branch to staging", "test SDK against OH Cloud", "e2e test a cloud workspace feature", "test provider tokens", "test secrets inheritance", or when changes span the SDK and OpenHands server repos and need end-to-end validation against a staging deployment.
-triggers:
-- staging deployment
-- feature branch deploy
-- test against cloud
-- e2e cloud
 ---
 
 # Cross-Repo Testing: SDK ↔ OpenHands Cloud
