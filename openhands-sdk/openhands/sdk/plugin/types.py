@@ -45,9 +45,7 @@ class MarketplaceRegistration(BaseModel):
         ... )
     """
 
-    name: str = Field(
-        description="Identifier for this marketplace registration"
-    )
+    name: str = Field(description="Identifier for this marketplace registration")
     source: str = Field(
         description="Marketplace source: 'github:owner/repo', git URL, or local path"
     )

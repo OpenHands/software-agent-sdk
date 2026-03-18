@@ -351,7 +351,9 @@ async def load_plugin(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
     """Load a plugin from a registered marketplace into the conversation."""
-    success = await conversation_service.load_plugin(conversation_id, request.plugin_ref)
+    success = await conversation_service.load_plugin(
+        conversation_id, request.plugin_ref
+    )
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()

@@ -1,20 +1,17 @@
 """Tests for MarketplaceRegistry and MarketplaceRegistration."""
 
 import json
+from unittest.mock import patch
+
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from openhands.sdk.plugin import (
+    AmbiguousPluginError,
+    Marketplace,
+    MarketplaceNotFoundError,
     MarketplaceRegistration,
     MarketplaceRegistry,
-    PluginSource,
     PluginNotFoundError,
-    AmbiguousPluginError,
-    MarketplaceNotFoundError,
-    Marketplace,
-    MarketplaceOwner,
-    MarketplacePluginEntry,
 )
 
 
@@ -95,7 +92,7 @@ class TestMarketplaceRegistry:
             MarketplaceRegistration(name="b", source="github:owner/b"),
         ]
         registry = MarketplaceRegistry(regs)
-        
+
         assert len(registry.registrations) == 2
         assert "a" in registry.registrations
         assert "b" in registry.registrations
@@ -108,7 +105,7 @@ class TestMarketplaceRegistry:
             MarketplaceRegistration(name="c", source="github:owner/c", auto_load="all"),
         ]
         registry = MarketplaceRegistry(regs)
-        
+
         auto_load = registry.get_auto_load_registrations()
         assert len(auto_load) == 2
         assert all(r.auto_load == "all" for r in auto_load)
@@ -116,10 +113,10 @@ class TestMarketplaceRegistry:
     def test_marketplace_not_found_error(self):
         """Test error when marketplace not registered."""
         registry = MarketplaceRegistry()
-        
+
         with pytest.raises(MarketplaceNotFoundError) as exc_info:
             registry.get_marketplace("nonexistent")
-        
+
         assert exc_info.value.marketplace_name == "nonexistent"
 
     def test_parse_plugin_ref_simple(self):
@@ -151,7 +148,7 @@ def mock_marketplace_dir(tmp_path):
     # Create .plugin/marketplace.json
     plugin_dir = tmp_path / ".plugin"
     plugin_dir.mkdir()
-    
+
     marketplace_data = {
         "name": "test-marketplace",
         "owner": {"name": "Test Owner"},
@@ -161,13 +158,13 @@ def mock_marketplace_dir(tmp_path):
         ],
         "skills": [],
     }
-    
+
     (plugin_dir / "marketplace.json").write_text(json.dumps(marketplace_data))
-    
+
     # Create plugin directories
     (tmp_path / "plugins" / "a").mkdir(parents=True)
     (tmp_path / "plugins" / "b").mkdir(parents=True)
-    
+
     return tmp_path
 
 
@@ -181,16 +178,14 @@ class TestMarketplaceRegistryResolution:
             source=str(mock_marketplace_dir),
         )
         registry = MarketplaceRegistry([reg])
-        
+
         # Mock fetch to return the local path
-        with patch.object(
-            registry, '_fetch_marketplace'
-        ) as mock_fetch:
+        with patch.object(registry, "_fetch_marketplace") as mock_fetch:
             marketplace = Marketplace.load(mock_marketplace_dir)
             mock_fetch.return_value = (marketplace, mock_marketplace_dir)
-            
+
             source = registry.resolve_plugin("plugin-a@test")
-            
+
             assert source.source == str(mock_marketplace_dir / "plugins" / "a")
 
     def test_resolve_plugin_not_found_in_marketplace(self, mock_marketplace_dir):
@@ -200,26 +195,24 @@ class TestMarketplaceRegistryResolution:
             source=str(mock_marketplace_dir),
         )
         registry = MarketplaceRegistry([reg])
-        
-        with patch.object(
-            registry, '_fetch_marketplace'
-        ) as mock_fetch:
+
+        with patch.object(registry, "_fetch_marketplace") as mock_fetch:
             marketplace = Marketplace.load(mock_marketplace_dir)
             mock_fetch.return_value = (marketplace, mock_marketplace_dir)
-            
+
             with pytest.raises(PluginNotFoundError) as exc_info:
                 registry.resolve_plugin("nonexistent@test")
-            
+
             assert exc_info.value.plugin_name == "nonexistent"
             assert exc_info.value.marketplace_name == "test"
 
     def test_resolve_plugin_marketplace_not_registered(self):
         """Test error when referenced marketplace is not registered."""
         registry = MarketplaceRegistry()
-        
+
         with pytest.raises(MarketplaceNotFoundError) as exc_info:
             registry.resolve_plugin("plugin@unknown")
-        
+
         assert exc_info.value.marketplace_name == "unknown"
 
     def test_resolve_plugin_search_all_marketplaces(self, mock_marketplace_dir):
@@ -229,15 +222,13 @@ class TestMarketplaceRegistryResolution:
             source=str(mock_marketplace_dir),
         )
         registry = MarketplaceRegistry([reg])
-        
-        with patch.object(
-            registry, '_fetch_marketplace'
-        ) as mock_fetch:
+
+        with patch.object(registry, "_fetch_marketplace") as mock_fetch:
             marketplace = Marketplace.load(mock_marketplace_dir)
             mock_fetch.return_value = (marketplace, mock_marketplace_dir)
-            
+
             source = registry.resolve_plugin("plugin-a")
-            
+
             assert source.source == str(mock_marketplace_dir / "plugins" / "a")
 
     def test_resolve_plugin_not_found_anywhere(self, mock_marketplace_dir):
@@ -247,16 +238,14 @@ class TestMarketplaceRegistryResolution:
             source=str(mock_marketplace_dir),
         )
         registry = MarketplaceRegistry([reg])
-        
-        with patch.object(
-            registry, '_fetch_marketplace'
-        ) as mock_fetch:
+
+        with patch.object(registry, "_fetch_marketplace") as mock_fetch:
             marketplace = Marketplace.load(mock_marketplace_dir)
             mock_fetch.return_value = (marketplace, mock_marketplace_dir)
-            
+
             with pytest.raises(PluginNotFoundError) as exc_info:
                 registry.resolve_plugin("nonexistent")
-            
+
             assert exc_info.value.plugin_name == "nonexistent"
             assert exc_info.value.marketplace_name is None
 
@@ -268,7 +257,7 @@ class TestMarketplaceRegistryResolution:
             mp_dir.mkdir()
             plugin_dir = mp_dir / ".plugin"
             plugin_dir.mkdir()
-            
+
             marketplace_data = {
                 "name": name,
                 "owner": {"name": "Owner"},
@@ -278,22 +267,24 @@ class TestMarketplaceRegistryResolution:
             }
             (plugin_dir / "marketplace.json").write_text(json.dumps(marketplace_data))
             (mp_dir / "plugins" / "common").mkdir(parents=True)
-        
+
         regs = [
             MarketplaceRegistration(name="mp1", source=str(tmp_path / "marketplace1")),
             MarketplaceRegistration(name="mp2", source=str(tmp_path / "marketplace2")),
         ]
         registry = MarketplaceRegistry(regs)
-        
+
         def mock_fetch(reg):
-            mp_path = tmp_path / ("marketplace1" if reg.name == "mp1" else "marketplace2")
+            mp_path = tmp_path / (
+                "marketplace1" if reg.name == "mp1" else "marketplace2"
+            )
             marketplace = Marketplace.load(mp_path)
             return (marketplace, mp_path)
-        
-        with patch.object(registry, '_fetch_marketplace', side_effect=mock_fetch):
+
+        with patch.object(registry, "_fetch_marketplace", side_effect=mock_fetch):
             with pytest.raises(AmbiguousPluginError) as exc_info:
                 registry.resolve_plugin("common-plugin")
-            
+
             assert exc_info.value.plugin_name == "common-plugin"
             assert set(exc_info.value.matching_marketplaces) == {"mp1", "mp2"}
 
@@ -304,15 +295,13 @@ class TestMarketplaceRegistryResolution:
             source=str(mock_marketplace_dir),
         )
         registry = MarketplaceRegistry([reg])
-        
-        with patch.object(
-            registry, '_fetch_marketplace'
-        ) as mock_fetch:
+
+        with patch.object(registry, "_fetch_marketplace") as mock_fetch:
             marketplace = Marketplace.load(mock_marketplace_dir)
             mock_fetch.return_value = (marketplace, mock_marketplace_dir)
-            
+
             plugins = registry.list_plugins("test")
-            
+
             assert set(plugins) == {"plugin-a", "plugin-b"}
 
     def test_list_plugins_from_all(self, mock_marketplace_dir):
@@ -322,13 +311,11 @@ class TestMarketplaceRegistryResolution:
             source=str(mock_marketplace_dir),
         )
         registry = MarketplaceRegistry([reg])
-        
-        with patch.object(
-            registry, '_fetch_marketplace'
-        ) as mock_fetch:
+
+        with patch.object(registry, "_fetch_marketplace") as mock_fetch:
             marketplace = Marketplace.load(mock_marketplace_dir)
             mock_fetch.return_value = (marketplace, mock_marketplace_dir)
-            
+
             plugins = registry.list_plugins()
-            
+
             assert set(plugins) == {"plugin-a", "plugin-b"}

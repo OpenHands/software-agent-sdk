@@ -83,7 +83,7 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
-    _marketplace_registry: MarketplaceRegistry | None  # Lazy-initialized from agent_context
+    _marketplace_registry: MarketplaceRegistry | None  # Lazy-init from agent_context
 
     def __init__(
         self,
@@ -1152,7 +1152,13 @@ class LocalConversation(BaseConversation):
 
         # Lazy-initialize the marketplace registry from agent_context
         if self._marketplace_registry is None:
-            registrations = self.agent.agent_context.registered_marketplaces
+            agent_context = self.agent.agent_context
+            if agent_context is None:
+                raise ValueError(
+                    "No agent context available. Configure agent_context "
+                    "with registered_marketplaces to use load_plugin()."
+                )
+            registrations = agent_context.registered_marketplaces
             if not registrations:
                 raise ValueError(
                     "No marketplaces registered. Configure registered_marketplaces "
@@ -1195,7 +1201,9 @@ class LocalConversation(BaseConversation):
             self._state.agent = self.agent
 
         # Track resolved plugin
-        resolved = ResolvedPluginSource.from_plugin_source(resolved_source, resolved_ref)
+        resolved = ResolvedPluginSource.from_plugin_source(
+            resolved_source, resolved_ref
+        )
         if self._resolved_plugins is None:
             self._resolved_plugins = []
         self._resolved_plugins.append(resolved)
