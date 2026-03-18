@@ -50,11 +50,6 @@ class TaskAction(Action):
         default=None,
         description="Task ID of the task to resume from.",
     )
-    max_turns: int | None = Field(
-        default=None,
-        description="Maximum number of agentic turns before stopping.",
-        ge=1,
-    )
 
 
 class TaskObservation(Observation):

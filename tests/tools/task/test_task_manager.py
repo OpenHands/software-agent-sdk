@@ -173,7 +173,6 @@ class TestTaskManager:
         task = manager._create_task(
             subagent_type="default",
             description="test task",
-            max_turns=3,
         )
         assert isinstance(task, Task)
         assert task.status == TaskStatus.RUNNING
@@ -187,7 +186,8 @@ class TestTaskManager:
         register_builtins_agents()
 
         task = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
+            subagent_type="default",
+            description=None,
         )
         assert task.id in manager._tasks
         assert isinstance(manager._tasks[task.id].conversation_id, uuid.UUID)
@@ -204,7 +204,8 @@ class TestTaskManager:
 
         # Create and evict a task (simulating a completed first run)
         task = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
+            subagent_type="default",
+            description=None,
         )
         original_id = task.id
         original_uuid = task.conversation_id
@@ -510,7 +511,8 @@ class TestStartTask:
 
         # Create and evict a task to simulate a prior completed run
         first = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
+            subagent_type="default",
+            description=None,
         )
         original_id = first.id
         manager._evict_task(first)
@@ -572,7 +574,6 @@ class TestTaskMetrics:
         task = manager._create_task(
             subagent_type="default",
             description="test",
-            max_turns=3,
         )
 
         # Wire LLM into sub-conv stats (simulates what _ensure_agent_ready does)
@@ -620,7 +621,6 @@ class TestTaskMetrics:
             task = manager._create_task(
                 subagent_type="default",
                 description="test",
-                max_turns=3,
             )
             sub_conv = task.conversation
             assert sub_conv is not None
@@ -690,7 +690,6 @@ class TestTaskManagerHooks:
         task = manager._create_task(
             subagent_type="hooked_agent",
             description="test hooks",
-            max_turns=3,
         )
 
         sub_conv = task.conversation
@@ -707,7 +706,6 @@ class TestTaskManagerHooks:
         task = manager._create_task(
             subagent_type="default",
             description="no hooks",
-            max_turns=3,
         )
 
         sub_conv = task.conversation
@@ -732,7 +730,6 @@ class TestTaskManagerHooks:
         task = manager._create_task(
             subagent_type="hooked_resume",
             description="test",
-            max_turns=3,
         )
         original_id = task.id
         manager._evict_task(task)
