@@ -2,6 +2,7 @@ import asyncio
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -14,6 +15,7 @@ from openhands.agent_server.config import (
     get_default_config,
 )
 from openhands.agent_server.conversation_router import conversation_router
+from openhands.agent_server.conversation_router_acp import conversation_router_acp
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
@@ -139,7 +141,15 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
 
-def _create_fastapi_instance() -> FastAPI:
+def _get_root_path(config: Config) -> str:
+    root_path = ""
+    if config.web_url:
+        web_url = urlparse(config.web_url)
+        root_path = web_url.path.rstrip("/")
+    return root_path
+
+
+def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
@@ -151,6 +161,7 @@ def _create_fastapi_instance() -> FastAPI:
             "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
         ),
         lifespan=api_lifespan,
+        root_path=_get_root_path(config),
     )
 
 
@@ -189,6 +200,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
+    api_router.include_router(conversation_router_acp)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)
@@ -216,7 +228,7 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
         and config.static_files_path.is_dir()
     ):
         # Map the root path to server info if there are no static files
-        app.get("/")(get_server_info)
+        app.get("/", tags=["Server Details"])(get_server_info)
         return
 
     # Mount static files directory
@@ -343,7 +355,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     """
     if config is None:
         config = get_default_config()
-    app = _create_fastapi_instance()
+    app = _create_fastapi_instance(config)
     app.state.config = config
 
     _add_api_routes(app, config)

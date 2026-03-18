@@ -367,16 +367,12 @@ def test_bash_command_endpoint_with_live_server(server_env):
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     """Integration test for file upload through live server.
 
-    This test validates that the /api/file/upload/{path} endpoint works
+    This test validates that the /api/file/upload endpoint works
     correctly end-to-end by:
     1. Starting a real FastAPI server with file upload endpoints
     2. Creating a RemoteWorkspace pointing to that server
     3. Creating a test file and uploading it
     4. Verifying the file was uploaded to the correct location with correct content
-
-    This is a regression test for the file upload issue where the client was
-    calling /api/file/upload (without the path parameter) instead of
-    /api/file/upload/{path} as the server expects.
     """
     # Create a RemoteWorkspace pointing to the live server
     workspace = RemoteWorkspace(

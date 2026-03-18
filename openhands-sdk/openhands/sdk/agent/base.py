@@ -415,11 +415,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         Compatibility requirements:
         - Agent class/type must match.
-        - Tools must match exactly (same tool names).
+        - Tools may only be added, never removed.
 
-        Tools are part of the system prompt and cannot be changed mid-conversation.
-        To use different tools, start a new conversation or use conversation forking
-        (see https://github.com/OpenHands/OpenHands/issues/8560).
+        Removing tools breaks backward compatibility because the LLM may have
+        already been told about them.  Adding new tools is safe — the LLM
+        simply gains new capabilities on the next turn.
 
         All other configuration (LLM, agent_context, condenser, etc.) can be
         freely changed between sessions.
@@ -457,24 +457,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if tool_class is not None:
                 persisted_names.add(tool_class.name)
 
-        if runtime_names == persisted_names:
-            return self
-
-        # Tools don't match - this is not allowed
+        # Removing tools breaks backward compatibility because the LLM may
+        # have already been told about them.  Adding new tools is safe — the
+        # LLM simply gains new capabilities on the next turn.
         missing_in_runtime = persisted_names - runtime_names
-        added_in_runtime = runtime_names - persisted_names
-
-        details: list[str] = []
         if missing_in_runtime:
-            details.append(f"removed: {sorted(missing_in_runtime)}")
-        if added_in_runtime:
-            details.append(f"added: {sorted(added_in_runtime)}")
+            raise ValueError(
+                f"Cannot resume conversation: tools were removed mid-conversation "
+                f"(removed: {sorted(missing_in_runtime)}). "
+                f"To use different tools, start a new conversation."
+            )
 
-        raise ValueError(
-            f"Cannot resume conversation: tools cannot be changed mid-conversation "
-            f"({'; '.join(details)}). "
-            f"To use different tools, start a new conversation."
-        )
+        return self
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
@@ -576,3 +570,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             Response string, or ``None`` to use the default LLM-based approach.
         """
         return None
+
+    def close(self) -> None:
+        """Clean up agent resources.
+
+        No-op by default; ACPAgent overrides to terminate subprocess.
+        """
+        pass

@@ -238,11 +238,11 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "nemotron-3-super-120b-a12b-free": {
-        "id": "nemotron-3-super-120b-a12b-free",
+    "nemotron-3-super-120b-a12b": {
+        "id": "nemotron-3-super-120b-a12b",
         "display_name": "NVIDIA Nemotron-3 Super 120B",
         "llm_config": {
-            "model": "litellm_proxy/openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+            "model": "litellm_proxy/nvidia/nemotron-3-super-120b-a12b",
             "temperature": 0.0,
         },
     },
@@ -330,9 +330,16 @@ def check_model(
             **kwargs,
         )
 
-        content = response.choices[0].message.content if response.choices else None
+        response_content = (
+            response.choices[0].message.content if response.choices else None
+        )
+        reasoning_content = (
+            getattr(response.choices[0].message, "reasoning_content", None)
+            if response.choices
+            else None
+        )
 
-        if content:
+        if response_content or reasoning_content:
             return True, f"✓ {display_name}: OK"
         else:
             # Check if there's any other data in the response for diagnostics
