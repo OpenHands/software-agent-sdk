@@ -6,6 +6,8 @@ import tarfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 BUILDKIT_STDERR_SAMPLE = "\n".join(
     [
@@ -759,3 +761,70 @@ def test_build_with_telemetry_preserves_telemetry_on_failure(tmp_path: Path):
     assert excinfo.value.telemetry.buildx_wall_clock_seconds == 25.5
     assert excinfo.value.telemetry.cache_export_seconds == 264.3
     assert excinfo.value.telemetry.cache_import_miss_count == 1
+
+
+@pytest.mark.parametrize(
+    "mode,expect_cache_to,expect_mode_value",
+    [
+        ("off", False, None),
+        ("max", True, "max"),
+        ("min", True, "min"),
+        ("invalid", True, "max"),  # Invalid values default to "max" (preserve behavior)
+    ],
+)
+def test_cache_export_modes(
+    tmp_path: Path,
+    mode: str,
+    expect_cache_to: bool,
+    expect_mode_value: str | None,
+):
+    """Test cache export behavior for different OPENHANDS_BUILDKIT_CACHE_MODE values."""
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    docker_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        docker_calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        image="ghcr.io/openhands/eval-agent-server",
+        target="source-minimal",
+        push=True,
+        sdk_project_root=_default_sdk_project_root(),
+    )
+
+    with (
+        patch.dict(os.environ, {"OPENHANDS_BUILDKIT_CACHE_MODE": mode}, clear=False),
+        patch(
+            "openhands.agent_server.docker.build._make_build_context",
+            return_value=ctx,
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        build(opts)
+
+    cmd = docker_calls[0][0]
+    cmd_str = " ".join(cmd)
+
+    # Should always have --cache-from
+    assert "--cache-from" in cmd_str
+
+    if expect_cache_to:
+        assert "--cache-to" in cmd_str
+        assert f"mode={expect_mode_value}" in cmd_str
+    else:
+        assert "--cache-to" not in cmd_str

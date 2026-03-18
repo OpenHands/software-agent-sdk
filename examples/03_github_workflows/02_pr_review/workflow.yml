@@ -32,25 +32,13 @@ jobs:
             github.event.requested_reviewer.login == 'openhands-agent'
         runs-on: ubuntu-latest
         steps:
-            - name: Checkout for composite action
-              uses: actions/checkout@v4
-              with:
-                  repository: OpenHands/software-agent-sdk
-                  # Use a specific version tag or branch (e.g., 'v1.0.0' or 'main')
-                  ref: main
-                  sparse-checkout: .github/actions/pr-review
-
             - name: Run PR Review
-              uses: ./.github/actions/pr-review
+              uses: OpenHands/extensions/plugins/pr-review@main
               with:
-                  # LLM model(s) to use. Can be comma-separated for A/B testing
-                  # - one model will be randomly selected per review
                   llm-model: anthropic/claude-sonnet-4-5-20250929
                   llm-base-url: ''
-                  # Review style: roasted (other option: standard)
                   review-style: roasted
-                  # SDK version to use (version tag or branch name)
-                  sdk-version: main
-                  # Secrets
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.GITHUB_TOKEN }}
+                  # Optional: Laminar API key for observability
+                  lmnr-api-key: ${{ secrets.LMNR_PROJECT_API_KEY }}
