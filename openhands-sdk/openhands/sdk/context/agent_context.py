@@ -92,7 +92,8 @@ class AgentContext(BaseModel):
         description=(
             "List of marketplace registrations for plugin resolution. "
             "Marketplaces with auto_load='all' will have their plugins loaded "
-            "automatically at conversation start. See MarketplaceRegistration for details."
+            "automatically at conversation start. "
+            "See MarketplaceRegistration for details."
         ),
     )
     secrets: Mapping[str, SecretValue] | None = Field(

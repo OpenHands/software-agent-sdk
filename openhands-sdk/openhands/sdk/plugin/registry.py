@@ -42,7 +42,9 @@ class PluginNotFoundError(PluginResolutionError):
         self.plugin_name = plugin_name
         self.marketplace_name = marketplace_name
         if marketplace_name:
-            msg = f"Plugin '{plugin_name}' not found in marketplace '{marketplace_name}'"
+            msg = (
+                f"Plugin '{plugin_name}' not found in marketplace '{marketplace_name}'"
+            )
         else:
             msg = f"Plugin '{plugin_name}' not found in any registered marketplace"
         super().__init__(msg)
@@ -89,7 +91,8 @@ class MarketplaceRegistry:
             registrations: List of marketplace registrations. Can be empty or None.
         """
         self._registrations: dict[str, MarketplaceRegistration] = {}
-        self._cache: dict[str, tuple[Marketplace, Path]] = {}  # name -> (marketplace, path)
+        # Maps name to (marketplace, path)
+        self._cache: dict[str, tuple[Marketplace, Path]] = {}
 
         if registrations:
             for reg in registrations:
@@ -102,12 +105,11 @@ class MarketplaceRegistry:
 
     def get_auto_load_registrations(self) -> list[MarketplaceRegistration]:
         """Get registrations with auto_load='all'."""
-        return [
-            reg for reg in self._registrations.values()
-            if reg.auto_load == "all"
-        ]
+        return [reg for reg in self._registrations.values() if reg.auto_load == "all"]
 
-    def _fetch_marketplace(self, reg: MarketplaceRegistration) -> tuple[Marketplace, Path]:
+    def _fetch_marketplace(
+        self, reg: MarketplaceRegistration
+    ) -> tuple[Marketplace, Path]:
         """Fetch a marketplace and return (Marketplace, repo_path).
 
         This is the internal method that does the actual fetching.
@@ -243,7 +245,8 @@ class MarketplaceRegistry:
 
             except Exception as e:
                 logger.warning(
-                    f"Error searching marketplace '{name}' for plugin '{plugin_name}': {e}"
+                    f"Error searching marketplace '{name}' "
+                    f"for plugin '{plugin_name}': {e}"
                 )
 
         if not matches:
