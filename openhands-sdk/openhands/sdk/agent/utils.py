@@ -55,6 +55,56 @@ def sanitize_json_control_chars(raw: str) -> str:
     return _CONTROL_CHAR_RE.sub(_escape_control_char, raw)
 
 
+# The set of letters that, when preceded by a bare backslash outside a JSON
+# string, form an escape-like sequence the model intended as whitespace.
+_WHITESPACE_ESCAPE_LETTERS = frozenset("ntr")
+
+
+def strip_literal_escape_sequences(raw: str) -> str:
+    r"""Replace literal ``\n`` / ``\t`` / ``\r`` outside JSON strings with spaces.
+
+    Some models (e.g. Qwen3.5-Flash) emit the two-character sequences
+    ``\n``, ``\t``, or ``\r`` *outside* of JSON string values.  Standard
+    JSON only allows backslash escapes inside quoted strings, so
+    ``json.loads`` rejects these bare sequences.
+
+    This function walks the string while tracking whether the current
+    position is inside a quoted string and replaces those sequences with
+    a single space when they appear outside a string.
+    """  # noqa: E501
+    result: list[str] = []
+    in_string = False
+    i = 0
+    length = len(raw)
+    while i < length:
+        ch = raw[i]
+        if in_string:
+            result.append(ch)
+            if ch == "\\":
+                # Escaped character inside string – copy it verbatim
+                i += 1
+                if i < length:
+                    result.append(raw[i])
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+                result.append(ch)
+            elif (
+                ch == "\\"
+                and i + 1 < length
+                and raw[i + 1] in _WHITESPACE_ESCAPE_LETTERS
+            ):
+                # Bare \n / \t / \r outside a string → whitespace
+                result.append(" ")
+                i += 1  # skip the letter after the backslash
+            else:
+                result.append(ch)
+        i += 1
+    return "".join(result)
+
+
 def fix_malformed_tool_arguments(
     arguments: dict[str, Any], action_type: type[Action]
 ) -> dict[str, Any]:

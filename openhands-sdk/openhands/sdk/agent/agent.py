@@ -11,6 +11,7 @@ from openhands.sdk.agent.utils import (
     make_llm_completion,
     prepare_llm_messages,
     sanitize_json_control_chars,
+    strip_literal_escape_sequences,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -588,6 +589,9 @@ class Agent(CriticMixin, AgentBase):
             # Sanitize raw control characters (U+0000–U+001F) that some
             # models emit as literal bytes instead of JSON escape sequences.
             sanitized_args = sanitize_json_control_chars(tool_call.arguments)
+            # Strip literal \n / \t / \r sequences that some models
+            # (e.g. Qwen3.5-Flash) place outside of JSON string values.
+            sanitized_args = strip_literal_escape_sequences(sanitized_args)
             arguments = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
