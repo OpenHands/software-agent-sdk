@@ -6,68 +6,87 @@ Register multiple marketplaces and load plugins on-demand.
 - auto_load=None: Register but don't auto-load (use conversation.load_plugin())
 """
 
+import json
+import os
 from pathlib import Path
 
-from openhands.sdk import AgentContext
-from openhands.sdk.plugin import MarketplaceRegistration, MarketplaceRegistry
+from openhands.sdk import LLM, Agent, AgentContext, Conversation
+from openhands.sdk.plugin import MarketplaceRegistration
 
-# Reuse the existing example marketplace (has skills, not plugins)
-EXAMPLE_MARKETPLACE = (
-    Path(__file__).parent.parent.parent
-    / "01_standalone_sdk"
-    / "43_mixed_marketplace_skills"
-)
+SCRIPT_DIR = Path(__file__).parent
+
+
+def create_example_marketplace() -> Path:
+    """Create a simple marketplace with a plugin for this demo."""
+    marketplace_dir = SCRIPT_DIR / "demo_marketplace"
+    plugin_dir = marketplace_dir / "plugins" / "greeter"
+    
+    # Create marketplace manifest
+    (marketplace_dir / ".plugin").mkdir(parents=True, exist_ok=True)
+    (marketplace_dir / ".plugin" / "marketplace.json").write_text(json.dumps({
+        "name": "demo-marketplace",
+        "owner": {"name": "Demo"},
+        "plugins": [{"name": "greeter", "source": "./plugins/greeter"}],
+        "skills": [],
+    }))
+    
+    # Create plugin with a skill
+    (plugin_dir / ".plugin").mkdir(parents=True, exist_ok=True)
+    (plugin_dir / ".plugin" / "plugin.json").write_text(json.dumps({
+        "name": "greeter",
+        "version": "1.0.0",
+        "description": "A greeting plugin",
+    }))
+    
+    (plugin_dir / "skills").mkdir(exist_ok=True)
+    (plugin_dir / "skills" / "SKILL.md").write_text("""---
+name: greeter-skill
+description: Generates friendly greetings
+---
+# Greeter Skill
+When asked to greet someone, respond with a warm, friendly greeting.
+""")
+    
+    return marketplace_dir
 
 
 def main():
-    # Register multiple marketplaces with different auto-load settings
+    marketplace_dir = create_example_marketplace()
+    
+    llm = LLM(
+        model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+        api_key=os.getenv("LLM_API_KEY"),
+        base_url=os.getenv("LLM_BASE_URL"),
+    )
+
+    # Register marketplace (not auto-loaded)
     agent_context = AgentContext(
         registered_marketplaces=[
             MarketplaceRegistration(
-                name="company",
-                source=str(EXAMPLE_MARKETPLACE),
-                auto_load="all",  # Load all plugins at conversation start
-            ),
-            MarketplaceRegistration(
-                name="experimental",
-                source=str(EXAMPLE_MARKETPLACE),
-                # auto_load=None (default) - registered but not auto-loaded
+                name="demo",
+                source=str(marketplace_dir),
+                # auto_load=None - we'll load explicitly
             ),
         ],
     )
 
-    print("Configured AgentContext with registered_marketplaces:")
-    for reg in agent_context.registered_marketplaces:
-        status = "auto-load" if reg.auto_load == "all" else "on-demand"
-        print(f"  {reg.name}: {status}")
+    agent = Agent(llm=llm, tools=[], agent_context=agent_context)
+    conversation = Conversation(agent=agent, workspace=os.getcwd())
 
-    # The registry can be used to inspect/resolve plugins before conversation
-    registry = MarketplaceRegistry(agent_context.registered_marketplaces)
-    
-    # List available skills from the marketplace
-    marketplace, _ = registry.get_marketplace("company")
-    print(f"\nSkills in '{marketplace.name}':")
-    for skill in marketplace.skills:
-        print(f"  - {skill.name}: {skill.description}")
+    # Load the plugin on-demand
+    conversation.load_plugin("greeter@demo")
+    print(f"Loaded: {conversation.resolved_plugins[0].source}")
 
-    # Example usage with Conversation (requires LLM_API_KEY):
-    print("""
-To use in a conversation:
-
-    from openhands.sdk import LLM, Agent, Conversation
-    
-    agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
-    conversation = Conversation(agent=agent, workspace=workspace)
-    
-    # Load a plugin on-demand from registered marketplace
-    conversation.load_plugin("plugin-name@experimental")
-    
-    # Use the loaded plugin's skills
-    conversation.send_message("...")
+    # Use the skill
+    conversation.send_message("Please greet me!")
     conversation.run()
-""")
+
+    print(f"\nEXAMPLE_COST: {llm.metrics.accumulated_cost:.4f}")
 
 
 if __name__ == "__main__":
-    main()
-    print("EXAMPLE_COST: 0")
+    if not os.getenv("LLM_API_KEY"):
+        print("Set LLM_API_KEY to run this example")
+        print("EXAMPLE_COST: 0")
+    else:
+        main()
