@@ -192,6 +192,60 @@ class TestTaskManager:
         assert task.id in manager._tasks
         assert isinstance(manager._tasks[task.id].conversation_id, uuid.UUID)
 
+    def test_create_task_uses_parent_max_iteration_when_factory_is_none(self, tmp_path):
+        """Fallback to parent's max_iteration_per_run when factory has none."""
+        register_builtins_agents()
+        llm = _make_llm()
+        agent = Agent(llm=llm, tools=[])
+        parent = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_iteration_per_run=100,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+
+        task = manager._create_task(subagent_type="default", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_iteration_per_run == 100
+
+    def test_create_task_prefers_factory_max_iteration_over_parent(self, tmp_path):
+        """Factory definition max_iteration_per_run takes precedence over parent."""
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        agent_def = AgentDefinition(
+            name="limited_agent",
+            description="Agent with iteration limit",
+            model="inherit",
+            tools=[],
+            system_prompt="You are limited.",
+            max_iteration_per_run=50,
+        )
+        factory_func = agent_definition_to_factory(agent_def)
+        register_agent(
+            name="limited_agent",
+            factory_func=factory_func,
+            description=agent_def,
+        )
+
+        llm = _make_llm()
+        agent = Agent(llm=llm, tools=[])
+        parent = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_iteration_per_run=200,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+
+        task = manager._create_task(subagent_type="limited_agent", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_iteration_per_run == 50
+
     def test_resume_unknown_task_raises(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         with pytest.raises(ValueError, match="not found"):
