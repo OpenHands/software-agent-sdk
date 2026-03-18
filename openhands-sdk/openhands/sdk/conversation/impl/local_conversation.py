@@ -663,32 +663,6 @@ class LocalConversation(BaseConversation):
                     )
                     iteration += 1
 
-                    # Inject budget warnings (Option A)
-                    warning_80_percent = int(self.max_iteration_per_run * 0.8)
-                    warning_95_percent = int(self.max_iteration_per_run * 0.95)
-
-                    if (
-                        iteration == warning_80_percent
-                        or iteration == warning_95_percent
-                    ):
-                        budget_warning = MessageEvent(
-                            source="environment",
-                            llm_message=Message(
-                                role="user",
-                                content=[
-                                    TextContent(
-                                        text=(
-                                            f"[SYSTEM] You have used {iteration}/"
-                                            f"{self.max_iteration_per_run} steps. "
-                                            f"{self.max_iteration_per_run - iteration} "
-                                            "steps remaining."
-                                        )
-                                    )
-                                ],
-                            ),
-                        )
-                        self._on_event(budget_warning)
-
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
                     # This allows concurrent user messages to be processed:

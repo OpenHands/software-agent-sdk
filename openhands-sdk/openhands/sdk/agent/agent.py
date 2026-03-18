@@ -253,16 +253,7 @@ class Agent(CriticMixin, AgentBase):
                 additional_secret_infos=secret_infos,
             )
 
-        # Add budget information to the dynamic context (Option A)
-        budget_info = (
-            f"\n\nYou have a budget of {state.max_iterations} steps for this task. "
-            "Plan your approach to complete the task within this budget."
-        )
-
-        if base_context:
-            return base_context + budget_info
-        else:
-            return budget_info
+        return base_context
 
     def _execute_actions(
         self,
