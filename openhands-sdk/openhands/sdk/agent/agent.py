@@ -432,6 +432,33 @@ class Agent(CriticMixin, AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
+        # When the LLM produced no tool call and no user-facing content,
+        # inject corrective feedback so the model knows it must act.
+        # This prevents the monologue stuck-detector from firing when the
+        # model simply forgot to emit a function call (common with Qwen,
+        # which sometimes places tool-call XML inside reasoning_content).
+        if not has_content:
+            logger.warning(
+                "LLM response contained no tool call and no content"
+                " - sending corrective feedback"
+            )
+            nudge = MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[
+                        TextContent(
+                            text=(
+                                "Your last response did not include a "
+                                "function call or a message. Please "
+                                "use a tool to proceed with the task."
+                            )
+                        )
+                    ],
+                ),
+            )
+            on_event(nudge)
+
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> bool:
@@ -585,10 +612,17 @@ class Agent(CriticMixin, AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            # Sanitize raw control characters (U+0000–U+001F) that some
-            # models emit as literal bytes instead of JSON escape sequences.
-            sanitized_args = sanitize_json_control_chars(tool_call.arguments)
-            arguments = json.loads(sanitized_args)
+            # Try parsing arguments as-is first.  Raw newlines / tabs are
+            # legal JSON whitespace and many models emit them between tokens
+            # (e.g. Qwen: "view_range": \n[1, 100]\n).  sanitize_json_
+            # control_chars would escape those to \\n, which breaks parsing.
+            # Fall back to sanitization only when the raw string is invalid
+            # (handles models that emit raw control chars *inside* strings).
+            try:
+                arguments = json.loads(tool_call.arguments)
+            except json.JSONDecodeError:
+                sanitized_args = sanitize_json_control_chars(tool_call.arguments)
+                arguments = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
