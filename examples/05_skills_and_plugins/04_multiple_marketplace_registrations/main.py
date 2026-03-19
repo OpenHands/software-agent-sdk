@@ -50,6 +50,7 @@ def main():
 
     # The "auto" marketplace plugins are already loaded
     # Now load an additional plugin on-demand from "demo" marketplace
+    # Format: "plugin-name@marketplace-name" (same as Claude Code plugin syntax)
     conversation.load_plugin("greeter@demo")
 
     resolved = conversation.resolved_plugins
