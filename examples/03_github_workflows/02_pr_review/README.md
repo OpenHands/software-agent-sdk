@@ -2,13 +2,11 @@
 
 This example demonstrates how to set up a GitHub Actions workflow for automated pull request reviews using the OpenHands agent SDK. When a PR is labeled with `review-this` or when openhands-agent is added as a reviewer, OpenHands will analyze the changes and provide detailed, constructive feedback.
 
+**Note**: The actual review scripts now live in the [OpenHands/extensions](https://github.com/OpenHands/extensions/tree/main/plugins/pr-review) repository. This directory contains an example workflow that references those scripts.
+
 ## Files
 
-- **`action.yml`**: Symlink to the composite GitHub Action (`.github/actions/pr-review/action.yml`)
-- **`workflow.yml`**: Example GitHub Actions workflow file that uses the composite action
-- **`agent_script.py`**: Python script that runs the OpenHands agent for PR review
-- **`prompt.py`**: The prompt asking the agent to write the PR review
-- **`evaluate_review.py`**: Script to evaluate review effectiveness when PR is closed
+- **`workflow.yml`**: Example GitHub Actions workflow file that runs the PR review agent
 - **`README.md`**: This documentation file
 
 ## Features
@@ -40,7 +38,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - Potential issues and security concerns
   - Specific improvement suggestions
 - **GitHub API Integration**: Uses the GitHub API to post inline review comments directly on specific lines of code
-- **Version Control**: Use `sdk-version` to pin to a specific version tag or branch
+- **Version Control**: Use `extensions-version` to pin to a specific version tag or branch of the extensions repository
 
 ## Setup
 
@@ -66,22 +64,17 @@ Set the following secrets in your GitHub repository settings:
 Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
 
 ```yaml
-- name: Run PR Review
-  uses: ./.github/actions/pr-review
-  with:
-      # LLM model(s) to use. Can be comma-separated for A/B testing
-      # - one model will be randomly selected per review
-      llm-model: anthropic/claude-sonnet-4-5-20250929
-      llm-base-url: ''
-      # Review style: roasted (other option: standard)
-      review-style: roasted
-      # SDK git ref to use (tag, branch, or commit SHA, e.g., 'v1.0.0', 'main', or 'abc1234')
-      sdk-version: main
-      # Optional: override the SDK repo (owner/repo) if you forked it
-      sdk-repo: OpenHands/software-agent-sdk
-      # Secrets
-      llm-api-key: ${{ secrets.LLM_API_KEY }}
-      github-token: ${{ secrets.GITHUB_TOKEN }}
+            - name: Run PR Review
+              uses: OpenHands/extensions/plugins/pr-review@main
+              with:
+                  # Customize these inputs as needed
+                  llm-model: anthropic/claude-sonnet-4-5-20250929
+                  llm-base-url: ''
+                  review-style: roasted
+                  # Secrets
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  lmnr-api-key: ${{ secrets.LMNR_PROJECT_API_KEY }}
 ```
 
 ### 4. Create the review label
@@ -172,27 +165,22 @@ You are a code reviewer for this project. Follow these guidelines:
 
 See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.agents/skills/code-review.md) for a complete example of a custom code review skill.
 
-## Composite Action
+## Workflow Configuration
 
-This workflow uses a reusable composite action located at `.github/actions/pr-review/action.yml` in the software-agent-sdk repository. The composite action handles:
-
-- Checking out the SDK at the specified version
-- Setting up Python and dependencies
-- Running the PR review agent
-- Uploading logs as artifacts
+The workflow is configured using inputs to the `OpenHands/extensions/plugins/pr-review` action.
 
 ### Action Inputs
 
-| Input | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | No | `anthropic/claude-sonnet-4-5-20250929` |
-| `llm-base-url` | LLM base URL (optional) | No | `''` |
-| `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
-| `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
-| `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
-| `llm-api-key` | LLM API key | Yes | - |
-| `github-token` | GitHub token for API access | Yes | - |
-| `lmnr-api-key` | Laminar API key for observability (optional) | No | - |
+| Input | Description | Default Example |
+|-------|-------------|---------|
+| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | `anthropic/claude-sonnet-4-5-20250929` |
+| `llm-base-url` | LLM base URL (optional) | `''` |
+| `review-style` | Review style: 'standard' or 'roasted' | `roasted` |
+| `llm-api-key` | LLM API key | `${{ secrets.LLM_API_KEY }}` |
+| `github-token` | GitHub token for API access | `${{ secrets.GITHUB_TOKEN }}` |
+| `lmnr-api-key` | Laminar API key for observability (optional) | `${{ secrets.LMNR_PROJECT_API_KEY }}` |
+
+To use a specific version of the extensions repository, modify the `uses` line in the workflow file, e.g., `uses: OpenHands/extensions/plugins/pr-review@v1.0.0`.
 
 ## A/B Testing with Multiple Models
 
@@ -200,16 +188,17 @@ The PR review workflow supports A/B testing different LLM models. When multiple 
 
 ### Configuration
 
-Specify multiple models as a comma-separated list in the `llm-model` parameter:
+Specify multiple models as a comma-separated list in the `llm-model` input:
 
 ```yaml
-- name: Run PR Review
-  uses: ./.github/actions/pr-review
-  with:
-      # Multiple models for A/B testing - one will be randomly selected
-      llm-model: 'litellm_proxy/claude-sonnet-4-5-20250929,litellm_proxy/gpt-4.1-2025-04-14'
-      llm-api-key: ${{ secrets.LLM_API_KEY }}
-      github-token: ${{ secrets.GITHUB_TOKEN }}
+            - name: Run PR Review
+              uses: OpenHands/extensions/plugins/pr-review@main
+              with:
+                  # Multiple models for A/B testing - one will be randomly selected
+                  llm-model: 'anthropic/claude-sonnet-4-5-20250929,gpt-4'
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  # ... other inputs
 ```
 
 ### Observability

@@ -1,4 +1,5 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
     "gpt-5.1",
@@ -65,6 +66,7 @@ VERIFIED_MINIMAX_MODELS = [
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-6",
     "claude-sonnet-4-5-20250929",
+    "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
     "minimax-m2.5",
