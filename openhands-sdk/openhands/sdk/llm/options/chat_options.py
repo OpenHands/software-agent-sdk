@@ -45,13 +45,6 @@ def select_chat_options(
             out.pop("temperature", None)
             out.pop("top_p", None)
 
-    # Gemini 2.5-pro should default to low when not set.
-    if "gemini-2.5-pro" in llm.model and llm.reasoning_effort in {None, "none"}:
-        out["reasoning_effort"] = "low"
-        if supports_reasoning_effort:
-            out.pop("temperature", None)
-            out.pop("top_p", None)
-
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:
         if llm.extended_thinking_budget:

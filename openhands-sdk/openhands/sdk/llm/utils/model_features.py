@@ -71,10 +71,7 @@ def _supports_reasoning_effort(model: str | None) -> bool:
     if normalized.startswith(LITELLM_PROXY_PREFIX):
         normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
 
-    try:
-        return bool(supports_reasoning(model=normalized, custom_llm_provider=None))
-    except Exception:
-        return False
+    return bool(supports_reasoning(model=normalized, custom_llm_provider=None))
 
 
 EXTENDED_THINKING_MODELS: list[str] = [
