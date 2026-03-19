@@ -28,14 +28,3 @@ updates:
       directory: /
       schedule:
           interval: weekly
-      groups:
-          security-all:
-              applies-to: security-updates
-              patterns:
-                  - '*'
-          version-all:
-              applies-to: version-updates
-              patterns:
-                  - '*'
-      commit-message:
-          prefix: chore(deps)
