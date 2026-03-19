@@ -194,6 +194,17 @@ jobs:
                     exit 1
                   fi
 
+            - name: Validate instance_ids (no spaces allowed)
+              if: github.event_name == 'workflow_dispatch' && github.event.inputs.instance_ids != ''
+              run: |
+                  INSTANCE_IDS="${{ github.event.inputs.instance_ids }}"
+                  if [[ "$INSTANCE_IDS" =~ [[:space:]] ]]; then
+                    echo "::error::instance_ids must not contain spaces. Use comma-separated values without spaces."
+                    echo "Got: '$INSTANCE_IDS'"
+                    echo "Example: 'django__django-11583,django__django-12345'"
+                    exit 1
+                  fi
+
             - name: Validate SDK reference (semantic version check)
               if: github.event_name == 'workflow_dispatch'
               env:
