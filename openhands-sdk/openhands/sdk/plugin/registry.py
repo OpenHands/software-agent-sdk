@@ -38,12 +38,28 @@ class AmbiguousPluginError(PluginResolutionError):
 class PluginNotFoundError(PluginResolutionError):
     """Raised when a plugin cannot be found in any registered marketplace."""
 
-    def __init__(self, plugin_name: str, marketplace_name: str | None = None):
+    def __init__(
+        self,
+        plugin_name: str,
+        marketplace_name: str | None = None,
+        fetch_errors: dict[str, Exception] | None = None,
+    ):
         self.plugin_name = plugin_name
         self.marketplace_name = marketplace_name
+        self.fetch_errors = fetch_errors or {}
+
         if marketplace_name:
             msg = (
                 f"Plugin '{plugin_name}' not found in marketplace '{marketplace_name}'"
+            )
+        elif fetch_errors:
+            # All marketplaces failed to fetch - show the actual errors
+            error_details = "; ".join(
+                f"'{name}': {err}" for name, err in fetch_errors.items()
+            )
+            msg = (
+                f"Plugin '{plugin_name}' not found. "
+                f"All {len(fetch_errors)} marketplace(s) failed to fetch: {error_details}"
             )
         else:
             msg = f"Plugin '{plugin_name}' not found in any registered marketplace"
@@ -226,10 +242,13 @@ class MarketplaceRegistry:
     def _resolve_from_all(self, plugin_name: str) -> PluginSource:
         """Resolve a plugin by searching all registered marketplaces."""
         matches: list[tuple[str, PluginSource]] = []
+        fetch_errors: dict[str, Exception] = {}
+        searched_count = 0
 
         for name, reg in self._registrations.items():
             try:
                 marketplace, repo_path = self._fetch_marketplace(reg)
+                searched_count += 1
                 plugin_entry = marketplace.get_plugin(plugin_name)
 
                 if plugin_entry is not None:
@@ -244,12 +263,16 @@ class MarketplaceRegistry:
                     matches.append((name, plugin_source))
 
             except Exception as e:
+                fetch_errors[name] = e
                 logger.warning(
                     f"Error searching marketplace '{name}' "
                     f"for plugin '{plugin_name}': {e}"
                 )
 
         if not matches:
+            # If all marketplaces failed to fetch, include errors in exception
+            if fetch_errors and searched_count == 0:
+                raise PluginNotFoundError(plugin_name, fetch_errors=fetch_errors)
             raise PluginNotFoundError(plugin_name)
 
         if len(matches) > 1:
@@ -269,6 +292,9 @@ class MarketplaceRegistry:
 
         Returns:
             List of plugin names (may include duplicates if searching all).
+
+        Raises:
+            PluginResolutionError: If all marketplaces fail to fetch when listing all.
         """
         plugin_names: list[str] = []
 
@@ -276,11 +302,23 @@ class MarketplaceRegistry:
             marketplace, _ = self.get_marketplace(marketplace_name)
             plugin_names.extend(p.name for p in marketplace.plugins)
         else:
+            fetch_errors: dict[str, Exception] = {}
             for name, reg in self._registrations.items():
                 try:
                     marketplace, _ = self._fetch_marketplace(reg)
                     plugin_names.extend(p.name for p in marketplace.plugins)
                 except Exception as e:
+                    fetch_errors[name] = e
                     logger.warning(f"Error listing plugins from '{name}': {e}")
+
+            # If all marketplaces failed, raise with details
+            if fetch_errors and not plugin_names and self._registrations:
+                error_details = "; ".join(
+                    f"'{name}': {err}" for name, err in fetch_errors.items()
+                )
+                raise PluginResolutionError(
+                    f"Failed to list plugins. "
+                    f"All {len(fetch_errors)} marketplace(s) failed: {error_details}"
+                )
 
         return plugin_names

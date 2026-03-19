@@ -1188,17 +1188,17 @@ class LocalConversation(BaseConversation):
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
         )
 
-        # Update agent with merged content
-        self.agent = self.agent.model_copy(
+        # Update agent and state atomically
+        # Create new agent first, then update both references together
+        new_agent = self.agent.model_copy(
             update={
                 "agent_context": merged_context,
                 "mcp_config": merged_mcp,
             }
         )
-
-        # Update agent in state for API observability
         with self._state:
-            self._state.agent = self.agent
+            self.agent = new_agent
+            self._state.agent = new_agent
 
         # Track resolved plugin
         resolved = ResolvedPluginSource.from_plugin_source(

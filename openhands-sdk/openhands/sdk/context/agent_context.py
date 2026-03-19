@@ -135,10 +135,7 @@ class AgentContext(BaseModel):
         if not self.load_user_skills and not self.load_public_skills:
             return self
 
-        # Handle backward compatibility: if marketplace_path is set but
-        # registered_marketplaces is empty, emit deprecation warning and
-        # convert to a default marketplace registration
-        effective_marketplace_path = self.marketplace_path
+        # Emit deprecation warning if using old marketplace_path field
         if self.marketplace_path is not None and not self.registered_marketplaces:
             warnings.warn(
                 "AgentContext.marketplace_path is deprecated. "
@@ -146,15 +143,13 @@ class AgentContext(BaseModel):
                 DeprecationWarning,
                 stacklevel=2,
             )
-            # For backward compatibility, we still use marketplace_path
-            # when registered_marketplaces is empty
 
         auto_skills = load_available_skills(
             work_dir=None,
             include_user=self.load_user_skills,
             include_project=False,
             include_public=self.load_public_skills,
-            marketplace_path=effective_marketplace_path,
+            marketplace_path=self.marketplace_path,
         )
 
         existing_names = {skill.name for skill in self.skills}
