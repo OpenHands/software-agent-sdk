@@ -301,9 +301,9 @@ def ensure_griffe() -> None:
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     """Check if the change is only in Field metadata (description, title, etc.).
 
-    Field metadata parameters like ``description``, ``title``, and ``examples``
-    don't affect runtime behavior - they're documentation-only. Changes to these
-    should not be considered breaking API changes.
+    Field metadata parameters like ``description``, ``title``, ``examples``, and
+    ``deprecated`` don't affect runtime behavior. Changes to these should not be
+    considered breaking API changes.
 
     Returns:
         True if both values are Field() calls and only metadata parameters differ.
@@ -316,14 +316,19 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
 
     # Metadata parameters that don't affect runtime behavior
     # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
-    metadata_params = ["description", "title", "examples", "json_schema_extra"]
+    metadata_patterns = {
+        "description": r'([\'"])([^\'"]*?)\1',
+        "title": r'([\'"])([^\'"]*?)\1',
+        "examples": r'([\'"])([^\'"]*?)\1',
+        "json_schema_extra": r'([\'"])([^\'"]*?)\1',
+        "deprecated": r"(?:True|False|None|'[^']*'|\"[^\"]*\")",
+    }
 
     old_normalized = old_str
     new_normalized = new_str
 
-    for param in metadata_params:
-        # Pattern to match param='...' or param="..." with simple string values
-        pattern = rf'{param}\s*=\s*([\'"])([^\'"]*?)\1'
+    for param, value_pattern in metadata_patterns.items():
+        pattern = rf"{param}\s*=\s*{value_pattern}"
         old_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", old_normalized)
         new_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", new_normalized)
 
