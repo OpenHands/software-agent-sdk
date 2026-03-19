@@ -96,17 +96,16 @@ DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 300.0
 def _format_browser_operation_error(
     error: BaseException, timeout_seconds: float | None = None
 ) -> str:
-    error_detail = str(error).strip()
-    if not error_detail:
-        if isinstance(error, builtins.TimeoutError):
-            if timeout_seconds is None:
-                error_detail = "Operation timed out"
-            else:
-                error_detail = (
-                    f"Operation timed out after {int(timeout_seconds)} seconds"
-                )
-        else:
-            error_detail = error.__class__.__name__
+    if error_detail := str(error).strip():
+        pass
+    elif isinstance(error, builtins.TimeoutError):
+        error_detail = (
+            f"Operation timed out after {int(timeout_seconds)} seconds"
+            if timeout_seconds is not None
+            else "Operation timed out"
+        )
+    else:
+        error_detail = error.__class__.__name__
     return f"Browser operation failed: {error_detail}"
 
 
