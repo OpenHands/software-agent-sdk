@@ -2372,7 +2372,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.15.0"
+version = "1.14.0"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "agent-client-protocol" },
