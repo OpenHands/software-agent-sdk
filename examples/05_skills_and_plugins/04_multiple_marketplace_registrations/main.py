@@ -1,11 +1,13 @@
 """Example: Multiple Marketplace Registrations
 
-Register multiple marketplaces and load plugins on-demand.
+Demonstrates two loading strategies for marketplace plugins:
 
-- auto_load="all": Load all plugins at conversation start
-- auto_load=None: Register but don't auto-load (use conversation.load_plugin())
+- auto_load="all": Plugins loaded automatically at conversation start
+- auto_load=None: Plugins loaded on-demand via conversation.load_plugin()
 
-This example uses a pre-created marketplace in ./demo_marketplace/
+This example uses pre-created marketplaces in:
+- ./auto_marketplace/ - auto-loaded at conversation start
+- ./demo_marketplace/ - loaded on-demand
 """
 
 import os
@@ -19,22 +21,26 @@ SCRIPT_DIR = Path(__file__).parent
 
 
 def main():
-    # Use pre-created marketplace in this directory
-    marketplace_dir = SCRIPT_DIR / "demo_marketplace"
-
     llm = LLM(
         model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
         api_key=os.getenv("LLM_API_KEY"),
         base_url=os.getenv("LLM_BASE_URL"),
     )
 
-    # Register marketplace (not auto-loaded)
+    # Register two marketplaces with different loading strategies
     agent_context = AgentContext(
         registered_marketplaces=[
+            # Auto-loaded: plugins available immediately when conversation starts
+            MarketplaceRegistration(
+                name="auto",
+                source=str(SCRIPT_DIR / "auto_marketplace"),
+                auto_load="all",
+            ),
+            # On-demand: registered but not loaded until explicitly requested
             MarketplaceRegistration(
                 name="demo",
-                source=str(marketplace_dir),
-                # auto_load=None means we load explicitly with load_plugin()
+                source=str(SCRIPT_DIR / "demo_marketplace"),
+                # auto_load=None (default) - use load_plugin() to load
             ),
         ],
     )
@@ -42,14 +48,18 @@ def main():
     agent = Agent(llm=llm, tools=[], agent_context=agent_context)
     conversation = Conversation(agent=agent, workspace=os.getcwd())
 
-    # Load the plugin on-demand
+    # The "auto" marketplace plugins are already loaded
+    # Now load an additional plugin on-demand from "demo" marketplace
     conversation.load_plugin("greeter@demo")
+
     resolved = conversation.resolved_plugins
     if resolved:
-        print(f"Loaded: {resolved[0].source}")
+        print(f"Loaded {len(resolved)} plugin(s):")
+        for plugin in resolved:
+            print(f"  - {plugin.source}")
 
-    # Use the skill
-    conversation.send_message("Please greet me!")
+    # Use skills from both plugins
+    conversation.send_message("Give me a tip, then greet me!")
     conversation.run()
 
     print(f"\nEXAMPLE_COST: {llm.metrics.accumulated_cost:.4f}")
