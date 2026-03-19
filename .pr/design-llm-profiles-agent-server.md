@@ -156,7 +156,7 @@ before constructing `LocalConversation`**.
 ## Non-goals
 
 1. Reworking the full conversation creation contract so `agent.llm` becomes optional.
-   That is the larger A2 alternative below, not the recommendation here.
+   That is a larger API cleanup.
 2. Generalizing this design to every agent component in one PR.
    This proposal is LLM-profile-specific.
 3. Auto-pushing profile edits into already-running conversations.
@@ -164,80 +164,7 @@ before constructing `LocalConversation`**.
 4. Solving multi-tenant profile isolation.
    The current agent-server is effectively instance-scoped; profiles should be too.
 
-## Creation-contract alternatives
-
-There are two viable ways to handle the conversation-start contract.
-
-### A1. Additive profile binding with `agent.llm` unchanged
-
-This document recommends A1.
-
-- keep `StartConversationRequest.agent.llm` exactly as it is today
-- add `llm_profile_id` only on the standard conversation contract plus
-  `StoredConversation` and `ConversationInfo`
-- treat `llm_profile_id` as server-managed metadata that resolves to a runtime
-  `agent.llm`
-- persist both:
-  - the resolved `agent.llm` snapshot
-  - the separate `llm_profile_id` reference
-- make no SDK `LLM` schema change
-
-Why A1 first:
-
-- it is fully additive
-- it keeps ACP honest, because the new field can stay off ACP models
-- it avoids triggering a larger conversation-creation cleanup in the same step
-
-### A2. Move profile identity into `LLM`, then clean up creation semantics
-
-This is the larger alternative behind non-goal #1.
-
-Changes relative to A1:
-
-1. **SDK/API model shape**
-   - add `LLM.profile_id: str | None = None`
-   - when a conversation is profile-backed, persist that ID on the resolved
-     `agent.llm` itself
-   - restore and runtime switching key off `agent.llm.profile_id`
-   - `StoredConversation.llm_profile_id` and `ConversationInfo.llm_profile_id`
-     become optional convenience duplicates rather than the canonical source
-
-2. **Conversation start semantics**
-   - the server looks first at `request.agent.llm.profile_id`
-   - if present, it resolves the named profile and overwrites the runtime
-     `agent.llm` from the store
-   - it still persists the resolved `agent.llm` snapshot as fallback
-
-3. **REST compatibility rollout**
-   - we cannot immediately make `agent.llm` optional on
-     `POST /api/conversations` without tripping the REST API breakage workflow
-   - the additive first step would therefore keep the current request valid and
-     required, while introducing `LLM.profile_id`
-   - a true "profile reference without inline `agent.llm`" contract would need
-     either:
-     - a new or versioned start contract, or
-     - deprecation of the old contract plus the required 5-minor-release runway
-   - only after that migration can the inline `agent.llm` requirement disappear
-
-4. **ACP/OpenAPI impact**
-   - because `ACPAgent` also carries an `LLM` field, adding `LLM.profile_id`
-     would surface that field on ACP models too
-   - agent-server would still need to reject or ignore it for ACP, or split the
-     schema more aggressively, to avoid a misleading contract
-
-5. **Info and switch surface**
-   - the switch endpoint writes `stored.agent.llm.profile_id` together with the
-     resolved snapshot
-   - `GET /api/conversations/{id}` can expose the binding via
-     `agent.llm.profile_id`, so a separate top-level `llm_profile_id` becomes
-     optional rather than required
-
-At minimum, A2 needs `LLM.profile_id` so restore can remember which profile a
-resolved snapshot came from.
-
-I like this as future cleanup, but not as the smallest compatible first step.
-
-## Proposed design (A1)
+## Proposed design
 
 ### 1. Add a server-managed profile store
 
@@ -600,23 +527,23 @@ This rollout is additive:
 This also avoids reviving `/api/conversations/{id}/llm`, so we do not create a
 second long-term public contract that we may later regret.
 
-## Other alternatives considered
+## Alternatives considered
 
-### 1. Reintroduce `/api/conversations/{id}/llm`
+### A. Reintroduce `/api/conversations/{id}/llm`
 
 Rejected as the primary path.
 
 Reason: it pushes us toward inline LLM transport instead of reusable profile
 references, and it duplicates concepts the SDK already has.
 
-### 2. Only add `/api/llm-profiles`, but no conversation switch endpoint
+### B. Only add `/api/llm-profiles`, but no conversation switch endpoint
 
 Rejected.
 
 Reason: then profiles help creation/restore, but not runtime switching. That
 would still leave remote clients behind the local SDK API.
 
-### 3. Store only `llm_profile_id`, not the resolved snapshot
+### C. Store only `llm_profile_id`, not the resolved snapshot
 
 Rejected.
 
@@ -625,7 +552,7 @@ resolved snapshot in `StoredConversation.agent.llm` is a cheap safety net.
 
 ## Recommendation
 
-Build this as **A1: profile-first additive integration**:
+Build this as a **profile-first** integration:
 
 1. server-managed `/api/llm-profiles`
 2. additive `llm_profile_id` on standard conversation creation/info models plus
