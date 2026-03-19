@@ -10,10 +10,10 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.skills import (
     Skill,
     SkillKnowledge,
-    load_public_skills,
-    load_user_skills,
+    load_available_skills,
     to_prompt,
 )
+from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -72,6 +72,13 @@ class AgentContext(BaseModel):
             "This allows you to get the latest skills without SDK updates."
         ),
     )
+    marketplace_path: str | None = Field(
+        default=DEFAULT_MARKETPLACE_PATH,
+        description=(
+            "Relative marketplace JSON path within the public skills repository. "
+            "Set to None to load all public skills without marketplace filtering."
+        ),
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -106,47 +113,28 @@ class AgentContext(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _load_user_skills(self):
-        """Load user skills from home directory if enabled."""
-        if not self.load_user_skills:
+    def _load_auto_skills(self):
+        """Load user and/or public skills if enabled."""
+        if not self.load_user_skills and not self.load_public_skills:
             return self
 
-        try:
-            user_skills = load_user_skills()
-            # Merge user skills with explicit skills, avoiding duplicates
-            existing_names = {skill.name for skill in self.skills}
-            for user_skill in user_skills:
-                if user_skill.name not in existing_names:
-                    self.skills.append(user_skill)
-                else:
-                    logger.warning(
-                        f"Skipping user skill '{user_skill.name}' "
-                        f"(already in explicit skills)"
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to load user skills: {str(e)}")
+        auto_skills = load_available_skills(
+            work_dir=None,
+            include_user=self.load_user_skills,
+            include_project=False,
+            include_public=self.load_public_skills,
+            marketplace_path=self.marketplace_path,
+        )
 
-        return self
+        existing_names = {skill.name for skill in self.skills}
+        for name, skill in auto_skills.items():
+            if name not in existing_names:
+                self.skills.append(skill)
+            else:
+                logger.warning(
+                    f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
+                )
 
-    @model_validator(mode="after")
-    def _load_public_skills(self):
-        """Load public skills from OpenHands skills repository if enabled."""
-        if not self.load_public_skills:
-            return self
-        try:
-            public_skills = load_public_skills()
-            # Merge public skills with explicit skills, avoiding duplicates
-            existing_names = {skill.name for skill in self.skills}
-            for public_skill in public_skills:
-                if public_skill.name not in existing_names:
-                    self.skills.append(public_skill)
-                else:
-                    logger.warning(
-                        f"Skipping public skill '{public_skill.name}' "
-                        f"(already in existing skills)"
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to load public skills: {str(e)}")
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:

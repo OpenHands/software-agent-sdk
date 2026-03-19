@@ -40,7 +40,7 @@ _MODEL_VARIANT_PATTERNS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             "gpt-5-codex",
             ("gpt-5-codex", "gpt-5.1-codex", "gpt-5.2-codex", "gpt-5.3-codex"),
         ),
-        ("gpt-5", ("gpt-5", "gpt-5.1", "gpt-5.2")),
+        ("gpt-5", ("gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4")),
     ),
 }
 

@@ -7,6 +7,7 @@ functions) so tests remain coupled to real behavior.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
+get_pypi_baseline_version = _prod.get_pypi_baseline_version
 
 # Reusable test config matching the _write_pkg_init helper
 _SDK_CFG = PackageConfig(
@@ -62,6 +64,40 @@ def _write_pkg_init(
         "__all__ = [\n" + "\n".join(f"    {name!r}," for name in all_names) + "\n]\n"
     )
     return pkg
+
+
+def _mock_pypi_releases(monkeypatch, releases: list[str]) -> None:
+    payload = {"releases": {version: [] for version in releases}}
+
+    class _DummyResponse:
+        def __init__(self, data: dict) -> None:
+            self._data = data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(self._data).encode()
+
+    def _fake_urlopen(*_args, **_kwargs):
+        return _DummyResponse(payload)
+
+    monkeypatch.setattr(_prod.urllib.request, "urlopen", _fake_urlopen)
+
+
+def test_get_pypi_baseline_version_returns_current_when_published(monkeypatch):
+    _mock_pypi_releases(monkeypatch, ["1.0.0", "1.1.0"])
+
+    assert get_pypi_baseline_version("openhands-sdk", "1.1.0") == "1.1.0"
+
+
+def test_get_pypi_baseline_version_falls_back_to_previous(monkeypatch):
+    _mock_pypi_releases(monkeypatch, ["1.0.0", "1.1.0"])
+
+    assert get_pypi_baseline_version("openhands-sdk", "1.2.0") == "1.1.0"
 
 
 def test_griffe_breakage_removed_attribute_requires_minor_bump(tmp_path):
@@ -428,6 +464,46 @@ def test_is_field_metadata_only_change_long_description():
         "skills from https://github.com/OpenHands/extensions.')"
     )
     assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_deprecated_bool_only():
+    """Changing only Field deprecated metadata is detected as metadata-only."""
+    old = "Field(default=False, deprecated=False)"
+    new = "Field(default=False, deprecated=True)"
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_field_deprecated_change_is_not_breaking(tmp_path):
+    """Field deprecated metadata changes should not count as breaking changes."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(default=False, deprecated=False)\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(default=False, deprecated=True)\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+    )
+    assert total_breaks == 0
+    assert undeprecated == 0
 
 
 def test_field_description_change_is_not_breaking(tmp_path):

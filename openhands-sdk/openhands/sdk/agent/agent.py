@@ -10,6 +10,7 @@ from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
     prepare_llm_messages,
+    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -79,11 +80,21 @@ class Agent(CriticMixin, AgentBase):
     AgentBase and implements the agent execution logic. Critic-related functionality
     is provided by CriticMixin.
 
+    Attributes:
+        llm: The language model instance used for reasoning.
+        tools: List of tools available to the agent.
+        name: Optional agent identifier.
+        system_prompt: Custom system prompt (uses default if not provided).
+
     Example:
-        >>> from openhands.sdk import LLM, Agent, Tool
-        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
-        >>> agent = Agent(llm=llm, tools=tools)
+        ```python
+        from openhands.sdk import LLM, Agent, Tool
+        from pydantic import SecretStr
+
+        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = Agent(llm=llm, tools=tools)
+        ```
     """
 
     @model_validator(mode="before")
@@ -487,7 +498,13 @@ class Agent(CriticMixin, AgentBase):
                 f"Failed to provide security_risk field in tool '{tool_name}'"
             )
 
-        # When using weaker models without security analyzer
+        # When no security analyzer is configured, ignore any security_risk field
+        # from LLM and return UNKNOWN. This ensures that security_risk is only
+        # evaluated when a security analyzer is explicitly set.
+        if security_analyzer is None:
+            return risk.SecurityRisk.UNKNOWN
+
+        # When using non-LLM security analyzer without security risk field
         # safely ignore missing security risk fields
         if not requires_sr and raw is None:
             return risk.SecurityRisk.UNKNOWN
@@ -568,7 +585,10 @@ class Agent(CriticMixin, AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            arguments = json.loads(tool_call.arguments)
+            # Sanitize raw control characters (U+0000–U+001F) that some
+            # models emit as literal bytes instead of JSON escape sequences.
+            sanitized_args = sanitize_json_control_chars(tool_call.arguments)
+            arguments = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
@@ -749,42 +769,15 @@ class Agent(CriticMixin, AgentBase):
     def _log_context_window_exceeded_warning(self) -> None:
         """Log a helpful warning when context window is exceeded without a condenser."""
         if self.condenser is None:
-            logger.warning(
-                "\n"
-                "=" * 80 + "\n"
-                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
-                "=" * 80 + "\n"
-                "\n"
+            situation = (
                 "The LLM's context window has been exceeded, but no condenser is "
-                "configured.\n"
-                "\n"
-                "Current configuration:\n"
-                f"  • Condenser: None\n"
-                f"  • LLM Model: {self.llm.model}\n"
-                "\n"
+                "configured."
+            )
+            config = f"  • Condenser: None\n  • LLM Model: {self.llm.model}"
+            advice = (
                 "To prevent this error, configure a condenser to automatically "
                 "summarize\n"
-                "conversation history when it gets too long.\n"
-                "\n"
-                "Example configuration:\n"
-                "\n"
-                "  from openhands.sdk import Agent, LLM\n"
-                "  from openhands.sdk.context.condenser import "
-                "LLMSummarizingCondenser\n"
-                "\n"
-                "  agent = Agent(\n"
-                "      llm=LLM(model='your-model'),\n"
-                "      condenser=LLMSummarizingCondenser(\n"
-                "          llm=LLM(model='your-model'),  # Can use same or "
-                "cheaper model\n"
-                "          max_size=120,  # Maximum events before condensation\n"
-                "          keep_first=4   # Number of initial events to preserve\n"
-                "      )\n"
-                "  )\n"
-                "\n"
-                "For more information, see: "
-                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
-                "=" * 80
+                "conversation history when it gets too long."
             )
         else:
             condenser_type = type(self.condenser).__name__
@@ -797,21 +790,15 @@ class Agent(CriticMixin, AgentBase):
                 condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
             )
 
-            logger.warning(
-                "\n"
-                "=" * 80 + "\n"
-                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
-                "=" * 80 + "\n"
-                "\n"
-                "The LLM's context window has been exceeded.\n"
-                "\n"
-                "Current configuration:\n"
+            situation = "The LLM's context window has been exceeded."
+            config = (
                 f"  • Condenser Type: {condenser_type}\n"
                 f"  • Handles Condensation Requests: {handles_requests}\n"
                 f"  • Condenser LLM: {condenser_llm}\n"
                 f"  • Agent LLM Model: {self.llm.model}\n"
-                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}\n"
-                "\n"
+                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}"
+            )
+            advice = (
                 "Your condenser is configured but does not handle condensation "
                 "requests\n"
                 "(handles_condensation_requests() returned False).\n"
@@ -820,23 +807,38 @@ class Agent(CriticMixin, AgentBase):
                 "  1. Use LLMSummarizingCondenser which handles condensation "
                 "requests, OR\n"
                 "  2. Implement handles_condensation_requests() in your custom "
-                "condenser\n"
-                "\n"
-                "Example with LLMSummarizingCondenser:\n"
-                "\n"
-                "  from openhands.sdk.context.condenser import "
-                "LLMSummarizingCondenser\n"
-                "\n"
-                "  agent = Agent(\n"
-                "      llm=LLM(model='your-model'),\n"
-                "      condenser=LLMSummarizingCondenser(\n"
-                "          llm=LLM(model='your-model'),\n"
-                "          max_size=120,\n"
-                "          keep_first=4\n"
-                "      )\n"
-                "  )\n"
-                "\n"
-                "For more information, see: "
-                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
-                "=" * 80
+                "condenser"
             )
+
+        logger.warning(
+            "\n"
+            "=" * 80 + "\n"
+            "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
+            "=" * 80 + "\n"
+            "\n"
+            f"{situation}\n"
+            "\n"
+            "Current configuration:\n"
+            f"{config}\n"
+            "\n"
+            f"{advice}\n"
+            "\n"
+            "Example configuration:\n"
+            "\n"
+            "  from openhands.sdk import Agent, LLM\n"
+            "  from openhands.sdk.context.condenser import "
+            "LLMSummarizingCondenser\n"
+            "\n"
+            "  agent = Agent(\n"
+            "      llm=LLM(model='your-model'),\n"
+            "      condenser=LLMSummarizingCondenser(\n"
+            "          llm=LLM(model='your-model'),\n"
+            "          max_size=240,\n"
+            "          keep_first=2\n"
+            "      )\n"
+            "  )\n"
+            "\n"
+            "For more information, see: "
+            "https://docs.openhands.dev/sdk/guides/context-condenser\n"
+            "=" * 80
+        )
