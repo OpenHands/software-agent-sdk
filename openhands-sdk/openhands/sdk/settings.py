@@ -447,6 +447,82 @@ def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
 _GENERAL_SECTION_KEY = "general"
 _GENERAL_SECTION_LABEL = "General"
 
+# Keep LLM settings metadata outside the public ``LLM`` field definitions so
+# the settings schema does not mutate the SDK's public model signatures.
+_LLM_CRITICAL_FIELDS = frozenset(
+    {
+        "model",
+        "api_key",
+        "base_url",
+    }
+)
+
+_LLM_MINOR_FIELDS = frozenset(
+    {
+        "openrouter_site_url",
+        "openrouter_app_name",
+        "num_retries",
+        "retry_multiplier",
+        "retry_min_wait",
+        "retry_max_wait",
+        "timeout",
+        "max_message_chars",
+        "top_p",
+        "top_k",
+        "max_input_tokens",
+        "model_canonical_name",
+        "extra_headers",
+        "input_cost_per_token",
+        "output_cost_per_token",
+        "stream",
+        "drop_params",
+        "modify_params",
+        "disable_stop_word",
+        "caching_prompt",
+        "log_completions",
+        "log_completions_folder",
+        "custom_tokenizer",
+        "native_tool_calling",
+        "force_string_serializer",
+        "reasoning_summary",
+        "enable_encrypted_reasoning",
+        "prompt_cache_retention",
+        "extended_thinking_budget",
+        "seed",
+        "safety_settings",
+        "usage_id",
+        "litellm_extra_body",
+    }
+)
+
+_LLM_MAJOR_FIELDS = frozenset(
+    {
+        "api_version",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_region_name",
+        "temperature",
+        "max_output_tokens",
+        "ollama_base_url",
+        "disable_vision",
+        "reasoning_effort",
+    }
+)
+
+
+def _fallback_settings_metadata(
+    model: type[BaseModel], field_name: str
+) -> SettingsFieldMetadata | None:
+    if model is not LLM:
+        return None
+    if field_name in _LLM_CRITICAL_FIELDS:
+        return SettingsFieldMetadata(prominence=SettingProminence.CRITICAL)
+    if field_name in _LLM_MINOR_FIELDS:
+        return SettingsFieldMetadata(prominence=SettingProminence.MINOR)
+    if field_name in _LLM_MAJOR_FIELDS:
+        return SettingsFieldMetadata(prominence=SettingProminence.MAJOR)
+    return None
+
 
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     sections: list[SettingsSectionSchema] = []
@@ -474,6 +550,8 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 if nested_field.exclude:
                     continue
                 metadata = settings_metadata(nested_field)
+                if metadata is None:
+                    metadata = _fallback_settings_metadata(nested_model, nested_key)
                 default_value = None
                 if isinstance(section_default, BaseModel):
                     default_value = getattr(section_default, nested_key)

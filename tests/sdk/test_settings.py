@@ -9,6 +9,7 @@ from openhands.sdk.settings import (
     CondenserSettings,
     VerificationSettings,
 )
+from openhands.sdk.settings_metadata import SETTINGS_METADATA_KEY
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
@@ -61,6 +62,11 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert llm_fields["llm.litellm_extra_body"].value_type == "object"
     assert llm_fields["llm.litellm_extra_body"].default == {}
     assert llm_fields["llm.litellm_extra_body"].prominence is SettingProminence.MINOR
+    llm_model_field_extra = LLM.model_fields["model"].json_schema_extra
+    assert not isinstance(llm_model_field_extra, dict) or (
+        SETTINGS_METADATA_KEY not in llm_model_field_extra
+    )
+
     assert llm_fields["llm.num_retries"].prominence is SettingProminence.MINOR
 
     # Excluded fields must not appear
