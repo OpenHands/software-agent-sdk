@@ -689,7 +689,16 @@ def _parse_buildkit_telemetry(stderr: str) -> BuildTelemetry:
             )
             continue
 
-        step_descriptions[step] = message.removesuffix(" ...").strip()
+        # Only update step description if there isn't already a classified one.
+        # This prevents sub-operations (like "preparing build cache for export")
+        # from overwriting the main operation (like "exporting cache to registry").
+        new_desc = message.removesuffix(" ...").strip()
+        existing_desc = step_descriptions.get(step)
+        if (
+            existing_desc is None
+            or _classify_buildkit_description(existing_desc) is None
+        ):
+            step_descriptions[step] = new_desc
 
     telemetry.build_context_seconds = _round_seconds(telemetry.build_context_seconds)
     telemetry.buildx_wall_clock_seconds = _round_seconds(
