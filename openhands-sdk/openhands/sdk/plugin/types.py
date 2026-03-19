@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -74,17 +75,40 @@ class MarketplaceRegistration(BaseModel):
     @classmethod
     def validate_repo_path(cls, v: str | None) -> str | None:
         """Validate repo_path is a safe relative path within the repository."""
-        if v is None:
-            return v
-        # Must be relative (no absolute paths)
-        if v.startswith("/"):
-            raise ValueError("repo_path must be relative, not absolute")
-        # No parent directory traversal
-        if ".." in Path(v).parts:
-            raise ValueError(
-                "repo_path cannot contain '..' (parent directory traversal)"
-            )
+        return _validate_repo_path(v)
+
+
+def _validate_repo_path(v: str | None) -> str | None:
+    """Validate that a repo_path is a safe relative path.
+
+    Ensures the path:
+    - Is relative (not absolute)
+    - Does not escape the repository root via '..' traversal
+    - Normalizes to a path within the repo even after resolution
+    """
+    if v is None:
         return v
+
+    # Must be relative (no absolute paths)
+    if v.startswith("/"):
+        raise ValueError("repo_path must be relative, not absolute")
+
+    # Normalize the path to catch tricks like 'safe/../../../etc'
+    # Use a dummy root to resolve against, then check if result stays inside
+    dummy_root = Path("/repo")
+    normalized = os.path.normpath(os.path.join(str(dummy_root), v))
+    normalized_path = Path(normalized)
+
+    # Check if the normalized path is still under dummy_root
+    # This catches paths like 'a/../../etc' which normalize to '/etc'
+    try:
+        normalized_path.relative_to(dummy_root)
+    except ValueError:
+        raise ValueError(
+            f"repo_path '{v}' escapes repository root after normalization"
+        )
+
+    return v
 
 
 class PluginSource(BaseModel):
@@ -127,17 +151,7 @@ class PluginSource(BaseModel):
     @classmethod
     def validate_repo_path(cls, v: str | None) -> str | None:
         """Validate repo_path is a safe relative path within the repository."""
-        if v is None:
-            return v
-        # Must be relative (no absolute paths)
-        if v.startswith("/"):
-            raise ValueError("repo_path must be relative, not absolute")
-        # No parent directory traversal
-        if ".." in Path(v).parts:
-            raise ValueError(
-                "repo_path cannot contain '..' (parent directory traversal)"
-            )
-        return v
+        return _validate_repo_path(v)
 
 
 class ResolvedPluginSource(BaseModel):

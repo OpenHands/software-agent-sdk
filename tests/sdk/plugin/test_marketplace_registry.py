@@ -12,6 +12,7 @@ from openhands.sdk.plugin import (
     MarketplaceRegistration,
     MarketplaceRegistry,
     PluginNotFoundError,
+    PluginResolutionError,
 )
 
 
@@ -68,7 +69,7 @@ class TestMarketplaceRegistration:
 
     def test_repo_path_validation_rejects_traversal(self):
         """Test that parent directory traversal is rejected."""
-        with pytest.raises(ValueError, match="cannot contain '..'"):
+        with pytest.raises(ValueError, match="escapes repository root"):
             MarketplaceRegistration(
                 name="test",
                 source="github:owner/repo",
@@ -319,3 +320,134 @@ class TestMarketplaceRegistryResolution:
             plugins = registry.list_plugins()
 
             assert set(plugins) == {"plugin-a", "plugin-b"}
+
+
+class TestErrorAccumulation:
+    """Tests for error accumulation when marketplaces fail."""
+
+    def test_resolve_plugin_all_marketplaces_fail_shows_errors(self):
+        """Test that when all marketplaces fail, errors are included in exception."""
+        regs = [
+            MarketplaceRegistration(name="mp1", source="github:owner/repo1"),
+            MarketplaceRegistration(name="mp2", source="github:owner/repo2"),
+        ]
+        registry = MarketplaceRegistry(regs)
+
+        # Mock _fetch_marketplace to always fail
+        error1 = ConnectionError("Network unreachable for mp1")
+        error2 = TimeoutError("Timeout connecting to mp2")
+
+        def mock_fetch(reg):
+            if reg.name == "mp1":
+                raise error1
+            raise error2
+
+        with patch.object(registry, "_fetch_marketplace", side_effect=mock_fetch):
+            with pytest.raises(PluginNotFoundError) as exc_info:
+                registry.resolve_plugin("some-plugin")
+
+            # Error should mention all marketplace failures
+            assert exc_info.value.fetch_errors is not None
+            assert len(exc_info.value.fetch_errors) == 2
+            assert "mp1" in exc_info.value.fetch_errors
+            assert "mp2" in exc_info.value.fetch_errors
+            # Exception message should contain details
+            assert "All 2 marketplace(s) failed" in str(exc_info.value)
+            assert "Network unreachable" in str(exc_info.value)
+            assert "Timeout" in str(exc_info.value)
+
+    def test_resolve_plugin_partial_failures_dont_show_errors(
+        self, mock_marketplace_dir
+    ):
+        """Test that partial failures (some succeed) don't include fetch_errors."""
+        regs = [
+            MarketplaceRegistration(name="failing", source="github:owner/bad"),
+            MarketplaceRegistration(name="working", source=str(mock_marketplace_dir)),
+        ]
+        registry = MarketplaceRegistry(regs)
+
+        marketplace = Marketplace.load(mock_marketplace_dir)
+
+        def mock_fetch(reg):
+            if reg.name == "failing":
+                raise ConnectionError("Network error")
+            return (marketplace, mock_marketplace_dir)
+
+        with patch.object(registry, "_fetch_marketplace", side_effect=mock_fetch):
+            # Plugin not in the marketplace that succeeded
+            with pytest.raises(PluginNotFoundError) as exc_info:
+                registry.resolve_plugin("nonexistent-plugin")
+
+            # Since one marketplace was searched successfully, we get normal error
+            assert "not found in any registered marketplace" in str(exc_info.value)
+            # fetch_errors should be empty (not all failed)
+            assert not exc_info.value.fetch_errors
+
+    def test_list_plugins_all_marketplaces_fail_raises_error(self):
+        """Test that list_plugins raises error with details when all fail."""
+        regs = [
+            MarketplaceRegistration(name="mp1", source="github:owner/repo1"),
+            MarketplaceRegistration(name="mp2", source="github:owner/repo2"),
+        ]
+        registry = MarketplaceRegistry(regs)
+
+        def mock_fetch(reg):
+            raise ConnectionError(f"Failed to fetch {reg.name}")
+
+        with patch.object(registry, "_fetch_marketplace", side_effect=mock_fetch):
+            with pytest.raises(PluginResolutionError) as exc_info:
+                registry.list_plugins()
+
+            # Error message should show all failures
+            assert "All 2 marketplace(s) failed" in str(exc_info.value)
+            assert "mp1" in str(exc_info.value)
+            assert "mp2" in str(exc_info.value)
+
+
+class TestPathValidation:
+    """Tests for repo_path validation security."""
+
+    def test_repo_path_rejects_traversal_via_normalization(self):
+        """Test that paths like 'safe/../../../etc' are rejected."""
+        with pytest.raises(ValueError, match="escapes repository root"):
+            MarketplaceRegistration(
+                name="test",
+                source="github:owner/repo",
+                repo_path="safe/../../../etc/passwd",
+            )
+
+    def test_repo_path_allows_valid_nested_path(self):
+        """Test that valid nested paths are allowed."""
+        reg = MarketplaceRegistration(
+            name="test",
+            source="github:owner/repo",
+            repo_path="marketplaces/internal/plugins",
+        )
+        assert reg.repo_path == "marketplaces/internal/plugins"
+
+    def test_repo_path_allows_simple_path(self):
+        """Test that simple paths without any tricks work."""
+        reg = MarketplaceRegistration(
+            name="test",
+            source="github:owner/repo",
+            repo_path="plugins",
+        )
+        assert reg.repo_path == "plugins"
+
+    def test_repo_path_rejects_absolute_path(self):
+        """Test that absolute paths are rejected."""
+        with pytest.raises(ValueError, match="must be relative"):
+            MarketplaceRegistration(
+                name="test",
+                source="github:owner/repo",
+                repo_path="/etc/passwd",
+            )
+
+    def test_repo_path_rejects_simple_parent_traversal(self):
+        """Test that simple '..' traversal is rejected."""
+        with pytest.raises(ValueError, match="escapes repository root"):
+            MarketplaceRegistration(
+                name="test",
+                source="github:owner/repo",
+                repo_path="../outside",
+            )
