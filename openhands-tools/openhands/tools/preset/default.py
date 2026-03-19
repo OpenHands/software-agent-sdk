@@ -88,36 +88,30 @@ def get_default_agent(
     return agent
 
 
-def register_builtins_agents(cli_mode: bool = False) -> list[str]:
+def register_builtins_agents(enable_browser: bool = True) -> list[str]:
     """Load and register builtin agents from ``subagent/*.md``.
-
     They are registered via `register_agent_if_absent` and will not
     overwrite agents already registered by programmatic calls, plugins,
     or project/user-level file-based definitions.
-
     Args:
-        cli_mode: Whether to load the default agent in cli mode or not.
-
+        enable_browser: Whether browser tools are available. When False,
+            agents that require browser tools (e.g. web researcher) are
+            skipped.
     Returns:
         List of agents which were actually registered.
     """
-    register_default_tools(
-        # Disable browser tools in CLI mode
-        enable_browser=not cli_mode,
-    )
+    register_default_tools(enable_browser=enable_browser)
 
     subagent_dir = Path(__file__).parent / "subagents"
     builtins_agents_def = load_agents_from_dir(subagent_dir)
 
-    # if we are in cli mode, we filter out the default agent (with browser tool)
-    # otherwise, we filter out the default cli agent
-    if cli_mode:
+    # Filter out browser-dependent agents when browser is not available
+    if not enable_browser:
+        _browser_only_agents = {"web researcher"}
         builtins_agents_def = [
-            agent for agent in builtins_agents_def if agent.name != "default"
-        ]
-    else:
-        builtins_agents_def = [
-            agent for agent in builtins_agents_def if agent.name != "default cli mode"
+            agent
+            for agent in builtins_agents_def
+            if agent.name not in _browser_only_agents
         ]
 
     registered: list[str] = []

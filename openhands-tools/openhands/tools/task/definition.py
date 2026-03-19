@@ -43,7 +43,7 @@ class TaskAction(Action):
         description="The task for the agent to perform.",
     )
     subagent_type: str = Field(
-        default="default",
+        default="general purpose",
         description="The type of specialized agent to use for this task.",
     )
     resume: str | None = Field(

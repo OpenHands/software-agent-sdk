@@ -358,10 +358,7 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     Raises:
         ValueError: If no agent factory with the given name is found
     """
-    if name is None or name == "":
-        factory_name = "default"
-    else:
-        factory_name = name
+    factory_name = "general purpose" if not name or name == "general purpose" else name
 
     with _registry_lock:
         factory = _agent_factories.get(factory_name)
