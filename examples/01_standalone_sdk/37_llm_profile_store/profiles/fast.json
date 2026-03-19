@@ -1,5 +1,6 @@
 {
   "model": "anthropic/claude-sonnet-4-5-20250929",
+  "api_key": "**********",
   "openrouter_site_url": "https://docs.all-hands.dev/",
   "openrouter_app_name": "OpenHands",
   "num_retries": 5,

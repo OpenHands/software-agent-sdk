@@ -1,8 +1,9 @@
 """Example: Using LLMProfileStore to save and reuse LLM configurations.
 
 This example ships with one pre-generated profile JSON file and creates another
-profile at runtime. The checked-in profile omits secrets so it is safe to keep
-in version control.
+profile at runtime. The checked-in profile comes from a normal save, so secrets
+are masked instead of exposed and non-secret fields like `base_url` are kept
+when present.
 """
 
 import os
@@ -35,9 +36,9 @@ creative_llm = LLM(
     temperature=0.9,
 )
 
-# The checked-in fast.json was generated without api_key/base_url, so those
-# fields were None and omitted by serialization. This runtime profile still
-# avoids persisting the real API key because secrets are masked by default.
+# The checked-in fast.json was generated with a normal save, so its api_key is
+# masked and any configured base_url would be preserved. This runtime profile
+# also avoids persisting the real API key because secrets are masked by default.
 store.save("creative", creative_llm)
 creative_profile_json = (profile_store_dir / "creative.json").read_text()
 if api_key is not None:
