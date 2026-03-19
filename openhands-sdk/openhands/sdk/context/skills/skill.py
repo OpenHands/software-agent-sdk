@@ -1,6 +1,7 @@
 import io
 import json
 import re
+import warnings
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
@@ -929,6 +930,11 @@ def load_public_skills(
 ) -> list[Skill]:
     """Load skills from the public OpenHands skills repository.
 
+    .. deprecated::
+        The `marketplace_path` parameter is deprecated. Use
+        `AgentContext.registered_marketplaces` with `MarketplaceRegistration`
+        for more flexible marketplace configuration.
+
     This function maintains a local git clone of the public skills registry at
     https://github.com/OpenHands/extensions. On first run, it clones the repository
     to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
@@ -948,8 +954,9 @@ def load_public_skills(
         repo_url: URL of the skills repository. Defaults to the official
             OpenHands skills repository.
         branch: Branch name to load skills from. Defaults to 'main'.
-        marketplace_path: Relative path to the marketplace JSON file within the
-            repository. Pass None to load all public skills without filtering.
+        marketplace_path: DEPRECATED - Relative path to the marketplace JSON file
+            within the repository. Pass None to load all public skills without
+            filtering. Use registered_marketplaces instead.
 
     Returns:
         List of Skill objects loaded from the public repository.
@@ -965,6 +972,15 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
+    # Emit deprecation warning when marketplace_path is explicitly provided
+    if marketplace_path is not None:
+        warnings.warn(
+            "load_public_skills(marketplace_path=...) is deprecated. "
+            "Use AgentContext.registered_marketplaces instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     all_skills = []
 
     try:
@@ -1061,6 +1077,11 @@ def load_available_skills(
 ) -> dict[str, Skill]:
     """Load and merge skills from SDK-level sources with consistent precedence.
 
+    .. deprecated::
+        The `marketplace_path` parameter is deprecated. Use
+        `AgentContext.registered_marketplaces` with `MarketplaceRegistration`
+        for more flexible marketplace configuration.
+
     Precedence (later overrides earlier via dict updates):
         public (lowest) → user → project (highest)
 
@@ -1074,19 +1095,33 @@ def load_available_skills(
         include_user: Load user-level skills (~/.agents/skills, etc.).
         include_project: Load project-level skills (requires *work_dir*).
         include_public: Load public skills from the OpenHands extensions repo.
-        marketplace_path: Relative marketplace JSON path to use for public skills.
-            Pass None to load all public skills without marketplace filtering.
+        marketplace_path: DEPRECATED - Relative marketplace JSON path to use for
+            public skills. Pass None to load all public skills without marketplace
+            filtering. Use registered_marketplaces instead.
 
     Returns:
         Dict mapping skill name → Skill, with higher-precedence sources
         overriding lower ones.
     """
+    # Emit deprecation warning when marketplace_path is explicitly provided
+    if marketplace_path is not None:
+        warnings.warn(
+            "load_available_skills(marketplace_path=...) is deprecated. "
+            "Use AgentContext.registered_marketplaces instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     available: dict[str, Skill] = {}
 
     if include_public:
         try:
-            for s in load_public_skills(marketplace_path=marketplace_path):
-                available[s.name] = s
+            # Suppress the nested deprecation warning from load_public_skills
+            # since we already warned above
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                for s in load_public_skills(marketplace_path=marketplace_path):
+                    available[s.name] = s
         except Exception as e:
             logger.warning(f"Failed to load public skills: {e}")
 

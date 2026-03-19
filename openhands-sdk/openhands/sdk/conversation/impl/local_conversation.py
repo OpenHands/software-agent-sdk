@@ -314,11 +314,12 @@ class LocalConversation(BaseConversation):
 
         The method:
         1. Fetches plugins from their sources (network IO for remote sources)
-        2. Resolves refs to commit SHAs for deterministic resume
-        3. Loads plugin contents (skills, MCP config, hooks)
-        4. Merges plugin contents into the agent
-        5. Sets up hook processor with combined hooks (explicit + plugin)
-        6. Runs session_start hooks
+        2. Auto-loads plugins from registered marketplaces with auto_load='all'
+        3. Resolves refs to commit SHAs for deterministic resume
+        4. Loads plugin contents (skills, MCP config, hooks)
+        5. Merges plugin contents into the agent
+        6. Sets up hook processor with combined hooks (explicit + plugin)
+        7. Runs session_start hooks
         """
         if self._plugins_loaded:
             return
@@ -326,16 +327,63 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
-        # Load plugins if specified
+        # Collect plugins from both explicit specs and auto-load marketplaces
+        plugins_to_load: list[tuple[PluginSource, str]] = []  # (spec, source_desc)
+
+        # Add explicit plugin specs first
         if self._plugin_specs:
-            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
+            for spec in self._plugin_specs:
+                plugins_to_load.append((spec, f"explicit: {spec.source}"))
+
+        # Auto-load plugins from registered marketplaces with auto_load='all'
+        agent_context = self.agent.agent_context
+        if agent_context and agent_context.registered_marketplaces:
+            # Initialize marketplace registry if needed
+            if self._marketplace_registry is None:
+                self._marketplace_registry = MarketplaceRegistry(
+                    agent_context.registered_marketplaces
+                )
+
+            # Get marketplaces that should auto-load
+            auto_load_registrations = (
+                self._marketplace_registry.get_auto_load_registrations()
+            )
+            for reg in auto_load_registrations:
+                try:
+                    marketplace, repo_path = self._marketplace_registry.get_marketplace(
+                        reg.name
+                    )
+                    logger.info(
+                        f"Auto-loading {len(marketplace.plugins)} plugin(s) from "
+                        f"marketplace '{reg.name}'"
+                    )
+                    for plugin_entry in marketplace.plugins:
+                        source, ref, subpath = marketplace.resolve_plugin_source(
+                            plugin_entry
+                        )
+                        plugin_source = PluginSource(
+                            source=source,
+                            ref=ref,
+                            repo_path=subpath,
+                        )
+                        plugins_to_load.append(
+                            (plugin_source, f"marketplace:{reg.name}/{plugin_entry.name}")
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to auto-load plugins from marketplace '{reg.name}': {e}"
+                    )
+
+        # Load all collected plugins
+        if plugins_to_load:
+            logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
             # Start with agent's existing context and MCP config
             merged_context = self.agent.agent_context
             merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
-            for spec in self._plugin_specs:
+            for spec, source_desc in plugins_to_load:
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
                     source=spec.source,
@@ -350,7 +398,7 @@ class LocalConversation(BaseConversation):
                 # Load the plugin
                 plugin = Plugin.load(path)
                 logger.debug(
-                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+                    f"Loaded plugin '{plugin.manifest.name}' from {source_desc}"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
                 )
 
@@ -378,7 +426,7 @@ class LocalConversation(BaseConversation):
             with self._state:
                 self._state.agent = self.agent
 
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+            logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
