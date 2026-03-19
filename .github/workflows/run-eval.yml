@@ -60,7 +60,10 @@ on:
                 default: main
                 type: string
             instance_ids:
-                description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
+                description: >-
+                    Comma-separated instance IDs to evaluate (no spaces).
+                    Example: "django__django-11583,django__django-12345".
+                    Leave empty to evaluate all instances up to eval_limit.
                 required: false
                 default: ''
             num_infer_workers:
