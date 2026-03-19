@@ -113,8 +113,6 @@ on:
 env:
     EVAL_REPO: OpenHands/evaluation
     EVAL_WORKFLOW: eval-job.yml
-    DATASET: princeton-nlp/SWE-bench_Verified
-    SPLIT: test
 
 jobs:
     print-parameters:
@@ -154,8 +152,6 @@ jobs:
                   echo "=== Environment Variables ==="
                   echo "EVAL_REPO: ${{ env.EVAL_REPO }}"
                   echo "EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}"
-                  echo "DATASET: ${{ env.DATASET }}"
-                  echo "SPLIT: ${{ env.SPLIT }}"
                   echo ""
                   echo "=== Label (for PR events) ==="
                   echo "Label: ${{ github.event.label.name || 'N/A' }}"
