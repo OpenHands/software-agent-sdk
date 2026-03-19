@@ -107,7 +107,7 @@ jobs:
                   echo "✓ Binary test completed successfully"
 
             - name: Upload binary artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: openhands-server-${{ matrix.os }}
                   path: |
@@ -319,7 +319,7 @@ jobs:
                   EOF
 
             - name: Upload build info artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: build-info-${{ matrix.variant }}-${{ matrix.arch }}
                   path: build-info/${{ matrix.variant }}-${{ matrix.arch }}.json
@@ -435,7 +435,7 @@ jobs:
                   EOF
 
             - name: Upload manifest info artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: manifest-info-${{ matrix.variant }}
                   path: manifest-info/${{ matrix.variant }}.json
