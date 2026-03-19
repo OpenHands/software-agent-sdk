@@ -4,9 +4,10 @@ Register multiple marketplaces and load plugins on-demand.
 
 - auto_load="all": Load all plugins at conversation start
 - auto_load=None: Register but don't auto-load (use conversation.load_plugin())
+
+This example uses a pre-created marketplace in ./demo_marketplace/
 """
 
-import json
 import os
 from pathlib import Path
 
@@ -17,50 +18,9 @@ from openhands.sdk.plugin import MarketplaceRegistration
 SCRIPT_DIR = Path(__file__).parent
 
 
-def create_example_marketplace() -> Path:
-    """Create a simple marketplace with a plugin for this demo."""
-    marketplace_dir = SCRIPT_DIR / "demo_marketplace"
-    plugin_dir = marketplace_dir / "plugins" / "greeter"
-
-    # Create marketplace manifest
-    (marketplace_dir / ".plugin").mkdir(parents=True, exist_ok=True)
-    (marketplace_dir / ".plugin" / "marketplace.json").write_text(
-        json.dumps(
-            {
-                "name": "demo-marketplace",
-                "owner": {"name": "Demo"},
-                "plugins": [{"name": "greeter", "source": "./plugins/greeter"}],
-                "skills": [],
-            }
-        )
-    )
-
-    # Create plugin with a skill
-    (plugin_dir / ".plugin").mkdir(parents=True, exist_ok=True)
-    (plugin_dir / ".plugin" / "plugin.json").write_text(
-        json.dumps(
-            {
-                "name": "greeter",
-                "version": "1.0.0",
-                "description": "A greeting plugin",
-            }
-        )
-    )
-
-    (plugin_dir / "skills").mkdir(exist_ok=True)
-    (plugin_dir / "skills" / "SKILL.md").write_text("""---
-name: greeter-skill
-description: Generates friendly greetings
----
-# Greeter Skill
-When asked to greet someone, respond with a warm, friendly greeting.
-""")
-
-    return marketplace_dir
-
-
 def main():
-    marketplace_dir = create_example_marketplace()
+    # Use pre-created marketplace in this directory
+    marketplace_dir = SCRIPT_DIR / "demo_marketplace"
 
     llm = LLM(
         model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
@@ -74,7 +34,7 @@ def main():
             MarketplaceRegistration(
                 name="demo",
                 source=str(marketplace_dir),
-                # auto_load=None - we'll load explicitly
+                # auto_load=None means we load explicitly with load_plugin()
             ),
         ],
     )
