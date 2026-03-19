@@ -47,12 +47,14 @@ class ConversationIterationLimitEvent(Event):
     different retry strategies.
     """
 
-    max_iterations: int = Field(description="The maximum allowed iterations")
+    max_iteration_per_run: int = Field(description="The maximum allowed iterations")
 
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this iteration limit event."""
         content = Text()
         content.append("Iteration Limit Reached\n", style="bold")
-        content.append(f"Max Iterations: {self.max_iterations}\n", style="yellow")
+        content.append(
+            f"Max Iterations: {self.max_iteration_per_run}\n", style="yellow"
+        )
         return content

@@ -477,4 +477,4 @@ def test_execution_status_error_on_max_iterations():
         e for e in events_received if isinstance(e, ConversationIterationLimitEvent)
     ]
     assert len(limit_events) == 1
-    assert limit_events[0].max_iterations == 2
+    assert limit_events[0].max_iteration_per_run == 2
