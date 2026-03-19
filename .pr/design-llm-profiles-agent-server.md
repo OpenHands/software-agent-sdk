@@ -155,8 +155,9 @@ before constructing `LocalConversation`**.
 
 ## Non-goals
 
-1. Reworking the full conversation creation contract so `agent.llm` becomes optional.
-   That is a larger API cleanup.
+1. Reworking the SDK/Python/REST agent contract so a standard `Agent` can be
+   configured by either an inline `LLM` or an `llm_profile_id`.
+   That is the larger A2 alternative below, not the recommendation here.
 2. Generalizing this design to every agent component in one PR.
    This proposal is LLM-profile-specific.
 3. Auto-pushing profile edits into already-running conversations.
@@ -164,7 +165,123 @@ before constructing `LocalConversation`**.
 4. Solving multi-tenant profile isolation.
    The current agent-server is effectively instance-scoped; profiles should be too.
 
-## Proposed design
+## Creation-contract alternatives
+
+There are two viable directions here.
+
+### A1. Additive profile binding with `agent.llm` unchanged
+
+This document recommends A1.
+
+- keep standard `Agent.llm` required everywhere it is required today
+- add `llm_profile_id` only on standard conversation REST models:
+  `StartConversationRequest`, `StoredConversation`, and `ConversationInfo`
+- treat `llm_profile_id` as server-managed metadata that resolves to a runtime
+  `agent.llm`
+- persist both:
+  - the resolved `agent.llm` snapshot
+  - the separate `llm_profile_id` reference
+- make no SDK `Agent` or `LLM` schema change
+
+Why A1 first:
+
+- it is fully additive for the current REST contract
+- it keeps the SDK Python `Agent` contract unchanged
+- it keeps unresolved profile references out of `ConversationState` and agent
+  internals
+- it avoids ACP/schema cleanup in the same step
+
+### A2. Standard `Agent` accepts either `llm` or `llm_profile_id`
+
+This is the larger cleanup alternative behind non-goal #1.
+
+The important distinction from A1 is that A2 is **not** "put `profile_id`
+inside `LLM`". It is: the public standard `Agent` configuration becomes one-of:
+
+- `Agent(llm=LLM(...), ...)`
+- `Agent(llm_profile_id="fast", ...)`
+
+Exact model shape still needs design, but semantically it means the standard
+agent contract can carry either a concrete LLM config or an unresolved profile
+reference.
+
+Blast radius relative to A1:
+
+1. **SDK/Python Agent contract**
+   - `openhands.sdk.agent.base.AgentBase` today requires `llm: LLM`
+   - `Agent`, `Conversation(...)`, `RemoteConversation(...)`, and direct
+     `Agent.model_dump()` / `model_validate()` round-trips all assume that
+   - A2 therefore changes the public Python API, not just the REST start request
+   - to keep the contract explicit, this likely wants `llm: LLM | None` plus
+     `llm_profile_id: str | None` with an exactly-one validator, or a dedicated
+     agent-spec union; `llm: LLM | str` would be too ambiguous
+
+2. **Runtime resolution point**
+   - the runtime cannot freely carry an unresolved profile reference today
+   - agent code directly reads `self.llm.model` and other concrete `LLM`
+     attributes
+   - so A2 needs a principled resolution step before an `Agent` is used by
+     `LocalConversation`, `RemoteConversation`, or `ConversationState.create()`
+   - that raises a design question: do we let the runtime `Agent` be partially
+     unresolved, or do we introduce a separate agent-spec / resolver boundary so
+     runtime agents still always have a real `LLM`?
+
+3. **Serialization and persistence**
+   - today an `Agent` model is already its serializable representation
+   - under A2, `agent.model_dump()` might now produce an unresolved
+     `{..., "llm_profile_id": "fast"}` shape instead of a concrete `llm`
+   - that affects `StoredConversation` `meta.json`, `ConversationState`
+     `base_state.json`, and any direct SDK serialization/deserialization of
+     `Agent`
+   - if we still want restore to survive deleted or corrupted profiles, we
+     probably need both:
+     - the profile reference
+     - a resolved snapshot fallback
+   - so A2 is not automatically simpler on persistence
+
+4. **Conversation restore semantics**
+   - `ConversationState.create()` currently validates the persisted agent,
+     verifies tools, then replaces `state.agent` with the runtime agent
+   - if persisted state can contain an unresolved profile reference, local SDK
+     restore also needs a way to resolve it, not just agent-server restore
+   - that means the resolution logic cannot live only in the REST layer
+
+5. **RemoteConversation and REST/OpenAPI**
+   - `RemoteConversation` currently serializes `agent.model_dump(...)` straight
+     into `POST /api/conversations`
+   - with A2, the embedded standard `Agent` schema changes, so REST changes are
+     downstream of the Python API change
+   - the request path can likely be rolled out additively, but the response
+     contract needs a deliberate choice: should `GET /api/conversations/{id}`
+     return the original unresolved agent shape, the resolved runtime
+     `agent.llm`, or both?
+   - that choice affects backward compatibility and the `Agent server REST API
+     breakage checks` workflow
+
+6. **ACP / model hierarchy**
+   - if we push the one-of fields down into `AgentBase`, ACP inherits them even
+     though ACP execution is not selected via `agent.llm`
+   - if we keep A2 standard-`Agent`-only, then `Agent` and `ACPAgent` no longer
+     share the same `llm` contract, and the model hierarchy becomes more
+     asymmetric
+   - either way, A2 has more schema fallout than A1
+
+7. **Conversation surface area**
+   - because the public agent contract changes, the blast radius is broader than
+     just start/switch endpoints
+   - `Conversation(...)`, `LocalConversation`, `RemoteConversation`, and any
+     helper that assumes a concrete agent `llm` need a documented resolution
+     story
+
+At minimum, A2 needs a clear answer to: what is the canonical serialized form of
+standard `Agent`? If the answer is "either inline `llm` or `llm_profile_id`",
+then this is a broader SDK contract redesign, not just an agent-server feature.
+
+I think A2 is a legitimate future cleanup, but it is materially larger than A1
+because it changes the public `Agent` contract and pushes profile resolution
+into core SDK construction/serialization paths, not only the REST layer.
+
+## Proposed design (A1)
 
 ### 1. Add a server-managed profile store
 
