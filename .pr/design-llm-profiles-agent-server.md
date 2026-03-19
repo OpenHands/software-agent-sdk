@@ -242,13 +242,15 @@ Delete the profile definition.
 
 ### 4. Extend conversation creation to accept a profile reference
 
-Add an optional field to both conversation contracts:
+Add an optional field on the shared start-request base so it flows into both
+conversation contracts:
 
-- `StartConversationRequest.llm_profile_id: str | None = None`
-- `StartACPConversationRequest.llm_profile_id: str | None = None`
+- `_StartConversationRequestBase.llm_profile_id: str | None = None`
+- inherited by `StartConversationRequest`
+- inherited by `StartACPConversationRequest`
 
-Because `StoredConversation` inherits from the ACP request model, the field will
-also persist naturally in `meta.json`.
+`StoredConversation` currently inherits from `StartACPConversationRequest`, so the
+same field would also persist naturally in `meta.json`.
 
 #### Semantics
 
