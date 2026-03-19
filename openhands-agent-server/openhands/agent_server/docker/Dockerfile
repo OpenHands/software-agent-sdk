@@ -58,12 +58,6 @@ RUN test -x /agent-server/dist/openhands-agent-server
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
 
-
-ARG OPENHANDS_BUILD_GIT_SHA=unknown
-ARG OPENHANDS_BUILD_GIT_REF=unknown
-ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
-ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
-
 # Install base packages and create user
 RUN set -eux; \
     # Install base packages (works for both Debian-based images)
@@ -103,6 +97,14 @@ RUN mkdir -p /etc/claude-code && \
 # NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
+
+# SDK version metadata — placed AFTER expensive RUN layers (apt-get, npm)
+# so that changing the SDK commit does not invalidate their cache.
+# This lets BuildKit reuse cached base layers across SDK commits.
+ARG OPENHANDS_BUILD_GIT_SHA=unknown
+ARG OPENHANDS_BUILD_GIT_REF=unknown
+ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
+ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 
 USER ${USERNAME}
 WORKDIR /
