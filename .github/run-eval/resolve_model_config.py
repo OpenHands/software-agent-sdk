@@ -330,9 +330,16 @@ def check_model(
             **kwargs,
         )
 
-        content = response.choices[0].message.content if response.choices else None
+        response_content = (
+            response.choices[0].message.content if response.choices else None
+        )
+        reasoning_content = (
+            getattr(response.choices[0].message, "reasoning_content", None)
+            if response.choices
+            else None
+        )
 
-        if content:
+        if response_content or reasoning_content:
             return True, f"✓ {display_name}: OK"
         else:
             # Check if there's any other data in the response for diagnostics

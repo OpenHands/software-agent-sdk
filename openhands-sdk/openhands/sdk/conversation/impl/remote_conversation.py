@@ -437,12 +437,17 @@ class RemoteState(ConversationStateProtocol):
                 return self._cached_state
 
             # Fallback to REST API if no cached state
-            resp = _send_request(
-                self._client,
-                "GET",
-                f"{self._conversation_info_base_path}/{self._conversation_id}",
-            )
-            state = resp.json()
+            return self.refresh_from_server()
+
+    def refresh_from_server(self) -> dict:
+        """Fetch and cache the latest authoritative conversation state."""
+        resp = _send_request(
+            self._client,
+            "GET",
+            f"{self._conversation_info_base_path}/{self._conversation_id}",
+        )
+        state = resp.json()
+        with self._lock:
             self._cached_state = state
             return state
 
@@ -1039,6 +1044,7 @@ class RemoteConversation(BaseConversation):
                     ws_status,
                     elapsed,
                 )
+                self._state.refresh_from_server()
                 return
             except Empty:
                 pass  # Queue.get() timed out, fall through to REST polling
@@ -1064,10 +1070,14 @@ class RemoteConversation(BaseConversation):
                         logger.info(
                             "Run completed via REST fallback after %d consecutive "
                             "terminal polls (status: %s, elapsed: %.1fs). "
-                            "Reconciling events...",
+                            "Refreshing final state and reconciling events...",
                             consecutive_terminal_polls,
                             status,
                             elapsed,
+                        )
+                        final_info = self._state.refresh_from_server()
+                        self._handle_conversation_status(
+                            final_info.get("execution_status")
                         )
                         # Reconcile events to catch any that were missed via WS.
                         # This is only called in the fallback path, so it doesn't
@@ -1185,15 +1195,20 @@ class RemoteConversation(BaseConversation):
         )
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
-        # Convert SecretValue to strings for JSON serialization
-        # SecretValue can be str or callable, we need to handle both
-        serializable_secrets = {}
+        from openhands.sdk.secret.secrets import SecretSource
+
+        serializable_secrets: dict[str, str | dict] = {}
         for key, value in secrets.items():
-            if callable(value):
-                # If it's a callable, call it to get the actual secret
+            if isinstance(value, SecretSource):
+                # Pydantic model → dict with "kind" discriminator for server.
+                # expose_secrets=True prevents SecretStr fields (e.g. header
+                # values) from being redacted during serialization.
+                serializable_secrets[key] = value.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                )
+            elif callable(value):
                 serializable_secrets[key] = value()
             else:
-                # If it's already a string, use it directly
                 serializable_secrets[key] = value
 
         payload = {"secrets": serializable_secrets}
