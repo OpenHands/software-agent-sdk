@@ -3,11 +3,14 @@
 See: https://github.com/OpenHands/software-agent-sdk/issues/2244
 """
 
-from openhands.tools.terminal.utils.escape_filter import filter_terminal_queries
+from openhands.tools.terminal.utils.escape_filter import (
+    TerminalQueryFilter,
+    filter_terminal_queries,
+)
 
 
 class TestFilterTerminalQueries:
-    """Tests for the filter_terminal_queries function."""
+    """Tests for the filter_terminal_queries function (stateless API)."""
 
     def test_dsr_query_removed(self):
         """DSR (Device Status Report) queries should be removed."""
@@ -142,3 +145,134 @@ class TestFilterTerminalQueries:
         output = "Hello 🌍 World \x1b[6n with emoji"
         result = filter_terminal_queries(output)
         assert result == "Hello 🌍 World  with emoji"
+
+
+class TestTerminalQueryFilter:
+    """Tests for the stateful TerminalQueryFilter class."""
+
+    def test_single_chunk_complete_query(self):
+        """Complete query in single chunk should be removed."""
+        f = TerminalQueryFilter()
+        result = f.filter("text\x1b[6nmore")
+        result += f.flush()
+        assert result == "textmore"
+
+    def test_split_dsr_query_across_chunks(self):
+        """DSR query split across chunks should be removed."""
+        f = TerminalQueryFilter()
+        # Chunk 1 ends with ESC [
+        result1 = f.filter("prefix\x1b[")
+        # Chunk 2 starts with 6n
+        result2 = f.filter("6nsuffix")
+        result2 += f.flush()
+        # Query should be removed when combined
+        assert result1 + result2 == "prefixsuffix"
+
+    def test_split_osc_query_across_chunks(self):
+        """OSC query split across chunks should be removed."""
+        f = TerminalQueryFilter()
+        # Chunk 1: ESC ] 11 ;
+        result1 = f.filter("start\x1b]11;")
+        # Chunk 2: ? BEL
+        result2 = f.filter("?\x07end")
+        result2 += f.flush()
+        assert result1 + result2 == "startend"
+
+    def test_split_esc_alone_at_end(self):
+        """Lone ESC at end of chunk should be held for next chunk."""
+        f = TerminalQueryFilter()
+        # Chunk 1 ends with just ESC
+        result1 = f.filter("text\x1b")
+        # ESC should be held (not in result1 yet)
+        assert result1 == "text"
+        # Chunk 2 completes non-query sequence
+        result2 = f.filter("[32mgreen")
+        result2 += f.flush()
+        # Color code preserved
+        assert result2 == "\x1b[32mgreen"
+
+    def test_incomplete_sequence_flushed_on_complete(self):
+        """Incomplete sequence at end should be flushed if not a query."""
+        f = TerminalQueryFilter()
+        # Chunk with incomplete color code at end
+        result1 = f.filter("text\x1b[32")
+        assert result1 == "text"
+        # Flush emits the non-query bytes
+        flushed = f.flush()
+        assert flushed == "\x1b[32"
+
+    def test_reset_clears_pending(self):
+        """Reset should clear any pending bytes."""
+        f = TerminalQueryFilter()
+        # Leave incomplete sequence
+        _ = f.filter("text\x1b[")
+        # Reset
+        f.reset()
+        # New filter call shouldn't see old pending
+        result = f.filter("new text")
+        result += f.flush()
+        assert result == "new text"
+
+    def test_multiple_commands_with_reset(self):
+        """Simulates multiple command outputs with reset between them."""
+        f = TerminalQueryFilter()
+        # Command 1 output
+        result1 = f.filter("cmd1 output\x1b[6n")
+        result1 += f.flush()
+        assert result1 == "cmd1 output"
+        # Reset for next command
+        f.reset()
+        # Command 2 output
+        result2 = f.filter("cmd2 output\x1b]11;?\x07")
+        result2 += f.flush()
+        assert result2 == "cmd2 output"
+
+    def test_incremental_output_simulated(self):
+        """Simulates incremental output from long-running command."""
+        f = TerminalQueryFilter()
+        # Simulating: "Progress: 25%\x1b[6n50%\x1b]11;?\x0775%100%"
+        # Split into chunks at arbitrary points
+        chunk1 = "Progress: 25%\x1b["  # DSR starts
+        chunk2 = "6n50%\x1b]"  # DSR ends, OSC starts
+        chunk3 = "11;?\x0775%100%"  # OSC ends
+
+        r1 = f.filter(chunk1)
+        r2 = f.filter(chunk2)
+        r3 = f.filter(chunk3)
+        r3 += f.flush()
+
+        assert r1 + r2 + r3 == "Progress: 25%50%75%100%"
+
+    def test_decrqss_split_across_chunks(self):
+        """DECRQSS query split across chunks should be removed."""
+        f = TerminalQueryFilter()
+        # DCS P $ q ... ST where ST is ESC \
+        result1 = f.filter("text\x1bP$q")
+        result2 = f.filter("setting\x1b\\more")
+        result2 += f.flush()
+        assert result1 + result2 == "textmore"
+
+    def test_formatting_preserved_across_chunks(self):
+        """Color/formatting codes split across chunks should be preserved."""
+        f = TerminalQueryFilter()
+        # Color code split: ESC [ 3 | 1 m
+        result1 = f.filter("normal \x1b[3")
+        result2 = f.filter("1mred text\x1b[0m")
+        result2 += f.flush()
+        assert result1 + result2 == "normal \x1b[31mred text\x1b[0m"
+
+    def test_mixed_queries_and_formatting_across_chunks(self):
+        """Mixed queries and formatting split across chunks."""
+        f = TerminalQueryFilter()
+        # Input: "\x1b[32mgreen\x1b[6nmore\x1b]11;?\x07text\x1b[0m"
+        # Split weirdly
+        chunk1 = "\x1b[32mgreen\x1b["  # color + start of DSR
+        chunk2 = "6nmore\x1b]11"  # DSR ends + start of OSC
+        chunk3 = ";?\x07text\x1b[0m"  # OSC ends + reset
+
+        r1 = f.filter(chunk1)
+        r2 = f.filter(chunk2)
+        r3 = f.filter(chunk3)
+        r3 += f.flush()
+
+        assert r1 + r2 + r3 == "\x1b[32mgreenmoretext\x1b[0m"
