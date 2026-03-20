@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 import openhands.tools.preset.default as _preset_default
@@ -45,7 +46,7 @@ def test_load_all_builtins() -> None:
     agents = load_agents_from_dir(SUBAGENTS_DIR)
     names = {a.name for a in agents}
     assert {
-        "general purpose",
+        "general-purpose",
         "code-explorer",
         "bash-runner",
         "web researcher",
@@ -57,11 +58,11 @@ def test_load_all_builtins() -> None:
     [
         (
             True,
-            ["general purpose", "code-explorer", "bash-runner", "web researcher"],
+            ["general-purpose", "code-explorer", "bash-runner", "web researcher"],
         ),
         (
             False,
-            ["general purpose", "code-explorer", "bash-runner"],
+            ["general-purpose", "code-explorer", "bash-runner"],
         ),
     ],
 )
@@ -81,7 +82,7 @@ def test_register_builtins_agents_registers_expected_factories(
     assert len(agent_tool_names) == len(expected_agents)
 
     # general purpose agent should never include browser tools
-    assert agent_tool_names["general purpose"] == [
+    assert agent_tool_names["general-purpose"] == [
         "terminal",
         "file_editor",
         "task_tracker",
@@ -99,3 +100,17 @@ def test_register_builtins_agents_skips_web_researcher_without_browser() -> None
     register_builtins_agents(enable_browser=False)
     with pytest.raises(ValueError, match="Unknown agent 'web researcher'"):
         get_agent_factory("web researcher")
+
+
+@pytest.mark.parametrize(
+    "old_name",
+    ["default", "default cli mode", "explore", "bash"],
+)
+def test_deprecated_agent_names_still_work(old_name: str) -> None:
+    """Old agent names should work with deprecation warnings."""
+    register_builtins_agents()
+    llm = _make_test_llm()
+
+    with pytest.warns(DeprecatedWarning, match=f"'{old_name}'"):
+        agent = get_agent_factory(old_name).factory_func(llm)
+        assert isinstance(agent, Agent)
