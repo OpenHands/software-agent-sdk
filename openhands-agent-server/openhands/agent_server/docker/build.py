@@ -386,6 +386,13 @@ class BuildOptions(BaseModel):
             "`uv build --sdist` itself."
         ),
     )
+    install_browser: bool = Field(
+        default=True,
+        description=(
+            "Whether to install browser-use dependency. "
+            "When True, passes --extra browser to uv sync in the Dockerfile."
+        ),
+    )
     sdk_version: str = Field(
         default=_DEFAULT_PACKAGE_VERSION,
         description=(
@@ -741,6 +748,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         f"OPENHANDS_BUILD_GIT_SHA={opts.git_sha}",
         "--build-arg",
         f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
+        "--build-arg",
+        f"INSTALL_BROWSER={'true' if opts.install_browser else 'false'}",
     ]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
@@ -939,6 +948,15 @@ def main(argv: list[str]) -> int:
             "Should only be used for release builds."
         ),
     )
+    parser.add_argument(
+        "--install-browser",
+        action=argparse.BooleanOptionalAction,
+        default=_env("INSTALL_BROWSER", "true").lower() == "true",
+        help=(
+            "Install browser-use dependency (default: true, env: $INSTALL_BROWSER). "
+            "Use --no-install-browser to skip."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -968,6 +986,7 @@ def main(argv: list[str]) -> int:
             prebuilt_sdist=args.prebuilt_sdist,
             arch=args.arch or None,
             include_versioned_tag=args.versioned_tag,
+            install_browser=args.install_browser,
         )
 
         # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
@@ -1012,6 +1031,7 @@ def main(argv: list[str]) -> int:
         target=args.target,  # type: ignore
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
+        install_browser=args.install_browser,
         sdk_project_root=sdk_project_root,
         prebuilt_sdist=args.prebuilt_sdist,
         arch=args.arch or None,

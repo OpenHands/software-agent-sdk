@@ -28,9 +28,15 @@ def register_default_tools(enable_browser: bool = True) -> None:
     logger.debug(f"Tool: {TaskTrackerTool.name} registered.")
 
     if enable_browser:
-        from openhands.tools.browser_use import BrowserToolSet
+        try:
+            from openhands.tools.browser_use import BrowserToolSet
 
-        logger.debug(f"Tool: {BrowserToolSet.name} registered.")
+            logger.debug(f"Tool: {BrowserToolSet.name} registered.")
+        except ImportError:
+            logger.warning(
+                "browser-use is not installed. Browser tools are unavailable. "
+                "Install with: pip install openhands-tools[browser]"
+            )
 
 
 def get_default_tools(
@@ -54,9 +60,15 @@ def get_default_tools(
         Tool(name=TaskTrackerTool.name),
     ]
     if enable_browser:
-        from openhands.tools.browser_use import BrowserToolSet
+        try:
+            from openhands.tools.browser_use import BrowserToolSet
 
-        tools.append(Tool(name=BrowserToolSet.name))
+            tools.append(Tool(name=BrowserToolSet.name))
+        except ImportError:
+            logger.warning(
+                "browser-use is not installed. Browser tools are unavailable. "
+                "Install with: pip install openhands-tools[browser]"
+            )
     return tools
 
 
