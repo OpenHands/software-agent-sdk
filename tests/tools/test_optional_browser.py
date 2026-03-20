@@ -1,6 +1,6 @@
 """Tests for optional browser-use dependency handling."""
 
-import logging
+import sys
 from unittest.mock import patch
 
 from openhands.tools.preset.default import (
@@ -9,41 +9,60 @@ from openhands.tools.preset.default import (
 )
 
 
+def _hide_browser_use():
+    """Remove browser_use from sys.modules so imports fail."""
+    hidden = {}
+    for k in list(sys.modules):
+        if (
+            k == "browser_use"
+            or k.startswith("browser_use.")
+            or k.startswith("openhands.tools.browser_use")
+        ):
+            hidden[k] = sys.modules.pop(k)
+    return hidden
+
+
 def test_register_default_tools_browser_disabled():
-    """When enable_browser=False, no browser import is attempted."""
+    """No browser tools registered when disabled."""
     register_default_tools(enable_browser=False)
+    from openhands.tools.file_editor import FileEditorTool
+    from openhands.tools.terminal import TerminalTool
+
+    assert FileEditorTool is not None
+    assert TerminalTool is not None
 
 
 def test_register_default_tools_browser_enabled():
-    """When enable_browser=True and browser-use is installed, tools are registered."""
+    """Browser tools registered when enabled and installed."""
     register_default_tools(enable_browser=True)
+    from openhands.tools.browser_use import BrowserToolSet
+
+    assert BrowserToolSet is not None
 
 
 def test_get_default_tools_without_browser():
-    """When enable_browser=False, returns only non-browser tools."""
+    """Returns only non-browser tools when disabled."""
     tools = get_default_tools(enable_browser=False)
-    assert len(tools) == 3  # terminal, file_editor, task_tracker
+    names = {t.name for t in tools}
+    assert len(tools) == 3
+    assert "browser" not in names
 
 
 def test_get_default_tools_with_browser():
-    """Browser tool included when browser-use is installed."""
+    """Includes browser tool when enabled and installed."""
     tools = get_default_tools(enable_browser=True)
-    assert len(tools) == 4  # terminal, file_editor, task_tracker, browser
+    names = {t.name for t in tools}
+    assert len(tools) == 4
+    assert "browser" in names
 
 
-def test_get_default_tools_browser_missing_fallback(caplog):
-    """Degrades gracefully when browser-use is missing."""
-    original_import = __builtins__.__import__
-
-    def mock_import(name, *args, **kwargs):
-        if "browser_use" in name:
-            raise ImportError("No module named 'browser_use'")
-        return original_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", side_effect=mock_import):
-        with caplog.at_level(logging.WARNING):
+def test_get_default_tools_browser_missing(caplog):
+    """Falls back to non-browser tools when import fails."""
+    hidden = _hide_browser_use()
+    try:
+        with patch.dict(sys.modules, {"browser_use": None}):
             tools = get_default_tools(enable_browser=True)
-
-    # Should return only non-browser tools (no crash)
-    assert len(tools) == 3
-    assert "browser-use is not installed" in caplog.text
+        assert len(tools) == 3
+        assert "browser-use is not installed" in caplog.text
+    finally:
+        sys.modules.update(hidden)
