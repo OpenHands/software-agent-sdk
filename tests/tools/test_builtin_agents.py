@@ -49,7 +49,7 @@ def test_load_all_builtins() -> None:
         "general-purpose",
         "code-explorer",
         "bash-runner",
-        "web researcher",
+        "web-researcher",
     }.issubset(names)
 
 
@@ -58,7 +58,7 @@ def test_load_all_builtins() -> None:
     [
         (
             True,
-            ["general-purpose", "code-explorer", "bash-runner", "web researcher"],
+            ["general-purpose", "code-explorer", "bash-runner", "web-researcher"],
         ),
         (
             False,
@@ -92,7 +92,7 @@ def test_register_builtins_agents_registers_expected_factories(
     assert agent_tool_names["bash-runner"] == ["terminal"]
 
     if enable_browser:
-        assert "browser_tool_set" in agent_tool_names["web researcher"]
+        assert "browser_tool_set" in agent_tool_names["web-researcher"]
 
 
 def test_general_purpose_has_no_browser_tools() -> None:

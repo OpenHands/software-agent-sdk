@@ -361,7 +361,7 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     """
     # Map old names to new names for backward compatibility
     _DEPRECATED_NAMES = {
-        "default": "general-purpose",
+        "default": "web-researcher",
         "default cli mode": "general-purpose",
         "explore": "code-explorer",
         "bash": "bash-runner",
