@@ -76,14 +76,20 @@ class ParallelFailingObservation(Observation):
     result: str = ""
 
 
-class ParallelFailingExecutor(ToolExecutor[ParallelFailingAction, ParallelFailingObservation]):
+class ParallelFailingExecutor(
+    ToolExecutor[ParallelFailingAction, ParallelFailingObservation]
+):
     def __call__(
-        self, action: ParallelFailingAction, conversation: "BaseConversation | None" = None
+        self,
+        action: ParallelFailingAction,
+        conversation: "BaseConversation | None" = None,
     ) -> ParallelFailingObservation:
         raise ValueError(f"Tool failed: {action.value}")
 
 
-class ParallelFailingTool(ToolDefinition[ParallelFailingAction, ParallelFailingObservation]):
+class ParallelFailingTool(
+    ToolDefinition[ParallelFailingAction, ParallelFailingObservation]
+):
     name = "parallel_failing_tool"
 
     @classmethod
