@@ -31,8 +31,12 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 ARG INSTALL_BOTO3=true
+ARG INSTALL_BROWSER=true
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
+    uv python install 3.13 && uv venv --python 3.13 .venv && \
+    uv sync --frozen --no-editable --managed-python \
+        $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3") \
+        $([ "$INSTALL_BROWSER" = "true" ] && echo "--extra browser")
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -42,9 +46,12 @@ FROM builder AS binary-builder
 ARG USERNAME UID GID
 
 ARG INSTALL_BOTO3=true
+ARG INSTALL_BROWSER=true
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
+    uv sync --frozen --dev --no-editable \
+        $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3") \
+        $([ "$INSTALL_BROWSER" = "true" ] && echo "--extra browser")
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
@@ -86,12 +93,12 @@ RUN set -eux; \
 # Set INSTALL_ACP=false to skip ACP installation (e.g. for benchmark images)
 ARG INSTALL_ACP=true
 RUN set -eux; \
-    if ! command -v npm >/dev/null 2>&1; then \
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-        apt-get install -y --no-install-recommends nodejs && \
-        rm -rf /var/lib/apt/lists/*; \
-    fi; \
     if [ "$INSTALL_ACP" = "true" ]; then \
+        if ! command -v npm >/dev/null 2>&1; then \
+            curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+            apt-get install -y --no-install-recommends nodejs && \
+            rm -rf /var/lib/apt/lists/*; \
+        fi; \
         npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp; \
     fi
 

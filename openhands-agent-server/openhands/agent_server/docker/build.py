@@ -395,6 +395,13 @@ class BuildOptions(BaseModel):
             "(e.g., at each release)."
         ),
     )
+    extra_build_args: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Additional Docker build args to pass to buildx. "
+            "For example, {'INSTALL_ACP': 'false'} to skip ACP installation."
+        ),
+    )
 
     @property
     def short_sha(self) -> str:
@@ -751,6 +758,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         "--build-arg",
         f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
     ]
+    for key, value in opts.extra_build_args.items():
+        args += ["--build-arg", f"{key}={value}"]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
     else:
