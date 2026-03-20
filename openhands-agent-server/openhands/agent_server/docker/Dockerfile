@@ -9,6 +9,13 @@ ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
 
+# Pre-built base overrides: when set to an image reference (e.g.,
+# ghcr.io/openhands/eval-base:tag), the final target pulls the pre-built
+# base from the registry instead of building base-image-minimal from scratch.
+# Default values reference the build stages defined below.
+ARG SOURCE_MINIMAL_BASE=base-image-minimal
+ARG SOURCE_BASE=base-image
+
 ####################################################################################
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
@@ -244,13 +251,13 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 # Target A: source
 # Local dev and debugging mode: copy source + venv from builder
 ############################
-FROM base-image AS source
+FROM ${SOURCE_BASE} AS source
 ARG USERNAME
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
-FROM base-image-minimal AS source-minimal
+FROM ${SOURCE_MINIMAL_BASE} AS source-minimal
 ARG USERNAME
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
