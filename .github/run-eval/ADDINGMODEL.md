@@ -52,6 +52,12 @@ This file (`resolve_model_config.py`) defines models available for evaluation. M
    - `openhands-sdk/openhands/sdk/llm/utils/model_prompt_spec.py` - GPT models only (variant detection)
    - `openhands-sdk/openhands/sdk/llm/utils/verified_models.py` - Production-ready models
 
+   > ⚠️ **When editing `verified_models.py`**: If you add a model to `VERIFIED_OPENHANDS_MODELS`,
+   > you **must also** add it to its provider-specific list (e.g. `VERIFIED_ANTHROPIC_MODELS`,
+   > `VERIFIED_GEMINI_MODELS`, `VERIFIED_MOONSHOT_MODELS`, etc.).
+   > If no list exists for the provider yet, create one and add it to the `VERIFIED_MODELS` dict.
+   > This ensures the model appears under its actual provider in the UI, not just under "openhands".
+
 ## Step 1: Add to resolve_model_config.py
 
 Add entry to `MODELS` dictionary:

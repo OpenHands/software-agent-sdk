@@ -10,6 +10,8 @@ import pytest
 from openhands.sdk.context.skills.exceptions import SkillValidationError
 from openhands.sdk.skills import (
     InstalledSkillsMetadata,
+    disable_skill,
+    enable_skill,
     get_installed_skill,
     get_installed_skills_dir,
     install_skill,
@@ -164,6 +166,33 @@ def test_load_installed_skills(sample_skill_dir: Path, installed_dir: Path) -> N
     assert skills[0].name == "sample-skill"
 
 
+def test_disable_skill_filters_load(
+    sample_skill_dir: Path, installed_dir: Path
+) -> None:
+    install_skill(source=str(sample_skill_dir), installed_dir=installed_dir)
+
+    assert disable_skill("sample-skill", installed_dir=installed_dir) is True
+
+    skills = load_installed_skills(installed_dir=installed_dir)
+    assert skills == []
+    info = get_installed_skill("sample-skill", installed_dir=installed_dir)
+    assert info is not None
+    assert info.enabled is False
+
+
+def test_enable_skill_restores_load(
+    sample_skill_dir: Path, installed_dir: Path
+) -> None:
+    install_skill(source=str(sample_skill_dir), installed_dir=installed_dir)
+    disable_skill("sample-skill", installed_dir=installed_dir)
+
+    assert enable_skill("sample-skill", installed_dir=installed_dir) is True
+
+    skills = load_installed_skills(installed_dir=installed_dir)
+    assert len(skills) == 1
+    assert skills[0].name == "sample-skill"
+
+
 def test_get_installed_skill_returns_info(
     sample_skill_dir: Path, installed_dir: Path
 ) -> None:
@@ -179,6 +208,7 @@ def test_update_skill_reinstalls_from_source(
     sample_skill_dir: Path, installed_dir: Path
 ) -> None:
     install_skill(source=str(sample_skill_dir), installed_dir=installed_dir)
+    disable_skill("sample-skill", installed_dir=installed_dir)
 
     updated = (
         "---\n"
@@ -193,6 +223,7 @@ def test_update_skill_reinstalls_from_source(
 
     assert info is not None
     assert info.description == "Updated description"
+    assert info.enabled is False
     installed_content = (installed_dir / "sample-skill" / "SKILL.md").read_text()
     assert "Updated description" in installed_content
 

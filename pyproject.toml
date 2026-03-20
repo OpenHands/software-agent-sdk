@@ -11,6 +11,7 @@ constraint-dependencies = [
     "protobuf>=6.33.5",  # CVE-2026-0994
     "pillow>=12.1.1",  # CVE-2026-25990
     "orjson>=3.11.7",  # CVE-2025-67221
+    "rich>=14.3.3", # Version 14.3.2 essentially has a denial-of-service vulnerability which is outlined in https://github.com/Textualize/rich/issues/3958
 ]
 
 # Workspace sources for intra-repo dependencies
@@ -42,7 +43,7 @@ dev = [
 
 # Ruff configuration
 [tool.ruff]
-target-version = "py312"
+target-version = "py313"
 line-length = 88
 
 [tool.ruff.format]
@@ -113,7 +114,7 @@ extraPaths = [
 ]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.12"
+pythonVersion = "3.13"
 useLibraryCodeForTypes = true
 typeCheckingMode = "standard"
 

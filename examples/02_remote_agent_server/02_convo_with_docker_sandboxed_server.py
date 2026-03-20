@@ -62,7 +62,7 @@ logger.info(f"Using server image: {server_image}")
 with DockerWorkspace(
     # use pre-built image for faster startup
     server_image=server_image,
-    host_port=8010,
+    # host_port auto-selects an available port when not specified
     platform=detect_platform(),
 ) as workspace:
     # 3) Create agent

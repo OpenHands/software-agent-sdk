@@ -17,6 +17,8 @@ from openhands.sdk.plugin.fetch import (
 from openhands.sdk.plugin.installed import (
     InstalledPluginInfo,
     InstalledPluginsMetadata,
+    disable_plugin,
+    enable_plugin,
     get_installed_plugin,
     get_installed_plugins_dir,
     install_plugin,
@@ -83,5 +85,7 @@ __all__ = [
     "load_installed_plugins",
     "get_installed_plugins_dir",
     "get_installed_plugin",
+    "enable_plugin",
+    "disable_plugin",
     "update_plugin",
 ]

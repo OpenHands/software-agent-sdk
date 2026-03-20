@@ -10,7 +10,6 @@ from openhands.agent_server.server_details_router import update_last_execution_t
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.git.git_diff import get_git_diff
 from openhands.sdk.git.models import GitChange, GitDiff
-from openhands.sdk.utils.deprecation import deprecated
 
 
 git_router = APIRouter(prefix="/git", tags=["Git"])
@@ -39,18 +38,15 @@ async def git_changes_query(
     return await _get_git_changes(path)
 
 
-@git_router.get("/changes/{path:path}")
-@deprecated(
-    deprecated_in="1.15.0",
-    removed_in="1.20.0",
-    details=(
-        "Use the /git/changes endpoint with a query parameter for the path "
-        "instead of a path parameter. This allows for better handling of "
-        "complex paths and is more consistent with other endpoints."
-    ),
-)
+@git_router.get("/changes/{path:path}", deprecated=True)
 async def git_changes_path(path: str) -> list[GitChange]:
-    """Get git changes using path parameter (legacy, for backwards compatibility)."""
+    """Get git changes using path parameter (legacy, for backwards compatibility).
+
+    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
+
+    Prefer `/git/changes?path=...` to avoid path-encoding issues and align with
+    other Git endpoints.
+    """
     return await _get_git_changes(path)
 
 
@@ -62,16 +58,13 @@ async def git_diff_query(
     return await _get_git_diff(path)
 
 
-@git_router.get("/diff/{path:path}")
-@deprecated(
-    deprecated_in="1.15.0",
-    removed_in="1.20.0",
-    details=(
-        "Use the /git/diff endpoint with a query parameter for the path "
-        "instead of a path parameter. This allows for better handling of "
-        "complex paths and is more consistent with other endpoints."
-    ),
-)
+@git_router.get("/diff/{path:path}", deprecated=True)
 async def git_diff_path(path: str) -> GitDiff:
-    """Get git diff using path parameter (legacy, for backwards compatibility)."""
+    """Get git diff using path parameter (legacy, for backwards compatibility).
+
+    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
+
+    Prefer `/git/diff?path=...` to avoid path-encoding issues and align with
+    other Git endpoints.
+    """
     return await _get_git_diff(path)
