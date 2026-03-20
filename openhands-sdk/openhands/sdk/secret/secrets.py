@@ -52,7 +52,7 @@ class LookupSecret(SecretSource):
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
 
-    def get_value(self):
+    def get_value(self) -> str:
         response = httpx.get(self.url, headers=self.headers, timeout=30.0)
         response.raise_for_status()
         return response.text

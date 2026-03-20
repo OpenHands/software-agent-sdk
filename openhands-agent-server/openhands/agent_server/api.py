@@ -15,6 +15,7 @@ from openhands.agent_server.config import (
     get_default_config,
 )
 from openhands.agent_server.conversation_router import conversation_router
+from openhands.agent_server.conversation_router_acp import conversation_router_acp
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
@@ -38,9 +39,6 @@ from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
-from openhands.sdk.agent import (
-    ACPAgent,  # noqa: F401  — register in DiscriminatedUnionMixin
-)
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -202,6 +200,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
+    api_router.include_router(conversation_router_acp)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)

@@ -173,6 +173,15 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "minimax-m2.7": {
+        "id": "minimax-m2.7",
+        "display_name": "MiniMax M2.7",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M2.7",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
@@ -330,9 +339,16 @@ def check_model(
             **kwargs,
         )
 
-        content = response.choices[0].message.content if response.choices else None
+        response_content = (
+            response.choices[0].message.content if response.choices else None
+        )
+        reasoning_content = (
+            getattr(response.choices[0].message, "reasoning_content", None)
+            if response.choices
+            else None
+        )
 
-        if content:
+        if response_content or reasoning_content:
             return True, f"✓ {display_name}: OK"
         else:
             # Check if there's any other data in the response for diagnostics
