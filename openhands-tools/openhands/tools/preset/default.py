@@ -16,6 +16,20 @@ from openhands.sdk.tool import Tool
 logger = get_logger(__name__)
 
 
+def _try_import_browser_toolset() -> type | None:
+    """Import BrowserToolSet if available, else log and return None."""
+    try:
+        from openhands.tools.browser_use import BrowserToolSet
+
+        return BrowserToolSet
+    except ImportError:
+        logger.warning(
+            "browser-use is not installed. Browser tools are unavailable. "
+            "Install with: pip install openhands-tools[browser]"
+        )
+        return None
+
+
 def register_default_tools(enable_browser: bool = True) -> None:
     """Register the default set of tools."""
     # Tools are now automatically registered when imported
@@ -28,9 +42,9 @@ def register_default_tools(enable_browser: bool = True) -> None:
     logger.debug(f"Tool: {TaskTrackerTool.name} registered.")
 
     if enable_browser:
-        from openhands.tools.browser_use import BrowserToolSet
-
-        logger.debug(f"Tool: {BrowserToolSet.name} registered.")
+        BrowserToolSet = _try_import_browser_toolset()
+        if BrowserToolSet:
+            logger.debug(f"Tool: {BrowserToolSet.name} registered.")
 
 
 def get_default_tools(
@@ -54,9 +68,9 @@ def get_default_tools(
         Tool(name=TaskTrackerTool.name),
     ]
     if enable_browser:
-        from openhands.tools.browser_use import BrowserToolSet
-
-        tools.append(Tool(name=BrowserToolSet.name))
+        BrowserToolSet = _try_import_browser_toolset()
+        if BrowserToolSet:
+            tools.append(Tool(name=BrowserToolSet.name))
     return tools
 
 

@@ -39,6 +39,7 @@ dev = [
     "streamlit>=1.49.1",
     "pytest-timeout>=2.4.0",
     "griffe[pypi]>=2.0.0",
+    "browser-use>=0.8.0",  # Optional dep of openhands-tools; needed for tests/type-checking
 ]
 
 # Ruff configuration

@@ -30,8 +30,14 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-sdk ./openhands-sdk
 COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
+ARG INSTALL_BROWSER=true
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
+    uv python install 3.13 && uv venv --python 3.13 .venv && \
+    if [ "$INSTALL_BROWSER" = "true" ]; then \
+        uv sync --frozen --no-editable --managed-python --extra boto3 --extra browser; \
+    else \
+        uv sync --frozen --no-editable --managed-python --extra boto3; \
+    fi
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -40,9 +46,14 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 FROM builder AS binary-builder
 ARG USERNAME UID GID
 
+ARG INSTALL_BROWSER=true
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable --extra boto3
+    if [ "$INSTALL_BROWSER" = "true" ]; then \
+        uv sync --frozen --dev --no-editable --extra boto3 --extra browser; \
+    else \
+        uv sync --frozen --dev --no-editable --extra boto3; \
+    fi
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
