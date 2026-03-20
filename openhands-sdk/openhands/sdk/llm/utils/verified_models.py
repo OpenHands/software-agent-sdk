@@ -48,6 +48,7 @@ VERIFIED_MISTRAL_MODELS = [
 
 VERIFIED_GEMINI_MODELS = [
     "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
 ]
 
 VERIFIED_DEEPSEEK_MODELS = [
