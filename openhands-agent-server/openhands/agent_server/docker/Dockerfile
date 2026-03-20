@@ -30,8 +30,9 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-sdk ./openhands-sdk
 COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
+ARG INSTALL_BOTO3=true
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
+    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -39,10 +40,11 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 ####################################################################################
 FROM builder AS binary-builder
 ARG USERNAME UID GID
+ARG INSTALL_BOTO3=true
 
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable --extra boto3
+    uv sync --frozen --dev --no-editable $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
