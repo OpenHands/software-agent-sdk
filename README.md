@@ -79,6 +79,27 @@ print("All done!")
 
 For installation instructions and detailed setup, see the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started).
 
+### Codebase Search (Optional)
+
+Add natural-language code search to your agent with [Morph's WarpGrep](https://morphllm.com). Requires a `MORPH_API_KEY` ([get one here](https://morphllm.com/dashboard/api-keys)) and Node.js 18+.
+
+```python
+from openhands.tools.codebase_search import register_codebase_search_tools
+
+register_codebase_search_tools()
+
+agent = Agent(
+    llm=llm,
+    tools=[
+        # ... your other tools ...
+        Tool(name="codebase_search"),           # search local repos
+        Tool(name="github_codebase_search"),    # search public GitHub repos
+    ],
+)
+```
+
+See [`examples/01_standalone_sdk/45_codebase_search.py`](examples/01_standalone_sdk/45_codebase_search.py) for a full working example.
+
 ## Documentation
 
 For detailed documentation, tutorials, and API reference, visit:
