@@ -68,38 +68,38 @@ class SlowTool(ToolDefinition[SlowAction, SlowObservation]):
         ]
 
 
-class FailingAction(Action):
+class ParallelFailingAction(Action):
     value: str = ""
 
 
-class FailingObservation(Observation):
+class ParallelFailingObservation(Observation):
     result: str = ""
 
 
-class FailingExecutor(ToolExecutor[FailingAction, FailingObservation]):
+class ParallelFailingExecutor(ToolExecutor[ParallelFailingAction, ParallelFailingObservation]):
     def __call__(
-        self, action: FailingAction, conversation: "BaseConversation | None" = None
-    ) -> FailingObservation:
+        self, action: ParallelFailingAction, conversation: "BaseConversation | None" = None
+    ) -> ParallelFailingObservation:
         raise ValueError(f"Tool failed: {action.value}")
 
 
-class FailingTool(ToolDefinition[FailingAction, FailingObservation]):
-    name = "failing_tool"
+class ParallelFailingTool(ToolDefinition[ParallelFailingAction, ParallelFailingObservation]):
+    name = "parallel_failing_tool"
 
     @classmethod
     def create(cls, conv_state: "ConversationState | None" = None) -> Sequence[Self]:
         return [
             cls(
                 description="A tool that always fails",
-                action_type=FailingAction,
-                observation_type=FailingObservation,
-                executor=FailingExecutor(),
+                action_type=ParallelFailingAction,
+                observation_type=ParallelFailingObservation,
+                executor=ParallelFailingExecutor(),
             )
         ]
 
 
 register_tool("SlowTool", SlowTool)
-register_tool("FailingTool", FailingTool)
+register_tool("ParallelFailingTool", ParallelFailingTool)
 
 
 # --- Helper ---
@@ -319,7 +319,7 @@ def test_error_in_parallel_batch_preserves_other_results():
                     _tool_call(
                         "call_0", "slow_tool", '{"delay": 0.01, "label": "ok1"}'
                     ),
-                    _tool_call("call_1", "failing_tool", '{"value": "boom"}'),
+                    _tool_call("call_1", "parallel_failing_tool", '{"value": "boom"}'),
                     _tool_call(
                         "call_2", "slow_tool", '{"delay": 0.01, "label": "ok2"}'
                     ),
@@ -330,7 +330,7 @@ def test_error_in_parallel_batch_preserves_other_results():
     )
     agent = Agent(
         llm=llm,
-        tools=[Tool(name="SlowTool"), Tool(name="FailingTool")],
+        tools=[Tool(name="SlowTool"), Tool(name="ParallelFailingTool")],
         tool_concurrency_limit=4,
     )
 
