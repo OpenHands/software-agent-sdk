@@ -334,7 +334,7 @@ jobs:
                   AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
-                  # Normalize instance_ids: strip all spaces around commas
+                  # Normalize instance_ids: strip all spaces
                   INSTANCE_IDS=$(printf '%s' "$INSTANCE_IDS" | tr -d ' ')
 
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH, tool preset: $TOOL_PRESET)"
