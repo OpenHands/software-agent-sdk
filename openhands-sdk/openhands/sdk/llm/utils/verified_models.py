@@ -1,4 +1,5 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
     "gpt-5.1",
@@ -45,9 +46,27 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-medium-2512",
 ]
 
+VERIFIED_GEMINI_MODELS = [
+    "gemini-3-pro-preview",
+]
+
+VERIFIED_DEEPSEEK_MODELS = [
+    "deepseek-chat",
+]
+
+VERIFIED_MOONSHOT_MODELS = [
+    "kimi-k2-thinking",
+    "kimi-k2.5",
+]
+
+VERIFIED_MINIMAX_MODELS = [
+    "minimax-m2.5",
+]
+
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-6",
     "claude-sonnet-4-5-20250929",
+    "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
     "minimax-m2.5",
@@ -70,4 +89,8 @@ VERIFIED_MODELS = {
     "anthropic": VERIFIED_ANTHROPIC_MODELS,
     "openai": VERIFIED_OPENAI_MODELS,
     "mistral": VERIFIED_MISTRAL_MODELS,
+    "gemini": VERIFIED_GEMINI_MODELS,
+    "deepseek": VERIFIED_DEEPSEEK_MODELS,
+    "moonshot": VERIFIED_MOONSHOT_MODELS,
+    "minimax": VERIFIED_MINIMAX_MODELS,
 }

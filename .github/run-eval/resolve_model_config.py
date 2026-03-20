@@ -140,6 +140,14 @@ MODELS = {
             "reasoning_effort": "high",
         },
     },
+    "gpt-5.4": {
+        "id": "gpt-5.4",
+        "display_name": "GPT-5.4",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    },
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
@@ -163,6 +171,15 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/minimax/MiniMax-M2.1",
             "temperature": 0.0,
+        },
+    },
+    "minimax-m2.7": {
+        "id": "minimax-m2.7",
+        "display_name": "MiniMax M2.7",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M2.7",
+            "temperature": 1.0,
+            "top_p": 0.95,
         },
     },
     "deepseek-v3.2-reasoner": {
@@ -227,6 +244,14 @@ MODELS = {
         "display_name": "GPT OSS 20B",
         "llm_config": {
             "model": "litellm_proxy/gpt-oss-20b",
+            "temperature": 0.0,
+        },
+    },
+    "nemotron-3-super-120b-a12b": {
+        "id": "nemotron-3-super-120b-a12b",
+        "display_name": "NVIDIA Nemotron-3 Super 120B",
+        "llm_config": {
+            "model": "litellm_proxy/nvidia/nemotron-3-super-120b-a12b",
             "temperature": 0.0,
         },
     },
@@ -314,9 +339,16 @@ def check_model(
             **kwargs,
         )
 
-        content = response.choices[0].message.content if response.choices else None
+        response_content = (
+            response.choices[0].message.content if response.choices else None
+        )
+        reasoning_content = (
+            getattr(response.choices[0].message, "reasoning_content", None)
+            if response.choices
+            else None
+        )
 
-        if content:
+        if response_content or reasoning_content:
             return True, f"✓ {display_name}: OK"
         else:
             # Check if there's any other data in the response for diagnostics

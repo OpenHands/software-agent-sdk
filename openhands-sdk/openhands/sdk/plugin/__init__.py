@@ -17,6 +17,8 @@ from openhands.sdk.plugin.fetch import (
 from openhands.sdk.plugin.installed import (
     InstalledPluginInfo,
     InstalledPluginsMetadata,
+    disable_plugin,
+    enable_plugin,
     get_installed_plugin,
     get_installed_plugins_dir,
     install_plugin,
@@ -27,9 +29,17 @@ from openhands.sdk.plugin.installed import (
 )
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
+from openhands.sdk.plugin.source import (
+    GitHubURLComponents,
+    is_local_path,
+    parse_github_url,
+    resolve_source_path,
+    validate_source_path,
+)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     Marketplace,
+    MarketplaceEntry,
     MarketplaceMetadata,
     MarketplaceOwner,
     MarketplacePluginEntry,
@@ -55,10 +65,17 @@ __all__ = [
     "fetch_plugin_with_resolution",
     # Marketplace classes
     "Marketplace",
+    "MarketplaceEntry",
     "MarketplaceOwner",
     "MarketplacePluginEntry",
     "MarketplacePluginSource",
     "MarketplaceMetadata",
+    # Source path utilities
+    "GitHubURLComponents",
+    "parse_github_url",
+    "is_local_path",
+    "validate_source_path",
+    "resolve_source_path",
     # Installed plugins management
     "InstalledPluginInfo",
     "InstalledPluginsMetadata",
@@ -68,5 +85,7 @@ __all__ = [
     "load_installed_plugins",
     "get_installed_plugins_dir",
     "get_installed_plugin",
+    "enable_plugin",
+    "disable_plugin",
     "update_plugin",
 ]
