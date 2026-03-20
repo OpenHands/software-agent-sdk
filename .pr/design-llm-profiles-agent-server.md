@@ -243,8 +243,8 @@ Blast radius relative to A1:
    - `ConversationState.create()` currently validates the persisted agent,
      verifies tools, then replaces `state.agent` with the runtime agent
    - if persisted state can contain an unresolved profile reference, local SDK
-     restore also needs a way to resolve it, not just agent-server restore
-   - that means the resolution logic cannot live only in the REST layer
+     restore needs a way to resolve it, not just agent-server restore
+   - that means the resolution logic must actually live in the local SDK layer
 
 5. **RemoteConversation and REST/OpenAPI**
    - `RemoteConversation` currently serializes `agent.model_dump(...)` straight
