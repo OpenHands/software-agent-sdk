@@ -127,7 +127,7 @@ jobs:
                   tar -czvf ../../../condenser_tests_${{ matrix.job-config.run-suffix }}_${TIMESTAMP}.tar.gz *${{ matrix.job-config.run-suffix }}* # Include result directories for this model
 
             - name: Upload evaluation results as artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               id: upload_results_artifact
               with:
                   name: condenser-test-outputs-${{ matrix.job-config.run-suffix }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -148,7 +148,7 @@ jobs:
                   fi
 
             - name: Upload test results summary
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: test-results-${{ matrix.job-config.run-suffix }}
                   path: test_results_summary/${{ matrix.job-config.run-suffix }}_results.json
@@ -221,7 +221,7 @@ jobs:
                     --output-file consolidated_report.md
 
             - name: Upload consolidated report
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: consolidated-condenser-report
                   path: consolidated_report.md
