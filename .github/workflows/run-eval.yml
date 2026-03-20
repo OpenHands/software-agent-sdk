@@ -20,6 +20,7 @@ on:
                     - swtbench
                     - commit0
                     - swebenchmultimodal
+                    - terminalbench
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
@@ -60,7 +61,11 @@ on:
                 default: main
                 type: string
             instance_ids:
-                description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
+                description: >-
+                    Comma-separated instance IDs to evaluate.
+                    Example: "django__django-11583,django__django-12345".
+                    Spaces around commas are automatically stripped.
+                    Leave empty to evaluate all instances up to eval_limit.
                 required: false
                 default: ''
             num_infer_workers:
@@ -113,8 +118,6 @@ on:
 env:
     EVAL_REPO: OpenHands/evaluation
     EVAL_WORKFLOW: eval-job.yml
-    DATASET: princeton-nlp/SWE-bench_Verified
-    SPLIT: test
 
 jobs:
     print-parameters:
@@ -154,8 +157,6 @@ jobs:
                   echo "=== Environment Variables ==="
                   echo "EVAL_REPO: ${{ env.EVAL_REPO }}"
                   echo "EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}"
-                  echo "DATASET: ${{ env.DATASET }}"
-                  echo "SPLIT: ${{ env.SPLIT }}"
                   echo ""
                   echo "=== Label (for PR events) ==="
                   echo "Label: ${{ github.event.label.name || 'N/A' }}"
@@ -333,6 +334,9 @@ jobs:
                   AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
+                  # Normalize instance_ids: strip all spaces
+                  INSTANCE_IDS=$(printf '%s' "$INSTANCE_IDS" | tr -d ' ')
+
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH, tool preset: $TOOL_PRESET)"
                   PAYLOAD=$(jq -n \
                     --arg sdk "$SDK_SHA" \

@@ -60,11 +60,13 @@ def test_gpt5_uses_reasoning_effort_and_strips_temp_top_p():
     assert "top_p" not in out
 
 
-def test_gemini_2_5_pro_defaults_reasoning_effort_low_when_none():
-    llm = DummyLLM(model="gemini-2.5-pro-experimental", reasoning_effort=None)
+def test_gemini_2_5_pro_without_reasoning_effort_preserves_temp_and_top_p():
+    llm = DummyLLM(model="gemini-2.5-pro", reasoning_effort=None)
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
 
-    assert out.get("reasoning_effort") == "low"
+    assert "reasoning_effort" not in out
+    assert out.get("temperature") == 0.0
+    assert out.get("top_p") == 1.0
 
 
 def test_non_reasoning_model_preserves_temp_and_top_p():
