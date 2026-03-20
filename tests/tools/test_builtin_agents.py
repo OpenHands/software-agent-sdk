@@ -95,6 +95,15 @@ def test_register_builtins_agents_registers_expected_factories(
         assert "browser_tool_set" in agent_tool_names["web researcher"]
 
 
+def test_general_purpose_has_no_browser_tools() -> None:
+    """general-purpose agent should not have browser tools (architectural change)."""
+    register_builtins_agents(enable_browser=True)
+    factory = get_agent_factory("general-purpose")
+    agent = factory.factory_func(_make_test_llm())
+    tool_names = [t.name for t in agent.tools]
+    assert "browser_tool_set" not in tool_names
+
+
 def test_register_builtins_agents_skips_web_researcher_without_browser() -> None:
     """When enable_browser=False, the web researcher agent should not be registered."""
     register_builtins_agents(enable_browser=False)
