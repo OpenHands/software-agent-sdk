@@ -473,6 +473,13 @@ def test_is_field_metadata_only_change_deprecated_bool_only():
     assert _is_field_metadata_only_change(old, new) is True
 
 
+def test_is_field_metadata_only_change_added_deprecated_kwarg():
+    """Adding deprecated metadata should still be treated as metadata-only."""
+    old = "Field(default=False, description='old description')"
+    new = "Field(default=False, deprecated=True, description='new description')"
+    assert _is_field_metadata_only_change(old, new) is True
+
+
 def test_field_deprecated_change_is_not_breaking(tmp_path):
     """Field deprecated metadata changes should not count as breaking changes."""
     old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
@@ -492,6 +499,43 @@ def test_field_deprecated_change_is_not_breaking(tmp_path):
         + "\nfrom pydantic import BaseModel, Field\n\n"
         + "class Config(BaseModel):\n"
         + "    enabled: bool = Field(default=False, deprecated=True)\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+    )
+    assert total_breaks == 0
+    assert undeprecated == 0
+
+
+def test_field_added_deprecated_kwarg_is_not_breaking(tmp_path):
+    """Adding deprecated metadata should not count as a breaking change."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(default=False, description='Old description')\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(\n"
+        + "        default=False,\n"
+        + "        deprecated=True,\n"
+        + "        description='New description',\n"
+        + "    )\n"
     )
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])

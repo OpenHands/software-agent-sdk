@@ -61,7 +61,11 @@ on:
                 default: main
                 type: string
             instance_ids:
-                description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
+                description: >-
+                    Comma-separated instance IDs to evaluate.
+                    Example: "django__django-11583,django__django-12345".
+                    Spaces around commas are automatically stripped.
+                    Leave empty to evaluate all instances up to eval_limit.
                 required: false
                 default: ''
             num_infer_workers:
@@ -330,6 +334,9 @@ jobs:
                   AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
+                  # Normalize instance_ids: strip all spaces
+                  INSTANCE_IDS=$(printf '%s' "$INSTANCE_IDS" | tr -d ' ')
+
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH, tool preset: $TOOL_PRESET)"
                   PAYLOAD=$(jq -n \
                     --arg sdk "$SDK_SHA" \

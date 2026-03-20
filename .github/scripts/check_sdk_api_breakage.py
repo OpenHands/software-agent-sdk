@@ -314,7 +314,7 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     if not (old_str.startswith("Field(") and new_str.startswith("Field(")):
         return False
 
-    # Metadata parameters that don't affect runtime behavior
+    # Metadata parameters that don't affect runtime behavior.
     # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
     metadata_patterns = {
         "description": r'([\'"])([^\'"]*?)\1',
@@ -324,15 +324,19 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
         "deprecated": r"(?:True|False|None|'[^']*'|\"[^\"]*\")",
     }
 
-    old_normalized = old_str
-    new_normalized = new_str
+    def _normalize(value: str) -> str:
+        normalized = value
+        for param, value_pattern in metadata_patterns.items():
+            pattern = rf",?\s*{param}\s*=\s*{value_pattern}"
+            normalized = re.sub(pattern, "", normalized)
 
-    for param, value_pattern in metadata_patterns.items():
-        pattern = rf"{param}\s*=\s*{value_pattern}"
-        old_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", old_normalized)
-        new_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", new_normalized)
+        normalized = re.sub(r"\(\s*,", "(", normalized)
+        normalized = re.sub(r",\s*\)", ")", normalized)
+        normalized = re.sub(r",\s*,", ", ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
 
-    return old_normalized == new_normalized
+    return _normalize(old_str) == _normalize(new_str)
 
 
 def _collect_breakages_pairs(
