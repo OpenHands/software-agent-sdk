@@ -26,13 +26,13 @@ def test_get_default_tools_without_browser():
 
 
 def test_get_default_tools_with_browser():
-    """When enable_browser=True and browser-use is installed, browser tool is included."""
+    """Browser tool included when browser-use is installed."""
     tools = get_default_tools(enable_browser=True)
     assert len(tools) == 4  # terminal, file_editor, task_tracker, browser
 
 
 def test_get_default_tools_browser_missing_fallback(caplog):
-    """When browser-use is not installed and enable_browser=True, degrades gracefully."""
+    """Degrades gracefully when browser-use is missing."""
     original_import = __builtins__.__import__
 
     def mock_import(name, *args, **kwargs):

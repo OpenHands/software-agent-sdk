@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 
 def _try_import_browser_toolset() -> type | None:
-    """Import BrowserToolSet if browser-use is installed, otherwise log and return None."""
+    """Import BrowserToolSet if available, else log and return None."""
     try:
         from openhands.tools.browser_use import BrowserToolSet
 
