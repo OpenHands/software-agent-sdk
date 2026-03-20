@@ -1,5 +1,5 @@
 ---
-name: web researcher
+name: web-researcher
 model: inherit
 description: >-
     USE THIS when you need to research information on the web — documentation,
