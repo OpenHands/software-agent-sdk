@@ -107,7 +107,7 @@ def register_builtins_agents(enable_browser: bool = True) -> list[str]:
 
     # Filter out browser-dependent agents when browser is not available
     if not enable_browser:
-        _browser_only_agents = {"web researcher"}
+        _browser_only_agents = {"web-researcher"}
         builtins_agents_def = [
             agent
             for agent in builtins_agents_def
