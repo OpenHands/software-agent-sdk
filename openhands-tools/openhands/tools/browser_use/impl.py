@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import functools
 import json
 import logging
@@ -26,7 +27,10 @@ from openhands.tools.browser_use.definition import (
     BrowserObservation,
 )
 from openhands.tools.browser_use.server import CustomBrowserUseServer
-from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
+from openhands.tools.utils.timeout import (
+    TimeoutError as ToolTimeoutError,
+    run_with_timeout,
+)
 
 
 F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
@@ -86,6 +90,24 @@ else:
 
 logger = get_logger(__name__)
 
+DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 300.0
+
+
+def _format_browser_operation_error(
+    error: BaseException, timeout_seconds: float | None = None
+) -> str:
+    if error_detail := str(error).strip():
+        pass
+    elif isinstance(error, builtins.TimeoutError):
+        error_detail = (
+            f"Operation timed out after {int(timeout_seconds)} seconds"
+            if timeout_seconds is not None
+            else "Operation timed out"
+        )
+    else:
+        error_detail = error.__class__.__name__
+    return f"Browser operation failed: {error_detail}"
+
 
 def _install_chromium() -> bool:
     """Attempt to install Chromium via uvx playwright install."""
@@ -139,6 +161,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+    _action_timeout_seconds: float
 
     def check_chromium_available(self) -> str | None:
         """Check if a Chromium/Chrome binary is available.
@@ -229,6 +252,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         allowed_domains: list[str] | None = None,
         session_timeout_minutes: int = 30,
         init_timeout_seconds: int = 30,
+        action_timeout_seconds: float = DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS,
         full_output_save_dir: str | None = None,
         inject_scripts: list[str] | None = None,
         **config,
@@ -240,6 +264,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             allowed_domains: List of allowed domains for browser operations
             session_timeout_minutes: Browser session timeout in minutes
             init_timeout_seconds: Timeout for browser initialization in seconds
+            action_timeout_seconds: Timeout for each browser action in seconds
             full_output_save_dir: Absolute path to directory to save full output
                 logs and files, used when truncation is needed.
             inject_scripts: List of JavaScript code strings to inject into every
@@ -286,15 +311,19 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
         try:
             run_with_timeout(init_logic, init_timeout_seconds)
-        except TimeoutError:
+        except ToolTimeoutError:
             raise Exception(
                 f"Browser tool initialization timed out after {init_timeout_seconds}s"
             )
+
+        if action_timeout_seconds <= 0:
+            raise ValueError("action_timeout_seconds must be greater than 0")
 
         self.full_output_save_dir: str | None = full_output_save_dir
         self._initialized = False
         self._async_executor = AsyncExecutor()
         self._cleanup_initiated = False
+        self._action_timeout_seconds = action_timeout_seconds
 
     def __call__(
         self,
@@ -302,9 +331,20 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
-        return self._async_executor.run_async(
-            self._execute_action, action, timeout=300.0
-        )
+        try:
+            return self._async_executor.run_async(
+                self._execute_action,
+                action,
+                timeout=self._action_timeout_seconds,
+            )
+        except builtins.TimeoutError as error:
+            return BrowserObservation.from_text(
+                text=_format_browser_operation_error(
+                    error, timeout_seconds=self._action_timeout_seconds
+                ),
+                is_error=True,
+                full_output_save_dir=self.full_output_save_dir,
+            )
 
     async def _execute_action(self, action):
         """Execute browser action asynchronously."""
@@ -372,8 +412,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 is_error=False,
                 full_output_save_dir=self.full_output_save_dir,
             )
-        except Exception as e:
-            error_msg = f"Browser operation failed: {str(e)}"
+        except Exception as error:
+            error_msg = _format_browser_operation_error(error)
             logging.error(error_msg, exc_info=True)
             return BrowserObservation.from_text(
                 text=error_msg,

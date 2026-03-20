@@ -381,6 +381,44 @@ def test_factory_info() -> None:
     assert info.index("alpha-agent") < info.index("beta-agent")
 
 
+def test_factory_info_mixed_tools_and_no_tools() -> None:
+    """get_factory_info correctly shows tools only for agents that have them."""
+
+    def dummy(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    agent_with = AgentDefinition(
+        name="with-tools",
+        description="Has tools",
+        tools=["TerminalTool"],
+    )
+    agent_without = AgentDefinition(
+        name="without-tools",
+        description="No tools",
+        tools=[],
+    )
+    register_agent(name="with-tools", factory_func=dummy, description=agent_with)
+    register_agent(name="without-tools", factory_func=dummy, description=agent_without)
+
+    info = get_factory_info()
+    assert info == (
+        "- **with-tools**: Has tools (tools: TerminalTool)\n"
+        "- **without-tools**: No tools"
+    )
+
+
+def test_factory_info_single_agent() -> None:
+    """get_factory_info works correctly with a single registered agent."""
+
+    def dummy(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    register_agent(name="solo-agent", factory_func=dummy, description="Only agent")
+
+    info = get_factory_info()
+    assert info == "- **solo-agent**: Only agent"
+
+
 @pytest.mark.parametrize("name", [None, "", "default", "alpha"])
 def test_error_default_factory_empty(name: str | None) -> None:
     """Ensure default agent factory is used when no type is provided."""
