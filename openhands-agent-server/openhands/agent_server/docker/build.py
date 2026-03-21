@@ -395,6 +395,13 @@ class BuildOptions(BaseModel):
             "(e.g., at each release)."
         ),
     )
+    extra_build_args: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Additional Docker build args to pass to buildx. "
+            "For example, {'INSTALL_ACP': 'false'} to skip ACP installation."
+        ),
+    )
 
     @property
     def short_sha(self) -> str:
@@ -689,7 +696,16 @@ def _parse_buildkit_telemetry(stderr: str) -> BuildTelemetry:
             )
             continue
 
-        step_descriptions[step] = message.removesuffix(" ...").strip()
+        # Only update step description if there isn't already a classified one.
+        # This prevents sub-operations (like "preparing build cache for export")
+        # from overwriting the main operation (like "exporting cache to registry").
+        new_desc = message.removesuffix(" ...").strip()
+        existing_desc = step_descriptions.get(step)
+        if (
+            existing_desc is None
+            or _classify_buildkit_description(existing_desc) is None
+        ):
+            step_descriptions[step] = new_desc
 
     telemetry.build_context_seconds = _round_seconds(telemetry.build_context_seconds)
     telemetry.buildx_wall_clock_seconds = _round_seconds(
@@ -742,6 +758,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         "--build-arg",
         f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
     ]
+    for key, value in opts.extra_build_args.items():
+        args += ["--build-arg", f"{key}={value}"]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
     else:
@@ -755,17 +773,36 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     local_cache_dir = _default_local_cache_dir()
     cache_args: list[str] = []
 
+    # Cache export mode: "max" (default), "min", or "off"
+    # Default to "max" to preserve existing behavior; set to "off" in batch builds
+    # to avoid contention when building many images in parallel
+    cache_export_mode = os.environ.get("OPENHANDS_BUILDKIT_CACHE_MODE", "max").lower()
+    if cache_export_mode not in ("off", "max", "min"):
+        logger.warning(
+            f"[build] Invalid OPENHANDS_BUILDKIT_CACHE_MODE='{cache_export_mode}', "
+            "defaulting to 'max'"
+        )
+        cache_export_mode = "max"
+
     if push:
-        # Remote/CI builds: use registry cache + inline for maximum reuse.
+        # Remote/CI builds: always read from registry cache
         cache_args += [
             "--cache-from",
             f"type=registry,ref={opts.image}:{cache_tag}",
             "--cache-from",
             f"type=registry,ref={opts.image}:{cache_tag_base}-main",
-            "--cache-to",
-            f"type=registry,ref={opts.image}:{cache_tag},mode=max",
         ]
-        logger.info("[build] Cache: registry (remote/CI) + inline")
+        # Only export cache if explicitly enabled (avoids contention in batch builds)
+        if cache_export_mode in ("max", "min"):
+            cache_args += [
+                "--cache-to",
+                f"type=registry,ref={opts.image}:{cache_tag},mode={cache_export_mode}",
+            ]
+            logger.info(
+                f"[build] Cache: registry read + export mode={cache_export_mode}"
+            )
+        else:
+            logger.info("[build] Cache: registry read only (export disabled)")
     else:
         # Local/dev builds: prefer local dir cache if
         # driver supports it; otherwise inline-only.

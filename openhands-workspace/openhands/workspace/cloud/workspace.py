@@ -1,6 +1,8 @@
 """OpenHands Cloud workspace implementation using Cloud API."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
 
 import httpx
@@ -11,10 +13,25 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 
 
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.secret import LookupSecret
+
+
 logger = get_logger(__name__)
 
 # Standard exposed URL names from OpenHands Cloud
 AGENT_SERVER = "AGENT_SERVER"
+
+# Number of retry attempts for transient API failures
+_MAX_RETRIES = 3
+
+
+def _is_retryable_error(error: BaseException) -> bool:
+    """Return True for transient errors that are worth retrying."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code >= 500
+    return isinstance(error, (httpx.ConnectError, httpx.TimeoutException))
 
 
 class OpenHandsCloudWorkspace(RemoteWorkspace):
@@ -347,7 +364,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             logger.info(f"Deleting sandbox {self._sandbox_id}...")
             self._send_api_request(
                 "DELETE",
-                f"{self.cloud_api_url}/api/v1/sandboxes",
+                f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}",
                 params={"sandbox_id": self._sandbox_id},
                 timeout=30.0,
             )
@@ -364,10 +381,165 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             except Exception:
                 pass
 
+    # -----------------------------------------------------------------
+    # Settings helpers
+    # -----------------------------------------------------------------
+
+    @property
+    def _settings_base_url(self) -> str:
+        """Base URL for sandbox-scoped settings endpoints."""
+        return f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}/settings"
+
+    @property
+    def _session_headers(self) -> dict[str, str]:
+        """Headers for settings requests (SESSION_API_KEY auth)."""
+        return {"X-Session-API-Key": self._session_api_key or ""}
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def get_llm(self, **llm_kwargs: Any) -> LLM:
+        """Fetch LLM settings from the user's SaaS account and return an LLM.
+
+        Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
+        user's LLM configuration (model, api_key, base_url) and returns a
+        fully usable ``LLM`` instance.  Retries up to 3 times on transient
+        errors (network issues, server 5xx).
+
+        Args:
+            **llm_kwargs: Additional keyword arguments passed to the LLM
+                constructor, allowing overrides of any LLM parameter
+                (e.g. ``model``, ``temperature``).
+
+        Returns:
+            An LLM instance configured with the user's SaaS credentials.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the sandbox is not running.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     llm = workspace.get_llm()
+            ...     agent = Agent(llm=llm, tools=get_default_tools())
+        """
+        from openhands.sdk.llm.llm import LLM
+
+        if not self._sandbox_id:
+            raise RuntimeError("Sandbox is not running")
+
+        resp = self._send_api_request(
+            "GET",
+            f"{self.cloud_api_url}/api/v1/users/me",
+            params={"expose_secrets": "true"},
+            headers={"X-Session-API-Key": self._session_api_key or ""},
+        )
+        data = resp.json()
+
+        kwargs: dict[str, Any] = {}
+        if data.get("llm_model"):
+            kwargs["model"] = data["llm_model"]
+        if data.get("llm_api_key"):
+            kwargs["api_key"] = data["llm_api_key"]
+        if data.get("llm_base_url"):
+            kwargs["base_url"] = data["llm_base_url"]
+
+        # User-provided kwargs take precedence
+        kwargs.update(llm_kwargs)
+
+        return LLM(**kwargs)
+
+    def get_secrets(self, names: list[str] | None = None) -> dict[str, LookupSecret]:
+        """Build ``LookupSecret`` references for the user's SaaS secrets.
+
+        Fetches the list of available secret **names** from the SaaS (no raw
+        values) and returns a dict of ``LookupSecret`` objects whose URLs
+        point to per-secret endpoints.  The agent-server resolves each
+        ``LookupSecret`` lazily, so raw values **never** transit through
+        the SDK client.
+
+        The returned dict is compatible with ``conversation.update_secrets()``.
+
+        Args:
+            names: Optional list of secret names to include. If ``None``,
+                all available secrets are returned.
+
+        Returns:
+            A dictionary mapping secret names to ``LookupSecret`` instances.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the sandbox is not running.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     secrets = workspace.get_secrets()
+            ...     conversation.update_secrets(secrets)
+            ...
+            ...     # Or a subset
+            ...     gh = workspace.get_secrets(names=["GITHUB_TOKEN"])
+            ...     conversation.update_secrets(gh)
+        """
+        from openhands.sdk.secret import LookupSecret
+
+        if not self._sandbox_id:
+            raise RuntimeError("Sandbox is not running")
+
+        resp = self._send_settings_request("GET", f"{self._settings_base_url}/secrets")
+        data = resp.json()
+
+        result: dict[str, LookupSecret] = {}
+        for item in data.get("secrets", []):
+            name = item["name"]
+            if names is not None and name not in names:
+                continue
+            result[name] = LookupSecret(
+                url=f"{self._settings_base_url}/secrets/{name}",
+                headers={"X-Session-API-Key": self._session_api_key or ""},
+                description=item.get("description"),
+            )
+
+        return result
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def _send_settings_request(
+        self, method: str, url: str, **kwargs: Any
+    ) -> httpx.Response:
+        """Send a request to sandbox settings endpoints (SESSION_API_KEY auth).
+
+        Retries up to 3 times on transient errors (network issues, server 5xx).
+        """
+        headers = kwargs.pop("headers", {})
+        headers.update(self._session_headers)
+
+        timeout = kwargs.pop("timeout", self.api_timeout)
+        with httpx.Client(timeout=timeout) as api_client:
+            response = api_client.request(method, url, headers=headers, **kwargs)
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            try:
+                error_detail = response.json()
+                logger.error(f"Settings request failed: {error_detail}")
+            except Exception:
+                logger.error(f"Settings request failed: {response.text}")
+            raise
+
+        return response
+
     def __del__(self) -> None:
         self.cleanup()
 
-    def __enter__(self) -> "OpenHandsCloudWorkspace":
+    def __enter__(self) -> OpenHandsCloudWorkspace:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:

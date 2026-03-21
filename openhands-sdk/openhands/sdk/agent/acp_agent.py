@@ -5,6 +5,10 @@ ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
 LLM calls.  The ACP server manages its own LLM, tools, and execution;
 the ACPAgent simply relays user messages and collects the response.
 
+Unlike the built-in Agent, one ACP ``step()`` maps to one complete remote
+assistant turn. ACPAgent therefore emits a terminal ``FinishAction`` at the
+end of each step to delimit that completed turn for downstream consumers.
+
 See https://agentclientprotocol.com/protocol/overview
 """
 
@@ -65,18 +69,12 @@ if TYPE_CHECKING:
     )
 
 
-# Seconds to wait after prompt() for pending session_update notifications
-# to be processed.  This is a best-effort workaround: the ACP protocol does
-# not currently signal when all notifications for a turn have been delivered,
-# so we yield to the event loop and then sleep briefly to allow in-flight
-# handlers to finish.  Override via ACP_NOTIFICATION_DRAIN_DELAY for slow or
-# remote servers.
-# TODO(https://github.com/agentclientprotocol/agent-client-protocol/issues/554):
-#       Replace with protocol-level synchronization once ACP supports a
-#       "turn complete" notification.
-_NOTIFICATION_DRAIN_DELAY: float = float(
-    os.environ.get("ACP_NOTIFICATION_DRAIN_DELAY", "0.1")
-)
+# Maximum seconds to wait for a UsageUpdate notification after prompt()
+# returns. The ACP server writes UsageUpdate to the wire before the
+# PromptResponse, so under normal conditions the notification handler
+# completes almost immediately. This timeout is a safety net for slow
+# or remote servers.
+_USAGE_UPDATE_TIMEOUT: float = float(os.environ.get("ACP_USAGE_UPDATE_TIMEOUT", "2.0"))
 
 # Retry configuration for transient ACP connection errors.
 # These errors can occur when the connection drops mid-conversation but the
@@ -92,20 +90,11 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # carry large tool-call outputs (e.g. file contents, test results).  When
 # a single JSON-RPC line exceeds the limit, readline() raises
 # LimitOverrunError, silently killing the filter/receive pipeline and
-# leaving the prompt() future unresolved forever.  100 MiB is generous
-# enough for any realistic message while still bounding memory.
+# leaving the prompt() future unresolved forever.  100 MiB is a pragmatic
+# compatibility limit for current ACP servers, not an endorsement of huge
+# JSON-RPC payloads; the long-term fix is protocol-level chunking/streaming
+# for large tool output.
 _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
-
-
-async def _drain_notifications() -> None:
-    """Best-effort drain of pending ``session_update`` notifications.
-
-    ACP does not yet signal when all notifications for a turn have been
-    delivered (see TODO above).  We yield to the event loop so already-queued
-    handlers run, then sleep briefly to allow in-flight IO handlers to finish.
-    """
-    await asyncio.sleep(0)
-    await asyncio.sleep(_NOTIFICATION_DRAIN_DELAY)
 
 
 def _make_dummy_llm() -> LLM:
@@ -209,8 +198,12 @@ class _OpenHandsACPBridge:
         self.on_token: Any = None  # ConversationTokenCallbackType | None
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
-        self._context_window: int = 0  # context window size from ACP
-        self._llm_ref: Any = None  # reference to the sentinel LLM
+        self._last_cost_by_session: dict[str, float] = {}
+        self._context_window: int = 0  # last context window seen
+        self._context_window_by_session: dict[str, int] = {}
+        # Per-turn synchronization for UsageUpdate notifications.
+        self._turn_usage_updates: dict[str, Any] = {}
+        self._usage_received: dict[str, asyncio.Event] = {}
         # Fork session state for ask_agent() — guarded by _fork_lock to
         # prevent concurrent ask_agent() calls from colliding.
         self._fork_lock = threading.Lock()
@@ -222,8 +215,26 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
         self.on_token = None
+        self._turn_usage_updates.clear()
+        self._usage_received.clear()
         # Note: telemetry state (_last_cost, _context_window, etc.)
         # is intentionally NOT cleared — it accumulates across turns.
+
+    def prepare_usage_sync(self, session_id: str) -> asyncio.Event:
+        """Prepare per-turn UsageUpdate synchronization for a session."""
+        event = asyncio.Event()
+        self._usage_received[session_id] = event
+        self._turn_usage_updates.pop(session_id, None)
+        return event
+
+    def get_turn_usage_update(self, session_id: str) -> Any:
+        """Return the latest UsageUpdate observed for the current turn."""
+        return self._turn_usage_updates.get(session_id)
+
+    def pop_turn_usage_update(self, session_id: str) -> Any:
+        """Consume per-turn UsageUpdate synchronization state for a session."""
+        self._usage_received.pop(session_id, None)
+        return self._turn_usage_updates.pop(session_id, None)
 
     # -- Client protocol methods ------------------------------------------
 
@@ -255,14 +266,13 @@ class _OpenHandsACPBridge:
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(update.content.text)
         elif isinstance(update, UsageUpdate):
-            # Update context window size
+            # Store the update for step()/ask_agent() to process in one place.
             self._context_window = update.size
-            # Record incremental cost
-            if update.cost is not None and self._llm_ref is not None:
-                delta = update.cost.amount - self._last_cost
-                if delta > 0:
-                    self._llm_ref.metrics.add_cost(delta)
-                self._last_cost = update.cost.amount
+            self._context_window_by_session[session_id] = update.size
+            self._turn_usage_updates[session_id] = update
+            event = self._usage_received.get(session_id)
+            if event is not None:
+                event.set()
         elif isinstance(update, ToolCallStart):
             self.accumulated_tool_calls.append(
                 {
@@ -452,14 +462,24 @@ class ACPAgent(AgentBase):
         response: PromptResponse | None,
         session_id: str,
         elapsed: float | None = None,
+        usage_update: UsageUpdate | None = None,
     ) -> None:
-        """Record token usage, latency, and notify stats callback from a PromptResponse.
+        """Record cost, token usage, latency, and notify stats callback once.
 
         Args:
             response: The ACP PromptResponse (may carry a ``usage`` field).
             session_id: Session identifier used as the response_id for metrics.
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
+            usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        if usage_update is not None and usage_update.cost is not None:
+            last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
+            delta = usage_update.cost.amount - last_cost
+            if delta > 0:
+                self.llm.metrics.add_cost(delta)
+            self._client._last_cost_by_session[session_id] = usage_update.cost.amount
+            self._client._last_cost = usage_update.cost.amount
+
         if response is not None and response.usage is not None:
             usage = response.usage
             self.llm.metrics.add_token_usage(
@@ -468,7 +488,9 @@ class ACPAgent(AgentBase):
                 cache_read_tokens=usage.cached_read_tokens or 0,
                 cache_write_tokens=usage.cached_write_tokens or 0,
                 reasoning_tokens=usage.thought_tokens or 0,
-                context_window=self._client._context_window,
+                context_window=self._client._context_window_by_session.get(
+                    session_id, self._client._context_window
+                ),
                 response_id=session_id,
             )
 
@@ -562,7 +584,6 @@ class ACPAgent(AgentBase):
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
-        client._llm_ref = self.llm
         self._client = client
 
         # Build environment: inherit current env + ACP extras
@@ -706,11 +727,22 @@ class ACPAgent(AgentBase):
         try:
 
             async def _prompt() -> PromptResponse:
+                usage_sync = self._client.prepare_usage_sync(self._session_id or "")
                 response = await self._conn.prompt(
                     [text_block(user_message)],
                     self._session_id,
                 )
-                await _drain_notifications()
+                if self._client.get_turn_usage_update(self._session_id or "") is None:
+                    try:
+                        await asyncio.wait_for(
+                            usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "UsageUpdate not received within %.1fs for session %s",
+                            _USAGE_UPDATE_TIMEOUT,
+                            self._session_id,
+                        )
                 return response
 
             # Send prompt to ACP server with retry logic for connection errors.
@@ -730,9 +762,8 @@ class ACPAgent(AgentBase):
                     response = self._executor.run_async(
                         _prompt, timeout=self.acp_prompt_timeout
                     )
-                    break  # Success, exit retry loop
+                    break
                 except TimeoutError:
-                    # Timeout is handled separately below, don't retry
                     raise
                 except _RETRIABLE_CONNECTION_ERRORS as e:
                     if attempt < max_retries:
@@ -748,17 +779,22 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        # Reset accumulators for retry (partial state may be stale)
                         self._client.reset()
                         self._client.on_token = on_token
                     else:
-                        # Max retries exceeded
                         raise
 
             elapsed = time.monotonic() - t0
             logger.info("ACP prompt returned in %.1fs", elapsed)
 
-            self._record_usage(response, self._session_id or "", elapsed=elapsed)
+            session_id = self._session_id or ""
+            usage_update = self._client.pop_turn_usage_update(session_id)
+            self._record_usage(
+                response,
+                session_id,
+                elapsed=elapsed,
+                usage_update=usage_update,
+            )
 
             # Emit ACPToolCallEvents for each accumulated tool call
             for tc in self._client.accumulated_tool_calls:
@@ -792,10 +828,9 @@ class ACPAgent(AgentBase):
             )
             on_event(msg_event)
 
-            # Emit FinishAction so evaluation frameworks (SWE-bench, etc.)
-            # recognize that the agent has completed its task.  The regular
-            # Agent emits this when the LLM calls the "finish" tool; for
-            # ACPAgent each step() is a complete turn, so we always finish.
+            # ACP step() boundaries are full remote assistant turns, not
+            # partial planning steps. Emit FinishAction to delimit that
+            # completed turn for eval/remote consumers, matching #2190.
             finish_action = FinishAction(message=response_text)
             tc_id = str(uuid.uuid4())
             action_event = ActionEvent(
@@ -906,15 +941,32 @@ class ACPAgent(AgentBase):
             client._fork_accumulated_text.clear()
             try:
                 fork_t0 = time.monotonic()
+                usage_sync = client.prepare_usage_sync(fork_session_id)
                 response = await self._conn.prompt(
                     [text_block(question)],
                     fork_session_id,
                 )
-                await _drain_notifications()
+                if client.get_turn_usage_update(fork_session_id) is None:
+                    try:
+                        await asyncio.wait_for(
+                            usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "UsageUpdate not received within %.1fs for fork session %s",
+                            _USAGE_UPDATE_TIMEOUT,
+                            fork_session_id,
+                        )
                 fork_elapsed = time.monotonic() - fork_t0
 
                 result = "".join(client._fork_accumulated_text)
-                self._record_usage(response, fork_session_id, elapsed=fork_elapsed)
+                usage_update = client.pop_turn_usage_update(fork_session_id)
+                self._record_usage(
+                    response,
+                    fork_session_id,
+                    elapsed=fork_elapsed,
+                    usage_update=usage_update,
+                )
                 return result
             finally:
                 client._fork_session_id = None

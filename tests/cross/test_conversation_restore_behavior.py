@@ -231,7 +231,7 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
         )
 
         with pytest.raises(
-            ValueError, match="tools cannot be changed mid-conversation"
+            ValueError, match="tools were removed mid-conversation"
         ) as exc:
             lifecycle.restore(runtime_agent)
 
@@ -240,8 +240,11 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
-def test_conversation_restore_fails_when_adding_tools(mock_completion):
-    """Restore must fail when runtime tools add a new tool."""
+def test_conversation_restore_succeeds_when_adding_tools(mock_completion):
+    """Restore must succeed when runtime tools add a new tool.
+
+    Adding tools is allowed — only removing tools is rejected.
+    """
 
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
@@ -274,13 +277,8 @@ def test_conversation_restore_fails_when_adding_tools(mock_completion):
             skill_keyword="alpha",
         )
 
-        with pytest.raises(
-            ValueError, match="tools cannot be changed mid-conversation"
-        ) as exc:
-            lifecycle.restore(runtime_agent)
-
-        assert "added:" in str(exc.value)
-        assert "FileEditorTool" in str(exc.value)
+        conversation = lifecycle.restore(runtime_agent)
+        assert conversation is not None
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -364,7 +362,7 @@ def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
         )
 
         with pytest.raises(
-            ValueError, match="tools cannot be changed mid-conversation"
+            ValueError, match="tools were removed mid-conversation"
         ) as exc:
             lifecycle.restore(runtime_agent)
 
@@ -373,8 +371,11 @@ def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
-def test_conversation_restore_fails_when_default_tools_added(mock_completion):
-    """Restore must fail if include_default_tools adds a built-in tool."""
+def test_conversation_restore_succeeds_when_default_tools_added(mock_completion):
+    """Restore must succeed if include_default_tools adds a built-in tool.
+
+    Adding tools is allowed — only removing tools is rejected.
+    """
 
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
@@ -409,13 +410,8 @@ def test_conversation_restore_fails_when_default_tools_added(mock_completion):
             include_default_tools=["FinishTool", "ThinkTool"],
         )
 
-        with pytest.raises(
-            ValueError, match="tools cannot be changed mid-conversation"
-        ) as exc:
-            lifecycle.restore(runtime_agent)
-
-        assert "added:" in str(exc.value)
-        assert "think" in str(exc.value)
+        conversation = lifecycle.restore(runtime_agent)
+        assert conversation is not None
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
