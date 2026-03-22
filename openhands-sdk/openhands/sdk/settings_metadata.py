@@ -23,12 +23,12 @@ class SettingsSectionMetadata(BaseModel):
 
 class SettingsFieldMetadata(BaseModel):
     label: str | None = None
-    prominence: SettingProminence = SettingProminence.MAJOR
+    prominence: SettingProminence = SettingProminence.MINOR
     depends_on: tuple[str, ...] = ()
 
 
 def field_meta(
-    prominence: SettingProminence = SettingProminence.MAJOR,
+    prominence: SettingProminence = SettingProminence.MINOR,
     *,
     label: str | None = None,
     depends_on: tuple[str, ...] = (),

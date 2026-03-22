@@ -50,7 +50,7 @@ class SettingsFieldSchema(BaseModel):
     value_type: SettingsValueType
     default: Any = None
     required: bool = False
-    prominence: SettingProminence = SettingProminence.MAJOR
+    prominence: SettingProminence = SettingProminence.MINOR
     depends_on: list[str] = Field(default_factory=list)
     secret: bool = False
     choices: list[SettingsChoice] = Field(default_factory=list)
@@ -408,8 +408,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 if nested_field.exclude:
                     continue
                 metadata = settings_metadata(nested_field)
-                if metadata is None and nested_model is LLM:
-                    metadata = LLM.settings_field_metadata(nested_key)
                 default_value = None
                 if isinstance(section_default, BaseModel):
                     default_value = getattr(section_default, nested_key)
@@ -430,7 +428,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         prominence=(
                             metadata.prominence
                             if metadata is not None
-                            else SettingProminence.MAJOR
+                            else SettingProminence.MINOR
                         ),
                         depends_on=[
                             f"{section_metadata.key}.{dependency}"

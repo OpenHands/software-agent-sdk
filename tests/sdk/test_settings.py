@@ -53,12 +53,13 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL
     assert llm_fields["llm.base_url"].prominence is SettingProminence.CRITICAL
     assert llm_fields["llm.reasoning_effort"].choices[0].value == "low"
-    assert llm_fields["llm.reasoning_effort"].prominence is SettingProminence.MAJOR
+    assert llm_fields["llm.reasoning_effort"].prominence is SettingProminence.MINOR
     assert llm_fields["llm.litellm_extra_body"].value_type == "object"
     assert llm_fields["llm.litellm_extra_body"].default == {}
     assert llm_fields["llm.litellm_extra_body"].prominence is SettingProminence.MINOR
     llm_model_field_extra = LLM.model_fields["model"].json_schema_extra
-    assert not llm_model_field_extra
+    assert isinstance(llm_model_field_extra, dict)
+    assert "openhands_settings" in llm_model_field_extra
 
     assert llm_fields["llm.num_retries"].prominence is SettingProminence.MINOR
 

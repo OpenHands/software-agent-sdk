@@ -23,7 +23,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
-from openhands.sdk.settings_metadata import SettingProminence, SettingsFieldMetadata
+from openhands.sdk.settings_metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -158,98 +158,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ```
     """
 
-    _SETTINGS_FIELD_METADATA: ClassVar[dict[str, SettingsFieldMetadata]] = {
-        "model": SettingsFieldMetadata(prominence=SettingProminence.CRITICAL),
-        "api_key": SettingsFieldMetadata(
-            label="API Key",
-            prominence=SettingProminence.CRITICAL,
-        ),
-        "base_url": SettingsFieldMetadata(prominence=SettingProminence.CRITICAL),
-        "openrouter_site_url": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "openrouter_app_name": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "num_retries": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "retry_multiplier": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "retry_min_wait": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "retry_max_wait": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "timeout": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "max_message_chars": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "top_p": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "top_k": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "max_input_tokens": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "model_canonical_name": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "extra_headers": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "input_cost_per_token": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "output_cost_per_token": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "stream": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "drop_params": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "modify_params": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "disable_stop_word": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "caching_prompt": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "log_completions": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "log_completions_folder": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "custom_tokenizer": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "native_tool_calling": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "force_string_serializer": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "reasoning_summary": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "enable_encrypted_reasoning": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "prompt_cache_retention": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "extended_thinking_budget": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "seed": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "safety_settings": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-        "usage_id": SettingsFieldMetadata(prominence=SettingProminence.MINOR),
-        "litellm_extra_body": SettingsFieldMetadata(
-            prominence=SettingProminence.MINOR,
-        ),
-    }
-
-    @classmethod
-    def settings_field_metadata(cls, field_name: str) -> SettingsFieldMetadata | None:
-        return cls._SETTINGS_FIELD_METADATA.get(field_name)
-
     # =========================================================================
     # Config fields
     # =========================================================================
@@ -257,14 +165,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     model: str = Field(
         default="claude-sonnet-4-20250514",
         description="Model name.",
+        json_schema_extra=field_meta(SettingProminence.CRITICAL),
     )
     api_key: str | SecretStr | None = Field(
         default=None,
         description="API key.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="API Key",
+        ),
     )
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",
+        json_schema_extra=field_meta(SettingProminence.CRITICAL),
     )
     api_version: str | None = Field(
         default=None,
