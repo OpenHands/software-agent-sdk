@@ -408,6 +408,8 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 if nested_field.exclude:
                     continue
                 metadata = settings_metadata(nested_field)
+                if metadata is None and nested_model is LLM:
+                    metadata = LLM.settings_field_metadata(nested_key)
                 default_value = None
                 if isinstance(section_default, BaseModel):
                     default_value = getattr(section_default, nested_key)
