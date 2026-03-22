@@ -43,6 +43,7 @@ VALID_TARGETS = {
     "source-minimal",
     "base-image-minimal",
     "base-image",
+    "builder",
 }
 _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
