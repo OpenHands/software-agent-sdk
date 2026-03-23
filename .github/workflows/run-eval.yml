@@ -113,6 +113,11 @@ on:
                     - default
                     - acp-claude
                     - acp-codex
+            partial_archive_url:
+                description: (Experimental) URL to a full archive tar.gz from a previous run to resume partial work
+                required: false
+                default: ''
+                type: string
 
 
 env:
@@ -153,6 +158,7 @@ jobs:
                   echo "enable_conversation_event_logging: ${{ github.event.inputs.enable_conversation_event_logging || 'true' }}"
                   echo "max_retries: ${{ github.event.inputs.max_retries || '3' }}"
                   echo "tool_preset: ${{ github.event.inputs.tool_preset || 'default' }}"
+                  echo "partial_archive_url: ${{ github.event.inputs.partial_archive_url || 'N/A' }}"
                   echo ""
                   echo "=== Environment Variables ==="
                   echo "EVAL_REPO: ${{ env.EVAL_REPO }}"
@@ -332,6 +338,7 @@ jobs:
                   MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
                   TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
                   AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
+                  PARTIAL_ARCHIVE_URL: ${{ github.event.inputs.partial_archive_url || '' }}
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
                   # Normalize instance_ids: strip all spaces
@@ -354,8 +361,9 @@ jobs:
                     --arg max_retries "$MAX_RETRIES" \
                     --arg tool_preset "$TOOL_PRESET" \
                     --arg agent_type "$AGENT_TYPE" \
+                    --arg partial_archive_url "$PARTIAL_ARCHIVE_URL" \
                     --arg triggered_by "$TRIGGERED_BY" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, triggered_by: $triggered_by}}')
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, partial_archive_url: $partial_archive_url, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
