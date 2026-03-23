@@ -8,6 +8,7 @@ from openhands.sdk.subagent.schema import (
     AgentDefinition,
     _extract_examples,
     _resolve_env_vars,
+    _resolve_env_vars_deep,
 )
 
 
@@ -721,3 +722,53 @@ def test_resolve_env_vars(
     for k, v in env_vars.items():
         monkeypatch.setenv(k, v)
     assert _resolve_env_vars(input_val) == expected
+
+
+@pytest.mark.parametrize(
+    ("input_val", "expected"),
+    [
+        (42, 42),
+        (None, None),
+        (True, True),
+        (3.14, 3.14),
+    ],
+    ids=["int", "none", "bool", "float"],
+)
+def test_resolve_env_vars_deep_non_string_passthrough(
+    input_val: object, expected: object
+):
+    assert _resolve_env_vars_deep(input_val) is expected
+
+
+def test_resolve_env_vars_deep_string(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VAL", "resolved")
+    assert _resolve_env_vars_deep("${VAL}") == "resolved"
+
+
+def test_resolve_env_vars_deep_dict(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("A", "1")
+    monkeypatch.setenv("B", "2")
+    result = _resolve_env_vars_deep({"key_a": "${A}", "key_b": "${B}"})
+    assert result == {"key_a": "1", "key_b": "2"}
+
+
+def test_resolve_env_vars_deep_list(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("X", "hello")
+    result = _resolve_env_vars_deep(["${X}", "literal", "${X}"])
+    assert result == ["hello", "literal", "hello"]
+
+
+def test_resolve_env_vars_deep_nested(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CMD", "/usr/bin/server")
+    monkeypatch.setenv("TOKEN", "secret")
+    data = {
+        "command": "${CMD}",
+        "args": ["--token", "${TOKEN}"],
+        "env": {"API_TOKEN": "${TOKEN}"},
+        "port": 8080,
+    }
+    result = _resolve_env_vars_deep(data)
+    assert result["command"] == "/usr/bin/server"
+    assert result["args"] == ["--token", "secret"]
+    assert result["env"]["API_TOKEN"] == "secret"
+    assert result["port"] == 8080  # non-string left untouched

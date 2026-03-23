@@ -53,6 +53,29 @@ def _resolve_env_vars(value: str) -> str:
     return os.path.expandvars(value)
 
 
+def _resolve_env_vars_deep(value: Any) -> Any:
+    """Recursively expand environment variable references in nested structures.
+
+    Walks dicts, lists, and strings, applying :func:`_resolve_env_vars` to
+    every string leaf.  Non-string scalars (int, float, bool, None) are
+    returned unchanged.
+
+    Args:
+        value: A string, dict, list, or scalar potentially containing
+            environment variable references.
+
+    Returns:
+        A copy of *value* with all string leaves expanded.
+    """
+    if isinstance(value, str):
+        return _resolve_env_vars(value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_vars_deep(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_vars_deep(item) for item in value]
+    return value
+
+
 def _extract_color(fm: dict[str, object]) -> str | None:
     """Extract color from frontmatter."""
     color_raw = fm.get("color")
@@ -106,18 +129,9 @@ def _extract_mcp_servers(fm: dict[str, Any]) -> dict[str, Any] | None:
         )
 
     # Resolve ${VAR} / $VAR references in all string values
-    def _resolve_deep(value: Any) -> Any:
-        if isinstance(value, str):
-            return _resolve_env_vars(value)
-        if isinstance(value, dict):
-            return {k: _resolve_deep(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [_resolve_deep(item) for item in value]
-        return value
-
     for server_name, server_cfg in mcp_servers_raw.items():
         if isinstance(server_cfg, dict):
-            mcp_servers_raw[server_name] = _resolve_deep(server_cfg)
+            mcp_servers_raw[server_name] = _resolve_env_vars_deep(server_cfg)
     return mcp_servers_raw
 
 
