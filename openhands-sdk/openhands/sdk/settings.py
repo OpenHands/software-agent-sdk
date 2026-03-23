@@ -281,6 +281,7 @@ class AgentSettings(BaseModel):
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:
+        """Export a structured schema describing configurable agent settings."""
         return export_settings_schema(cls)
 
     def create_agent(self) -> Agent:
@@ -383,6 +384,12 @@ _GENERAL_SECTION_LABEL = "General"
 
 
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
+    """Export a structured settings schema for a Pydantic settings model.
+
+    The returned schema groups nested models into sections and describes each
+    exported field with its label, type, default, dependencies, choices, and
+    whether the value should be treated as secret input.
+    """
     sections: list[SettingsSectionSchema] = []
     general_fields: list[SettingsFieldSchema] = []
 
