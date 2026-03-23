@@ -45,18 +45,13 @@ class PlanningFileEditorObservation(FileEditorObservation):
     """
 
 
-TOOL_DESCRIPTION = (
-    FILE_EDITOR_TOOL_DESCRIPTION
-    + """
-
-IMPORTANT RESTRICTION FOR PLANNING AGENT:
+PLANNING_RESTRICTIONS = """IMPORTANT RESTRICTION FOR PLANNING AGENT:
 * You can VIEW any file in the workspace using the 'view' command
 * You can ONLY EDIT the PLAN.md file (all other edit operations will be rejected)
 * PLAN.md is automatically initialized with section headers at the workspace root
 * All editing commands (create, str_replace, insert, undo_edit) are restricted to PLAN.md only
 * The PLAN.md file already contains the required section structure - you just need to fill in the content
-"""  # noqa
-)
+"""  # noqa: E501
 
 
 class PlanningFileEditorTool(
@@ -129,9 +124,25 @@ class PlanningFileEditorTool(
             plan_path=plan_path,
         )
 
+        description_lines = FILE_EDITOR_TOOL_DESCRIPTION.split("\n")
+        base_description = "\n".join(description_lines[:2])
+        remaining_description = "\n".join(description_lines[2:])
+
+        if conv_state.agent.llm.vision_is_active():
+            file_editor_description = (
+                f"{base_description}\n"
+                "* If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, "
+                ".bmp), `view` displays the image content\n"
+                f"{remaining_description}"
+            )
+        else:
+            file_editor_description = FILE_EDITOR_TOOL_DESCRIPTION
+
+        tool_description = f"{file_editor_description}\n\n{PLANNING_RESTRICTIONS}"
+
         # Add working directory information to the tool description
         enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
+            f"{tool_description}\n\n"
             f"Your current working directory: {working_dir}\n"
             f"Your PLAN.md location: {plan_path}\n"
             f"This plan file will be accessible to other agents in the workflow."
