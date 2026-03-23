@@ -23,6 +23,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.settings_metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -160,19 +161,46 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Config fields
     # =========================================================================
-    model: str = Field(default="claude-sonnet-4-20250514", description="Model name.")
-    api_key: str | SecretStr | None = Field(default=None, description="API key.")
-    base_url: str | None = Field(default=None, description="Custom base URL.")
+
+    model: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Model name.",
+        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+    )
+    api_key: str | SecretStr | None = Field(
+        default=None,
+        description="API key.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="API Key",
+        ),
+    )
+    base_url: str | None = Field(
+        default=None,
+        description="Custom base URL.",
+        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+    )
     api_version: str | None = Field(
-        default=None, description="API version (e.g., Azure)."
+        default=None,
+        description="API version (e.g., Azure).",
     )
 
-    aws_access_key_id: str | SecretStr | None = Field(default=None)
-    aws_secret_access_key: str | SecretStr | None = Field(default=None)
-    aws_region_name: str | None = Field(default=None)
+    aws_access_key_id: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_secret_access_key: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_region_name: str | None = Field(
+        default=None,
+    )
 
-    openrouter_site_url: str = Field(default="https://docs.all-hands.dev/")
-    openrouter_app_name: str = Field(default="OpenHands")
+    openrouter_site_url: str = Field(
+        default="https://docs.all-hands.dev/",
+    )
+    openrouter_app_name: str = Field(
+        default="OpenHands",
+    )
 
     num_retries: int = Field(default=5, ge=0)
     retry_multiplier: float = Field(default=8.0, ge=0)
@@ -253,7 +281,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description="The cost per output token. This will available in logs for user.",
     )
-    ollama_base_url: str | None = Field(default=None)
+    ollama_base_url: str | None = Field(
+        default=None,
+    )
 
     stream: bool = Field(
         default=False,
@@ -275,11 +305,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "processing (useful for cost reduction).",
     )
     disable_stop_word: bool | None = Field(
-        default=False, description="Disable using of stop word."
+        default=False,
+        description="Disable using of stop word.",
     )
-    caching_prompt: bool = Field(default=True, description="Enable caching of prompts.")
+    caching_prompt: bool = Field(
+        default=True,
+        description="Enable caching of prompts.",
+    )
     log_completions: bool = Field(
-        default=False, description="Enable logging of completions."
+        default=False,
+        description="Enable logging of completions.",
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
@@ -287,7 +322,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "Required if log_completions is True.",
     )
     custom_tokenizer: str | None = Field(
-        default=None, description="A custom tokenizer to use for token counting."
+        default=None,
+        description="A custom tokenizer to use for token counting.",
     )
     native_tool_calling: bool = Field(
         default=True,
@@ -335,7 +371,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "supported by Anthropic models.",
     )
     seed: int | None = Field(
-        default=None, description="The seed to use for random number generation."
+        default=None,
+        description="The seed to use for random number generation.",
     )
     # REMOVE_AT: 1.15.0 - Remove this field and its handling in chat_options.py
     safety_settings: list[dict[str, str]] | None = Field(
