@@ -424,26 +424,6 @@ def test_saas_runtime_mode_custom_port():
     workspace.cleanup()
 
 
-def test_saas_runtime_mode_port_from_env(monkeypatch):
-    """agent_server_port reads from AGENT_SERVER_PORT env var."""
-    monkeypatch.setenv("AGENT_SERVER_PORT", "12345")
-    workspace = _make_saas_workspace()
-
-    assert workspace.agent_server_port == 12345
-    assert workspace.host == "http://localhost:12345"
-    workspace.cleanup()
-
-
-def test_saas_runtime_mode_port_env_overridden_by_kwarg(monkeypatch):
-    """Explicit agent_server_port kwarg takes precedence over env var."""
-    monkeypatch.setenv("AGENT_SERVER_PORT", "12345")
-    workspace = _make_saas_workspace(agent_server_port=9999)
-
-    assert workspace.agent_server_port == 9999
-    assert workspace.host == "http://localhost:9999"
-    workspace.cleanup()
-
-
 def test_saas_runtime_mode_cloud_credentials_available():
     """Cloud API fields are available for get_llms / get_secrets."""
     workspace = _make_saas_workspace(
@@ -494,7 +474,7 @@ def test_callback_on_successful_exit():
         ws.__exit__(None, None, None)
 
         mock_client.post.assert_called_once()
-        (url,) = mock_client.post.call_args.args
+        url, = mock_client.post.call_args.args
         payload = mock_client.post.call_args.kwargs["json"]
         assert url == "https://svc.test/complete"
         assert payload["status"] == "COMPLETED"

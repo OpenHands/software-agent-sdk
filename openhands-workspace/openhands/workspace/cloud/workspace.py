@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
 
@@ -90,13 +89,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         ),
     )
     agent_server_port: int = Field(
-        default_factory=lambda: int(
-            os.environ.get("AGENT_SERVER_PORT", DEFAULT_AGENT_SERVER_PORT)
-        ),
+        default=DEFAULT_AGENT_SERVER_PORT,
         description=(
-            "Port of the local agent-server. Only used when "
-            "saas_runtime_mode=True. Defaults to the AGENT_SERVER_PORT "
-            "environment variable, or 60000 if not set."
+            "Port of the local agent-server. Only used when saas_runtime_mode=True."
         ),
     )
 
@@ -152,7 +147,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     )
     automation_run_id: str | None = Field(
         default=None,
-        description=("Automation run ID included in the completion callback payload."),
+        description=(
+            "Automation run ID included in the completion callback payload."
+        ),
     )
 
     # Private state
@@ -662,6 +659,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         try:
             with httpx.Client(timeout=10.0) as cb_client:
                 resp = cb_client.post(callback_url, json=payload)
-                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
+                logger.info(
+                    f"Completion callback sent ({status}): {resp.status_code}"
+                )
         except Exception as e:
             logger.warning(f"Completion callback failed: {e}")
