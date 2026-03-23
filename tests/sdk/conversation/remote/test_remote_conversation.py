@@ -1205,17 +1205,10 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_execute_tool_not_implemented(self, mock_ws_client):
-        """Test that execute_tool raises NotImplementedError for RemoteConversation."""
+    def test_remote_conversation_execute_tool(self, mock_ws_client):
+        """Test that execute_tool calls the server endpoint."""
         # Setup mocks
         mock_client_instance = self.setup_mock_client()
-
-        conversation_id = str(uuid.uuid4())
-        mock_conv_response = self.create_mock_conversation_response(conversation_id)
-        mock_events_response = self.create_mock_events_response()
-
-        mock_client_instance.post.return_value = mock_conv_response
-        mock_client_instance.get.return_value = mock_events_response
 
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
@@ -1223,13 +1216,34 @@ class TestRemoteConversation:
         # Create conversation
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
 
-        # Create a dummy action (using a simple mock)
+        # Mock the execute_tool API response
+        mock_execute_response = Mock()
+        mock_execute_response.status_code = 200
+        mock_execute_response.raise_for_status.return_value = None
+        mock_execute_response.json.return_value = {
+            "observation": {
+                "content": [{"text": "hello world", "kind": "text"}],
+                "is_error": False,
+            },
+            "is_error": False,
+        }
+
+        # Override request for execute_tool endpoint
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def request_side_effect(method, url, **kwargs):
+            if method == "POST" and "execute_tool" in url:
+                return mock_execute_response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = request_side_effect
+
+        # Create a mock action with model_dump
         from unittest.mock import MagicMock
 
         mock_action = MagicMock()
+        mock_action.model_dump.return_value = {"command": "echo hello"}
 
-        # Verify execute_tool raises NotImplementedError
-        with pytest.raises(NotImplementedError) as exc_info:
-            conversation.execute_tool("any_tool", mock_action)
-
-        assert "not yet supported for RemoteConversation" in str(exc_info.value)
+        result = conversation.execute_tool("terminal", mock_action)
+        assert result.text == "hello world"
+        assert result.is_error is False

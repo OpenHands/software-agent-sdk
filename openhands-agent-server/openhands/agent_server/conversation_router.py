@@ -17,6 +17,8 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    ExecuteToolRequest,
+    ExecuteToolResponse,
     GenerateTitleRequest,
     GenerateTitleResponse,
     SendMessageRequest,
@@ -338,3 +340,37 @@ async def condense_conversation(
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/execute_tool",
+    responses={
+        404: {"description": "Item not found"},
+        400: {"description": "Tool not found or execution error"},
+    },
+)
+async def execute_tool(
+    conversation_id: UUID,
+    request: ExecuteToolRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ExecuteToolResponse:
+    """Execute a tool directly on a conversation without going through the agent loop.
+
+    This is useful for pre-run setup operations like running setup scripts
+    through the agent's terminal tool so environment changes persist in the
+    agent's session.
+    """
+    try:
+        result = await conversation_service.execute_tool(
+            conversation_id, request.tool_name, request.action
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return ExecuteToolResponse(
+        observation=result,
+        is_error=result.get("is_error", False),
+    )

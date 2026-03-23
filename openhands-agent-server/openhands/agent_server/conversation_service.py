@@ -613,6 +613,20 @@ class ConversationService:
         response = await event_service.ask_agent(question)
         return response
 
+    async def execute_tool(
+        self, conversation_id: UUID, tool_name: str, action_dict: dict
+    ) -> dict | None:
+        """Execute a tool directly on a conversation.
+
+        Returns the observation dict, or None if the conversation was not found.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+        return await event_service.execute_tool(tool_name, action_dict)
+
     async def condense(self, conversation_id: UUID) -> bool:
         """Force condensation of the conversation history."""
         if self._event_services is None:

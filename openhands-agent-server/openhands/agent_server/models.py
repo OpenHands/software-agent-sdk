@@ -418,6 +418,28 @@ class AskAgentResponse(BaseModel):
     response: str = Field(description="The agent's response to the question")
 
 
+class ExecuteToolRequest(BaseModel):
+    """Payload to execute a tool directly on a conversation."""
+
+    tool_name: str = Field(
+        description="The name of the tool to execute (e.g., 'terminal')"
+    )
+    action: dict[str, Any] = Field(
+        description="The action parameters to pass to the tool executor"
+    )
+
+
+class ExecuteToolResponse(BaseModel):
+    """Response from executing a tool."""
+
+    observation: dict[str, Any] = Field(
+        description="The observation returned by the tool execution"
+    )
+    is_error: bool = Field(
+        default=False, description="Whether the tool execution resulted in an error"
+    )
+
+
 class BashEventBase(DiscriminatedUnionMixin, ABC):
     """Base class for all bash event types"""
 
