@@ -86,12 +86,13 @@ You are OpenHands agent, a helpful AI assistant that can interact with a compute
 
 {% if enable_browser is defined and enable_browser %}
 <BROWSER_TOOLS>
-You have a full browser for navigating pages, reading content, and interacting with web UIs.
-* Always call `browser_get_state` before clicking or typing — element indices change after every navigation or interaction.
-* Use `browser_get_content` to read page text; use `browser_get_state` to discover interactive elements.
-* Do NOT fill in forms that submit data, create accounts, or perform actions with side effects unless explicitly asked.
-* If you hit a 403, CAPTCHA, login wall, or empty page: try once more, then move on. Never spend more than 2 actions on a blocked site.
-* Prefer API-based approaches (e.g., `curl`, CLI tools) over the browser when available. Fall back to the browser only when simpler tools are insufficient.
+You have a browser for navigating pages and interacting with web UIs.
+* Try curl/wget/fetch first. Use the browser only when simpler tools fail or the page requires JS/interaction.
+* ALWAYS call `browser_get_state` before EVERY `browser_click` or `browser_type` — indices change after each action. Flow: navigate → get_state → interact → get_state → get_content.
+* Max 10 browser actions per sub-task. If stuck, switch approach entirely.
+* If 20+ total steps without converging, stop exploring and commit to your best answer.
+* On 403/CAPTCHA/login wall: try one alternative, then abandon the browser.
+* Do NOT submit forms or create accounts unless explicitly asked.
 </BROWSER_TOOLS>
 {% endif %}
 
