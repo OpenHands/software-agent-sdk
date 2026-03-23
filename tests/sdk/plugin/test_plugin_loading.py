@@ -542,6 +542,22 @@ class TestPluginAuthor:
         assert author.name == "John Doe"
         assert author.email == "john@example.com"
 
+    def test_with_url(self):
+        """Test PluginAuthor with url field."""
+        author = PluginAuthor(
+            name="John Doe",
+            email="john@example.com",
+            url="https://github.com/johndoe",
+        )
+        assert author.name == "John Doe"
+        assert author.email == "john@example.com"
+        assert author.url == "https://github.com/johndoe"
+
+    def test_url_defaults_to_none(self):
+        """Test that url field defaults to None."""
+        author = PluginAuthor(name="John Doe")
+        assert author.url is None
+
 
 class TestCommandDefinition:
     """Tests for CommandDefinition loading."""
