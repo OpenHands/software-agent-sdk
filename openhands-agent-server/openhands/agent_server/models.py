@@ -146,7 +146,17 @@ class _StartConversationRequestBase(BaseModel):
         default=True,
         description=(
             "If true, automatically generate a title for the conversation from "
-            "the first user message using the conversation's LLM."
+            "the first user message. Uses the LLM configured via title_llm_profile "
+            "if set, otherwise falls back to the agent's LLM."
+        ),
+    )
+    title_llm_profile: str | None = Field(
+        default=None,
+        description=(
+            "Optional LLM profile name for title generation. If set, the LLM "
+            "is loaded from LLMProfileStore (~/.openhands/profiles/) instead of "
+            "using the agent's LLM. This enables using a fast/cheap model for "
+            "title generation regardless of the agent's main model."
         ),
     )
 

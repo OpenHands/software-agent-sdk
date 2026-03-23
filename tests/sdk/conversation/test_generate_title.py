@@ -66,9 +66,12 @@ def create_mock_llm_response(content: str) -> LLMResponse:
     )
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_generate_title_basic(mock_completion):
-    """Test basic generate_title functionality."""
+def test_generate_title_without_llm_uses_truncation():
+    """Test generate_title falls back to truncation when no LLM is provided.
+
+    Title generation is decoupled from agent.llm - calling generate_title()
+    without an explicit LLM parameter falls back to simple message truncation.
+    """
     agent = create_test_agent()
     conv = Conversation(agent=agent, visualizer=None)
 
@@ -76,16 +79,11 @@ def test_generate_title_basic(mock_completion):
     user_message = create_user_message_event("Help me create a Python script")
     conv.state.events.append(user_message)
 
-    # Mock the LLM response
-    mock_response = create_mock_llm_response("Create Python Script")
-    mock_completion.return_value = mock_response
-
-    # Generate title
+    # Generate title without providing an LLM - falls back to truncation
     title = conv.generate_title()
 
-    # Verify the title was generated
-    assert title == "Create Python Script"
-    mock_completion.assert_called_once()
+    # Verify the title is the truncated message (no LLM call made)
+    assert title == "Help me create a Python script"
 
 
 def test_generate_title_no_user_messages():
@@ -112,19 +110,40 @@ def test_generate_title_llm_error_fallback(mock_completion):
     user_message = create_user_message_event("Fix the bug in my application")
     conv.state.events.append(user_message)
 
+    # Create an LLM to pass explicitly
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="err")
+
     # Mock the LLM to raise an exception
     mock_completion.side_effect = Exception("LLM error")
 
-    # Generate title (should fall back to truncation)
-    title = conv.generate_title()
+    # Generate title with explicit LLM (should fall back to truncation on error)
+    title = conv.generate_title(llm=custom_llm)
 
     # Verify fallback title was generated
     assert title == "Fix the bug in my application"
 
 
+def test_generate_title_truncation_respects_max_length():
+    """Test generate_title truncation respects max_length parameter."""
+    agent = create_test_agent()
+    conv = Conversation(agent=agent, visualizer=None)
+
+    # Add a user message that is longer than max_length
+    long_message = "Create a web application with advanced features and database"
+    user_message = create_user_message_event(long_message)
+    conv.state.events.append(user_message)
+
+    # Generate title with max_length=20 (no LLM, so falls back to truncation)
+    title = conv.generate_title(max_length=20)
+
+    # Verify the title was truncated
+    assert len(title) <= 20
+    assert title.endswith("...")
+
+
 @patch("openhands.sdk.llm.llm.LLM.completion")
-def test_generate_title_with_max_length(mock_completion):
-    """Test generate_title respects max_length parameter."""
+def test_generate_title_with_llm_truncates_long_response(mock_completion):
+    """Test generate_title truncates long LLM responses to max_length."""
     agent = create_test_agent()
     conv = Conversation(agent=agent, visualizer=None)
 
@@ -132,14 +151,17 @@ def test_generate_title_with_max_length(mock_completion):
     user_message = create_user_message_event("Create a web application")
     conv.state.events.append(user_message)
 
+    # Create an LLM to pass explicitly
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="test")
+
     # Mock the LLM response with a long title
     mock_response = create_mock_llm_response(
         "Create a Complex Web Application with Database"
     )
     mock_completion.return_value = mock_response
 
-    # Generate title with max_length=20
-    title = conv.generate_title(max_length=20)
+    # Generate title with max_length=20 and explicit LLM
+    title = conv.generate_title(llm=custom_llm, max_length=20)
 
     # Verify the title was truncated
     assert len(title) <= 20
@@ -182,13 +204,16 @@ def test_generate_title_empty_llm_response_fallback(mock_completion):
     user_message = create_user_message_event("Help with testing")
     conv.state.events.append(user_message)
 
+    # Create an LLM to pass explicitly
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="empty")
+
     # Mock the LLM response with empty content
     mock_response = MagicMock()
     mock_response.choices = []
     mock_completion.return_value = mock_response
 
-    # Generate title (should fall back to truncation)
-    title = conv.generate_title()
+    # Generate title with explicit LLM (falls back to truncation on empty response)
+    title = conv.generate_title(llm=custom_llm)
 
     # Verify fallback title was generated
     assert title == "Help with testing"

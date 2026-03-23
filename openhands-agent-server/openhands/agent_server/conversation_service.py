@@ -788,7 +788,8 @@ class AutoTitleSubscriber(Subscriber):
 
         async def _generate_and_save() -> None:
             try:
-                title = await self.service.generate_title()
+                title_llm = self._load_title_llm()
+                title = await self.service.generate_title(llm=title_llm)
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
                     self.service.stored.updated_at = utc_now()
@@ -801,6 +802,29 @@ class AutoTitleSubscriber(Subscriber):
                 )
 
         asyncio.create_task(_generate_and_save())
+
+    def _load_title_llm(self) -> LLM | None:
+        """Load the LLM for title generation from profile store.
+
+        Returns:
+            LLM instance if title_llm_profile is configured, None otherwise.
+            If profile loading fails, returns None to fall back to agent.llm.
+        """
+        profile_name = self.service.stored.title_llm_profile
+        if not profile_name:
+            return None
+
+        try:
+            from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+            profile_store = LLMProfileStore()
+            return profile_store.load(profile_name)
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning(
+                f"Failed to load title LLM profile '{profile_name}': {e}. "
+                "Falling back to agent's LLM."
+            )
+            return None
 
 
 @dataclass
