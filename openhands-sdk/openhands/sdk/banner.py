@@ -5,7 +5,10 @@ Can be suppressed by setting the OPENHANDS_SUPPRESS_BANNER environment variable.
 """
 
 import os
-import sys
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 
 # Not guarded by a lock; worst case in a race is the banner prints twice.
@@ -29,15 +32,27 @@ def _print_banner(version: str) -> None:
         return
     _BANNER_PRINTED = True
 
-    banner = f"""\
-+----------------------------------------------------------------------+
-|  OpenHands SDK v{version:<53}|
-|                                                                      |
-|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
-|  Get help: openhands.dev/joinslack                                   |
-|  Scale up: openhands.dev/product/sdk                                 |
-|                                                                      |
-|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
-+----------------------------------------------------------------------+
-"""
-    print(banner, file=sys.stderr)
+    console = Console(stderr=True)
+
+    title = Text.from_markup(
+        f"[bold blue]OpenHands SDK[/bold blue] [yellow]v{version}[/yellow]"
+    )
+
+    body = Text.from_markup(
+        "Check out the [bold]SDK Builder Hub[/bold]: "
+        "[cyan link=https://sdkbuilders.openhands.dev]sdkbuilders.openhands.dev[/cyan link]\n"  # noqa:E501
+        "[dim]- Apply for LLM development credits\n"
+        "- Join OpenHands Slack community\n"
+        "- Access SDK docs, report bugs, and suggest features[/dim]\n\n"
+        "[dim]Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message[/dim]"
+    )
+
+    panel = Panel(
+        body,
+        title=title,
+        title_align="left",
+        border_style="magenta",
+        width=70,
+        padding=(0, 1),
+    )
+    console.print(panel)
