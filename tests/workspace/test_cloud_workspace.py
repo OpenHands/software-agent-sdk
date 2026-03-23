@@ -164,7 +164,7 @@ def test_cleanup_deletes_sandbox():
 
             mock_request.assert_called_once_with(
                 "DELETE",
-                "https://cloud.example.com/api/v1/sandboxes",
+                "https://cloud.example.com/api/v1/sandboxes/sandbox-123",
                 params={"sandbox_id": "sandbox-123"},
                 timeout=30.0,
             )
@@ -384,3 +384,198 @@ def test_resume_existing_sandbox_sets_internal_id():
     # Clean up
     workspace._sandbox_id = None
     workspace.cleanup()
+
+
+# --- saas_runtime_mode tests ---
+
+_CLOUD_URL = "https://app.all-hands.dev"
+_CLOUD_KEY = "test-key"
+
+
+def _make_saas_workspace(**overrides):
+    """Helper to create an OpenHandsCloudWorkspace in saas_runtime_mode."""
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    kwargs = {
+        "saas_runtime_mode": True,
+        "cloud_api_url": _CLOUD_URL,
+        "cloud_api_key": _CLOUD_KEY,
+        **overrides,
+    }
+    return OpenHandsCloudWorkspace(**kwargs)
+
+
+def test_saas_runtime_mode_skips_sandbox_creation():
+    """In saas_runtime_mode, no sandbox is created or resumed."""
+    workspace = _make_saas_workspace()
+
+    assert workspace.saas_runtime_mode is True
+    assert workspace.host == "http://localhost:60000"
+    # Without SANDBOX_ID env var or constructor param, _sandbox_id is None
+    assert workspace._sandbox_id is None
+
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_sandbox_id_from_constructor():
+    """sandbox_id constructor param populates _sandbox_id in saas_runtime_mode."""
+    workspace = _make_saas_workspace(sandbox_id="sb-123")
+
+    assert workspace._sandbox_id == "sb-123"
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_sandbox_id_from_env(monkeypatch):
+    """SANDBOX_ID env var populates _sandbox_id in saas_runtime_mode."""
+    monkeypatch.setenv("SANDBOX_ID", "sb-env-456")
+    workspace = _make_saas_workspace()
+
+    assert workspace._sandbox_id == "sb-env-456"
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_session_key_from_env(monkeypatch):
+    """SESSION_API_KEY env var populates _session_api_key in saas_runtime_mode."""
+    monkeypatch.setenv("SESSION_API_KEY", "sess-key-abc")
+    workspace = _make_saas_workspace()
+
+    assert workspace._session_api_key == "sess-key-abc"
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_session_key_fallback(monkeypatch):
+    """Falls back to OH_SESSION_API_KEYS_0 if SESSION_API_KEY is unset."""
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "oh-key-xyz")
+    workspace = _make_saas_workspace()
+
+    assert workspace._session_api_key == "oh-key-xyz"
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_custom_port():
+    """Custom agent_server_port is reflected in host URL."""
+    workspace = _make_saas_workspace(agent_server_port=9999)
+
+    assert workspace.host == "http://localhost:9999"
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_port_from_env(monkeypatch):
+    """AGENT_SERVER_PORT env var overrides agent_server_port."""
+    monkeypatch.setenv("AGENT_SERVER_PORT", "7777")
+    workspace = _make_saas_workspace()
+
+    assert workspace.host == "http://localhost:7777"
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_cloud_credentials_available():
+    """Cloud API fields are available for get_llms / get_secrets."""
+    workspace = _make_saas_workspace(
+        cloud_api_url="https://app.all-hands.dev/",
+        cloud_api_key="my-key",
+    )
+
+    assert workspace.cloud_api_url == "https://app.all-hands.dev"
+    assert workspace._api_headers == {"Authorization": "Bearer my-key"}
+    workspace.cleanup()
+
+
+def test_saas_runtime_mode_cleanup_does_not_delete_sandbox():
+    """cleanup() in saas_runtime_mode should not call any Cloud API."""
+    workspace = _make_saas_workspace()
+
+    with patch.object(workspace, "_send_api_request") as mock_req:
+        workspace.cleanup()
+        mock_req.assert_not_called()
+
+
+def test_saas_runtime_mode_context_manager():
+    """Context manager works in saas_runtime_mode without side effects."""
+    with _make_saas_workspace() as ws:
+        assert ws.host == "http://localhost:60000"
+
+
+# --- completion callback tests ---
+
+
+def test_callback_on_successful_exit():
+    """__exit__ POSTs COMPLETED status to callback URL on clean exit."""
+    ws = _make_saas_workspace(
+        automation_callback_url="https://svc.test/complete",
+        automation_run_id="run-42",
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        ws.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        url, = mock_client.post.call_args.args
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert url == "https://svc.test/complete"
+        assert payload["status"] == "COMPLETED"
+        assert payload["run_id"] == "run-42"
+        assert "error" not in payload
+
+
+def test_callback_on_exception_exit():
+    """__exit__ POSTs FAILED status with error detail on exception."""
+    ws = _make_saas_workspace(
+        automation_callback_url="https://svc.test/complete",
+        automation_run_id="run-99",
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        exc = RuntimeError("script crashed")
+        ws.__exit__(RuntimeError, exc, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "FAILED"
+        assert payload["run_id"] == "run-99"
+        assert "script crashed" in payload["error"]
+
+
+def test_no_callback_when_url_not_set():
+    """No HTTP call when automation_callback_url is None."""
+    ws = _make_saas_workspace()
+    assert ws.automation_callback_url is None
+
+    with patch("httpx.Client") as MockClient:
+        ws.__exit__(None, None, None)
+        MockClient.assert_not_called()
+
+
+def test_callback_failure_does_not_raise():
+    """Callback errors are swallowed — cleanup still runs."""
+    ws = _make_saas_workspace(
+        automation_callback_url="https://svc.test/complete",
+    )
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.ConnectError("refused")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        # Should not raise
+        ws.__exit__(None, None, None)
