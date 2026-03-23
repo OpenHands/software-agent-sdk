@@ -60,6 +60,18 @@ def test_gpt5_uses_reasoning_effort_and_strips_temp_top_p():
     assert "top_p" not in out
 
 
+def test_kimi_k2_thinking_does_not_send_reasoning_effort():
+    llm = DummyLLM(
+        model="litellm_proxy/moonshot/kimi-k2-thinking",
+        temperature=1.0,
+        reasoning_effort="high",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+    assert out.get("temperature") == 1.0
+
+
 def test_gemini_2_5_pro_without_reasoning_effort_preserves_temp_and_top_p():
     llm = DummyLLM(model="gemini-2.5-pro", reasoning_effort=None)
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
