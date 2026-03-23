@@ -227,17 +227,21 @@ class TestLocalConversationPlugins:
         This is a regression test for a bug where MCP tools from plugins were not
         being created because the agent was initialized before plugins were loaded.
         """
-        # Mock create_mcp_tools to avoid actually starting MCP servers in tests
+        from openhands.sdk.mcp import MCPToolsResult
+
+        # Mock create_mcp_tools_graceful to avoid actually starting MCP servers
         mcp_tools_created = []
 
-        def mock_create_mcp_tools(config, timeout):
+        def mock_create_mcp_tools_graceful(config, timeout):
             mcp_tools_created.append(config)
-            return []  # Return empty list for testing
+            return MCPToolsResult(tools=[], errors=[])  # Return empty result
 
         import openhands.sdk.agent.base
 
         monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
+            openhands.sdk.agent.base,
+            "create_mcp_tools_graceful",
+            mock_create_mcp_tools_graceful,
         )
 
         plugin_dir = create_test_plugin(
@@ -269,7 +273,8 @@ class TestLocalConversationPlugins:
         assert "test-server" in conversation.agent.mcp_config["mcpServers"]
 
         # The agent should have been initialized with the complete MCP config
-        # This verifies that create_mcp_tools was called with the plugin's MCP config
+        # This verifies that create_mcp_tools_graceful was called with the plugin's
+        # MCP config
         assert len(mcp_tools_created) > 0
         assert "mcpServers" in mcp_tools_created[-1]
         assert "test-server" in mcp_tools_created[-1]["mcpServers"]
