@@ -154,7 +154,9 @@ class PluginAuthor(BaseModel):
 
     name: str = Field(description="Author's name")
     email: str | None = Field(default=None, description="Author's email address")
-    url: str | None = Field(default=None, description="Author's URL (e.g., GitHub profile)")
+    url: str | None = Field(
+        default=None, description="Author's URL (e.g., GitHub profile)"
+    )
 
     @classmethod
     def from_string(cls, author_str: str) -> PluginAuthor:
