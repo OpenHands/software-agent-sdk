@@ -1,0 +1,168 @@
+# SDK stateless reasoning replay test (Responses API)
+
+Run at (UTC): 2026-02-24T10:22:11.042176+00:00
+Model: openai/gpt-5.2-codex
+
+## Config: enable_encrypted_reasoning=True, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_069af157befdce5301699d7bc1f57c8196b3ccdc1b9fb7c09b', 'summary_len': 0, 'content_len': 0, 'encrypted_len': 1188, 'status': None}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_0016b22647bb129601699d7bc629888197a847f26e6c2d528b', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: FAIL :: BadRequestError: litellm.BadRequestError: OpenAIException - {
+  "error": {
+    "message": "Item with id 'rs_0016b22647bb129601699d7bc629888197a847f26e6c2d528b' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": null
+  }
+}
+
+## Config: enable_encrypted_reasoning=True, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_0c02a21961105fb801699d7bc905e88193b89ba704341f41b5', 'summary_len': 0, 'content_len': 0, 'encrypted_len': 972, 'status': None}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_028223c8f5098fd901699d7bcdb93c8195bb79c3106a7528ba', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: FAIL :: BadRequestError: litellm.BadRequestError: OpenAIException - {
+  "error": {
+    "message": "Item with id 'rs_028223c8f5098fd901699d7bcdb93c8195bb79c3106a7528ba' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": null
+  }
+}
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=False
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_0706cf2ca035393701699d7bd0c3d08190aa72f1972a5c712a', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: OK :: ok
+
+---
+Raw JSON:
+[
+  {
+    "timestamp_utc": "2026-02-24T10:21:53.332023+00:00",
+    "model": "openai/gpt-5.2-codex",
+    "enable_encrypted_reasoning": true,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_069af157befdce5301699d7bc1f57c8196b3ccdc1b9fb7c09b",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": 1188,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:57.099847+00:00",
+    "model": "openai/gpt-5.2-codex",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_0016b22647bb129601699d7bc629888197a847f26e6c2d528b",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": false,
+      "detail": "BadRequestError: litellm.BadRequestError: OpenAIException - {\n  \"error\": {\n    \"message\": \"Item with id 'rs_0016b22647bb129601699d7bc629888197a847f26e6c2d528b' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input\",\n    \"code\": null\n  }\n}"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:22:00.185487+00:00",
+    "model": "openai/gpt-5.2-codex",
+    "enable_encrypted_reasoning": true,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_0c02a21961105fb801699d7bc905e88193b89ba704341f41b5",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": 972,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:22:05.228842+00:00",
+    "model": "openai/gpt-5.2-codex",
+    "enable_encrypted_reasoning": false,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_028223c8f5098fd901699d7bcdb93c8195bb79c3106a7528ba",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": false,
+      "detail": "BadRequestError: litellm.BadRequestError: OpenAIException - {\n  \"error\": {\n    \"message\": \"Item with id 'rs_028223c8f5098fd901699d7bcdb93c8195bb79c3106a7528ba' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input\",\n    \"code\": null\n  }\n}"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:22:07.764748+00:00",
+    "model": "openai/gpt-5.2-codex",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": false,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_0706cf2ca035393701699d7bd0c3d08190aa72f1972a5c712a",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  }
+]

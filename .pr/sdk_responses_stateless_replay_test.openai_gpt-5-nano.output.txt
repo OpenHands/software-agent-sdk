@@ -1,0 +1,168 @@
+# SDK stateless reasoning replay test (Responses API)
+
+Run at (UTC): 2026-02-24T10:21:39.413222+00:00
+Model: openai/gpt-5-nano
+
+## Config: enable_encrypted_reasoning=True, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_018237a4e0002f2201699d7b984e8c8197aa1f9d2ed902ae72', 'summary_len': 0, 'content_len': 0, 'encrypted_len': 2956, 'status': None}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_0112d985e72bd1d001699d7ba085988195a52aee8c8385b7c9', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: FAIL :: BadRequestError: litellm.BadRequestError: OpenAIException - {
+  "error": {
+    "message": "Item with id 'rs_0112d985e72bd1d001699d7ba085988195a52aee8c8385b7c9' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": null
+  }
+}
+
+## Config: enable_encrypted_reasoning=True, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_021f181b8c61beba01699d7ba36b488190a55333b34dffebd1', 'summary_len': 0, 'content_len': 0, 'encrypted_len': 3064, 'status': None}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_028ccd1399b4673f01699d7baa6bc88196a14f242881074c00', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: FAIL :: BadRequestError: litellm.BadRequestError: OpenAIException - {
+  "error": {
+    "message": "Item with id 'rs_028ccd1399b4673f01699d7baa6bc88196a14f242881074c00' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": null
+  }
+}
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=False
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_055b5311b118a27501699d7badb7108194b2fc9bb8f0adc5c8', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: OK :: ok
+
+---
+Raw JSON:
+[
+  {
+    "timestamp_utc": "2026-02-24T10:21:11.745109+00:00",
+    "model": "openai/gpt-5-nano",
+    "enable_encrypted_reasoning": true,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_018237a4e0002f2201699d7b984e8c8197aa1f9d2ed902ae72",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": 2956,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:20.092704+00:00",
+    "model": "openai/gpt-5-nano",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_0112d985e72bd1d001699d7ba085988195a52aee8c8385b7c9",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": false,
+      "detail": "BadRequestError: litellm.BadRequestError: OpenAIException - {\n  \"error\": {\n    \"message\": \"Item with id 'rs_0112d985e72bd1d001699d7ba085988195a52aee8c8385b7c9' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input\",\n    \"code\": null\n  }\n}"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:23.104490+00:00",
+    "model": "openai/gpt-5-nano",
+    "enable_encrypted_reasoning": true,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_021f181b8c61beba01699d7ba36b488190a55333b34dffebd1",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": 3064,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:30.108499+00:00",
+    "model": "openai/gpt-5-nano",
+    "enable_encrypted_reasoning": false,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_028ccd1399b4673f01699d7baa6bc88196a14f242881074c00",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": false,
+      "detail": "BadRequestError: litellm.BadRequestError: OpenAIException - {\n  \"error\": {\n    \"message\": \"Item with id 'rs_028ccd1399b4673f01699d7baa6bc88196a14f242881074c00' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input\",\n    \"code\": null\n  }\n}"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:21:33.365313+00:00",
+    "model": "openai/gpt-5-nano",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": false,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_055b5311b118a27501699d7badb7108194b2fc9bb8f0adc5c8",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  }
+]

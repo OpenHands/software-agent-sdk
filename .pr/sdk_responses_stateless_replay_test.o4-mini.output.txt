@@ -1,0 +1,168 @@
+# SDK stateless reasoning replay test (Responses API)
+
+Run at (UTC): 2026-02-24T10:20:59.550134+00:00
+Model: openai/o4-mini
+
+## Config: enable_encrypted_reasoning=True, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_0a8094b97b3cad2301699d7b7ffe448195bd872661d30e1be2', 'summary_len': 0, 'content_len': 0, 'encrypted_len': 1100, 'status': None}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_0aa1c143fba0489601699d7b8382d88193b841a3087d6f3584', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: FAIL :: BadRequestError: litellm.BadRequestError: OpenAIException - {
+  "error": {
+    "message": "Item with id 'rs_0aa1c143fba0489601699d7b8382d88193b841a3087d6f3584' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": null
+  }
+}
+
+## Config: enable_encrypted_reasoning=True, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4.'
+  reasoning: {'present': True, 'id': 'rs_07341ff854ff63fd01699d7b84dc2881949c0304b2fa949476', 'summary_len': 0, 'content_len': 0, 'encrypted_len': 1144, 'status': None}
+turn2: OK :: ok
+
+## Config: enable_encrypted_reasoning=False, drop_params=True, bypass_sdk_strip=True
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_0e0871d45e391ac501699d7b884b288193af7dd1e26ab22db7', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: FAIL :: BadRequestError: litellm.BadRequestError: OpenAIException - {
+  "error": {
+    "message": "Item with id 'rs_0e0871d45e391ac501699d7b884b288193af7dd1e26ab22db7' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.",
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": null
+  }
+}
+
+## Config: enable_encrypted_reasoning=False, drop_params=False, bypass_sdk_strip=False
+turn1: ok
+  assistant_text: '4'
+  reasoning: {'present': True, 'id': 'rs_046405b75b6d41ad01699d7b89ae608194b8fc36e33c6e742b', 'summary_len': 0, 'content_len': 0, 'encrypted_len': None, 'status': None}
+turn2: OK :: ok
+
+---
+Raw JSON:
+[
+  {
+    "timestamp_utc": "2026-02-24T10:20:47.363395+00:00",
+    "model": "openai/o4-mini",
+    "enable_encrypted_reasoning": true,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_0a8094b97b3cad2301699d7b7ffe448195bd872661d30e1be2",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": 1100,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:20:51.090106+00:00",
+    "model": "openai/o4-mini",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_0aa1c143fba0489601699d7b8382d88193b841a3087d6f3584",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": false,
+      "detail": "BadRequestError: litellm.BadRequestError: OpenAIException - {\n  \"error\": {\n    \"message\": \"Item with id 'rs_0aa1c143fba0489601699d7b8382d88193b841a3087d6f3584' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input\",\n    \"code\": null\n  }\n}"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:20:52.386238+00:00",
+    "model": "openai/o4-mini",
+    "enable_encrypted_reasoning": true,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4.",
+      "reasoning": {
+        "present": true,
+        "id": "rs_07341ff854ff63fd01699d7b84dc2881949c0304b2fa949476",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": 1144,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:20:55.506314+00:00",
+    "model": "openai/o4-mini",
+    "enable_encrypted_reasoning": false,
+    "drop_params": true,
+    "bypass_sdk_strip": true,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_0e0871d45e391ac501699d7b884b288193af7dd1e26ab22db7",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": false,
+      "detail": "BadRequestError: litellm.BadRequestError: OpenAIException - {\n  \"error\": {\n    \"message\": \"Item with id 'rs_0e0871d45e391ac501699d7b884b288193af7dd1e26ab22db7' not found. Items are not persisted when `store` is set to false. Try again with `store` set to true, or remove this item from your input.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input\",\n    \"code\": null\n  }\n}"
+    }
+  },
+  {
+    "timestamp_utc": "2026-02-24T10:20:57.152368+00:00",
+    "model": "openai/o4-mini",
+    "enable_encrypted_reasoning": false,
+    "drop_params": false,
+    "bypass_sdk_strip": false,
+    "turn_1": {
+      "ok": true,
+      "assistant_text": "4",
+      "reasoning": {
+        "present": true,
+        "id": "rs_046405b75b6d41ad01699d7b89ae608194b8fc36e33c6e742b",
+        "summary_len": 0,
+        "content_len": 0,
+        "encrypted_len": null,
+        "status": null
+      }
+    },
+    "turn_2": {
+      "ok": true,
+      "detail": "ok"
+    }
+  }
+]

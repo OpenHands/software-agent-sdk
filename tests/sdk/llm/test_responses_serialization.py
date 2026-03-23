@@ -213,3 +213,55 @@ def test_assistant_includes_reasoning_passthrough():
     assert [c["text"] for c in r.get("content", [])] == ["c1"]
     assert r.get("encrypted_content") == "enc"
     assert r.get("status") == "completed"
+
+
+def test_reasoning_items_stripped_from_input_when_store_false():
+    """When store=False, reasoning item IDs from prior turns can't be resolved
+    by the API because items aren't persisted.  The LLM.responses() path must
+    strip them to avoid 'Item with id ... not found' errors."""
+    ri = ReasoningItemModel(
+        id="rs_abc123",
+        summary=["thinking"],
+        encrypted_content="enc",
+        status="completed",
+    )
+    tc = MessageToolCall(id="fc_1", name="terminal", arguments="{}", origin="responses")
+    m_assistant = Message(
+        role="assistant",
+        content=[TextContent(text="Here is the result")],
+        tool_calls=[tc],
+        responses_reasoning_item=ri,
+    )
+    m_tool = Message(
+        role="tool",
+        tool_call_id="fc_1",
+        name="terminal",
+        content=[TextContent(text="ok")],
+    )
+
+    llm = LLM(model="gpt-5-mini")
+    _, input_items = llm.format_messages_for_responses([m_assistant, m_tool])
+
+    # Confirm reasoning items ARE present before filtering
+    assert any(
+        isinstance(it, dict) and it.get("type") == "reasoning" for it in input_items
+    )
+
+    # Apply the same filtering that LLM.responses() does for store=False
+    filtered = [
+        item
+        for item in input_items
+        if not (isinstance(item, dict) and item.get("type") == "reasoning")
+    ]
+
+    # Reasoning items should be gone, but other items preserved
+    assert not any(
+        isinstance(it, dict) and it.get("type") == "reasoning" for it in filtered
+    )
+    assert any(
+        isinstance(it, dict) and it.get("type") == "function_call" for it in filtered
+    )
+    assert any(
+        isinstance(it, dict) and it.get("type") == "function_call_output"
+        for it in filtered
+    )

@@ -1,0 +1,227 @@
+# Responses API store=False reasoning-item behavior
+
+Run at (UTC): 2026-02-24T10:00:33.954941+00:00
+include: ['reasoning.encrypted_content']
+Models:
+- o4-mini
+- gpt-5-nano
+- gpt-5.2
+- gpt-5.2-codex
+
+## Model: o4-mini
+turn1: ok
+  output_text: '4'
+  output_items: reasoning:rs_085ada45435bafde01699d76a4d36c81908bca3b2ae604a3f2, message:msg_085ada45435bafde01699d76a578748190a7aa0156331aaf0b
+  reasoning_item_ids: ['rs_085ada45435bafde01699d76a4d36c81908bca3b2ae604a3f2']
+  reasoning_item_encrypted_lengths: [1124]
+turn2:
+  - naive_output_items: OK :: ok: output_text='6'
+  - strip_reasoning_items: OK :: ok: output_text='6'
+  - drop_ids: OK :: ok: output_text='6'
+  - messages_only: OK :: ok: output_text='6'
+
+## Model: gpt-5-nano
+turn1: ok
+  output_text: '4'
+  output_items: reasoning:rs_075ab0c8313e9bb201699d76ad6d108195a4b210ba0e532c15, message:msg_075ab0c8313e9bb201699d76ae0a548195ab28ab7a43b1f016
+  reasoning_item_ids: ['rs_075ab0c8313e9bb201699d76ad6d108195a4b210ba0e532c15']
+  reasoning_item_encrypted_lengths: [1144]
+turn2:
+  - naive_output_items: OK :: ok: output_text='6'
+  - strip_reasoning_items: OK :: ok: output_text='6'
+  - drop_ids: OK :: ok: output_text='6'
+  - messages_only: OK :: ok: output_text='6'
+
+## Model: gpt-5.2
+turn1: ok
+  output_text: '4'
+  output_items: message:msg_02d6542286650a4e01699d76b7057481908bd2783205b2a123
+  reasoning_item_ids: []
+  reasoning_item_encrypted_lengths: []
+turn2:
+  - naive_output_items: OK :: ok: output_text='6'
+  - strip_reasoning_items: OK :: ok: output_text='6'
+  - drop_ids: OK :: ok: output_text='6'
+  - messages_only: OK :: ok: output_text='6'
+
+## Model: gpt-5.2-codex
+turn1: ok
+  output_text: '4'
+  output_items: reasoning:rs_02fcd9c0e454f0ea01699d76bb50cc8190b79ea0d45245420d, message:msg_02fcd9c0e454f0ea01699d76bb872c81909de519ff0d8cb0c6
+  reasoning_item_ids: ['rs_02fcd9c0e454f0ea01699d76bb50cc8190b79ea0d45245420d']
+  reasoning_item_encrypted_lengths: [868]
+turn2:
+  - naive_output_items: OK :: ok: output_text='6'
+  - strip_reasoning_items: OK :: ok: output_text='6'
+  - drop_ids: OK :: ok: output_text='6'
+  - messages_only: OK :: ok: output_text='6'
+
+
+---
+Raw JSON:
+[
+  {
+    "model": "o4-mini",
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "timestamp_utc": "2026-02-24T10:00:03.870099+00:00",
+    "turn_1": {
+      "ok": true,
+      "output_text": "4",
+      "output_items_summary": "reasoning:rs_085ada45435bafde01699d76a4d36c81908bca3b2ae604a3f2, message:msg_085ada45435bafde01699d76a578748190a7aa0156331aaf0b",
+      "reasoning_item_ids": [
+        "rs_085ada45435bafde01699d76a4d36c81908bca3b2ae604a3f2"
+      ],
+      "reasoning_item_encrypted_lengths": [
+        1124
+      ]
+    },
+    "turn_2": {
+      "attempts": [
+        {
+          "label": "naive_output_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "strip_reasoning_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "drop_ids",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "messages_only",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        }
+      ]
+    }
+  },
+  {
+    "model": "gpt-5-nano",
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "timestamp_utc": "2026-02-24T10:00:12.955131+00:00",
+    "turn_1": {
+      "ok": true,
+      "output_text": "4",
+      "output_items_summary": "reasoning:rs_075ab0c8313e9bb201699d76ad6d108195a4b210ba0e532c15, message:msg_075ab0c8313e9bb201699d76ae0a548195ab28ab7a43b1f016",
+      "reasoning_item_ids": [
+        "rs_075ab0c8313e9bb201699d76ad6d108195a4b210ba0e532c15"
+      ],
+      "reasoning_item_encrypted_lengths": [
+        1144
+      ]
+    },
+    "turn_2": {
+      "attempts": [
+        {
+          "label": "naive_output_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "strip_reasoning_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "drop_ids",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "messages_only",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        }
+      ]
+    }
+  },
+  {
+    "model": "gpt-5.2",
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "timestamp_utc": "2026-02-24T10:00:21.487615+00:00",
+    "turn_1": {
+      "ok": true,
+      "output_text": "4",
+      "output_items_summary": "message:msg_02d6542286650a4e01699d76b7057481908bd2783205b2a123",
+      "reasoning_item_ids": [],
+      "reasoning_item_encrypted_lengths": []
+    },
+    "turn_2": {
+      "attempts": [
+        {
+          "label": "naive_output_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "strip_reasoning_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "drop_ids",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "messages_only",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        }
+      ]
+    }
+  },
+  {
+    "model": "gpt-5.2-codex",
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "timestamp_utc": "2026-02-24T10:00:26.227831+00:00",
+    "turn_1": {
+      "ok": true,
+      "output_text": "4",
+      "output_items_summary": "reasoning:rs_02fcd9c0e454f0ea01699d76bb50cc8190b79ea0d45245420d, message:msg_02fcd9c0e454f0ea01699d76bb872c81909de519ff0d8cb0c6",
+      "reasoning_item_ids": [
+        "rs_02fcd9c0e454f0ea01699d76bb50cc8190b79ea0d45245420d"
+      ],
+      "reasoning_item_encrypted_lengths": [
+        868
+      ]
+    },
+    "turn_2": {
+      "attempts": [
+        {
+          "label": "naive_output_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "strip_reasoning_items",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "drop_ids",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        },
+        {
+          "label": "messages_only",
+          "ok": true,
+          "detail": "ok: output_text='6'"
+        }
+      ]
+    }
+  }
+]
