@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -35,6 +36,26 @@ _VALID_PERMISSION_MODES: Final[set[str]] = {
     "never_confirm",
     "confirm_risky",
 }
+
+
+def _resolve_env_vars(value: str) -> str:
+    """Resolve ``${VAR}`` references in *value* from ``os.environ``."""
+
+    def _replace(m: re.Match) -> str:
+        return os.environ.get(m.group(1), m.group(0))
+
+    return re.sub(r"\$\{(\w+)\}", _replace, value)
+
+
+def _resolve_env_vars_deep(value: Any) -> Any:
+    """Recursively resolve ``${VAR}`` references in all string values."""
+    if isinstance(value, str):
+        return _resolve_env_vars(value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_vars_deep(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_vars_deep(item) for item in value]
+    return value
 
 
 def _extract_color(fm: dict[str, object]) -> str | None:
@@ -72,17 +93,27 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     return skills
 
 
-def _extract_mcp_servers(fm: dict[str, object]) -> dict[str, Any] | None:
-    """Extract MCP servers configuration from frontmatter."""
+def _extract_mcp_servers(fm: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract MCP servers configuration from frontmatter.
+
+    Note that environment variable references of the form `${VAR}` inside any
+    string value of each server config are resolved from `os.environ`
+    at parse time so that Markdown-based definitions can forward secrets
+    without hard-coding them.
+    """
     mcp_servers_raw = fm.get("mcp_servers")
     if mcp_servers_raw is None:
         return None
-    if isinstance(mcp_servers_raw, dict):
-        return mcp_servers_raw
-    raise ValueError(
-        f"mcp_servers must be a mapping of server names to configs, "
-        f"got {type(mcp_servers_raw)}"
-    )
+    if not isinstance(mcp_servers_raw, dict):
+        raise ValueError(
+            f"mcp_servers must be a mapping of server names to configs, "
+            f"got {type(mcp_servers_raw)}"
+        )
+    # Resolve ${VAR} references in all string values
+    for server_name, server_cfg in mcp_servers_raw.items():
+        if isinstance(server_cfg, dict):
+            mcp_servers_raw[server_name] = _resolve_env_vars_deep(server_cfg)
+    return mcp_servers_raw
 
 
 def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
