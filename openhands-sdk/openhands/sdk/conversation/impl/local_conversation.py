@@ -592,6 +592,7 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
+        last_event_count = len(self._state.events)
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
@@ -599,10 +600,10 @@ class LocalConversation(BaseConversation):
                     # Pause attempts to acquire the state lock
                     # Before value can be modified step can be taken
                     # Ensure step conditions are checked when lock is already acquired
-                    if self._state.execution_status in [
-                        ConversationExecutionStatus.PAUSED,
-                        ConversationExecutionStatus.STUCK,
-                    ]:
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.PAUSED
+                    ):
                         break
 
                     # Handle stop hooks on FINISHED
@@ -634,15 +635,25 @@ class LocalConversation(BaseConversation):
                         break
 
                     # Check for stuck patterns if enabled
+                    # Only check if new events have been added since last check
+                    # to avoid repeatedly triggering on the same pattern
                     if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
+                        current_event_count = len(self._state.events)
+                        if current_event_count > last_event_count:
+                            is_stuck = self._stuck_detector.is_stuck()
 
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
-                            continue
+                            if is_stuck:
+                                logger.warning("Stuck pattern detected.")
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.STUCK
+                                )
+                                # Exit the loop when stuck is detected, rather than
+                                # continuing. Continuing would cause an infinite loop
+                                # because is_stuck() would return true again.
+                                # The caller can then decide how to handle it.
+                                break
+                            # Update event count after checking
+                            last_event_count = current_event_count
 
                     # clear the flag before calling agent.step() (user approved)
                     if (
@@ -657,6 +668,8 @@ class LocalConversation(BaseConversation):
                         self, on_event=self._on_event, on_token=self._on_token
                     )
                     iteration += 1
+                    # Update event count after agent.step() adds new events
+                    last_event_count = len(self._state.events)
 
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
