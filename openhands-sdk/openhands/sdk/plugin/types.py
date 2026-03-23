@@ -363,37 +363,52 @@ class MarketplacePluginSource(BaseModel):
         return self
 
 
-class MarketplacePluginEntry(BaseModel):
-    """Plugin entry in a marketplace.
+class MarketplaceEntry(BaseModel):
+    """Base class for marketplace entries (plugins and skills).
 
-    Represents a single plugin available in the marketplace with its
-    metadata and source location.
+    Both plugins and skills are pointers to directories:
+    - Plugin directories contain: plugin.json, skills/, commands/, agents/, etc.
+    - Skill directories contain: SKILL.md and optionally scripts/, references/, assets/
 
-    This schema extends the core PluginManifest fields (name, version,
-    description, author) with marketplace-specific fields (source, category,
-    tags) and optional inline component definitions.
-
-    The `license` and `keywords` fields align with the AgentSkills standard
-    (https://agentskills.io/specification) used by Skill definitions.
-
-    Related schemas:
-        - PluginManifest: Core plugin metadata (plugin.json)
-        - Skill: Individual skill definitions with license, description
-        - Plugin: Loaded plugin with skills, commands, agents, hooks
+    Source is a string path (local path or GitHub URL).
     """
 
-    # Core fields (shared with PluginManifest)
-    name: str = Field(
-        description="Plugin identifier (kebab-case, no spaces). "
-        "Users see this when installing: /plugin install <name>@marketplace"
+    name: str = Field(description="Identifier (kebab-case, no spaces)")
+    source: str = Field(description="Path to directory (local path or GitHub URL)")
+    description: str | None = Field(default=None, description="Brief description")
+    version: str | None = Field(default=None, description="Version")
+    author: PluginAuthor | None = Field(default=None, description="Author information")
+    category: str | None = Field(default=None, description="Category for organization")
+    homepage: str | None = Field(
+        default=None, description="Homepage or documentation URL"
     )
-    version: str | None = Field(default=None, description="Plugin version")
-    description: str | None = Field(
-        default=None, description="Brief plugin description"
+
+    model_config = {"extra": "allow", "populate_by_name": True}
+
+    @field_validator("author", mode="before")
+    @classmethod
+    def _parse_author(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return PluginAuthor.from_string(v)
+        return v
+
+
+class MarketplacePluginEntry(MarketplaceEntry):
+    """Plugin entry in a marketplace.
+
+    Extends MarketplaceEntry with Claude Code compatibility fields for
+    inline plugin definitions (when strict=False).
+
+    Plugins support both string sources and complex source objects
+    (MarketplacePluginSource) for GitHub/git URLs with ref and path.
+    """
+
+    # Override source to allow complex source objects for plugins
+    source: str | MarketplacePluginSource = Field(  # type: ignore[assignment]
+        description="Path to plugin directory or source object for GitHub/git"
     )
-    author: PluginAuthor | None = Field(
-        default=None, description="Plugin author information"
-    )
+
+    # Plugin-specific fields
     entry_command: str | None = Field(
         default=None,
         description=(
@@ -402,105 +417,35 @@ class MarketplacePluginEntry(BaseModel):
         ),
     )
 
-    # Marketplace-specific: source location
-    source: str | MarketplacePluginSource = Field(
-        description="Where to fetch the plugin from. Can be a relative path string "
-        "(e.g., './plugins/my-plugin') or a source object for GitHub/git URLs"
+    # Claude Code compatibility fields
+    strict: bool = Field(
+        default=True,
+        description="If True, plugin source must contain plugin.json. "
+        "If False, marketplace entry defines the plugin inline.",
     )
+    commands: str | list[str] | None = Field(default=None)
+    agents: str | list[str] | None = Field(default=None)
+    hooks: str | HooksConfigDict | None = Field(default=None)
+    mcp_servers: McpServersDict | None = Field(default=None, alias="mcpServers")
+    lsp_servers: LspServersDict | None = Field(default=None, alias="lspServers")
 
-    # Discovery and categorization (aligns with Skill.license for compatibility)
-    license: str | None = Field(
-        default=None,
-        description="SPDX license identifier (e.g., MIT, Apache-2.0). "
-        "Aligns with AgentSkills standard used by Skill definitions.",
-    )
-    keywords: list[str] = Field(
-        default_factory=list,
-        description="Tags for plugin discovery and categorization. "
-        "Aligns with AgentSkills standard used by Skill definitions.",
-    )
-    category: str | None = Field(
-        default=None, description="Plugin category for organization"
-    )
-    tags: list[str] = Field(default_factory=list, description="Tags for searchability")
-
-    # Repository/project links
-    homepage: str | None = Field(
-        default=None, description="Plugin homepage or documentation URL"
-    )
+    # Additional metadata fields
+    license: str | None = Field(default=None, description="SPDX license identifier")
+    keywords: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     repository: str | None = Field(
         default=None, description="Source code repository URL"
     )
 
-    # Marketplace behavior control
-    strict: bool = Field(
-        default=True,
-        description="If True, plugin source must contain plugin.json. "
-        "If False, marketplace entry defines everything about the plugin.",
-    )
-
-    # Inline plugin component definitions (when strict=False)
-    # These fields are part of the marketplace schema for future use.
-    # Currently, Plugin.load() reads these from the plugin directory itself.
-    # TODO: Support loading inline definitions from marketplace entries.
-    commands: str | list[str] | None = Field(
-        default=None,
-        description="Custom paths to command files or directories. "
-        "Loaded as CommandDefinition objects by Plugin.",
-    )
-    agents: str | list[str] | None = Field(
-        default=None,
-        description="Custom paths to agent files. "
-        "Loaded as AgentDefinition objects by Plugin.",
-    )
-    hooks: str | HooksConfigDict | None = Field(
-        default=None,
-        description="Hooks configuration - either a path to hooks.json file (str) "
-        "or inline configuration dict. Loaded as HookConfig by Plugin. "
-        "See openhands.sdk.hooks.HookConfig for the expected structure.",
-    )
-    mcp_servers: McpServersDict | None = Field(
-        default=None,
-        alias="mcpServers",
-        description="MCP server configurations keyed by server name. "
-        "Each server config should have 'command' and optional 'args', 'env'. "
-        "Corresponds to Plugin.mcp_config loaded from .mcp.json. "
-        "See https://gofastmcp.com/clients/client#configuration-format",
-    )
-    lsp_servers: LspServersDict | None = Field(
-        default=None,
-        alias="lspServers",
-        description="LSP server configurations keyed by server name. "
-        "Each server config should have 'command' and optional 'args'.",
-    )
-
-    model_config = {"extra": "allow", "populate_by_name": True}
-
-    @field_validator("author", mode="before")
-    @classmethod
-    def _parse_author(cls, v: Any) -> Any:
-        """Parse author from string format 'Name <email>' if needed."""
-        if isinstance(v, str):
-            return PluginAuthor.from_string(v)
-        return v
-
     @field_validator("source", mode="before")
     @classmethod
     def _parse_source(cls, v: Any) -> Any:
-        """Parse source dict to MarketplacePluginSource if needed."""
         if isinstance(v, dict):
             return MarketplacePluginSource.model_validate(v)
         return v
 
     def to_plugin_manifest(self) -> PluginManifest:
-        """Convert marketplace entry to a PluginManifest.
-
-        Useful when strict=False and the marketplace entry defines the
-        plugin metadata directly without a separate plugin.json file.
-
-        Returns:
-            PluginManifest with the core fields from this entry.
-        """
+        """Convert to PluginManifest (for strict=False entries)."""
         return PluginManifest(
             name=self.name,
             version=self.version or "1.0.0",
@@ -513,54 +458,31 @@ class MarketplacePluginEntry(BaseModel):
 class MarketplaceMetadata(BaseModel):
     """Optional metadata for a marketplace."""
 
-    description: str | None = Field(
-        default=None, description="Brief marketplace description"
-    )
-    version: str | None = Field(default=None, description="Marketplace version")
-    plugin_root: str | None = Field(
-        default=None,
-        alias="pluginRoot",
-        description="Base directory prepended to relative plugin source paths. "
-        "E.g., './plugins' allows writing 'source: formatter' "
-        "instead of 'source: ./plugins/formatter'",
-    )
+    description: str | None = Field(default=None)
+    version: str | None = Field(default=None)
 
     model_config = {"extra": "allow", "populate_by_name": True}
 
 
 class Marketplace(BaseModel):
-    """A plugin marketplace that lists available plugins.
+    """A plugin marketplace that lists available plugins and skills.
 
-    Marketplaces follow the Claude Code marketplace structure for compatibility.
+    Follows the Claude Code marketplace structure for compatibility,
+    with an additional `skills` field for standalone skill references.
+
     The marketplace.json file is located in `.plugin/` or `.claude-plugin/`
     directory at the root of the marketplace repository.
 
-    Example marketplace.json:
+    Example:
     ```json
     {
         "name": "company-tools",
-        "owner": {
-            "name": "DevTools Team",
-            "email": "devtools@example.com"
-        },
-        "description": "Internal development tools",
-        "metadata": {
-            "version": "1.0.0",
-            "pluginRoot": "./plugins"
-        },
+        "owner": {"name": "DevTools Team"},
         "plugins": [
-            {
-                "name": "code-formatter",
-                "source": "./plugins/formatter",
-                "description": "Automatic code formatting"
-            },
-            {
-                "name": "deployment-tools",
-                "source": {
-                    "source": "github",
-                    "repo": "company/deploy-plugin"
-                }
-            }
+            {"name": "formatter", "source": "./plugins/formatter"}
+        ],
+        "skills": [
+            {"name": "github", "source": "./skills/github"}
         ]
     }
     ```
@@ -577,6 +499,9 @@ class Marketplace(BaseModel):
     )
     plugins: list[MarketplacePluginEntry] = Field(
         default_factory=list, description="List of available plugins"
+    )
+    skills: list[MarketplaceEntry] = Field(
+        default_factory=list, description="List of standalone skills"
     )
     metadata: MarketplaceMetadata | None = Field(
         default=None, description="Optional marketplace metadata"
@@ -653,19 +578,11 @@ class Marketplace(BaseModel):
     ) -> tuple[str, str | None, str | None]:
         """Resolve a plugin's source to a full path or URL.
 
-        Handles relative paths and plugin_root from metadata.
-
-        Args:
-            plugin: Plugin entry to resolve source for.
-
         Returns:
             Tuple of (source, ref, subpath) where:
             - source: Resolved source string (path or URL)
             - ref: Branch, tag, or commit reference (None for local paths)
             - subpath: Subdirectory path within the repo (None if not specified)
-
-        Raises:
-            ValueError: If source object is invalid.
         """
         source = plugin.source
 
@@ -677,21 +594,15 @@ class Marketplace(BaseModel):
                 return (source.url, source.ref, source.path)
             raise ValueError(
                 f"Invalid plugin source for '{plugin.name}': "
-                f"source type '{source.source}' is missing required field. "
-                f"'github' sources require 'repo', 'url' sources require 'url'"
+                f"source type '{source.source}' is missing required field"
             )
 
-        # Source is a string path - check if it's absolute or a URL
+        # Absolute paths or URLs - return as-is
         if source.startswith(("/", "~")) or "://" in source:
             return (source, None, None)
 
-        # Relative path: apply plugin_root if configured
-        if self.metadata and self.metadata.plugin_root:
-            plugin_root = self.metadata.plugin_root.rstrip("/")
-            source = f"{plugin_root}/{source.lstrip('./')}"
-
-        # Resolve relative paths to absolute if we know the marketplace path
-        if self.path and not source.startswith(("/", "~")):
+        # Relative path - resolve against marketplace path if known
+        if self.path:
             source = str(Path(self.path) / source.lstrip("./"))
 
         return (source, None, None)

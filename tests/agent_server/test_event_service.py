@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -397,11 +399,17 @@ class TestEventServiceSearchEvents:
     async def test_search_events_timestamp_filter_with_timezone_aware(
         self, event_service, mock_conversation_with_timestamped_events
     ):
-        """Test filtering events with timezone-aware datetime."""
+        """Test filtering events with timezone-aware datetime requires normalization.
+
+        Event timestamps are naive (server local time), so callers must normalize
+        timezone-aware datetimes to naive before filtering. This is done by the
+        REST/WebSocket API layer via normalize_datetime_to_server_timezone().
+        """
         event_service._conversation = mock_conversation_with_timestamped_events
 
-        # Filter events >= 12:00:00 UTC (should return events 3, 4, 5)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        # Filter events >= 12:00:00 (naive, as if normalized by API layer)
+        # The API layer would convert a tz-aware datetime to naive server time
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)  # naive datetime
         result = await event_service.search_events(timestamp__gte=filter_time)
 
         assert len(result.items) == 3
@@ -539,11 +547,16 @@ class TestEventServiceCountEvents:
     async def test_count_events_timestamp_filter_with_timezone_aware(
         self, event_service, mock_conversation_with_timestamped_events
     ):
-        """Test counting events with timezone-aware datetime."""
+        """Test counting events with timezone-aware datetime requires normalization.
+
+        Event timestamps are naive (server local time), so callers must normalize
+        timezone-aware datetimes to naive before filtering. This is done by the
+        REST/WebSocket API layer via normalize_datetime_to_server_timezone().
+        """
         event_service._conversation = mock_conversation_with_timestamped_events
 
-        # Count events >= 12:00:00 UTC (should return 3)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        # Count events >= 12:00:00 (naive, as if normalized by API layer)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)  # naive datetime
         result = await event_service.count_events(timestamp__gte=filter_time)
         assert result == 3
 
@@ -1576,4 +1589,86 @@ class TestEventServiceConcurrentSubscriptions:
         # Verify all updates were received
         assert len(events_received) == 5, (
             f"Expected 5 events, got {len(events_received)}"
+        )
+
+
+class TestSearchEventsBlockedByRunLoop:
+    """Reproduce: search_events blocks for the entire duration of agent.step().
+
+    The run loop in LocalConversation.run() holds the FIFOLock on
+    ConversationState for each iteration (including the LLM call and tool
+    execution).  EventService._search_events_sync() acquires the *same* lock
+    to iterate events, so it blocks until the step finishes.
+
+    See HANG_REPRO.md for the full write-up.
+    """
+
+    @pytest.mark.asyncio
+    async def test_search_events_not_blocked_by_state_lock(
+        self, sample_stored_conversation
+    ):
+        """search_events must return promptly even while the run loop holds the lock.
+
+        This simulates the real scenario: LocalConversation.run() holds
+        ``_state`` (FIFOLock) for the entire agent step, while
+        ``_search_events_sync`` tries to acquire the same lock in a
+        thread-pool executor.
+
+        The expected (fixed) behaviour is that the read path does NOT
+        contend on the write lock, so search_events returns in well
+        under a second regardless of how long the step takes.
+        """
+        service = EventService(
+            stored=sample_stored_conversation,
+            conversations_dir=Path("test_conversation_dir"),
+        )
+
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+
+        real_lock = FIFOLock()
+        state._lock = real_lock
+        state.__enter__ = lambda self: (real_lock.acquire(), self)[1]
+        state.__exit__ = lambda self, *args: real_lock.release()
+        state.events = [
+            MessageEvent(id=f"evt-{i}", source="user", llm_message=Message(role="user"))
+            for i in range(3)
+        ]
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        conversation._state = state
+        service._conversation = conversation
+
+        hold_seconds = 2.0
+        lock_acquired = threading.Event()
+
+        def hold_lock_like_run_loop():
+            """Simulate LocalConversation.run() holding the lock during step."""
+            with state:
+                lock_acquired.set()
+                time.sleep(hold_seconds)
+
+        # Start the "run loop" thread that holds the lock
+        run_thread = threading.Thread(target=hold_lock_like_run_loop, daemon=True)
+        run_thread.start()
+        lock_acquired.wait(timeout=5.0)
+
+        # search_events should return quickly even though the lock is held
+        t0 = time.monotonic()
+        result = await service.search_events()
+        elapsed = time.monotonic() - t0
+
+        run_thread.join(timeout=5.0)
+
+        # search_events returned correct data
+        assert len(result.items) == 3
+
+        # The critical assertion: search_events must NOT be blocked by the
+        # run-loop's lock.  If it takes anywhere near hold_seconds, the read
+        # path is still contending on the write lock (the bug in HANG_REPRO.md).
+        max_acceptable = 0.5
+        assert elapsed < max_acceptable, (
+            f"search_events took {elapsed:.3f}s, but should return in "
+            f"<{max_acceptable}s even while the run loop holds the state lock "
+            f"for {hold_seconds}s.  The read path is blocked by the write lock "
+            f"(see HANG_REPRO.md)."
         )

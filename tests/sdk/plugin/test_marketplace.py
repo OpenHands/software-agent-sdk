@@ -159,19 +159,13 @@ class TestMarketplaceMetadata:
         metadata = MarketplaceMetadata(description="Internal tools", version="1.0.0")
         assert metadata.description == "Internal tools"
         assert metadata.version == "1.0.0"
-        assert metadata.plugin_root is None
 
-    def test_metadata_with_plugin_root(self):
-        """Test metadata with plugin_root (using snake_case via model_validate)."""
-        metadata = MarketplaceMetadata.model_validate({"plugin_root": "./plugins"})
-        assert metadata.plugin_root == "./plugins"
-
-    def test_metadata_camel_case_alias(self):
-        """Test model_validate handles camelCase field names via alias."""
+    def test_metadata_extra_fields_allowed(self):
+        """Test that extra fields are allowed in metadata."""
         metadata = MarketplaceMetadata.model_validate(
-            {"description": "Tools", "pluginRoot": "./plugins"}
+            {"description": "Tools", "custom_field": "value"}
         )
-        assert metadata.plugin_root == "./plugins"
+        assert metadata.description == "Tools"
 
 
 class TestMarketplace:
@@ -241,8 +235,7 @@ class TestMarketplace:
             "owner": {"name": "Meta Team", "email": "meta@example.com"},
             "metadata": {
                 "description": "Marketplace with metadata",
-                "version": "2.0.0",
-                "pluginRoot": "./plugins"
+                "version": "2.0.0"
             },
             "plugins": []
         }"""
@@ -253,7 +246,6 @@ class TestMarketplace:
         assert marketplace.metadata is not None
         assert marketplace.metadata.description == "Marketplace with metadata"
         assert marketplace.metadata.version == "2.0.0"
-        assert marketplace.metadata.plugin_root == "./plugins"
         assert marketplace.owner.email == "meta@example.com"
 
     def test_load_marketplace_with_github_plugin_source(self, tmp_path: Path):
@@ -446,36 +438,6 @@ class TestMarketplace:
         source, ref, subpath = marketplace.resolve_plugin_source(plugin)
         # Should resolve to absolute path
         assert str(marketplace_dir / "plugins/local") == source
-        assert ref is None
-        assert subpath is None
-
-    def test_resolve_plugin_source_with_plugin_root(self, tmp_path: Path):
-        """Test resolve_plugin_source with plugin_root metadata."""
-        marketplace_dir = tmp_path / "root-test"
-        marketplace_dir.mkdir()
-        manifest_dir = marketplace_dir / ".plugin"
-        manifest_dir.mkdir()
-
-        manifest_file = manifest_dir / "marketplace.json"
-        manifest_file.write_text(
-            """{
-            "name": "root-marketplace",
-            "owner": {"name": "Test Team"},
-            "metadata": {
-                "pluginRoot": "./plugins"
-            },
-            "plugins": [
-                {"name": "simple-plugin", "source": "simple"}
-            ]
-        }"""
-        )
-
-        marketplace = Marketplace.load(marketplace_dir)
-        plugin = marketplace.plugins[0]
-
-        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
-        # Should prepend plugin_root and resolve to absolute path
-        assert source.endswith("plugins/simple")
         assert ref is None
         assert subpath is None
 

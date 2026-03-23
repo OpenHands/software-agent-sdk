@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from litellm.utils import supports_reasoning
+
 
 def model_matches(model: str, patterns: list[str]) -> bool:
     """Return True if any pattern appears as a substring in the raw model name.
@@ -49,32 +51,28 @@ class ModelFeatures:
     supports_prompt_cache_retention: bool
 
 
-# Model lists capturing current behavior. Keep entries lowercase.
+LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
-REASONING_EFFORT_MODELS: list[str] = [
-    # Mirror main behavior exactly (no unintended expansion)
-    "o1-2024-12-17",
-    "o1",
-    "o3",
-    "o3-2025-04-16",
-    "o3-mini-2025-01-31",
-    "o3-mini",
-    "o4-mini",
-    "o4-mini-2025-04-16",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    # Gemini 3 family
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
-    # OpenAI GPT-5 family (includes mini variants)
-    "gpt-5",
-    # Anthropic Opus 4.5 and 4.6
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    # Nova 2 Lite
-    "nova-2-lite",
-]
+
+def _supports_reasoning_effort(model: str | None) -> bool:
+    """Return True if the model supports reasoning_effort via LiteLLM.
+
+    We pass the full model string to LiteLLM so it can run its own provider
+    parsing logic (including nested provider paths like `openrouter/anthropic/...`
+    and other special cases).
+
+    We only strip our `litellm_proxy/` wrapper prefix, since it is not a real
+    LiteLLM provider.
+    """
+    if not model:
+        return False
+
+    normalized = model.strip().lower()
+    if normalized.startswith(LITELLM_PROXY_PREFIX):
+        normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
+
+    return bool(supports_reasoning(model=normalized, custom_llm_provider=None))
+
 
 EXTENDED_THINKING_MODELS: list[str] = [
     # Anthropic model family
@@ -112,16 +110,21 @@ PROMPT_CACHE_MODELS: list[str] = [
 #   - gpt-5.1-chat-latest
 #   - gpt-5
 #   - gpt-5-codex
-#   - gpt-4.1
+# Note: OpenAI docs also list gpt-4.1, but Azure rejects
+# prompt_cache_retention for Azure deployments. We allow GPT-4.1
+# generally (e.g., OpenAI/LiteLLM) and explicitly exclude Azure.
 # Use ordered include/exclude rules (last wins) to naturally express exceptions.
 PROMPT_CACHE_RETENTION_MODELS: list[str] = [
-    # Broad allow for GPT-5 family and GPT-4.1 (covers gpt-5.2 and variants)
+    # Broad allow for GPT-5 family (covers gpt-5.2 and variants)
     "gpt-5",
+    # Allow GPT-4.1 for OpenAI/LiteLLM-style identifiers
     "gpt-4.1",
     # Exclude all mini variants by default
     "!mini",
     # Re-allow the explicitly documented supported mini variant
     "gpt-5.1-codex-mini",
+    # Azure OpenAI does not support prompt_cache_retention
+    "!azure/",
 ]
 
 SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
@@ -171,7 +174,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
     return ModelFeatures(
-        supports_reasoning_effort=model_matches(model, REASONING_EFFORT_MODELS),
+        supports_reasoning_effort=_supports_reasoning_effort(model),
         supports_extended_thinking=model_matches(model, EXTENDED_THINKING_MODELS),
         supports_prompt_cache=model_matches(model, PROMPT_CACHE_MODELS),
         supports_stop_words=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
@@ -183,22 +186,3 @@ def get_features(model: str) -> ModelFeatures:
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
     )
-
-
-# Default temperature mapping.
-# Each entry: (pattern, default_temperature)
-DEFAULT_TEMPERATURE_MODELS: list[tuple[str, float]] = [
-    ("kimi-k2-thinking", 1.0),
-    ("kimi-k2.5", 1.0),
-]
-
-
-def get_default_temperature(model: str) -> float:
-    """Return the default temperature for a given model pattern.
-
-    Uses case-insensitive substring matching via model_matches.
-    """
-    for pattern, value in DEFAULT_TEMPERATURE_MODELS:
-        if model_matches(model, [pattern]):
-            return value
-    return 0.0

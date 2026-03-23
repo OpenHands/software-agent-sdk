@@ -5,11 +5,12 @@ from openhands.tools.delegate.definition import (
     DelegateObservation,
     DelegateTool,
 )
-from openhands.tools.delegate.impl import DelegateExecutor
+from openhands.tools.delegate.impl import ConfirmationHandler, DelegateExecutor
 from openhands.tools.delegate.visualizer import DelegationVisualizer
 
 
 __all__ = [
+    "ConfirmationHandler",
     "DelegateAction",
     "DelegateObservation",
     "DelegateExecutor",
