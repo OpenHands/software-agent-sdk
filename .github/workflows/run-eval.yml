@@ -114,7 +114,7 @@ on:
                     - acp-claude
                     - acp-codex
             partial_archive_url:
-                description: (Experimental) URL to a full archive tar.gz from a previous run to resume partial work
+                description: Resume partial work from full archive tar.gz
                 required: false
                 default: ''
                 type: string
