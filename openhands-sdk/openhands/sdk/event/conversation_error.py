@@ -35,3 +35,26 @@ class ConversationErrorEvent(Event):
         content.append("\n\nDetail:\n", style="bold")
         content.append(self.detail)
         return content
+
+
+class ConversationIterationLimitEvent(Event):
+    """
+    Event emitted when a conversation reaches its maximum iteration limit.
+
+    This is a terminal event that indicates the agent has exhausted its
+    allocated iterations without completing the task. It allows clients to
+    distinguish between actual errors and budget exhaustion, enabling
+    different retry strategies.
+    """
+
+    max_iteration_per_run: int = Field(description="The maximum allowed iterations")
+
+    @property
+    def visualize(self) -> Text:
+        """Return Rich Text representation of this iteration limit event."""
+        content = Text()
+        content.append("Iteration Limit Reached\n", style="bold")
+        content.append(
+            f"Max Iterations: {self.max_iteration_per_run}\n", style="yellow"
+        )
+        return content

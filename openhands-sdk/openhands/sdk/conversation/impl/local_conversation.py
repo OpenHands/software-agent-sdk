@@ -33,7 +33,10 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.conversation_error import (
+    ConversationErrorEvent,
+    ConversationIterationLimitEvent,
+)
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -529,6 +532,7 @@ class LocalConversation(BaseConversation):
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
                 ConversationExecutionStatus.STUCK,
+                ConversationExecutionStatus.MAX_ITERATIONS_REACHED,
             ):
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
@@ -588,6 +592,7 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.PAUSED,
                 ConversationExecutionStatus.ERROR,
                 ConversationExecutionStatus.STUCK,
+                ConversationExecutionStatus.MAX_ITERATIONS_REACHED,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
@@ -673,17 +678,17 @@ class LocalConversation(BaseConversation):
                         break
 
                     if iteration >= self.max_iteration_per_run:
-                        error_msg = (
+                        logger.error(
                             f"Agent reached maximum iterations limit "
                             f"({self.max_iteration_per_run})."
                         )
-                        logger.error(error_msg)
-                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+                        )
                         self._on_event(
-                            ConversationErrorEvent(
+                            ConversationIterationLimitEvent(
                                 source="environment",
-                                code="MaxIterationsReached",
-                                detail=error_msg,
+                                max_iterations=self.max_iteration_per_run,
                             )
                         )
                         break

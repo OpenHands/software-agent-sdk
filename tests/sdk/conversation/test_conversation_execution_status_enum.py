@@ -41,6 +41,23 @@ def test_agent_execution_state_enum_basic():
     conversation._state.execution_status = ConversationExecutionStatus.ERROR
     assert conversation._state.execution_status == ConversationExecutionStatus.ERROR
 
+    # Test setting to STUCK
+    conversation._state.execution_status = ConversationExecutionStatus.STUCK
+    assert conversation._state.execution_status == ConversationExecutionStatus.STUCK
+
+    # Test setting to MAX_ITERATIONS_REACHED
+    conversation._state.execution_status = (
+        ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
+    assert (
+        conversation._state.execution_status
+        == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
+
+    # Test setting to DELETING
+    conversation._state.execution_status = ConversationExecutionStatus.DELETING
+    assert conversation._state.execution_status == ConversationExecutionStatus.DELETING
+
 
 def test_enum_values():
     """Test that all enum values are correct."""
@@ -53,6 +70,11 @@ def test_enum_values():
     )
     assert ConversationExecutionStatus.FINISHED == "finished"
     assert ConversationExecutionStatus.ERROR == "error"
+    assert ConversationExecutionStatus.STUCK == "stuck"
+    assert (
+        ConversationExecutionStatus.MAX_ITERATIONS_REACHED == "max_iterations_reached"
+    )
+    assert ConversationExecutionStatus.DELETING == "deleting"
 
 
 def test_enum_serialization():
@@ -79,3 +101,17 @@ def test_enum_serialization():
     conversation._state.execution_status = ConversationExecutionStatus.ERROR
     serialized = conversation._state.model_dump_json()
     assert '"execution_status":"error"' in serialized
+
+    conversation._state.execution_status = ConversationExecutionStatus.STUCK
+    serialized = conversation._state.model_dump_json()
+    assert '"execution_status":"stuck"' in serialized
+
+    conversation._state.execution_status = (
+        ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
+    serialized = conversation._state.model_dump_json()
+    assert '"execution_status":"max_iterations_reached"' in serialized
+
+    conversation._state.execution_status = ConversationExecutionStatus.DELETING
+    serialized = conversation._state.model_dump_json()
+    assert '"execution_status":"deleting"' in serialized

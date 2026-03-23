@@ -25,6 +25,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationIterationLimitEvent
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
@@ -417,7 +418,6 @@ def test_send_message_resets_stuck_to_idle():
 
 def test_execution_status_error_on_max_iterations():
     """Test that status is set to ERROR with clear message when max iterations hit."""
-    from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
     status_during_execution: list[ConversationExecutionStatus] = []
     events_received: list = []
@@ -466,12 +466,15 @@ def test_execution_status_error_on_max_iterations():
     )
     conversation.run()
 
-    # Status should be ERROR
-    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+    # Status should be MAX_ITERATIONS_REACHED
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
 
-    # Should have emitted a ConversationErrorEvent with clear message
-    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
-    assert len(error_events) == 1
-    assert error_events[0].code == "MaxIterationsReached"
-    assert "maximum iterations limit" in error_events[0].detail
-    assert "(2)" in error_events[0].detail  # max_iteration_per_run value
+    # Should have emitted a ConversationIterationLimitEvent
+    limit_events = [
+        e for e in events_received if isinstance(e, ConversationIterationLimitEvent)
+    ]
+    assert len(limit_events) == 1
+    assert limit_events[0].max_iteration_per_run == 2
