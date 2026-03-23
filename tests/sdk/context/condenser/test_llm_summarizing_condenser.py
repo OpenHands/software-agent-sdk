@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from litellm.types.utils import ModelResponse
+from pydantic import SecretStr
 
 from openhands.sdk.context.condenser.base import (
     CondensationRequirement,
@@ -75,6 +76,14 @@ def mock_llm() -> LLM:
     # Explicitly set pricing attributes required by LLM -> Telemetry wiring
     mock_llm.input_cost_per_token = None
     mock_llm.output_cost_per_token = None
+
+    # Attributes required by LLMCapabilities (created in _set_env_side_effects)
+    mock_llm.model_canonical_name = None
+    mock_llm.api_key = SecretStr("test-key")
+    mock_llm.disable_vision = False
+    mock_llm.caching_prompt = False
+    mock_llm.max_input_tokens = 128000
+    mock_llm.max_output_tokens = 4096
 
     mock_llm._metrics = None
 

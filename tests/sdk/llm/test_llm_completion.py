@@ -408,11 +408,14 @@ def test_llm_token_counting_basic(default_config):
 
 
 def test_llm_model_info_initialization(default_config):
-    """Test model info initialization."""
+    """Test model info initialization.
+
+    Model info is initialized during LLM construction through LLMCapabilities.
+    """
     llm = default_config
 
-    # Model info initialization should complete without errors
-    llm._init_model_info_and_caps()
+    # Capabilities are initialized during construction
+    assert llm._capabilities is not None
 
     # Model info might be None for unknown models, which is fine
     assert llm.model_info is None or isinstance(llm.model_info, dict)
