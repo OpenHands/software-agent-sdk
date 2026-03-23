@@ -6,7 +6,12 @@ import hashlib
 from pathlib import Path
 
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
-from openhands.sdk.git.utils import extract_repo_name, is_git_url, normalize_git_url
+from openhands.sdk.git.utils import (
+    extract_repo_name,
+    is_git_url,
+    normalize_git_url,
+    redact_url_credentials,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -160,7 +165,9 @@ def _fetch_remote_source(
     )
 
     if result is None:
-        raise PluginFetchError(f"Failed to fetch plugin from {source}")
+        # Redact credentials from source URL in error message
+        safe_source = redact_url_credentials(source)
+        raise PluginFetchError(f"Failed to fetch plugin from {safe_source}")
 
     return _apply_subpath(plugin_path, subpath, "plugin repository")
 
@@ -321,13 +328,17 @@ def _fetch_remote_source_with_resolution(
     )
 
     if result is None:
-        raise PluginFetchError(f"Failed to fetch plugin from {source}")
+        # Redact credentials from source URL in error message
+        safe_source = redact_url_credentials(source)
+        raise PluginFetchError(f"Failed to fetch plugin from {safe_source}")
 
     # Get the actual commit SHA that was checked out
     try:
         resolved_ref = git_helper.get_head_commit(repo_cache_path)
     except Exception as e:
-        logger.warning(f"Could not get commit SHA for {source}: {e}")
+        # Redact credentials from source URL in log message
+        safe_source = redact_url_credentials(source)
+        logger.warning(f"Could not get commit SHA for {safe_source}: {e}")
         # Fall back to the requested ref if we can't get the SHA
         resolved_ref = ref or "HEAD"
 
