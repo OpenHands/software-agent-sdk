@@ -28,7 +28,7 @@ import tomllib
 from contextlib import chdir
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.logger import IN_CI, get_logger, rolling_log_view
 from openhands.sdk.workspace import PlatformType, TargetType
@@ -36,7 +36,15 @@ from openhands.sdk.workspace import PlatformType, TargetType
 
 logger = get_logger(__name__)
 
-VALID_TARGETS = {"binary", "binary-minimal", "source", "source-minimal"}
+VALID_TARGETS = {
+    "binary",
+    "binary-minimal",
+    "source",
+    "source-minimal",
+    "base-image-minimal",
+    "base-image",
+    "builder",
+}
 _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
 _BUILDKIT_INLINE_DONE_RE = re.compile(
@@ -402,6 +410,16 @@ class BuildOptions(BaseModel):
             "For example, {'INSTALL_ACP': 'false'} to skip ACP installation."
         ),
     )
+    prebuilt_base: str | None = Field(
+        default=None,
+        description=(
+            "Pre-built base image to use instead of building base-image-minimal "
+            "from scratch. When set, the Dockerfile's SOURCE_MINIMAL_BASE / "
+            "SOURCE_BASE ARG is overridden, skipping the base-image-minimal "
+            "build stage entirely. Only applies to source-minimal and source "
+            "targets; raises ValueError for other targets."
+        ),
+    )
 
     @property
     def short_sha(self) -> str:
@@ -413,6 +431,15 @@ class BuildOptions(BaseModel):
         if v not in VALID_TARGETS:
             raise ValueError(f"target must be one of {sorted(VALID_TARGETS)}")
         return v
+
+    @model_validator(mode="after")
+    def _validate_prebuilt_base(self) -> "BuildOptions":
+        if self.prebuilt_base and self.target not in ("source-minimal", "source"):
+            raise ValueError(
+                f"prebuilt_base is only supported for source-minimal and source "
+                f"targets, got target={self.target}"
+            )
+        return self
 
     @property
     def custom_tag_list(self) -> list[str]:
@@ -737,11 +764,18 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
-    ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
+    # Base-image targets don't need SDK source (no COPY from build context),
+    # so use an empty temp dir instead of running the expensive uv build --sdist.
+    is_base_only = opts.target in ("base-image-minimal", "base-image")
+    if is_base_only:
+        ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
+        shutil.copy2(dockerfile_path, ctx / "Dockerfile")
+    else:
+        ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
     telemetry.build_context_seconds = _round_seconds(
         time.monotonic() - build_context_started
     )
-    logger.info(f"[build] Clean build context: {ctx}")
+    logger.info(f"[build] {'Empty' if is_base_only else 'Clean'} build context: {ctx}")
 
     args = [
         "docker",
@@ -760,6 +794,18 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     ]
     for key, value in opts.extra_build_args.items():
         args += ["--build-arg", f"{key}={value}"]
+
+    # When a pre-built base is provided, override the Dockerfile ARG so the
+    # final target pulls the cached base from the registry instead of building
+    # base-image-minimal from scratch.
+    if opts.prebuilt_base:
+        target_arg = {
+            "source-minimal": "SOURCE_MINIMAL_BASE",
+            "source": "SOURCE_BASE",
+        }.get(opts.target)
+        if target_arg:
+            args += ["--build-arg", f"{target_arg}={opts.prebuilt_base}"]
+
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
     else:
