@@ -8,7 +8,6 @@ from openhands.sdk.subagent.schema import (
     AgentDefinition,
     _extract_examples,
     _resolve_env_vars,
-    _resolve_env_vars_deep,
 )
 
 
@@ -688,82 +687,37 @@ class TestExtractExamples:
         assert "Multi" in examples[0]
 
 
-class TestResolveEnvVars:
-    """Tests for _resolve_env_vars and _resolve_env_vars_deep."""
-
-    @pytest.mark.parametrize(
-        ("input_val", "env_vars", "expected"),
-        [
-            ("${FOO}", {"FOO": "bar"}, "bar"),
-            (
-                "${HOST}:${PORT}",
-                {"HOST": "localhost", "PORT": "8080"},
-                "localhost:8080",
-            ),
-            ("prefix_${VAR}_suffix", {"VAR": "mid"}, "prefix_mid_suffix"),
-            ("plain text", {}, "plain text"),
-            ("${MISSING}", {}, "${MISSING}"),
-        ],
-        ids=[
-            "single_var",
-            "multiple_vars",
-            "var_embedded_in_text",
-            "no_vars",
-            "unset_var_unchanged",
-        ],
-    )
-    def test_resolve_env_vars(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        input_val: str,
-        env_vars: dict[str, str],
-        expected: str,
-    ):
-        for k, v in env_vars.items():
-            monkeypatch.setenv(k, v)
-        assert _resolve_env_vars(input_val) == expected
-
-    @pytest.mark.parametrize(
-        ("input_val", "expected"),
-        [
-            (42, 42),
-            (None, None),
-            (True, True),
-            (3.14, 3.14),
-        ],
-        ids=["int", "none", "bool", "float"],
-    )
-    def test_resolve_deep_non_string_passthrough(
-        self, input_val: object, expected: object
-    ):
-        assert _resolve_env_vars_deep(input_val) is expected
-
-    def test_resolve_deep_string(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("VAL", "resolved")
-        assert _resolve_env_vars_deep("${VAL}") == "resolved"
-
-    def test_resolve_deep_dict(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("A", "1")
-        monkeypatch.setenv("B", "2")
-        result = _resolve_env_vars_deep({"key_a": "${A}", "key_b": "${B}"})
-        assert result == {"key_a": "1", "key_b": "2"}
-
-    def test_resolve_deep_list(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("X", "hello")
-        result = _resolve_env_vars_deep(["${X}", "literal", "${X}"])
-        assert result == ["hello", "literal", "hello"]
-
-    def test_resolve_deep_nested(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("CMD", "/usr/bin/server")
-        monkeypatch.setenv("TOKEN", "secret")
-        data = {
-            "command": "${CMD}",
-            "args": ["--token", "${TOKEN}"],
-            "env": {"API_TOKEN": "${TOKEN}"},
-            "port": 8080,
-        }
-        result = _resolve_env_vars_deep(data)
-        assert result["command"] == "/usr/bin/server"
-        assert result["args"] == ["--token", "secret"]
-        assert result["env"]["API_TOKEN"] == "secret"
-        assert result["port"] == 8080  # non-string left untouched
+@pytest.mark.parametrize(
+    ("input_val", "env_vars", "expected"),
+    [
+        ("${FOO}", {"FOO": "bar"}, "bar"),
+        (
+            "${HOST}:${PORT}",
+            {"HOST": "localhost", "PORT": "8080"},
+            "localhost:8080",
+        ),
+        ("prefix_${VAR}_suffix", {"VAR": "mid"}, "prefix_mid_suffix"),
+        ("plain text", {}, "plain text"),
+        ("${MISSING}", {}, "${MISSING}"),
+        ("$FOO", {"FOO": "bar"}, "bar"),
+        ("$FOO/path", {"FOO": "/root"}, "/root/path"),
+    ],
+    ids=[
+        "single_var",
+        "multiple_vars",
+        "var_embedded_in_text",
+        "no_vars",
+        "unset_var_unchanged",
+        "dollar_without_braces",
+        "dollar_without_braces_in_path",
+    ],
+)
+def test_resolve_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+    input_val: str,
+    env_vars: dict[str, str],
+    expected: str,
+):
+    for k, v in env_vars.items():
+        monkeypatch.setenv(k, v)
+    assert _resolve_env_vars(input_val) == expected

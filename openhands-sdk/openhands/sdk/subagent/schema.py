@@ -39,23 +39,18 @@ _VALID_PERMISSION_MODES: Final[set[str]] = {
 
 
 def _resolve_env_vars(value: str) -> str:
-    """Resolve ``${VAR}`` references in *value* from ``os.environ``."""
+    """Expand environment variable references in *value* using ``os.path.expandvars``.
 
-    def _replace(m: re.Match) -> str:
-        return os.environ.get(m.group(1), m.group(0))
+    Supports ``$VAR`` and ``${VAR}`` syntax.  If a referenced variable is not
+    set, the placeholder is left unchanged (standard ``expandvars`` behaviour).
 
-    return re.sub(r"\$\{(\w+)\}", _replace, value)
+    Args:
+        value: A string potentially containing environment variable references.
 
-
-def _resolve_env_vars_deep(value: Any) -> Any:
-    """Recursively resolve ``${VAR}`` references in all string values."""
-    if isinstance(value, str):
-        return _resolve_env_vars(value)
-    if isinstance(value, dict):
-        return {k: _resolve_env_vars_deep(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_resolve_env_vars_deep(item) for item in value]
-    return value
+    Returns:
+        The string with all recognised environment variables expanded.
+    """
+    return os.path.expandvars(value)
 
 
 def _extract_color(fm: dict[str, object]) -> str | None:
@@ -109,10 +104,20 @@ def _extract_mcp_servers(fm: dict[str, Any]) -> dict[str, Any] | None:
             f"mcp_servers must be a mapping of server names to configs, "
             f"got {type(mcp_servers_raw)}"
         )
-    # Resolve ${VAR} references in all string values
+
+    # Resolve ${VAR} / $VAR references in all string values
+    def _resolve_deep(value: Any) -> Any:
+        if isinstance(value, str):
+            return _resolve_env_vars(value)
+        if isinstance(value, dict):
+            return {k: _resolve_deep(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_resolve_deep(item) for item in value]
+        return value
+
     for server_name, server_cfg in mcp_servers_raw.items():
         if isinstance(server_cfg, dict):
-            mcp_servers_raw[server_name] = _resolve_env_vars_deep(server_cfg)
+            mcp_servers_raw[server_name] = _resolve_deep(server_cfg)
     return mcp_servers_raw
 
 
