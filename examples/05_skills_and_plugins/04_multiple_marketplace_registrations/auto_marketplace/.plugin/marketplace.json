@@ -1,0 +1,6 @@
+{
+  "name": "auto-marketplace",
+  "owner": {"name": "Demo"},
+  "plugins": [{"name": "helper", "source": "./plugins/helper"}],
+  "skills": []
+}

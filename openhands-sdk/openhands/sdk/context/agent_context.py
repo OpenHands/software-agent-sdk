@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import warnings
 from collections.abc import Mapping
 from datetime import datetime
 
@@ -17,10 +18,15 @@ from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.plugin.types import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
 
 
 logger = get_logger(__name__)
+
+# Constants for default marketplace
+PUBLIC_SKILLS_REPO = "github:OpenHands/extensions"
+PUBLIC_SKILLS_BRANCH = "main"
 
 PROMPT_DIR = pathlib.Path(__file__).parent / "prompts" / "templates"
 
@@ -74,9 +80,20 @@ class AgentContext(BaseModel):
     )
     marketplace_path: str | None = Field(
         default=DEFAULT_MARKETPLACE_PATH,
+        deprecated=True,
         description=(
+            "DEPRECATED: Use registered_marketplaces instead. "
             "Relative marketplace JSON path within the public skills repository. "
             "Set to None to load all public skills without marketplace filtering."
+        ),
+    )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "List of marketplace registrations for plugin resolution. "
+            "Marketplaces with auto_load='all' will have their plugins loaded "
+            "automatically at conversation start. "
+            "See MarketplaceRegistration for details."
         ),
     )
     secrets: Mapping[str, SecretValue] | None = Field(
@@ -117,6 +134,15 @@ class AgentContext(BaseModel):
         """Load user and/or public skills if enabled."""
         if not self.load_user_skills and not self.load_public_skills:
             return self
+
+        # Emit deprecation warning if using old marketplace_path field
+        if self.marketplace_path is not None and not self.registered_marketplaces:
+            warnings.warn(
+                "AgentContext.marketplace_path is deprecated. "
+                "Use registered_marketplaces instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         auto_skills = load_available_skills(
             work_dir=None,

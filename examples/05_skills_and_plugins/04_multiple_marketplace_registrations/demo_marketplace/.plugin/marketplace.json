@@ -1,0 +1,6 @@
+{
+  "name": "demo-marketplace",
+  "owner": {"name": "Demo"},
+  "plugins": [{"name": "greeter", "source": "./plugins/greeter"}],
+  "skills": []
+}

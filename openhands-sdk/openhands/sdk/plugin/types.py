@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import frontmatter
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -13,6 +14,99 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # Directories to check for marketplace manifest
 MARKETPLACE_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
 MARKETPLACE_MANIFEST_FILE = "marketplace.json"
+
+
+class MarketplaceRegistration(BaseModel):
+    """Registration for a plugin marketplace.
+
+    Represents a marketplace that can be registered for plugin resolution.
+    Marketplaces can be auto-loaded (plugins loaded at conversation start)
+    or registered only (available for explicit plugin references).
+
+    Examples:
+        >>> # Auto-load all plugins from a marketplace
+        >>> MarketplaceRegistration(
+        ...     name="public",
+        ...     source="github:OpenHands/skills",
+        ...     auto_load="all"
+        ... )
+
+        >>> # Register marketplace without auto-loading
+        >>> MarketplaceRegistration(
+        ...     name="experimental",
+        ...     source="github:acme/experimental"
+        ... )
+
+        >>> # Marketplace in monorepo subdirectory
+        >>> MarketplaceRegistration(
+        ...     name="team",
+        ...     source="github:acme/monorepo",
+        ...     repo_path="marketplaces/internal",
+        ...     auto_load="all"
+        ... )
+    """
+
+    name: str = Field(description="Identifier for this marketplace registration")
+    source: str = Field(
+        description="Marketplace source: 'github:owner/repo', git URL, or local path"
+    )
+    ref: str | None = Field(
+        default=None,
+        description="Optional branch, tag, or commit (only for git sources)",
+    )
+    repo_path: str | None = Field(
+        default=None,
+        description=(
+            "Subdirectory path within the git repository containing the marketplace "
+            "(e.g., 'marketplaces/internal' for monorepos). "
+            "Only relevant for git sources, not local paths."
+        ),
+    )
+    auto_load: Literal["all"] | None = Field(
+        default=None,
+        description=(
+            "Auto-load behavior for this marketplace. "
+            "'all' = load all plugins at conversation start. "
+            "None = registered for resolution but not auto-loaded."
+        ),
+    )
+
+    @field_validator("repo_path")
+    @classmethod
+    def validate_repo_path(cls, v: str | None) -> str | None:
+        """Validate repo_path is a safe relative path within the repository."""
+        return _validate_repo_path(v)
+
+
+def _validate_repo_path(v: str | None) -> str | None:
+    """Validate that a repo_path is a safe relative path.
+
+    Ensures the path:
+    - Is relative (not absolute)
+    - Does not escape the repository root via '..' traversal
+    - Normalizes to a path within the repo even after resolution
+    """
+    if v is None:
+        return v
+
+    # Must be relative (no absolute paths)
+    if v.startswith("/"):
+        raise ValueError("repo_path must be relative, not absolute")
+
+    # Normalize the path to catch tricks like 'safe/../../../etc'
+    # Use a dummy root to resolve against, then check if result stays inside
+    dummy_root = Path("/repo")
+    normalized = os.path.normpath(os.path.join(str(dummy_root), v))
+    normalized_path = Path(normalized)
+
+    # Check if the normalized path is still under dummy_root
+    # This catches paths like 'a/../../etc' which normalize to '/etc'
+    try:
+        normalized_path.relative_to(dummy_root)
+    except ValueError:
+        raise ValueError(f"repo_path '{v}' escapes repository root after normalization")
+
+    return v
 
 
 class PluginSource(BaseModel):
@@ -55,17 +149,7 @@ class PluginSource(BaseModel):
     @classmethod
     def validate_repo_path(cls, v: str | None) -> str | None:
         """Validate repo_path is a safe relative path within the repository."""
-        if v is None:
-            return v
-        # Must be relative (no absolute paths)
-        if v.startswith("/"):
-            raise ValueError("repo_path must be relative, not absolute")
-        # No parent directory traversal
-        if ".." in Path(v).parts:
-            raise ValueError(
-                "repo_path cannot contain '..' (parent directory traversal)"
-            )
-        return v
+        return _validate_repo_path(v)
 
 
 class ResolvedPluginSource(BaseModel):

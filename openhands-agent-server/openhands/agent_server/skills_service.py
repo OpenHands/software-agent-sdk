@@ -9,16 +9,20 @@ Skill Sources:
 - Project skills: {workspace}/.openhands/skills/, .cursorrules, agents.md
 - Organization skills: {org}/.openhands or {org}/openhands-config
 - Sandbox skills: Exposed URLs from sandbox environment
+- Registered marketplaces: Multiple marketplace sources with auto-load support
 
 Precedence (later overrides earlier):
-sandbox < public < user < org < project
+sandbox < public < user < org < project < marketplace-plugins
 """
+
+from __future__ import annotations
 
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openhands.sdk.context.skills import (
     Skill,
@@ -36,6 +40,10 @@ from openhands.sdk.context.skills.utils import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.plugin.types import MarketplaceRegistration
 
 
 logger = get_logger(__name__)
@@ -286,6 +294,7 @@ def load_all_skills(
     org_name: str | None = None,
     sandbox_exposed_urls: list[ExposedUrlData] | None = None,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
+    registered_marketplaces: list[MarketplaceRegistration] | None = None,
 ) -> SkillLoadResult:
     """Load and merge skills from all configured sources.
 
@@ -296,6 +305,7 @@ def load_all_skills(
     3. User skills - From ~/.openhands/skills/
     4. Organization skills - From {org}/.openhands or equivalent
     5. Project skills (highest) - From {workspace}/.openhands/skills/
+    6. Marketplace plugins (highest) - From registered marketplaces with auto_load
 
     Args:
         load_public: Whether to load public skills from OpenHands/extensions repo.
@@ -306,8 +316,10 @@ def load_all_skills(
         org_repo_url: Pre-authenticated Git URL for org skills.
         org_name: Organization name for org skills.
         sandbox_exposed_urls: List of exposed URLs from sandbox.
-        marketplace_path: Relative marketplace JSON path for public skills.
+        marketplace_path: DEPRECATED - Relative marketplace JSON path for public skills.
             Pass None to load all public skills without marketplace filtering.
+        registered_marketplaces: List of marketplace registrations. When provided,
+            marketplaces with auto_load='all' will have their skills loaded.
 
     Returns:
         SkillLoadResult containing merged skills and source counts.
@@ -349,7 +361,7 @@ def load_all_skills(
     sources["org"] = len(org_skills)
     skill_lists.append(org_skills)
 
-    # 5. Load project skills (highest precedence)
+    # 5. Load project skills
     project_skills = load_available_skills(
         work_dir=project_dir if load_project else None,
         include_user=False,
@@ -359,6 +371,13 @@ def load_all_skills(
     sources["project"] = len(project_skills)
     skill_lists.append(list(project_skills.values()))
 
+    # 6. Load skills from registered marketplaces with auto_load='all' (highest)
+    marketplace_skills: list[Skill] = []
+    if registered_marketplaces:
+        marketplace_skills = _load_marketplace_skills(registered_marketplaces)
+    sources["marketplace"] = len(marketplace_skills)
+    skill_lists.append(marketplace_skills)
+
     # Merge all skills with precedence
     all_skills = merge_skills(skill_lists)
 
@@ -367,6 +386,72 @@ def load_all_skills(
     )
 
     return SkillLoadResult(skills=all_skills, sources=sources)
+
+
+def _load_marketplace_skills(
+    registrations: list[MarketplaceRegistration],
+) -> list[Skill]:
+    """Load skills from registered marketplaces with auto_load='all'.
+
+    This function iterates through marketplace registrations, fetches those
+    marked for auto-loading, and loads all their plugin skills.
+
+    Args:
+        registrations: List of marketplace registrations.
+
+    Returns:
+        List of skills loaded from auto-load marketplaces.
+    """
+    from openhands.sdk.plugin import (
+        MarketplaceRegistry,
+        Plugin,
+        fetch_plugin_with_resolution,
+    )
+
+    all_skills: list[Skill] = []
+
+    # Create registry and get auto-load registrations
+    registry = MarketplaceRegistry(registrations)
+    auto_load_regs = registry.get_auto_load_registrations()
+
+    for reg in auto_load_regs:
+        try:
+            marketplace, repo_path = registry.get_marketplace(reg.name)
+            logger.info(
+                f"Loading skills from {len(marketplace.plugins)} plugin(s) in "
+                f"marketplace '{reg.name}'"
+            )
+
+            for plugin_entry in marketplace.plugins:
+                try:
+                    # Resolve and fetch the plugin
+                    source, ref, subpath = marketplace.resolve_plugin_source(
+                        plugin_entry
+                    )
+                    path, resolved_ref = fetch_plugin_with_resolution(
+                        source=source,
+                        ref=ref,
+                        repo_path=subpath,
+                    )
+
+                    # Load the plugin and extract skills
+                    plugin = Plugin.load(path)
+                    if plugin.skills:
+                        all_skills.extend(plugin.skills)
+                        logger.debug(
+                            f"Loaded {len(plugin.skills)} skill(s) from plugin "
+                            f"'{plugin.manifest.name}' in marketplace '{reg.name}'"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load plugin '{plugin_entry.name}' "
+                        f"from marketplace '{reg.name}': {e}"
+                    )
+
+        except Exception as e:
+            logger.warning(f"Failed to load marketplace '{reg.name}': {e}")
+
+    return all_skills
 
 
 def sync_public_skills() -> tuple[bool, str]:
