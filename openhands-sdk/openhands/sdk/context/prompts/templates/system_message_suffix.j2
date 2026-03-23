@@ -1,6 +1,8 @@
 {% if current_datetime %}
 <CURRENT_DATETIME>
 The current date and time is: {{ current_datetime }}
+
+Note: Your training data may have a cutoff date earlier than the current date shown above. When evaluating dates, CVE identifiers (e.g., CVE-2026-*), security advisories, or other time-sensitive information, trust the system clock above rather than assumptions based on your training data. Information from years beyond your training cutoff is valid if the current date confirms we are in or past that year.
 </CURRENT_DATETIME>
 {% endif %}
 {% if repo_skills %}
