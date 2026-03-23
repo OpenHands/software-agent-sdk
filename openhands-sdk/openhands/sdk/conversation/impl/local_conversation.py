@@ -35,7 +35,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
-from openhands.sdk.io import LocalFileStore
+from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -104,6 +104,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        file_store: FileStore | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -143,6 +144,9 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            file_store: Optional FileStore for conversation persistence. When
+                   provided, takes precedence over persistence_dir and allows
+                   injecting any FileStore implementation (e.g. S3, database).
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -181,6 +185,7 @@ class LocalConversation(BaseConversation):
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
+            file_store=file_store,
         )
 
         # Default callback: persist every event to state

@@ -269,6 +269,7 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
+        file_store: FileStore | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -296,6 +297,12 @@ class ConversationState(OpenHandsModel):
                     persisted state. If provided, secrets are encrypted when
                     saving and decrypted when loading. If not provided, secrets
                     are redacted (lost) on serialization.
+            file_store: Optional FileStore to use for persistence. When
+                    provided, it takes precedence over persistence_dir and
+                    allows callers to inject any FileStore implementation
+                    (e.g. S3, database-backed). When None, a LocalFileStore
+                    is created from persistence_dir (or InMemoryFileStore if
+                    persistence_dir is also None).
 
         Returns:
             ConversationState ready for use
@@ -304,11 +311,12 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        file_store = (
-            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
-            if persistence_dir
-            else InMemoryFileStore()
-        )
+        if file_store is None:
+            file_store = (
+                LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
+                if persistence_dir
+                else InMemoryFileStore()
+            )
 
         try:
             base_text = file_store.read(BASE_STATE)
