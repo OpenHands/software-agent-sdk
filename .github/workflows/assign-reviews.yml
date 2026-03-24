@@ -136,6 +136,12 @@ jobs:
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
             LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
         steps:
+            - name: Validate GitHub token
+              env:
+                  GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+              run: |
+                  curl -sSf -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user | head -20
+
             - name: Checkout repository
               uses: actions/checkout@v5
 
