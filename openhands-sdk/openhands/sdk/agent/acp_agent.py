@@ -156,20 +156,26 @@ def _resolve_bypass_mode(agent_name: str) -> str:
     return _DEFAULT_BYPASS_MODE
 
 
-def _command_contains_agent(acp_command: list[str], agent_name: str) -> bool:
-    """Return True when any ACP command token references *agent_name*."""
-    needle = agent_name.lower()
-    return any(needle in part.lower() for part in acp_command)
+def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
+    """Build ACP session metadata for server-specific model selection."""
+    if not acp_model:
+        return {}
+    if "claude" in agent_name.lower():
+        return {"claudeCode": {"options": {"model": acp_model}}}
+    return {}
 
 
-def _build_codex_model_override_args(
-    acp_command: list[str],
+async def _maybe_set_session_model(
+    conn: ClientSideConnection,
+    agent_name: str,
+    session_id: str,
     acp_model: str | None,
-) -> list[str]:
-    """Return CLI args that force a Codex ACP model selection."""
-    if not acp_model or not _command_contains_agent(acp_command, "codex-acp"):
-        return []
-    return ["-c", f"model={json.dumps(acp_model)}"]
+) -> None:
+    """Apply a protocol-level session model override when the server supports it."""
+    if not acp_model:
+        return
+    if "codex-acp" in agent_name.lower():
+        await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -454,7 +460,7 @@ class ACPAgent(AgentBase):
         description=(
             "Model for the ACP server to use (e.g. 'claude-opus-4-6' or "
             "'gpt-5.4'). For Claude ACP, passed via session _meta. For Codex "
-            'ACP, translated to `-c model="..."` at process startup. '
+            "ACP, applied via the protocol-level set_session_model call. "
             "If None, the server picks its default."
         ),
     )
@@ -614,11 +620,7 @@ class ACPAgent(AgentBase):
         env.pop("CLAUDECODE", None)
 
         command = self.acp_command[0]
-        args = (
-            list(self.acp_command[1:])
-            + list(self.acp_args)
-            + _build_codex_model_override_args(self.acp_command, self.acp_model)
-        )
+        args = list(self.acp_command[1:]) + list(self.acp_args)
 
         working_dir = str(state.workspace.working_dir)
 
@@ -685,13 +687,17 @@ class ACPAgent(AgentBase):
             # Build _meta content for session options (e.g. model selection).
             # Extra kwargs to new_session() become the _meta dict in the
             # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-            session_meta: dict[str, Any] = {}
-            if self.acp_model and "claude" in agent_name.lower():
-                session_meta["claudeCode"] = {"options": {"model": self.acp_model}}
+            session_meta = _build_session_meta(agent_name, self.acp_model)
 
             # Create a new session
             response = await conn.new_session(cwd=working_dir, **session_meta)
             session_id = response.session_id
+            await _maybe_set_session_model(
+                conn,
+                agent_name,
+                session_id,
+                self.acp_model,
+            )
 
             # Resolve the permission mode to use.  Different ACP servers
             # use different mode IDs for the same concept (no-prompts):
