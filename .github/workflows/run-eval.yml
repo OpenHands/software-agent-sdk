@@ -50,6 +50,11 @@ on:
                 description: Reason for manual trigger
                 required: false
                 default: ''
+            inspect_pat_only:
+                description: Print safe metadata for ALLHANDS_BOT_GITHUB_PAT and stop
+                required: false
+                default: false
+                type: boolean
             eval_branch:
                 description: Evaluation repo branch to use (for testing feature branches)
                 required: false
@@ -122,8 +127,8 @@ env:
 jobs:
     print-parameters:
         if: >
-            github.event_name == 'release' ||
-            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'release') ||
+            (github.event_name == 'workflow_dispatch' && github.event.inputs.inspect_pat_only != 'true') ||
             (github.event_name == 'pull_request_target' &&
              (github.event.label.name == 'run-eval-1' ||
               github.event.label.name == 'run-eval-50' ||
@@ -145,6 +150,7 @@ jobs:
                   echo "eval_limit: ${{ github.event.inputs.eval_limit || '1' }}"
                   echo "model_ids: ${{ github.event.inputs.model_ids || '(default)' }}"
                   echo "reason: ${{ github.event.inputs.reason || 'N/A' }}"
+                  echo "inspect_pat_only: ${{ github.event.inputs.inspect_pat_only || 'false' }}"
                   echo "eval_branch: ${{ github.event.inputs.eval_branch || 'main' }}"
                   echo "benchmarks_branch: ${{ github.event.inputs.benchmarks_branch || 'main' }}"
                   echo "instance_ids: ${{ github.event.inputs.instance_ids || 'N/A' }}"
@@ -161,7 +167,102 @@ jobs:
                   echo "=== Label (for PR events) ==="
                   echo "Label: ${{ github.event.label.name || 'N/A' }}"
 
+    inspect-pat:
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.inspect_pat_only == 'true'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+
+        steps:
+            - name: Inspect token metadata
+              env:
+                  GH_PAT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+              run: |
+                  set -euo pipefail
+
+                  if [ -z "${GH_PAT:-}" ]; then
+                    echo "ALLHANDS_BOT_GITHUB_PAT is not available in this workflow context" >&2
+                    exit 1
+                  fi
+
+                  user_headers="$(mktemp)"
+                  user_body="$(mktemp)"
+
+                  curl -sS \
+                    -D "$user_headers" \
+                    -o "$user_body" \
+                    -H "Authorization: Bearer $GH_PAT" \
+                    -H "Accept: application/vnd.github+json" \
+                    https://api.github.com/user
+
+                  echo "== Authenticated User =="
+                  jq '{login, id, type, name, email, html_url, created_at, updated_at}' "$user_body"
+                  echo
+
+                  echo "== Token Headers =="
+                  python3 - <<'PY' "$user_headers"
+                  import sys
+
+                  path = sys.argv[1]
+                  wanted = {
+                      "x-oauth-scopes",
+                      "github-authentication-token-expiration",
+                      "x-accepted-oauth-scopes",
+                      "x-github-api-version-selected",
+                  }
+
+                  headers = {}
+                  with open(path, encoding="utf-8") as fh:
+                      for raw in fh:
+                          if ":" not in raw:
+                              continue
+                          key, value = raw.split(":", 1)
+                          key = key.strip().lower()
+                          if key in wanted:
+                              headers[key] = value.strip()
+
+                  for key in sorted(wanted):
+                      print(f"{key}: {headers.get(key, '<not present>')}")
+                  PY
+                  echo
+
+                  echo "== Repo Access Check =="
+                  repo_body="$(mktemp)"
+                  repo_status="$(
+                    curl -sS \
+                      -o "$repo_body" \
+                      -w "%{http_code}" \
+                      -H "Authorization: Bearer $GH_PAT" \
+                      -H "Accept: application/vnd.github+json" \
+                      https://api.github.com/repos/OpenHands/software-agent-sdk
+                  )"
+                  echo "OpenHands/software-agent-sdk status: $repo_status"
+                  if [ "$repo_status" = "200" ]; then
+                    jq '{full_name, private, owner: .owner.login, permissions}' "$repo_body"
+                  else
+                    cat "$repo_body"
+                  fi
+                  echo
+
+                  echo "== Installations Check =="
+                  installations_body="$(mktemp)"
+                  installations_status="$(
+                    curl -sS \
+                      -o "$installations_body" \
+                      -w "%{http_code}" \
+                      -H "Authorization: Bearer $GH_PAT" \
+                      -H "Accept: application/vnd.github+json" \
+                      https://api.github.com/user/installations
+                  )"
+                  echo "GET /user/installations status: $installations_status"
+                  if [ "$installations_status" = "200" ]; then
+                    jq '{total_count, installations: [.installations[] | {id, account: .account.login, target_type, app_slug, permissions}]}' "$installations_body"
+                  else
+                    cat "$installations_body"
+                  fi
+
     build-and-evaluate:
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.inspect_pat_only != 'true'
         needs: print-parameters
         runs-on: ubuntu-latest
         permissions:
