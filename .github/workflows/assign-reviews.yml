@@ -149,7 +149,7 @@ jobs:
                   echo "LLM_API_KEY ends with: ...${LLM_API_KEY: -4}"
                   echo "Fetching key info from LiteLLM proxy..."
                   curl -sSf -H "Authorization: Bearer $LLM_API_KEY" \
-                    "$LLM_BASE_URL/key/info" | python3 -m json.tool
+                    "$LLM_BASE_URL/key/info?key=$LLM_API_KEY" | python3 -m json.tool
 
             - name: Checkout repository
               uses: actions/checkout@v5
