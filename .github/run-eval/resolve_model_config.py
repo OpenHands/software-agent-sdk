@@ -405,8 +405,8 @@ def _check_proxy_reachable(base_url: str, timeout: int = 10) -> tuple[bool, str]
     Tests TCP connectivity with a short timeout so we fail fast with a clear
     message instead of hanging for 60s on each model check.
     """
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     health_url = f"{base_url.rstrip('/')}/health"
     try:
@@ -475,9 +475,7 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
         print(f"✓ All {len(models)} model(s) passed preflight check\n", flush=True)
     else:
         print("✗ Some models failed preflight check", flush=True)
-        print(
-            "Evaluation aborted to avoid wasting compute resources.\n", flush=True
-        )
+        print("Evaluation aborted to avoid wasting compute resources.\n", flush=True)
 
     return all_passed
 
