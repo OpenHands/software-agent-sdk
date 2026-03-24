@@ -119,6 +119,10 @@ consult each relevant package-level AGENTS.md.
   [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
   Public API removals require deprecation before removal, and breaking SDK API
   changes require at least a **MINOR** SemVer bump.
+- The SDK API breakage checker should treat metadata-only changes to
+  Pydantic `Field(...)` declarations as non-breaking, including adding,
+  removing, or editing `description`, `title`, `examples`,
+  `json_schema_extra`, and `deprecated` kwargs.
 - For public REST APIs, read
   [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
   REST contract breaks need a deprecation notice and a runway of

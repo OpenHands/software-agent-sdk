@@ -395,6 +395,13 @@ class BuildOptions(BaseModel):
             "(e.g., at each release)."
         ),
     )
+    extra_build_args: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Additional Docker build args to pass to buildx. "
+            "For example, {'INSTALL_ACP': 'false'} to skip ACP installation."
+        ),
+    )
 
     @property
     def short_sha(self) -> str:
@@ -689,7 +696,16 @@ def _parse_buildkit_telemetry(stderr: str) -> BuildTelemetry:
             )
             continue
 
-        step_descriptions[step] = message.removesuffix(" ...").strip()
+        # Only update step description if there isn't already a classified one.
+        # This prevents sub-operations (like "preparing build cache for export")
+        # from overwriting the main operation (like "exporting cache to registry").
+        new_desc = message.removesuffix(" ...").strip()
+        existing_desc = step_descriptions.get(step)
+        if (
+            existing_desc is None
+            or _classify_buildkit_description(existing_desc) is None
+        ):
+            step_descriptions[step] = new_desc
 
     telemetry.build_context_seconds = _round_seconds(telemetry.build_context_seconds)
     telemetry.buildx_wall_clock_seconds = _round_seconds(
@@ -742,6 +758,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
         "--build-arg",
         f"OPENHANDS_BUILD_GIT_REF={opts.git_ref}",
     ]
+    for key, value in opts.extra_build_args.items():
+        args += ["--build-arg", f"{key}={value}"]
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
     else:
