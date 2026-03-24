@@ -80,10 +80,29 @@ def test_get_tools_for_preset_invalid():
         get_tools_for_preset("invalid_preset", enable_browser=False)  # type: ignore[arg-type]
 
 
+def test_get_tools_for_preset_nemotron():
+    """Test that nemotron preset returns Anthropic-compatible tools."""
+    tools = get_tools_for_preset("nemotron", enable_browser=False)
+    tool_names = {t.name for t in tools}
+
+    assert "bash" in tool_names
+    assert "str_replace" in tool_names
+    assert "task_tracker" in tool_names
+    # Default terminal/file_editor should NOT be present
+    assert "terminal" not in tool_names
+    assert "file_editor" not in tool_names
+
+
 def test_tool_preset_type_literal_values():
     """Verify ToolPresetType includes all expected values."""
     # This is a compile-time check but we document expected values here
-    valid_presets: list[ToolPresetType] = ["default", "gemini", "gpt5", "planning"]
+    valid_presets: list[ToolPresetType] = [
+        "default",
+        "gemini",
+        "gpt5",
+        "planning",
+        "nemotron",
+    ]
     for preset in valid_presets:
         # Should not raise
         tools = get_tools_for_preset(preset, enable_browser=False)
@@ -104,12 +123,18 @@ def test_run_infer_argparse_accepts_all_tool_presets():
     parser.add_argument(
         "--tool-preset",
         type=str,
-        choices=["default", "gemini", "gpt5", "planning"],
+        choices=["default", "gemini", "gpt5", "planning", "nemotron"],
         default="default",
     )
 
     # Test each valid preset value
-    valid_presets: list[ToolPresetType] = ["default", "gemini", "gpt5", "planning"]
+    valid_presets: list[ToolPresetType] = [
+        "default",
+        "gemini",
+        "gpt5",
+        "planning",
+        "nemotron",
+    ]
 
     for preset in valid_presets:
         # This should not raise an error

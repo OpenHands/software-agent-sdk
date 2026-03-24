@@ -455,14 +455,15 @@ def main():
     parser.add_argument(
         "--tool-preset",
         type=str,
-        choices=["default", "gemini", "gpt5", "planning"],
+        choices=["default", "gemini", "gpt5", "planning", "nemotron"],
         default="default",
         help=(
             "Tool preset to use for file editing (default: 'default'). "
             "'default' uses FileEditorTool (claude-style), "
             "'gemini' uses read_file/write_file/edit/list_directory tools, "
             "'gpt5' uses apply_patch tool, "
-            "'planning' uses planning-specific tools."
+            "'planning' uses planning-specific tools, "
+            "'nemotron' uses bash/str_replace tools (Anthropic-compatible)."
         ),
     )
 
