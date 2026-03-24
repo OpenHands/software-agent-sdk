@@ -177,6 +177,7 @@ jobs:
             - name: Inspect token metadata
               env:
                   GH_PAT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
               run: |
                   set -euo pipefail
 
@@ -259,6 +260,19 @@ jobs:
                     jq '{total_count, installations: [.installations[] | {id, account: .account.login, target_type, app_slug, permissions}]}' "$installations_body"
                   else
                     cat "$installations_body"
+                  fi
+                  echo
+
+                  echo "== LLM API Key Metadata =="
+                  if [ -z "${LLM_API_KEY:-}" ]; then
+                    echo "LLM_API_KEY_EVAL: <missing>"
+                  else
+                    key_length="$(printf '%s' "$LLM_API_KEY" | wc -c | tr -d ' ')"
+                    key_fingerprint="$(printf '%s' "$LLM_API_KEY" | shasum -a 256 | awk '{print $1}')"
+                    echo "LLM_API_KEY_EVAL: present"
+                    echo "length: $key_length"
+                    echo "sha256: $key_fingerprint"
+                    echo "sha256_prefix16: ${key_fingerprint%${key_fingerprint#????????????????}}"
                   fi
 
     build-and-evaluate:
