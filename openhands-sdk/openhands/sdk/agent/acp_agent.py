@@ -156,6 +156,22 @@ def _resolve_bypass_mode(agent_name: str) -> str:
     return _DEFAULT_BYPASS_MODE
 
 
+def _command_contains_agent(acp_command: list[str], agent_name: str) -> bool:
+    """Return True when any ACP command token references *agent_name*."""
+    needle = agent_name.lower()
+    return any(needle in part.lower() for part in acp_command)
+
+
+def _build_codex_model_override_args(
+    acp_command: list[str],
+    acp_model: str | None,
+) -> list[str]:
+    """Return CLI args that force a Codex ACP model selection."""
+    if not acp_model or not _command_contains_agent(acp_command, "codex-acp"):
+        return []
+    return ["-c", f"model={json.dumps(acp_model)}"]
+
+
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     """Read lines from *source* and forward only JSON-RPC lines to *dest*.
 
@@ -435,8 +451,12 @@ class ACPAgent(AgentBase):
     )
     acp_model: str | None = Field(
         default=None,
-        description="Model for the ACP server to use (e.g. 'claude-opus-4-6'). "
-        "Passed via session _meta. If None, the server picks its default.",
+        description=(
+            "Model for the ACP server to use (e.g. 'claude-opus-4-6' or "
+            "'gpt-5.4'). For Claude ACP, passed via session _meta. For Codex "
+            'ACP, translated to `-c model="..."` at process startup. '
+            "If None, the server picks its default."
+        ),
     )
 
     # Private runtime state
@@ -594,7 +614,11 @@ class ACPAgent(AgentBase):
         env.pop("CLAUDECODE", None)
 
         command = self.acp_command[0]
-        args = list(self.acp_command[1:]) + list(self.acp_args)
+        args = (
+            list(self.acp_command[1:])
+            + list(self.acp_args)
+            + _build_codex_model_override_args(self.acp_command, self.acp_model)
+        )
 
         working_dir = str(state.workspace.working_dir)
 

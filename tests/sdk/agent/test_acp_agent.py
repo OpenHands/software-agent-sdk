@@ -11,6 +11,7 @@ import pytest
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _build_codex_model_override_args,
     _OpenHandsACPBridge,
     _resolve_bypass_mode,
     _select_auth_method,
@@ -1428,6 +1429,33 @@ class TestSelectAuthMethod:
         methods = [self._make_auth_method("chatgpt")]
         env = {"OPENAI_API_KEY": "sk-test"}
         assert _select_auth_method(methods, env) is None
+
+
+# ---------------------------------------------------------------------------
+# _build_codex_model_override_args
+# ---------------------------------------------------------------------------
+
+
+class TestBuildCodexModelOverrideArgs:
+    def test_codex_acp_binary_adds_model_override(self):
+        assert _build_codex_model_override_args(
+            ["codex-acp"], "gpt-5.4"
+        ) == ["-c", 'model="gpt-5.4"']
+
+    def test_npx_codex_acp_adds_model_override(self):
+        assert _build_codex_model_override_args(
+            ["npx", "-y", "@zed-industries/codex-acp"],
+            "gpt-5.4",
+        ) == ["-c", 'model="gpt-5.4"']
+
+    def test_non_codex_agent_does_not_add_override(self):
+        assert _build_codex_model_override_args(
+            ["npx", "-y", "@zed-industries/claude-agent-acp"],
+            "gpt-5.4",
+        ) == []
+
+    def test_missing_model_does_not_add_override(self):
+        assert _build_codex_model_override_args(["codex-acp"], None) == []
 
 
 # ---------------------------------------------------------------------------
