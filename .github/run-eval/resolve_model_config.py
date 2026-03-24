@@ -14,8 +14,27 @@ Outputs to GITHUB_OUTPUT:
 
 import json
 import os
+import signal
 import sys
+import time
 from typing import Any
+
+
+def _sigterm_handler(signum: int, _frame: object) -> None:
+    """Handle SIGTERM/SIGALRM with a diagnostic message instead of silent death."""
+    sig_name = signal.Signals(signum).name
+    print(
+        f"\nERROR: Process received {sig_name} during preflight check.\n"
+        "This usually means the LiteLLM proxy is unreachable or hanging.\n"
+        f"LLM_BASE_URL: {os.environ.get('LLM_BASE_URL', '(not set)')}\n",
+        file=sys.stderr,
+        flush=True,
+    )
+    sys.exit(1)
+
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+signal.signal(signal.SIGALRM, _sigterm_handler)
 
 
 # SDK-specific parameters that should not be passed to litellm.
@@ -380,6 +399,26 @@ def check_model(
 test_model = check_model
 
 
+def _check_proxy_reachable(base_url: str, timeout: int = 10) -> tuple[bool, str]:
+    """Quick health check: can we reach the proxy at all?
+
+    Tests TCP connectivity with a short timeout so we fail fast with a clear
+    message instead of hanging for 60s on each model check.
+    """
+    import urllib.request
+    import urllib.error
+
+    health_url = f"{base_url.rstrip('/')}/health"
+    try:
+        req = urllib.request.Request(health_url, method="GET")
+        urllib.request.urlopen(req, timeout=timeout)
+        return True, f"Proxy reachable at {base_url}"
+    except urllib.error.URLError as e:
+        return False, f"Cannot reach proxy at {base_url}: {e.reason}"
+    except Exception as e:
+        return False, f"Cannot reach proxy at {base_url}: {type(e).__name__}: {e}"
+
+
 def run_preflight_check(models: list[dict[str, Any]]) -> bool:
     """Run preflight LLM check for all models.
 
@@ -401,23 +440,44 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
         print("Preflight check: SKIPPED (LLM_API_KEY not set)")
         return True
 
-    print(f"\nPreflight LLM check for {len(models)} model(s)...")
-    print("-" * 50)
+    # Quick connectivity check before trying expensive model completions
+    print(f"\nChecking proxy connectivity: {base_url}", flush=True)
+    reachable, msg = _check_proxy_reachable(base_url)
+    if not reachable:
+        print(f"✗ {msg}", file=sys.stderr, flush=True)
+        print(
+            "\nThe LiteLLM proxy appears to be down or unreachable.\n"
+            "Set SKIP_PREFLIGHT=true to bypass this check.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    print(f"✓ {msg}", flush=True)
+
+    print(f"\nPreflight LLM check for {len(models)} model(s)...", flush=True)
+    print("-" * 50, flush=True)
 
     all_passed = True
     for model_config in models:
+        display_name = model_config.get("display_name", "unknown")
+        print(f"  Checking {display_name}...", end=" ", flush=True)
+        t0 = time.monotonic()
         success, message = check_model(model_config, api_key, base_url)
-        print(message)
+        elapsed = time.monotonic() - t0
+        print(f"({elapsed:.1f}s)", flush=True)
+        print(f"  {message}", flush=True)
         if not success:
             all_passed = False
 
-    print("-" * 50)
+    print("-" * 50, flush=True)
 
     if all_passed:
-        print(f"✓ All {len(models)} model(s) passed preflight check\n")
+        print(f"✓ All {len(models)} model(s) passed preflight check\n", flush=True)
     else:
-        print("✗ Some models failed preflight check")
-        print("Evaluation aborted to avoid wasting compute resources.\n")
+        print("✗ Some models failed preflight check", flush=True)
+        print(
+            "Evaluation aborted to avoid wasting compute resources.\n", flush=True
+        )
 
     return all_passed
 
@@ -431,7 +491,7 @@ def main() -> None:
 
     # Resolve model configs
     resolved = find_models_by_id(model_ids)
-    print(f"Resolved {len(resolved)} model(s): {', '.join(model_ids)}")
+    print(f"Resolved {len(resolved)} model(s): {', '.join(model_ids)}", flush=True)
 
     # Run preflight check
     if not run_preflight_check(resolved):
