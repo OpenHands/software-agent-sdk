@@ -184,6 +184,12 @@ jobs:
               with:
                   python-version: '3.13'
 
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
             - name: Validate eval_limit
               if: github.event_name == 'workflow_dispatch'
               run: |
@@ -200,15 +206,15 @@ jobs:
               run: |
                   python3 .github/run-eval/validate_sdk_ref.py
 
-            - name: Install dependencies
+            - name: Sync locked workspace dependencies
               run: |
-                  pip install 'litellm>=1.81.0'
+                  uv sync --frozen
 
             - name: Load model IDs from Python script
               id: load-models
               run: |
                   # Extract all model IDs from resolve_model_config.py
-                  ALLOWED_MODEL_IDS=$(python3 << 'EOF'
+                  ALLOWED_MODEL_IDS=$(uv run python << 'EOF'
                   import sys
                   sys.path.insert(0, '.github/run-eval')
                   from resolve_model_config import MODELS
@@ -311,7 +317,7 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
               run: |
-                  python3 .github/run-eval/resolve_model_config.py
+                  uv run python .github/run-eval/resolve_model_config.py
 
             - name: Dispatch evaluation workflow
               env:
