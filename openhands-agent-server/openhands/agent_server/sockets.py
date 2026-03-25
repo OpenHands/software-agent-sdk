@@ -220,7 +220,7 @@ async def events_socket(
                         )
                         await _send_event(error_event, websocket)
                     except Exception:
-                        pass  # Websocket already broken; log failure but continue to raise original error
+                        pass  # Websocket already broken: continue to raise original error
                     raise
 
                 # For critical errors that indicate the websocket is broken, exit
