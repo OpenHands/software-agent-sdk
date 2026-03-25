@@ -220,7 +220,7 @@ async def events_socket(
                 except Exception:
                     # MCP Failed but there was an error sending to the client
                     logger.exception('mcp_send_error_failure', stack_info=True)
-                raise
+                #raise
             except Exception as e:
                 # For other exceptions, log and continue the loop
                 logger.exception("error_in_subscription", stack_info=True)
