@@ -145,10 +145,15 @@ jobs:
                   fi
 
                   EXIT_CODE=0
+                  # TEMPORARY: run only the 6 previously-failing Docker/remote
+                  # examples to validate the Python 3.12 builder fix.
+                  # Revert this filter before merging.
                   uv run pytest tests/examples/test_examples.py \
                       --run-examples \
                       --examples-results-dir "$RESULTS_DIR" \
-                      -n 4 || EXIT_CODE=$?
+                      -n 4 \
+                      -k "02_convo_with_docker or 03_browser_use_with_docker or 04_convo_with_api or 08_convo_with_apptainer or 09_acp_agent_with_remote or 10_cloud_workspace" \
+                      || EXIT_CODE=$?
 
                   TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
                   WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
