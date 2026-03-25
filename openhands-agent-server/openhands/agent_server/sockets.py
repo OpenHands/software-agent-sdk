@@ -220,8 +220,8 @@ async def events_socket(
                         )
                         await _send_event(error_event, websocket)
                     except Exception:
-                        pass  # Websocket already broken: continue to raise original error
-                    raise
+                        # MCP Failed but there was an error sending to the client
+                        logger.exception('mcp_send_error_failure', stack_info=True)
 
                 # For critical errors that indicate the websocket is broken, exit
                 if isinstance(e, (RuntimeError, ConnectionError)):
