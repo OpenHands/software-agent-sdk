@@ -426,6 +426,11 @@ def test_split_breaking_changes_separates_three_buckets():
             "text": "added body oneOf member",
         },
         {
+            "id": "response-body-any-of-added",
+            "details": {},
+            "text": "added body anyOf member",
+        },
+        {
             "id": "response-body-changed",
             "details": {},
             "text": "response body changed",
@@ -434,9 +439,11 @@ def test_split_breaking_changes_separates_three_buckets():
     removed, additive_oneof, other = _prod._split_breaking_changes(changes)
     assert len(removed) == 1
     assert removed[0]["path"] == "/foo"
-    assert len(additive_oneof) == 2
-    assert additive_oneof[0]["id"] == "response-property-one-of-added"
-    assert additive_oneof[1]["id"] == "response-body-one-of-added"
+    assert {change["id"] for change in additive_oneof} == {
+        "response-property-one-of-added",
+        "response-body-one-of-added",
+        "response-body-any-of-added",
+    }
     assert len(other) == 1
     assert other[0]["id"] == "response-body-changed"
 

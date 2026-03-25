@@ -426,8 +426,9 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
     {
         "response-body-one-of-added",
         "response-property-one-of-added",
-        # anyOf variants are already INFO in oasdiff and won't appear in the
-        # breaking list, but include them for completeness / future-proofing.
+        # Keep the anyOf variants here too so that if oasdiff ever reports them
+        # as breakages, additive response-union expansion gets the same
+        # downgrade without further script changes.
         "response-body-any-of-added",
         "response-property-any-of-added",
     }
