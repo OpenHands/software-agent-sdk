@@ -44,10 +44,10 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     This workspace connects to OpenHands Cloud (app.all-hands.dev) to provision
     and manage sandboxed environments for agent execution.
 
-    When ``saas_runtime_mode=True``, the workspace assumes it is already running
-    inside an OpenHands Cloud Runtime sandbox.  Instead of creating or managing
-    a sandbox via the Cloud API it connects directly to the local agent-server
-    at ``http://localhost:<agent_server_port>``.
+    When ``local_agent_server_mode=True``, the workspace assumes it is already
+    running inside an OpenHands Cloud Runtime sandbox.  Instead of creating or
+    managing a sandbox via the Cloud API it connects directly to the local
+    agent-server at ``http://localhost:<agent_server_port>``.
 
     Example:
         workspace = OpenHandsCloudWorkspace(
@@ -62,9 +62,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             sandbox_spec_id="ghcr.io/openhands/agent-server:main-python",
         )
 
-        # Running inside an OpenHands Cloud Runtime (SaaS runtime mode)
+        # Running inside an OpenHands Cloud Runtime (local agent-server mode)
         workspace = OpenHandsCloudWorkspace(
-            saas_runtime_mode=True,
+            local_agent_server_mode=True,
             cloud_api_url="https://app.all-hands.dev",
             cloud_api_key=os.environ["OPENHANDS_API_KEY"],
         )
@@ -80,8 +80,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         description=("The agent server URL. Set automatically after sandbox starts."),
     )
 
-    # SaaS runtime mode
-    saas_runtime_mode: bool = Field(
+    # Local agent-server mode
+    local_agent_server_mode: bool = Field(
         default=False,
         description=(
             "When True, assume the SDK is running inside an OpenHands Cloud "
@@ -92,7 +92,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     agent_server_port: int = Field(
         default=DEFAULT_AGENT_SERVER_PORT,
         description=(
-            "Port of the local agent-server. Only used when saas_runtime_mode=True."
+            "Port of the local agent-server. "
+            "Only used when local_agent_server_mode=True."
         ),
     )
 
@@ -138,23 +139,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         ),
     )
 
-    # Automation completion callback (used by the automation service)
-    automation_callback_url: str | None = Field(
-        default=None,
-        description=(
-            "URL to POST completion status to when the context manager exits. "
-            "Set by the automation service; not intended for direct user use."
-        ),
-    )
-    automation_run_id: str | None = Field(
-        default=None,
-        description=("Automation run ID included in the completion callback payload."),
-    )
-
     # Private state
     _sandbox_id: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
     _exposed_urls: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _automation_callback_url: str | None = PrivateAttr(default=None)
+    _automation_run_id: str | None = PrivateAttr(default=None)
 
     @property
     def client(self) -> httpx.Client:
@@ -185,8 +175,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         """Set up the sandbox and initialize the workspace."""
         self.cloud_api_url = self.cloud_api_url.rstrip("/")
 
-        if self.saas_runtime_mode:
-            self._init_saas_runtime_mode()
+        if self.local_agent_server_mode:
+            self._init_local_agent_server_mode()
         else:
             try:
                 self._start_sandbox()
@@ -195,16 +185,18 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 self.cleanup()
                 raise
 
-    def _init_saas_runtime_mode(self) -> None:
-        """Initialize in SaaS runtime mode — connect to local agent-server.
+    def _init_local_agent_server_mode(self) -> None:
+        """Initialize in local agent-server mode — connect to local agent-server.
 
-        Reads sandbox identity from environment variables so that
-        ``get_llm()`` and ``get_secrets()`` can call the Cloud API's
-        sandbox-scoped settings endpoints.
+        Reads sandbox identity and automation callback settings from
+        environment variables so that ``get_llm()`` and ``get_secrets()``
+        can call the Cloud API's sandbox-scoped settings endpoints.
 
         Expected env vars (injected by the automation dispatcher):
-          ``SANDBOX_ID``       — this sandbox's Cloud API identifier
-          ``SESSION_API_KEY``  — session key for sandbox settings auth
+          ``SANDBOX_ID``                — this sandbox's Cloud API identifier
+          ``SESSION_API_KEY``           — session key for sandbox settings auth
+          ``AUTOMATION_CALLBACK_URL``   — completion callback endpoint (optional)
+          ``AUTOMATION_RUN_ID``         — run ID for callback payload (optional)
 
         Falls back to ``OH_SESSION_API_KEYS_0`` (set by the runtime)
         if ``SESSION_API_KEY`` is not present.
@@ -212,7 +204,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         port = os.environ.get("AGENT_SERVER_PORT", str(self.agent_server_port))
         self.host = f"http://localhost:{port}"
         logger.info(
-            f"SaaS runtime mode: connecting to local agent-server at {self.host}"
+            f"Local agent-server mode: connecting to agent-server at {self.host}"
         )
 
         # Discover sandbox identity from env vars
@@ -220,6 +212,10 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         self._session_api_key = os.environ.get(
             "SESSION_API_KEY", os.environ.get("OH_SESSION_API_KEYS_0")
         )
+
+        # Automation callback settings from env vars
+        self._automation_callback_url = os.environ.get("AUTOMATION_CALLBACK_URL")
+        self._automation_run_id = os.environ.get("AUTOMATION_RUN_ID")
 
         if not self._sandbox_id:
             logger.warning(
@@ -457,17 +453,17 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def cleanup(self) -> None:
         """Clean up the sandbox by deleting it.
 
-        In SaaS runtime mode the sandbox is managed externally, so only the
-        HTTP client is closed.
+        In local agent-server mode the sandbox is managed externally, so only
+        the HTTP client is closed.
         """
         # Guard against __del__ on partially-constructed instances
         # (e.g. when validation fails before all fields are initialised).
         try:
-            saas_mode = self.saas_runtime_mode
+            local_mode = self.local_agent_server_mode
         except AttributeError:
             return
 
-        if saas_mode:
+        if local_mode:
             try:
                 if self._client:
                     self._client.close()
@@ -674,10 +670,10 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         """POST completion status to the automation service (best-effort).
 
         Called by ``__exit__`` before ``cleanup()``.  Does nothing when
-        ``automation_callback_url`` is not set.
+        ``AUTOMATION_CALLBACK_URL`` env var was not set.
         """
         try:
-            callback_url = self.automation_callback_url
+            callback_url = self._automation_callback_url
         except AttributeError:
             return
 
@@ -686,8 +682,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         status = "COMPLETED" if exc_type is None else "FAILED"
         payload: dict[str, Any] = {"status": status}
-        if self.automation_run_id:
-            payload["run_id"] = self.automation_run_id
+        if self._automation_run_id:
+            payload["run_id"] = self._automation_run_id
         if exc_val is not None:
             payload["error"] = str(exc_val)
 
