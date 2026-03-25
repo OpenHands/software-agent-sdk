@@ -207,13 +207,13 @@ async def events_socket(
                 # Exit the loop when websocket disconnects
                 logger.info(f"Event websocket disconnected: {conversation_id}")
                 return
-            except RuntimeError as e:
+            except (MCPError, RuntimeError) as e:
                 # Runtime errors send an error and close the connection
                 logger.exception("error_in_subscription", stack_info=True)
                 try:
                     error_event = ConversationErrorEvent(
                         source="environment",
-                        code="RUNTIME_ERROR",
+                        code=e.__class__.__name__,
                         detail=str(e),
                     )
                     await _send_event(error_event, websocket)
@@ -221,7 +221,7 @@ async def events_socket(
                     # MCP Failed but there was an error sending to the client
                     logger.exception('send_error_failure', stack_info=True)
                 #raise
-            except Exception as e:
+            except Exception:
                 # For other exceptions, log and continue the loop
                 logger.exception("error_in_subscription", stack_info=True)
     finally:
