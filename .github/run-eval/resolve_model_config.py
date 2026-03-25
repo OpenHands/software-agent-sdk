@@ -399,18 +399,23 @@ def check_model(
 test_model = check_model
 
 
-def _check_proxy_reachable(base_url: str, timeout: int = 10) -> tuple[bool, str]:
+def _check_proxy_reachable(
+    base_url: str, api_key: str | None = None, timeout: int = 10
+) -> tuple[bool, str]:
     """Quick health check: can we reach the proxy at all?
 
-    Tests TCP connectivity with a short timeout so we fail fast with a clear
-    message instead of hanging for 60s on each model check.
+    Uses /v1/models (standard OpenAI-compatible endpoint) which works with
+    any valid API key. The /health endpoint requires admin-level access on
+    some LiteLLM configurations.
     """
     import urllib.error
     import urllib.request
 
-    health_url = f"{base_url.rstrip('/')}/health"
+    models_url = f"{base_url.rstrip('/')}/v1/models"
     try:
-        req = urllib.request.Request(health_url, method="GET")
+        req = urllib.request.Request(models_url, method="GET")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
         urllib.request.urlopen(req, timeout=timeout)
         return True, f"Proxy reachable at {base_url}"
     except urllib.error.URLError as e:
@@ -442,7 +447,7 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
 
     # Quick connectivity check before trying expensive model completions
     print(f"\nChecking proxy connectivity: {base_url}", flush=True)
-    reachable, msg = _check_proxy_reachable(base_url)
+    reachable, msg = _check_proxy_reachable(base_url, api_key=api_key)
     if not reachable:
         print(f"✗ {msg}", file=sys.stderr, flush=True)
         print(
