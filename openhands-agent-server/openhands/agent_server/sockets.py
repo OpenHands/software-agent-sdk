@@ -217,6 +217,8 @@ async def events_socket(
                             source="environment",
                             code="MCP_CONNECTION_ERROR",
                             detail=str(e),
+                        )
+                        await _send_event(error_event, websocket)
                     except Exception:
                         pass  # Websocket already broken; log failure but continue to raise original error
                     raise
