@@ -52,7 +52,7 @@ class MCPClient(AsyncMCPClient):
         try:
             await self.__aenter__()
         except RuntimeError as exc:
-            raise MCPError(f"MCP Connection Failure") from exc
+            raise MCPError("MCP Connection Failure") from exc
 
     def call_async_from_sync(
         self,
