@@ -655,6 +655,43 @@ def test_parse_buildkit_telemetry_extracts_phase_timings():
     assert telemetry.cached_step_count == 1
 
 
+def test_parse_buildkit_telemetry_cache_export_with_preparing_line():
+    """Test that cache export timing is captured when sub-operations appear.
+
+    This reproduces a bug where BuildKit outputs:
+        #33 exporting cache to registry
+        #33 preparing build cache for export
+        #33 DONE 36.2s
+
+    Previously, the second line overwrote step_descriptions["33"], causing
+    the DONE time to be attributed to "preparing build cache for export"
+    which wasn't classified as cache_export.
+
+    The fix ensures that once a step has a classified description
+    ("exporting cache to registry" -> cache_export), subsequent sub-operation
+    descriptions don't overwrite it.
+    """
+    from openhands.agent_server.docker.build import _parse_buildkit_telemetry
+
+    # Real-world BuildKit output pattern
+    stderr_with_preparing = "\n".join(
+        [
+            "#33 exporting cache to registry",
+            "#33 preparing build cache for export",
+            "#33 writing layer sha256:abc123 0.5s done",
+            "#33 preparing build cache for export 36.2s done",
+            "#33 DONE 36.2s",
+            "",
+        ]
+    )
+
+    telemetry = _parse_buildkit_telemetry(stderr_with_preparing)
+
+    # Should capture the cache export time because "exporting cache to registry"
+    # is preserved as the step description (not overwritten by "preparing...")
+    assert telemetry.cache_export_seconds == 36.2
+
+
 def test_build_with_telemetry_returns_parsed_buildkit_fields(tmp_path: Path):
     from openhands.agent_server.docker.build import (
         BuildOptions,

@@ -20,6 +20,7 @@ on:
                     - swtbench
                     - commit0
                     - swebenchmultimodal
+                    - terminalbench
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
@@ -60,7 +61,11 @@ on:
                 default: main
                 type: string
             instance_ids:
-                description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
+                description: >-
+                    Comma-separated instance IDs to evaluate.
+                    Example: "django__django-11583,django__django-12345".
+                    Spaces around commas are automatically stripped.
+                    Leave empty to evaluate all instances up to eval_limit.
                 required: false
                 default: ''
             num_infer_workers:
@@ -113,8 +118,6 @@ on:
 env:
     EVAL_REPO: OpenHands/evaluation
     EVAL_WORKFLOW: eval-job.yml
-    DATASET: princeton-nlp/SWE-bench_Verified
-    SPLIT: test
 
 jobs:
     print-parameters:
@@ -154,8 +157,6 @@ jobs:
                   echo "=== Environment Variables ==="
                   echo "EVAL_REPO: ${{ env.EVAL_REPO }}"
                   echo "EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}"
-                  echo "DATASET: ${{ env.DATASET }}"
-                  echo "SPLIT: ${{ env.SPLIT }}"
                   echo ""
                   echo "=== Label (for PR events) ==="
                   echo "Label: ${{ github.event.label.name || 'N/A' }}"
@@ -183,6 +184,12 @@ jobs:
               with:
                   python-version: '3.13'
 
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
             - name: Validate eval_limit
               if: github.event_name == 'workflow_dispatch'
               run: |
@@ -199,15 +206,15 @@ jobs:
               run: |
                   python3 .github/run-eval/validate_sdk_ref.py
 
-            - name: Install dependencies
+            - name: Sync locked workspace dependencies
               run: |
-                  pip install 'litellm>=1.81.0'
+                  uv sync --frozen
 
             - name: Load model IDs from Python script
               id: load-models
               run: |
                   # Extract all model IDs from resolve_model_config.py
-                  ALLOWED_MODEL_IDS=$(python3 << 'EOF'
+                  ALLOWED_MODEL_IDS=$(uv run python << 'EOF'
                   import sys
                   sys.path.insert(0, '.github/run-eval')
                   from resolve_model_config import MODELS
@@ -228,7 +235,7 @@ jobs:
               env:
                   DEFAULT_MODEL: ${{ steps.load-models.outputs.default_model }}
                   ALLOWED_MODEL_IDS_JSON: ${{ steps.load-models.outputs.allowed_model_ids }}
-                  PAT_TOKEN_DEFAULT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  PAT_TOKEN_DEFAULT: ${{ secrets.PAT_TOKEN }}
               run: |
                   set -euo pipefail
 
@@ -310,7 +317,7 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
               run: |
-                  python3 .github/run-eval/resolve_model_config.py
+                  uv run python .github/run-eval/resolve_model_config.py
 
             - name: Dispatch evaluation workflow
               env:
@@ -333,6 +340,9 @@ jobs:
                   AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
+                  # Normalize instance_ids: strip all spaces
+                  INSTANCE_IDS=$(printf '%s' "$INSTANCE_IDS" | tr -d ' ')
+
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH, tool preset: $TOOL_PRESET)"
                   PAYLOAD=$(jq -n \
                     --arg sdk "$SDK_SHA" \

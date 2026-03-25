@@ -30,8 +30,9 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-sdk ./openhands-sdk
 COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
+ARG INSTALL_BOTO3=true
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
+    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -40,9 +41,10 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 FROM builder AS binary-builder
 ARG USERNAME UID GID
 
+ARG INSTALL_BOTO3=true
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable --extra boto3
+    uv sync --frozen --dev --no-editable $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
@@ -57,12 +59,6 @@ RUN test -x /agent-server/dist/openhands-agent-server
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
-
-
-ARG OPENHANDS_BUILD_GIT_SHA=unknown
-ARG OPENHANDS_BUILD_GIT_REF=unknown
-ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
-ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 
 # Install base packages and create user
 RUN set -eux; \
@@ -87,13 +83,17 @@ RUN set -eux; \
 
 # Pre-install ACP servers for ACPAgent support (Claude Code + Codex)
 # Install Node.js/npm if not present (SWE-bench base images may lack them)
+# Set INSTALL_ACP=false to skip ACP installation (e.g. for benchmark images)
+ARG INSTALL_ACP=true
 RUN set -eux; \
     if ! command -v npm >/dev/null 2>&1; then \
         curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
         apt-get install -y --no-install-recommends nodejs && \
         rm -rf /var/lib/apt/lists/*; \
     fi; \
-    npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp
+    if [ "$INSTALL_ACP" = "true" ]; then \
+        npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp; \
+    fi
 
 # Configure Claude Code managed settings for headless operation:
 # Allow all tool permissions (no human in the loop to approve).
@@ -103,6 +103,14 @@ RUN mkdir -p /etc/claude-code && \
 # NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
+
+# SDK version metadata — placed AFTER expensive RUN layers (apt-get, npm)
+# so that changing the SDK commit does not invalidate their cache.
+# This lets BuildKit reuse cached base layers across SDK commits.
+ARG OPENHANDS_BUILD_GIT_SHA=unknown
+ARG OPENHANDS_BUILD_GIT_REF=unknown
+ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
+ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 
 USER ${USERNAME}
 WORKDIR /
