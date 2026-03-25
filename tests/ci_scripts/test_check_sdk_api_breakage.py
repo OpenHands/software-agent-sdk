@@ -480,6 +480,37 @@ def test_is_field_metadata_only_change_added_deprecated_kwarg():
     assert _is_field_metadata_only_change(old, new) is True
 
 
+def test_is_field_metadata_only_change_json_schema_extra_dict():
+    """Adding json_schema_extra with a dict value is metadata-only."""
+    old = "Field(default='claude-sonnet-4-20250514', description='Model name.')"
+    new = (
+        "Field(default='claude-sonnet-4-20250514', description='Model name.', "
+        "json_schema_extra={'openhands_settings': "
+        "{'label': None, 'prominence': 'critical', 'depends_on': []}})"
+    )
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_json_schema_extra_function_call():
+    """Adding json_schema_extra with a function call value is metadata-only."""
+    old = "Field(default=None, description='API key.')"
+    new = (
+        "Field(default=None, description='API key.', "
+        "json_schema_extra=field_meta(SettingProminence.CRITICAL, label='API Key'))"
+    )
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_json_schema_extra_with_real_change():
+    """json_schema_extra + real default change is NOT metadata-only."""
+    old = "Field(default='old-model', description='Model name.')"
+    new = (
+        "Field(default='new-model', description='Model name.', "
+        "json_schema_extra={'key': 'value'})"
+    )
+    assert _is_field_metadata_only_change(old, new) is False
+
+
 def test_field_deprecated_change_is_not_breaking(tmp_path):
     """Field deprecated metadata changes should not count as breaking changes."""
     old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
@@ -580,5 +611,56 @@ def test_field_description_change_is_not_breaking(tmp_path):
         _SDK_CFG,
     )
     # Field description changes should NOT count as breaking
+    assert total_breaks == 0
+    assert undeprecated == 0
+
+
+def test_field_json_schema_extra_dict_is_not_breaking(tmp_path):
+    """Adding json_schema_extra with a dict value should not be breaking."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(\n"
+        + "        default='claude-sonnet-4-20250514',\n"
+        + "        description='Model name.',\n"
+        + "    )\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(\n"
+        + "        default='claude-sonnet-4-20250514',\n"
+        + "        description='Model name.',\n"
+        + "        json_schema_extra={\n"
+        + "            'settings': {\n"
+        + "                'label': None,\n"
+        + "                'prominence': 'critical',\n"
+        + "            }\n"
+        + "        },\n"
+        + "    )\n"
+    )
+
+    old_root = griffe.load(
+        "openhands.sdk",
+        search_paths=[str(tmp_path / "old")],
+    )
+    new_root = griffe.load(
+        "openhands.sdk",
+        search_paths=[str(tmp_path / "new")],
+    )
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+    )
     assert total_breaks == 0
     assert undeprecated == 0

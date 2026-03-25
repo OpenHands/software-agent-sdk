@@ -4,7 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.sdk.hooks.config import HookConfig
-from openhands.sdk.subagent.schema import AgentDefinition, _extract_examples
+from openhands.sdk.subagent.schema import (
+    AgentDefinition,
+    _extract_examples,
+    _resolve_env_vars,
+    _resolve_env_vars_deep,
+)
 
 
 class TestAgentDefinition:
@@ -445,6 +450,110 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         assert agent.mcp_servers is None
 
+    def test_mcp_servers_env_vars_resolved_in_env_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Test that ${VAR} references in env values are resolved."""
+        monkeypatch.setenv("MY_API_KEY", "secret-123")
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+mcp_servers:
+  my-server:
+    command: npx
+    args:
+      - mcp-server
+    env:
+      API_KEY: ${MY_API_KEY}
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        mcp_servers = agent.mcp_servers
+        assert mcp_servers is not None
+        assert mcp_servers["my-server"]["env"]["API_KEY"] == "secret-123"
+
+    def test_mcp_servers_env_vars_resolved_in_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Test that ${VAR} references in command are resolved."""
+        monkeypatch.setenv("PLUGIN_ROOT", "/opt/plugins")
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+mcp_servers:
+  my-server:
+    command: ${PLUGIN_ROOT}/bin/server
+    args:
+      - --config
+      - ${PLUGIN_ROOT}/config.json
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        mcp_servers = agent.mcp_servers
+        assert mcp_servers is not None
+        assert mcp_servers["my-server"]["command"] == "/opt/plugins/bin/server"
+        assert mcp_servers["my-server"]["args"] == [
+            "--config",
+            "/opt/plugins/config.json",
+        ]
+
+    def test_mcp_servers_env_vars_resolved_in_url_and_headers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Test that ${VAR} references in url and headers are resolved."""
+        monkeypatch.setenv("API_BASE", "https://api.example.com")
+        monkeypatch.setenv("AUTH_TOKEN", "tok-abc")
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+mcp_servers:
+  remote:
+    type: http
+    url: ${API_BASE}/mcp
+    headers:
+      Authorization: Bearer ${AUTH_TOKEN}
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        mcp_servers = agent.mcp_servers
+        assert mcp_servers is not None
+        assert mcp_servers["remote"]["url"] == "https://api.example.com/mcp"
+        assert mcp_servers["remote"]["headers"]["Authorization"] == "Bearer tok-abc"
+
+    def test_mcp_servers_unset_env_var_kept_as_is(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Test that unset ${VAR} references are left unchanged."""
+        monkeypatch.delenv("NONEXISTENT_VAR", raising=False)
+        agent_md = tmp_path / "agent.md"
+        agent_md.write_text(
+            """---
+name: agent
+mcp_servers:
+  my-server:
+    command: ${NONEXISTENT_VAR}
+---
+
+Prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
+        mcp_servers = agent.mcp_servers
+        assert mcp_servers is not None
+        assert mcp_servers["my-server"]["command"] == "${NONEXISTENT_VAR}"
+
     def test_permission_mode_defaults_to_none(self):
         """Test that permission_mode defaults to None (inherit parent)."""
         agent = AgentDefinition(name="test")
@@ -577,3 +686,89 @@ class TestExtractExamples:
         examples = _extract_examples(description)
         assert len(examples) == 1
         assert "Multi" in examples[0]
+
+
+@pytest.mark.parametrize(
+    ("input_val", "env_vars", "expected"),
+    [
+        ("${FOO}", {"FOO": "bar"}, "bar"),
+        (
+            "${HOST}:${PORT}",
+            {"HOST": "localhost", "PORT": "8080"},
+            "localhost:8080",
+        ),
+        ("prefix_${VAR}_suffix", {"VAR": "mid"}, "prefix_mid_suffix"),
+        ("plain text", {}, "plain text"),
+        ("${MISSING}", {}, "${MISSING}"),
+        ("$FOO", {"FOO": "bar"}, "bar"),
+        ("$FOO/path", {"FOO": "/root"}, "/root/path"),
+    ],
+    ids=[
+        "single_var",
+        "multiple_vars",
+        "var_embedded_in_text",
+        "no_vars",
+        "unset_var_unchanged",
+        "dollar_without_braces",
+        "dollar_without_braces_in_path",
+    ],
+)
+def test_resolve_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+    input_val: str,
+    env_vars: dict[str, str],
+    expected: str,
+):
+    for k, v in env_vars.items():
+        monkeypatch.setenv(k, v)
+    assert _resolve_env_vars(input_val) == expected
+
+
+@pytest.mark.parametrize(
+    ("input_val", "expected"),
+    [
+        (42, 42),
+        (None, None),
+        (True, True),
+        (3.14, 3.14),
+    ],
+    ids=["int", "none", "bool", "float"],
+)
+def test_resolve_env_vars_deep_non_string_passthrough(
+    input_val: object, expected: object
+):
+    assert _resolve_env_vars_deep(input_val) is expected
+
+
+def test_resolve_env_vars_deep_string(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VAL", "resolved")
+    assert _resolve_env_vars_deep("${VAL}") == "resolved"
+
+
+def test_resolve_env_vars_deep_dict(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("A", "1")
+    monkeypatch.setenv("B", "2")
+    result = _resolve_env_vars_deep({"key_a": "${A}", "key_b": "${B}"})
+    assert result == {"key_a": "1", "key_b": "2"}
+
+
+def test_resolve_env_vars_deep_list(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("X", "hello")
+    result = _resolve_env_vars_deep(["${X}", "literal", "${X}"])
+    assert result == ["hello", "literal", "hello"]
+
+
+def test_resolve_env_vars_deep_nested(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CMD", "/usr/bin/server")
+    monkeypatch.setenv("TOKEN", "secret")
+    data = {
+        "command": "${CMD}",
+        "args": ["--token", "${TOKEN}"],
+        "env": {"API_TOKEN": "${TOKEN}"},
+        "port": 8080,
+    }
+    result = _resolve_env_vars_deep(data)
+    assert result["command"] == "/usr/bin/server"
+    assert result["args"] == ["--token", "secret"]
+    assert result["env"]["API_TOKEN"] == "secret"
+    assert result["port"] == 8080  # non-string left untouched
