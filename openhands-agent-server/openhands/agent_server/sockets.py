@@ -203,30 +203,27 @@ async def events_socket(
                 logger.info(f"Received message: {conversation_id}")
                 message = Message.model_validate(data)
                 await event_service.send_message(message, True)
-            except WebSocketDisconnect:
-                logger.info(f"Event websocket disconnected: {conversation_id}")
+            except (WebSocketDisconnect, ConnectionError):
                 # Exit the loop when websocket disconnects
+                logger.info(f"Event websocket disconnected: {conversation_id}")
                 return
-            except Exception as e:
+            except RuntimeError as e:
+                # Runtime errors send an error and close the connection
                 logger.exception("error_in_subscription", stack_info=True)
-
-                # For MCP errors send error event to client
-                if isinstance(e, MCPError):
-                    try:
-                        error_event = ConversationErrorEvent(
-                            source="environment",
-                            code="MCP_CONNECTION_ERROR",
-                            detail=str(e),
-                        )
-                        await _send_event(error_event, websocket)
-                    except Exception:
-                        # MCP Failed but there was an error sending to the client
-                        logger.exception('mcp_send_error_failure', stack_info=True)
-
-                # For critical errors that indicate the websocket is broken, exit
-                if isinstance(e, (RuntimeError, ConnectionError)):
-                    raise
-                # For other exceptions, continue the loop
+                try:
+                    error_event = ConversationErrorEvent(
+                        source="environment",
+                        code="MCP_CONNECTION_ERROR",
+                        detail=str(e),
+                    )
+                    await _send_event(error_event, websocket)
+                except Exception:
+                    # MCP Failed but there was an error sending to the client
+                    logger.exception('mcp_send_error_failure', stack_info=True)
+                raise
+            except Exception as e:
+                # For other exceptions, log and continue the loop
+                logger.exception("error_in_subscription", stack_info=True)
     finally:
         await event_service.unsubscribe_from_events(subscriber_id)
 

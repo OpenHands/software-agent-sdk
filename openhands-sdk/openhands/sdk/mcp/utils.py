@@ -8,7 +8,7 @@ from fastmcp.mcp_config import MCPConfig
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
-from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
@@ -78,11 +78,6 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
-    except RuntimeError as e:
-        # Wrap RuntimeError from MCP client as MCPError so it can be handled
-        # gracefully in sockets.py instead of treating it as a critical error
-        client.sync_close()
-        raise MCPError(f"MCP connection failed: {e}") from e
     except BaseException:
         try:
             client.sync_close()
