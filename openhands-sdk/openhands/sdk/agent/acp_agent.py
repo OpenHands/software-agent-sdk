@@ -156,6 +156,28 @@ def _resolve_bypass_mode(agent_name: str) -> str:
     return _DEFAULT_BYPASS_MODE
 
 
+def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
+    """Build ACP session metadata for server-specific model selection."""
+    if not acp_model:
+        return {}
+    if "claude" in agent_name.lower():
+        return {"claudeCode": {"options": {"model": acp_model}}}
+    return {}
+
+
+async def _maybe_set_session_model(
+    conn: ClientSideConnection,
+    agent_name: str,
+    session_id: str,
+    acp_model: str | None,
+) -> None:
+    """Apply a protocol-level session model override when the server supports it."""
+    if not acp_model:
+        return
+    if "codex-acp" in agent_name.lower():
+        await conn.set_session_model(model_id=acp_model, session_id=session_id)
+
+
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     """Read lines from *source* and forward only JSON-RPC lines to *dest*.
 
@@ -435,8 +457,12 @@ class ACPAgent(AgentBase):
     )
     acp_model: str | None = Field(
         default=None,
-        description="Model for the ACP server to use (e.g. 'claude-opus-4-6'). "
-        "Passed via session _meta. If None, the server picks its default.",
+        description=(
+            "Model for the ACP server to use (e.g. 'claude-opus-4-6' or "
+            "'gpt-5.4'). For Claude ACP, passed via session _meta. For Codex "
+            "ACP, applied via the protocol-level set_session_model call. "
+            "If None, the server picks its default."
+        ),
     )
 
     # Private runtime state
@@ -661,13 +687,17 @@ class ACPAgent(AgentBase):
             # Build _meta content for session options (e.g. model selection).
             # Extra kwargs to new_session() become the _meta dict in the
             # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-            session_meta: dict[str, Any] = {}
-            if self.acp_model and "claude" in agent_name.lower():
-                session_meta["claudeCode"] = {"options": {"model": self.acp_model}}
+            session_meta = _build_session_meta(agent_name, self.acp_model)
 
             # Create a new session
             response = await conn.new_session(cwd=working_dir, **session_meta)
             session_id = response.session_id
+            await _maybe_set_session_model(
+                conn,
+                agent_name,
+                session_id,
+                self.acp_model,
+            )
 
             # Resolve the permission mode to use.  Different ACP servers
             # use different mode IDs for the same concept (no-prompts):
