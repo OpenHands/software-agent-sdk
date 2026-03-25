@@ -36,7 +36,15 @@ from openhands.sdk.workspace import PlatformType, TargetType
 
 logger = get_logger(__name__)
 
-VALID_TARGETS = {"binary", "binary-minimal", "source", "source-minimal"}
+VALID_TARGETS = {
+    "binary",
+    "binary-minimal",
+    "source",
+    "source-minimal",
+    "base-image-minimal",
+    "base-image",
+    "builder",
+}
 _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
 _BUILDKIT_INLINE_DONE_RE = re.compile(
@@ -737,11 +745,18 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
-    ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
+    # Base-image targets don't need SDK source (no COPY from build context),
+    # so use an empty temp dir instead of running the expensive uv build --sdist.
+    is_base_only = opts.target in ("base-image-minimal", "base-image")
+    if is_base_only:
+        ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
+        shutil.copy2(dockerfile_path, ctx / "Dockerfile")
+    else:
+        ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
     telemetry.build_context_seconds = _round_seconds(
         time.monotonic() - build_context_started
     )
-    logger.info(f"[build] Clean build context: {ctx}")
+    logger.info(f"[build] {'Empty' if is_base_only else 'Clean'} build context: {ctx}")
 
     args = [
         "docker",
@@ -760,6 +775,7 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     ]
     for key, value in opts.extra_build_args.items():
         args += ["--build-arg", f"{key}={value}"]
+
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
     else:
