@@ -13,18 +13,16 @@ ARG PORT=8000
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
 ####################################################################################
-# NOTE: The builder uses Python 3.12, not 3.13, because CPython 3.13's
-# libpython3.13.so ships with an executable stack (PT_GNU_STACK PF_X).
+# NOTE: We use the base image's system Python (--python-preference only-system)
+# instead of uv-managed python-build-standalone. The python-build-standalone
+# builds compile libpython with an executable stack (PT_GNU_STACK PF_X).
 # Docker containers running under seccomp restrictions (e.g. GitHub Actions
 # Docker-in-Docker) reject dlopen() on such libraries with:
 #   "cannot enable executable stack as shared object requires: Invalid argument"
-# Python 3.12 does not have this issue. Since PyInstaller produces a
-# self-contained binary, the builder Python version is independent of the
-# runtime base images (which still use Python 3.13).
-FROM python:3.12-bookworm AS builder
+# Debian's CPython packages do not have this issue.
+FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
@@ -40,7 +38,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 ARG INSTALL_BOTO3=true
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.12 && uv venv --python 3.12 .venv && uv sync --frozen --no-editable --managed-python $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
+    uv venv --python-preference only-system .venv && uv sync --frozen --no-editable $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -254,13 +252,11 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 ############################
 FROM base-image AS source
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 FROM base-image-minimal AS source-minimal
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
