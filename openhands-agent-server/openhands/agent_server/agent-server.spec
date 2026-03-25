@@ -5,7 +5,10 @@ PyInstaller spec for OpenHands Agent Server with PEP 420 (implicit namespace) la
 
 from pathlib import Path
 import os
+import shutil
 import site
+import struct
+import tempfile
 from PyInstaller.utils.hooks import (
     collect_submodules,
     collect_data_files,
@@ -131,6 +134,58 @@ a = Analysis(
 # Remove problematic system libraries that should use host versions
 # This prevents bundling incompatible libgcc_s.so.1 that lacks GCC_14.0 symbols
 a.binaries = [x for x in a.binaries if not x[0].startswith('libgcc_s.so')]
+
+
+def _clear_elf_execstack(filepath):
+    """Clear the PF_X flag from PT_GNU_STACK in a 64-bit ELF binary.
+
+    Some builds of libpython set PT_GNU_STACK to RWX (executable stack).
+    Containers with seccomp restrictions (e.g. GitHub Actions Docker-in-Docker)
+    reject dlopen() on such libraries with:
+      "cannot enable executable stack as shared object requires: Invalid argument"
+
+    This function patches the flag in-place so the bundled library loads
+    without requiring an executable stack.
+    """
+    PT_GNU_STACK = 0x6474E551
+    PF_X = 0x1
+    with open(filepath, "r+b") as f:
+        if f.read(4) != b"\x7fELF":
+            return False
+        ei_class = struct.unpack("B", f.read(1))[0]
+        if ei_class != 2:  # 64-bit only
+            return False
+        f.seek(32)
+        e_phoff = struct.unpack("<Q", f.read(8))[0]
+        f.seek(54)
+        e_phentsize = struct.unpack("<H", f.read(2))[0]
+        e_phnum = struct.unpack("<H", f.read(2))[0]
+        for i in range(e_phnum):
+            hdr_off = e_phoff + i * e_phentsize
+            f.seek(hdr_off)
+            p_type = struct.unpack("<I", f.read(4))[0]
+            if p_type == PT_GNU_STACK:
+                p_flags = struct.unpack("<I", f.read(4))[0]
+                if p_flags & PF_X:
+                    f.seek(hdr_off + 4)
+                    f.write(struct.pack("<I", p_flags & ~PF_X))
+                    return True
+                break
+    return False
+
+
+# Clear executable stack from bundled libpython so the binary works inside
+# Docker containers with seccomp restrictions (see _clear_elf_execstack).
+_fixup_dir = tempfile.mkdtemp(prefix="pyi_execstack_fix_")
+_patched = []
+for _i, (_name, _src, _tc) in enumerate(a.binaries):
+    if "libpython" in _name:
+        _dst = os.path.join(_fixup_dir, os.path.basename(_src))
+        shutil.copy2(_src, _dst)
+        if _clear_elf_execstack(_dst):
+            print(f"Cleared executable stack flag: {_name}")
+            _patched.append(_i)
+            a.binaries[_i] = (_name, _dst, _tc)
 
 pyz = PYZ(a.pure)
 
