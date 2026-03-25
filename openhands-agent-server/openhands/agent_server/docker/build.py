@@ -405,10 +405,7 @@ class BuildOptions(BaseModel):
     )
     extra_build_args: dict[str, str] = Field(
         default_factory=dict,
-        description=(
-            "Additional Docker build args to pass to buildx. "
-            "For example, {'INSTALL_ACP': 'false'} to skip ACP installation."
-        ),
+        description="Additional Docker build args to pass to buildx.",
     )
 
     @property
