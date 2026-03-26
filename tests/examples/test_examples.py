@@ -54,6 +54,9 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/35_subscription_login.py",
     # Requires interactive input() which fails in CI with EOFError
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
+    # Cloud credential sharing relies on SaaS account config; not yet
+    # stable in CI (ConversationRunError since introduction).
+    "examples/02_remote_agent_server/10_cloud_workspace_share_credentials.py",
 }
 
 
