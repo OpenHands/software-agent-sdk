@@ -72,10 +72,10 @@ class View(BaseModel):
         else:
             raise ValueError(f"Invalid key type: {type(key)}")
 
-    @staticmethod
     def enforce_properties(
-        current_view_events: list[LLMConvertibleEvent], all_events: Sequence[Event]
-    ) -> list[LLMConvertibleEvent]:
+        self,
+        all_events: Sequence[Event],
+    ) -> None:
         """Enforce all properties on the list of current view events.
 
         Repeatedly applies each property's enforcement mechanism until the list of view
@@ -86,21 +86,26 @@ class View(BaseModel):
         enforced a warning is logged.
         """
         for property in ALL_PROPERTIES:
-            events_to_forget = property.enforce(current_view_events, all_events)
+            events_to_forget = property.enforce(self.events, all_events)
             if events_to_forget:
                 logger.warning(
                     f"Property {property.__class__} enforced, "
                     f"{len(events_to_forget)} events dropped."
                 )
-                return View.enforce_properties(
-                    [
-                        event
-                        for event in current_view_events
-                        if event.id not in events_to_forget
-                    ],
-                    all_events,
-                )
-        return current_view_events
+
+                self.events = [
+                    event for event in self.events if event.id not in events_to_forget
+                ]
+                break
+
+        # If we get all the way through the loop without hitting a break, that means no
+        # properties needed to be enforced and we can keep the view as-is.
+        else:
+            return
+
+        # If we did hit a break in the loop, a property applied and now we need to check
+        # all the properties again to see if any are unblocked.
+        self.enforce_properties(all_events)
 
     def append_event(self, event: Event) -> None:
         """Append an event to the end of the view, applying any condensation semantics
@@ -147,9 +152,5 @@ class View(BaseModel):
         for event in events:
             result.append_event(event)
 
-        output = View.enforce_properties(result.events, events)
-
-        return View(
-            events=output,
-            unhandled_condensation_request=result.unhandled_condensation_request,
-        )
+        result.enforce_properties(events)
+        return result
