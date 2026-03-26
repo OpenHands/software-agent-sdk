@@ -147,7 +147,7 @@ consult each relevant package-level AGENTS.md.
 
 
 
-- `scripts/benchmark_skill_relevance.py` benchmarks skill discovery by copying selected `OpenHands/extensions` skills into a temporary `.claude/skills` workspace and comparing the standard `Agent` with `ACPAgent`.
+- `scripts/benchmark_skill_relevance.py` benchmarks skill discovery by copying selected `OpenHands/extensions` skills into a temporary `.claude/skills` workspace and comparing the standard `Agent` with `ACPAgent`; it defaults to a `natural` prompt style that mirrors plain user requests and also supports a more scaffolded `guided` mode.
 - When running ACP benchmarks locally, `LLM_API_KEY` and `LLM_MODEL` are required; the script defaults `ANTHROPIC_BASE_URL` to `https://llm-proxy.app.all-hands.dev/` when `LLM_BASE_URL` is unset so Claude ACP can route through the All-Hands proxy.
 
 </DEV_SETUP>

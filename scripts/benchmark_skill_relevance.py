@@ -43,124 +43,97 @@ PROMPT_CASES: list[PromptCase] = [
     ),
     PromptCase(
         skill_name="docker",
-        prompt=(
-            "Containerize this Python app with Docker and explain the image strategy."
-        ),
+        prompt="Help me package this Python app into a Docker image.",
     ),
     PromptCase(
         skill_name="kubernetes",
-        prompt=(
-            "Set up a local Kubernetes cluster with KIND and deploy a sample service."
-        ),
+        prompt="I want to try this service on a tiny local Kubernetes cluster.",
     ),
     PromptCase(
         skill_name="datadog",
-        prompt=(
-            "Investigate a Datadog alert about elevated API latency in production."
-        ),
+        prompt="Can you help me investigate a Datadog latency alert?",
     ),
     PromptCase(
         skill_name="github",
         prompt=(
-            "Use GitHub to inspect a pull request and summarize the failing checks."
+            "Take a look at the failing pull request on GitHub and tell me "
+            "what's wrong."
         ),
     ),
     PromptCase(
         skill_name="gitlab",
-        prompt=(
-            "Prepare a GitLab merge request for the current branch and explain "
-            "the API flow."
-        ),
+        prompt="Can you put together a merge request for this branch in GitLab?",
     ),
     PromptCase(
         skill_name="linear",
         prompt=(
-            "Create a Linear issue for a regression and capture reproduction steps."
+            "Please file a Linear ticket for this regression with reproduction steps."
         ),
     ),
     PromptCase(
         skill_name="notion",
-        prompt=(
-            "Create a Notion page documenting the release checklist for this project."
-        ),
+        prompt="Write up our release checklist in Notion.",
     ),
     PromptCase(
         skill_name="discord",
-        prompt=("Build a Discord slash command that reports the current server stats."),
+        prompt="Build a Discord slash command that shows the current server stats.",
     ),
     PromptCase(
         skill_name="ssh",
-        prompt=(
-            "Connect to a remote Linux host with SSH and inspect the application logs."
-        ),
+        prompt="SSH into the Linux host and check the app logs for me.",
     ),
     PromptCase(
         skill_name="uv",
-        prompt=(
-            "Set up this Python project with uv and sync the development dependencies."
-        ),
+        prompt="Set this Python project up with uv and get the dependencies synced.",
     ),
     PromptCase(
         skill_name="jupyter",
-        prompt="Clean up this Jupyter notebook and run all cells in order.",
+        prompt="Please clean up this notebook and run the cells in order.",
     ),
     PromptCase(
         skill_name="pdflatex",
-        prompt=(
-            "Compile this LaTeX paper into a PDF with pdflatex and report any errors."
-        ),
+        prompt="Turn this LaTeX paper into a PDF and tell me what breaks.",
     ),
     PromptCase(
         skill_name="vercel",
-        prompt=(
-            "Deploy this web app to Vercel and explain how preview deployments work."
-        ),
+        prompt="Can you get this web app deployed on Vercel?",
     ),
     PromptCase(
         skill_name="releasenotes",
-        prompt="Generate release notes from git history since the last release tag.",
+        prompt="Please draft release notes since our last release tag.",
     ),
     PromptCase(
         skill_name="security",
-        prompt=(
-            "Review this authentication flow for security issues and risky assumptions."
-        ),
+        prompt="Give this authentication flow a security review.",
     ),
     PromptCase(
         skill_name="code-review",
-        prompt=(
-            "Perform a structured code review of this patch for style and "
-            "security concerns."
-        ),
+        prompt="Give me a careful code review of this patch.",
     ),
     PromptCase(
         skill_name="skill-creator",
-        prompt="Help me create a new skill for generating database migration plans.",
+        prompt="Help me design a reusable skill for database migration plans.",
     ),
     PromptCase(
         skill_name="readiness-report",
-        prompt=(
-            "Generate a readiness report for how well this repo supports "
-            "autonomous AI coding."
-        ),
+        prompt="How ready is this repo for autonomous coding agents?",
     ),
     PromptCase(
         skill_name="openhands-api",
-        prompt=(
-            "Show how to automate starting a fresh OpenHands Cloud "
-            "conversation via API."
-        ),
+        prompt="Show me how to start a fresh OpenHands Cloud conversation from code.",
     ),
 ]
 
-BENCHMARK_SUFFIX = (
+GUIDED_BENCHMARK_SUFFIX = (
     "\n\nBefore you answer, inspect any relevant guidance files from the "
     "workspace. Then briefly explain your first step and stop there."
 )
 
 
-def compose_benchmark_prompt(case: PromptCase) -> str:
-    return case.prompt + BENCHMARK_SUFFIX
+def compose_benchmark_prompt(case: PromptCase, prompt_style: str) -> str:
+    if prompt_style == "guided":
+        return case.prompt + GUIDED_BENCHMARK_SUFFIX
+    return case.prompt
 
 
 def parse_args() -> argparse.Namespace:
@@ -200,6 +173,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Conversation iteration cap for the standard OpenHands agent.",
+    )
+    parser.add_argument(
+        "--prompt-style",
+        choices=("natural", "guided"),
+        default="natural",
+        help=(
+            "Prompt style for the benchmark. 'natural' uses plain user requests "
+            "to mirror the original skill-triggering issue; 'guided' appends an "
+            "instruction to inspect relevant guidance files."
+        ),
     )
     parser.add_argument(
         "--acp-model",
@@ -354,6 +337,8 @@ def extract_non_prompt_events(events: list[dict[str, Any]]) -> list[dict[str, An
 def analyze_case(
     *,
     case: PromptCase,
+    benchmark_prompt: str,
+    prompt_style: str,
     event_payloads: list[dict[str, Any]],
     skill_path: Path,
     elapsed_seconds: float,
@@ -406,7 +391,8 @@ def analyze_case(
     return {
         "skill_name": case.skill_name,
         "prompt": case.prompt,
-        "benchmark_prompt": compose_benchmark_prompt(case),
+        "benchmark_prompt": benchmark_prompt,
+        "prompt_style": prompt_style,
         "skill_path": skill_path_str,
         "activated_skills": activated,
         "suggested": suggested,
@@ -435,6 +421,7 @@ def run_case(
     else:
         raise ValueError(f"Unsupported agent kind: {agent_kind}")
 
+    benchmark_prompt = compose_benchmark_prompt(case, args.prompt_style)
     error: str | None = None
     conversation = Conversation(
         agent=agent,
@@ -444,7 +431,7 @@ def run_case(
     )
     start = time.monotonic()
     try:
-        conversation.send_message(compose_benchmark_prompt(case))
+        conversation.send_message(benchmark_prompt)
         conversation.run()
     except Exception as exc:  # noqa: BLE001
         error = repr(exc)
@@ -459,6 +446,8 @@ def run_case(
     skill_path = skills_dir / case.skill_name / "SKILL.md"
     result = analyze_case(
         case=case,
+        benchmark_prompt=benchmark_prompt,
+        prompt_style=args.prompt_style,
         event_payloads=event_payloads,
         skill_path=skill_path,
         elapsed_seconds=elapsed_seconds,
@@ -505,8 +494,13 @@ def summarize_agent_results(
     }
 
 
-def render_markdown_report(agent_summaries: list[dict[str, Any]]) -> str:
+def render_markdown_report(
+    agent_summaries: list[dict[str, Any]],
+    prompt_style: str,
+) -> str:
     lines = ["# Skill relevance benchmark", ""]
+    lines.append(f"Prompt style: `{prompt_style}`")
+    lines.append("")
     lines.append("## Summary")
     lines.append("")
     lines.append("| Agent | Accessed | Suggested | Total | Access rate |")
@@ -538,10 +532,12 @@ def render_markdown_report(agent_summaries: list[dict[str, Any]]) -> str:
 def write_summary(
     output_dir: Path,
     prompt_cases: list[PromptCase],
+    prompt_style: str,
     agent_summaries: list[dict[str, Any]],
 ) -> None:
     summary = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "prompt_style": prompt_style,
         "prompt_cases": [asdict(case) for case in prompt_cases],
         "agents": agent_summaries,
     }
@@ -549,7 +545,9 @@ def write_summary(
     (output_dir / "comparison.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False)
     )
-    (output_dir / "comparison.md").write_text(render_markdown_report(agent_summaries))
+    (output_dir / "comparison.md").write_text(
+        render_markdown_report(agent_summaries, prompt_style)
+    )
 
 
 def get_agent_kinds(agent_arg: str) -> list[str]:
@@ -587,7 +585,7 @@ def main() -> None:
             write_case_artifact(output_dir, result)
             agent_summary = summarize_agent_results(agent_kind, case_results)
             partial_summaries = [*agent_summaries, agent_summary]
-            write_summary(output_dir, cases, partial_summaries)
+            write_summary(output_dir, cases, args.prompt_style, partial_summaries)
             log(
                 f"[{agent_kind}] {case.skill_name}: "
                 f"accessed={result['skill_accessed']} "
@@ -595,7 +593,7 @@ def main() -> None:
                 f"reasons={result['reasons']}"
             )
         agent_summaries.append(summarize_agent_results(agent_kind, case_results))
-        write_summary(output_dir, cases, agent_summaries)
+        write_summary(output_dir, cases, args.prompt_style, agent_summaries)
         log(f"Completed benchmark for {agent_kind}")
 
     log(f"Wrote benchmark comparison to {output_dir}")
