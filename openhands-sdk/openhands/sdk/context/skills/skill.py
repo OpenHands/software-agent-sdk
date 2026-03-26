@@ -663,6 +663,7 @@ class Skill(BaseModel):
         if not self.commands and not extra_vars:
             return self.content
 
+        # Lazy import to avoid circular dependency: skill -> execute -> types -> skill
         from openhands.sdk.context.skills.execute import render_content_with_commands
 
         return render_content_with_commands(

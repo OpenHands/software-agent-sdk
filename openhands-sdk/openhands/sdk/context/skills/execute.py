@@ -35,8 +35,9 @@ def _execute_command(spec: CommandSpec, working_dir: Path | None = None) -> str:
                 spec, f"Command exited with code {result.returncode}: {result.stderr}"
             )
         output = result.stdout.strip()
-        if len(output) > MAX_OUTPUT_SIZE:
-            output = output[:MAX_OUTPUT_SIZE] + "\n... [output truncated]"
+        if len(output.encode()) > MAX_OUTPUT_SIZE:
+            output = output.encode()[:MAX_OUTPUT_SIZE].decode("utf-8", errors="ignore")
+            output += "\n... [output truncated]"
         return output
 
     except subprocess.TimeoutExpired:
@@ -47,9 +48,9 @@ def _execute_command(spec: CommandSpec, working_dir: Path | None = None) -> str:
 
 def _handle_error(spec: CommandSpec, message: str) -> str:
     """Handle command execution error based on on_error setting."""
-    logger.warning("Skill command '%s' failed: %s", spec.name, message)
     if spec.on_error == "fail":
         raise SkillError(message)
+    logger.warning("Skill command '%s' failed: %s", spec.name, message)
     if spec.on_error == "empty":
         return ""
     return f"[Error: {message}]"
