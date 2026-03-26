@@ -271,7 +271,7 @@ jobs:
 
             - name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})
               id: build
-              uses: docker/build-push-action@v6
+              uses: docker/build-push-action@v7
               with:
                   context: ${{ steps.prep.outputs.build_context }}
                   file: ${{ steps.prep.outputs.dockerfile }}
