@@ -224,8 +224,8 @@ async def test_websocket_unsubscribe_in_finally_when_no_disconnect(
 
         from openhands.agent_server.sockets import events_socket
 
-        # ConnectionError should be caught gracefully (like WebSocketDisconnect)
-        # and the function should return normally, not raise
+        # ConnectionError is caught gracefully (like WebSocketDisconnect)
+        # and the function returns normally
         await events_socket(
             sample_conversation_id, mock_websocket, session_api_key=None
         )
