@@ -7,7 +7,6 @@ from openhands.sdk.event.condenser import (
     CondensationSummaryEvent,
 )
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-from openhands.sdk.event.llm_convertible import MessageEvent
 from tests.sdk.context.view.conftest import (
     create_action_event,
     create_observation_event,
