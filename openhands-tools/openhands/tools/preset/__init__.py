@@ -21,7 +21,9 @@ Notes:
 from .default import get_default_agent, register_builtins_agents
 from .gemini import get_gemini_agent, get_gemini_tools
 from .gpt5 import get_gpt5_agent
+from .nemotron import get_nemotron_agent, get_nemotron_tools
 from .planning import get_planning_agent
+from .qwen import get_qwen_agent, get_qwen_tools
 
 
 __all__ = [
@@ -29,6 +31,10 @@ __all__ = [
     "get_gemini_agent",
     "get_gemini_tools",
     "get_gpt5_agent",
+    "get_nemotron_agent",
+    "get_nemotron_tools",
     "get_planning_agent",
+    "get_qwen_agent",
+    "get_qwen_tools",
     "register_builtins_agents",
 ]

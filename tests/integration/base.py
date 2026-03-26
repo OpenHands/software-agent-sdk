@@ -29,7 +29,7 @@ from tests.integration.early_stopper import EarlyStopperBase, EarlyStopResult
 
 
 # Tool preset type for selecting which file editing toolset to use
-ToolPresetType = Literal["default", "gemini", "gpt5", "planning"]
+ToolPresetType = Literal["default", "gemini", "gpt5", "nemotron", "planning", "qwen"]
 
 
 def get_tools_for_preset(
@@ -38,7 +38,8 @@ def get_tools_for_preset(
     """Get the list of tools for the given preset.
 
     Args:
-        preset: The tool preset to use (default, gemini, gpt5, or planning).
+        preset: The tool preset to use (default, gemini, gpt5, nemotron,
+            planning, qwen).
         enable_browser: Whether to include browser tools.
 
     Returns:
@@ -53,11 +54,19 @@ def get_tools_for_preset(
             from openhands.tools.preset.gpt5 import get_gpt5_tools
 
             return get_gpt5_tools(enable_browser=enable_browser)
+        case "nemotron":
+            from openhands.tools.preset.nemotron import get_nemotron_tools
+
+            return get_nemotron_tools(enable_browser=enable_browser)
         case "planning":
             from openhands.tools.preset.planning import get_planning_tools
 
             # Planning preset is read-only and doesn't support browser tools
             return get_planning_tools()
+        case "qwen":
+            from openhands.tools.preset.qwen import get_qwen_tools
+
+            return get_qwen_tools(enable_browser=enable_browser)
         case "default":
             from openhands.tools.preset.default import get_default_tools
 

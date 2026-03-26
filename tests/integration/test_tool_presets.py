@@ -59,6 +59,19 @@ def test_get_tools_for_preset_gpt5():
     assert "file_editor" not in tool_names
 
 
+def test_get_tools_for_preset_nemotron():
+    """Test that nemotron preset returns Anthropic-compatible tools."""
+    tools = get_tools_for_preset("nemotron", enable_browser=False)
+    tool_names = {t.name for t in tools}
+
+    assert "bash" in tool_names
+    assert "str_replace" in tool_names
+    assert "task_tracker" in tool_names
+    # Default terminal and file_editor should NOT be present
+    assert "terminal" not in tool_names
+    assert "file_editor" not in tool_names
+
+
 def test_get_tools_for_preset_planning():
     """Test that planning preset returns read-only tools."""
     tools = get_tools_for_preset("planning", enable_browser=False)
@@ -73,6 +86,19 @@ def test_get_tools_for_preset_planning():
     assert "browser_navigate" not in tool_names
 
 
+def test_get_tools_for_preset_qwen():
+    """Test that qwen preset returns Anthropic-compatible tools."""
+    tools = get_tools_for_preset("qwen", enable_browser=False)
+    tool_names = {t.name for t in tools}
+
+    assert "bash" in tool_names
+    assert "str_replace" in tool_names
+    assert "task_tracker" in tool_names
+    # Default terminal and file_editor should NOT be present
+    assert "terminal" not in tool_names
+    assert "file_editor" not in tool_names
+
+
 def test_get_tools_for_preset_invalid():
     """Test that invalid preset raises ValueError."""
     with pytest.raises(ValueError, match="Unknown `preset` parameter"):
@@ -83,7 +109,14 @@ def test_get_tools_for_preset_invalid():
 def test_tool_preset_type_literal_values():
     """Verify ToolPresetType includes all expected values."""
     # This is a compile-time check but we document expected values here
-    valid_presets: list[ToolPresetType] = ["default", "gemini", "gpt5", "planning"]
+    valid_presets: list[ToolPresetType] = [
+        "default",
+        "gemini",
+        "gpt5",
+        "nemotron",
+        "planning",
+        "qwen",
+    ]
     for preset in valid_presets:
         # Should not raise
         tools = get_tools_for_preset(preset, enable_browser=False)
@@ -104,12 +137,19 @@ def test_run_infer_argparse_accepts_all_tool_presets():
     parser.add_argument(
         "--tool-preset",
         type=str,
-        choices=["default", "gemini", "gpt5", "planning"],
+        choices=["default", "gemini", "gpt5", "nemotron", "planning", "qwen"],
         default="default",
     )
 
     # Test each valid preset value
-    valid_presets: list[ToolPresetType] = ["default", "gemini", "gpt5", "planning"]
+    valid_presets: list[ToolPresetType] = [
+        "default",
+        "gemini",
+        "gpt5",
+        "nemotron",
+        "planning",
+        "qwen",
+    ]
 
     for preset in valid_presets:
         # This should not raise an error

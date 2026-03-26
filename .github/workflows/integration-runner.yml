@@ -33,9 +33,9 @@ on:
                 type: string
             tool_preset:
                 description: >-
-                    Tool preset for file editing (default, gemini, gpt5, planning).
+                    Tool preset for file editing (default, gemini, gpt5, nemotron, planning, qwen).
                     'default' uses FileEditorTool, 'gemini' uses read_file/write_file/edit/list_directory,
-                    'gpt5' uses apply_patch tool.
+                    'gpt5' uses apply_patch tool, 'nemotron' and 'qwen' use bash/str_replace (Anthropic schema).
                 required: false
                 default: default
                 type: choice
@@ -43,7 +43,9 @@ on:
                     - default
                     - gemini
                     - gpt5
+                    - nemotron
                     - planning
+                    - qwen
     schedule:
         - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
