@@ -14,6 +14,7 @@ from rich.text import Text
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -233,6 +234,11 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 
 class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
     """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        # Pane-level isolation is handled internally by TmuxPanePool;
+        # no external serialization needed.
+        return DeclaredResources(keys=(), declared=True)
 
     @classmethod
     def create(

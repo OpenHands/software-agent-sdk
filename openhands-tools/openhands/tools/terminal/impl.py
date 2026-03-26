@@ -12,8 +12,16 @@ from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
 )
-from openhands.tools.terminal.terminal.factory import create_terminal_session
+from openhands.tools.terminal.terminal.factory import (
+    _is_tmux_available,
+    create_terminal_session,
+)
 from openhands.tools.terminal.terminal.terminal_session import TerminalSession
+from openhands.tools.terminal.terminal.tmux_pane_pool import (
+    DEFAULT_MAX_PANES,
+    TmuxPanePool,
+)
+from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
 logger = get_logger(__name__)
@@ -31,6 +39,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         shell_path: str | None = None,
         full_output_save_dir: str | None = None,
+        max_panes: int = DEFAULT_MAX_PANES,
     ):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
@@ -45,25 +54,66 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                        If None, will auto-detect bash from PATH.
             full_output_save_dir: Path to directory to save full output
                                   logs and files, used when truncation is needed.
+            max_panes: Maximum number of concurrent panes in pool mode.
         """
         self.shell_path = shell_path
-        self.session = create_terminal_session(
-            work_dir=working_dir,
-            username=username,
-            no_change_timeout_seconds=no_change_timeout_seconds,
-            terminal_type=terminal_type,
-            shell_path=shell_path,
-        )
-        self.session.initialize()
+        self._working_dir = working_dir
+        self._username = username
+        self._no_change_timeout_seconds = no_change_timeout_seconds
+        self._terminal_type = terminal_type
         self.full_output_save_dir: str | None = full_output_save_dir
-        logger.info(
-            f"TerminalExecutor initialized with working_dir: {working_dir}, "
-            f"username: {username}, "
-            f"terminal_type: {terminal_type or self.session.__class__.__name__}"
-        )
+
+        # Pool mode: use TmuxPanePool for parallel execution
+        self._pool: TmuxPanePool | None = None
+        self._sessions: dict[int, TerminalSession] = {}
+
+        use_pool = terminal_type in (None, "tmux") and _is_tmux_available()
+
+        if use_pool:
+            self._pool = TmuxPanePool(working_dir, username, max_panes=max_panes)
+            self._pool.initialize()
+            # Create a primary session for backwards-compat property access
+            primary_terminal = self._pool.checkout()
+            self.session = self._wrap_session(primary_terminal)
+            self._pool.checkin(primary_terminal)
+            logger.info(
+                f"TerminalExecutor initialized (pool mode) "
+                f"working_dir: {working_dir}, username: {username}, "
+                f"max_panes: {max_panes}"
+            )
+        else:
+            self.session = create_terminal_session(
+                work_dir=working_dir,
+                username=username,
+                no_change_timeout_seconds=no_change_timeout_seconds,
+                terminal_type=terminal_type,
+                shell_path=shell_path,
+            )
+            self.session.initialize()
+            logger.info(
+                f"TerminalExecutor initialized with "
+                f"working_dir: {working_dir}, "
+                f"username: {username}, "
+                f"terminal_type: "
+                f"{terminal_type or self.session.__class__.__name__}"
+            )
+
+    def _wrap_session(self, terminal: TmuxTerminal) -> TerminalSession:
+        """Get or create a TerminalSession for a pooled TmuxTerminal."""
+        pane_id = id(terminal)
+        if pane_id not in self._sessions:
+            session = TerminalSession(terminal, self._no_change_timeout_seconds)
+            # The pool already initialized the terminal — skip
+            # session.initialize() which would create a new tmux session.
+            session._initialized = True
+            self._sessions[pane_id] = session
+        return self._sessions[pane_id]
 
     def _export_envs(
-        self, action: TerminalAction, conversation: "LocalConversation | None" = None
+        self,
+        action: TerminalAction,
+        conversation: "LocalConversation | None" = None,
+        session: TerminalSession | None = None,
     ) -> None:
         if not action.command.strip():
             return
@@ -90,8 +140,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
         logger.debug(f"Exporting {len(env_vars)} environment variables before command")
 
+        target = session or self.session
         # Execute the export command separately to persist env in the session
-        _ = self.session.execute(
+        _ = target.execute(
             TerminalAction(
                 command=exports_cmd,
                 is_input=False,
@@ -105,22 +156,37 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         Returns:
             TerminalObservation with reset confirmation message
         """
-        original_work_dir = self.session.work_dir
-        original_username = self.session.username
-        original_no_change_timeout = self.session.no_change_timeout_seconds
+        if self._pool is not None:
+            # Pool mode: close and recreate the pool
+            self._pool.close()
+            self._sessions.clear()
+            self._pool = TmuxPanePool(
+                self._working_dir,
+                self._username,
+                max_panes=self._pool.max_panes,
+            )
+            self._pool.initialize()
+            # Recreate primary session reference
+            primary = self._pool.checkout()
+            self.session = self._wrap_session(primary)
+            self._pool.checkin(primary)
+        else:
+            original_work_dir = self.session.work_dir
+            original_username = self.session.username
+            original_no_change_timeout = self.session.no_change_timeout_seconds
 
-        self.session.close()
-        self.session = create_terminal_session(
-            work_dir=original_work_dir,
-            username=original_username,
-            no_change_timeout_seconds=original_no_change_timeout,
-            terminal_type=None,  # Let it auto-detect like before
-            shell_path=self.shell_path,
-        )
-        self.session.initialize()
+            self.session.close()
+            self.session = create_terminal_session(
+                work_dir=original_work_dir,
+                username=original_username,
+                no_change_timeout_seconds=original_no_change_timeout,
+                terminal_type=None,
+                shell_path=self.shell_path,
+            )
+            self.session.initialize()
 
         logger.info(
-            f"Terminal session reset successfully with working_dir: {original_work_dir}"
+            f"Terminal session reset successfully with working_dir: {self._working_dir}"
         )
 
         return TerminalObservation.from_text(
@@ -132,29 +198,25 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             exit_code=0,
         )
 
-    def __call__(
+    def _execute_on_session(
         self,
+        session: TerminalSession,
         action: TerminalAction,
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
-        # Validate field combinations
-        if action.reset and action.is_input:
-            raise ValueError("Cannot use reset=True with is_input=True")
-
-        if action.reset or self.session._closed:
+        """Run *action* on the given *session*, handling reset/envs/masking."""
+        if action.reset or session._closed:
             reset_result = self.reset()
 
-            # Handle command execution after reset
             if action.command.strip():
                 command_action = TerminalAction(
                     command=action.command,
                     timeout=action.timeout,
-                    is_input=False,  # is_input validated to be False when reset=True
+                    is_input=False,
                 )
-                self._export_envs(command_action, conversation)
-                command_result = self.session.execute(command_action)
+                self._export_envs(command_action, conversation, session=session)
+                command_result = session.execute(command_action)
 
-                # Extract text from content
                 reset_text = reset_result.text
                 command_text = command_result.text
 
@@ -167,12 +229,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                     }
                 )
             else:
-                # Reset only, no command to execute
                 observation = reset_result
         else:
-            # If env keys detected, export env values to bash as a separate action first
-            self._export_envs(action, conversation)
-            observation = self.session.execute(action)
+            self._export_envs(action, conversation, session=session)
+            observation = session.execute(action)
 
         # Apply automatic secrets masking
         content_text = observation.text
@@ -195,7 +255,25 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
         return observation
 
+    def __call__(
+        self,
+        action: TerminalAction,
+        conversation: "LocalConversation | None" = None,
+    ) -> TerminalObservation:
+        if action.reset and action.is_input:
+            raise ValueError("Cannot use reset=True with is_input=True")
+
+        if self._pool is not None:
+            with self._pool.pane() as terminal:
+                session = self._wrap_session(terminal)
+                return self._execute_on_session(session, action, conversation)
+        else:
+            return self._execute_on_session(self.session, action, conversation)
+
     def close(self) -> None:
         """Close the terminal session and clean up resources."""
-        if hasattr(self, "session"):
+        if self._pool is not None:
+            self._pool.close()
+            self._sessions.clear()
+        elif hasattr(self, "session"):
             self.session.close()
