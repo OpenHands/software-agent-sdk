@@ -208,6 +208,11 @@ async def events_socket(
             except (WebSocketDisconnect, ConnectionError):
                 # Exit the loop when websocket disconnects
                 logger.info(f"Event websocket disconnected: {conversation_id}")
+                try:
+                    await websocket.close(code=1000, reason="Connection closed")
+                except Exception:
+                    # WebSocket may already be closed or in inconsistent state
+                    logger.debug("WebSocket close failed (may already be closed)")
                 return
             except Exception as e:
                 # Something went wrong - the conversation may be broken
@@ -290,6 +295,11 @@ async def bash_events_socket(
             except (WebSocketDisconnect, ConnectionError):
                 # Exit the loop when websocket disconnects
                 logger.info("Bash websocket disconnected")
+                try:
+                    await websocket.close(code=1000, reason="Connection closed")
+                except Exception:
+                    # WebSocket may already be closed or in inconsistent state
+                    logger.debug("WebSocket close failed (may already be closed)")
                 return
             except Exception as e:
                 # Something went wrong - the conversation may be broken
