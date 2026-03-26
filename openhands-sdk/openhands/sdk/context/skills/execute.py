@@ -14,7 +14,8 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_OUTPUT_SIZE: Final[int] = 50 * 1024  # 50KB per command
+# 50KB per command
+MAX_OUTPUT_SIZE: Final[int] = 50 * 1024
 
 
 def _execute_command(spec: CommandSpec, working_dir: Path | None = None) -> str:
@@ -33,10 +34,10 @@ def _execute_command(spec: CommandSpec, working_dir: Path | None = None) -> str:
             return _handle_error(
                 spec, f"Command exited with code {result.returncode}: {result.stderr}"
             )
-        output = result.stdout
+        output = result.stdout.strip()
         if len(output) > MAX_OUTPUT_SIZE:
             output = output[:MAX_OUTPUT_SIZE] + "\n... [output truncated]"
-        return output.strip()
+        return output
 
     except subprocess.TimeoutExpired:
         return _handle_error(spec, f"Command timed out after {spec.timeout}s")
@@ -54,7 +55,7 @@ def _handle_error(spec: CommandSpec, message: str) -> str:
     return f"[Error: {message}]"
 
 
-def execute_commands(
+def _execute_commands(
     commands: list[CommandSpec],
     working_dir: Path | None = None,
 ) -> dict[str, str]:
@@ -68,25 +69,16 @@ def render_content_with_commands(
     working_dir: Path | None = None,
     extra_vars: dict[str, str] | None = None,
 ) -> str:
-    """Render skill content by executing commands and substituting variables.
-
-    Substitutes {{var_name}} patterns with command outputs or extra_vars.
-
-    Args:
-        content: Raw skill content with {{var}} placeholders.
-        commands: List of commands to execute.
-        working_dir: Directory to run commands in.
-        extra_vars: Additional variables for substitution.
-
-    Returns:
-        Content with variables substituted.
-    """
+    """Execute commands and substitute {{var_name}} patterns in content."""
     if not commands and not extra_vars:
         return content
 
     # Execute commands
-    variables = execute_commands(commands, working_dir) if commands else {}
+    variables = _execute_commands(commands, working_dir) if commands else {}
     if extra_vars:
+        collisions = set(variables) & set(extra_vars)
+        if collisions:
+            logger.warning("extra_vars overriding command outputs: %s", collisions)
         variables.update(extra_vars)
 
     if not variables:
