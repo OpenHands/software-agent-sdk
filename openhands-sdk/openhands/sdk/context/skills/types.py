@@ -1,6 +1,22 @@
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+class CommandSpec(BaseModel):
+    """Specification for a shell command to execute for dynamic context."""
+
+    name: str = Field(description="Variable name for template substitution")
+    command: str = Field(description="Shell command to execute")
+    timeout: float = Field(default=10.0, description="Timeout in seconds")
+    on_error: Literal["fail", "empty", "message"] = Field(
+        default="message",
+        description=(
+            "How to handle failures: 'fail' raises, 'empty' returns '', "
+            "'message' returns error description"
+        ),
+    )
 
 
 class InputMetadata(BaseModel):
