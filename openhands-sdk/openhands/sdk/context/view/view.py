@@ -144,7 +144,7 @@ class View(BaseModel):
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
         """
-        result: View = View(events=[])
+        result: View = View()
 
         # Generate the LLMConvertibleEvent objects the agent can send to the LLM by
         # adding them one at a time to the result view. This ensures condensations are
@@ -153,5 +153,8 @@ class View(BaseModel):
         for event in events:
             result.append_event(event)
 
+        # Once all the events are loaded enforce the relevant properties to ensure
+        # the construction was done properly.
         result.enforce_properties(events)
+
         return result
