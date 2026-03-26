@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
 from pydantic import Field
+from pydantic.json_schema import SkipJsonSchema
 from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
@@ -50,9 +51,12 @@ class TaskAction(Action):
         default=None,
         description="Task ID of the task to resume from.",
     )
-    max_turns: int | None = Field(
+    max_turns: SkipJsonSchema[int | None] = Field(
         default=None,
-        description="Maximum number of agentic turns before stopping.",
+        description="Deprecated: This field is ignored and will be removed "
+        "in version 2. Maximum iterations are now determined by "
+        "the agent definition or parent conversation.",
+        deprecated=True,
         ge=1,
     )
 

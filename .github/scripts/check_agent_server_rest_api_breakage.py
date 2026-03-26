@@ -25,11 +25,19 @@ Policies enforced:
      declare a scheduled removal version that has been reached by the current
      package version.
 
-3) No in-place contract breakage
+3) Additive response oneOf/anyOf expansion is allowed
+   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in response
+     schemas is a normal evolution for extensible event-stream APIs.  Clients MUST
+     handle unknown discriminator values gracefully (skip/ignore).
+   - oasdiff flags ``response-body-one-of-added`` and
+     ``response-property-one-of-added`` as ERR; this script downgrades them to
+     informational notices.
+
+4) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
-     operations fail the check. REST clients need 5 minor releases of runway, so
-     incompatible replacements must ship additively or behind a versioned contract
-     until the scheduled removal version.
+     operations or additive oneOf expansions fail the check. REST clients need 5
+     minor releases of runway, so incompatible replacements must ship additively or
+     behind a versioned contract until the scheduled removal version.
 
 If the baseline release schema can't be generated (e.g., missing tag / repo issues),
 the script emits a warning and exits successfully to avoid flaky CI.
@@ -410,11 +418,33 @@ def _validate_removed_operations(
     return errors
 
 
+# oasdiff rule IDs for additive oneOf/anyOf expansion in response schemas.
+# These are flagged as ERR by oasdiff but are expected evolution for extensible
+# discriminated-union APIs (e.g. the events endpoint).  We downgrade them to
+# informational notices so they don't block CI.
+_ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
+    {
+        "response-body-one-of-added",
+        "response-property-one-of-added",
+        # Keep the anyOf variants here too so that if oasdiff ever reports them
+        # as breakages, additive response-union expansion gets the same
+        # downgrade without further script changes.
+        "response-body-any-of-added",
+        "response-property-any-of-added",
+    }
+)
+
+
 def _split_breaking_changes(
     breaking_changes: list[dict],
-) -> tuple[list[dict], list[dict]]:
-    """Split oasdiff results into removals and all other breakages."""
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split oasdiff results into three buckets.
+
+    Returns:
+        (removed_operations, additive_response_oneof, other_breaking_changes)
+    """
     removed_operations: list[dict] = []
+    additive_response_oneof: list[dict] = []
     other_breaking_changes: list[dict] = []
 
     for change in breaking_changes:
@@ -431,9 +461,13 @@ def _split_breaking_changes(
             )
             continue
 
+        if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS:
+            additive_response_oneof.append(change)
+            continue
+
         other_breaking_changes.append(change)
 
-    return removed_operations, other_breaking_changes
+    return removed_operations, additive_response_oneof, other_breaking_changes
 
 
 def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
@@ -570,9 +604,11 @@ def main() -> int:
                 "in JSON format. There may be warnings only."
             )
     else:
-        removed_operations, other_breaking_changes = _split_breaking_changes(
-            breaking_changes
-        )
+        (
+            removed_operations,
+            additive_response_oneof,
+            other_breaking_changes,
+        ) = _split_breaking_changes(breaking_changes)
         removal_errors = _validate_removed_operations(
             removed_operations,
             prev_schema,
@@ -582,11 +618,22 @@ def main() -> int:
         for error in removal_errors:
             print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
 
+        if additive_response_oneof:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Additive oneOf/anyOf expansion detected in response schemas. "
+                "This is expected for extensible discriminated-union APIs and "
+                "does not break backward compatibility."
+            )
+            for item in additive_response_oneof:
+                print(f"  - {item.get('text', str(item))}")
+
         if other_breaking_changes:
             print(
                 "::error "
                 f"title={PYPI_DISTRIBUTION} REST API::Detected breaking REST API "
-                "changes other than removing previously-deprecated operations. "
+                "changes other than removing previously-deprecated operations "
+                "or additive response oneOf expansions. "
                 "REST contract changes must preserve compatibility for 5 minor "
                 "releases; keep the old contract available until its scheduled "
                 "removal version."
@@ -599,7 +646,8 @@ def main() -> int:
         if not (removal_errors or other_breaking_changes):
             print(
                 "Breaking changes are limited to previously-deprecated operations "
-                "whose scheduled removal versions have been reached."
+                "whose scheduled removal versions have been reached, and/or "
+                "additive response oneOf expansions."
             )
         else:
             return 1

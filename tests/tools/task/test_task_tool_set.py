@@ -17,7 +17,6 @@ def _task_tool_call(
     subagent_type: str = "test_agent",
     description: str | None = None,
     resume: str | None = None,
-    max_turns: int | None = None,
 ) -> Message:
     """Build a Message whose only tool call is the task tool."""
     args: dict = {
@@ -28,8 +27,6 @@ def _task_tool_call(
         args["description"] = description
     if resume is not None:
         args["resume"] = resume
-    if max_turns is not None:
-        args["max_turns"] = max_turns
 
     return Message(
         role="assistant",

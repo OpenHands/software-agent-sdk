@@ -187,6 +187,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         examples=[{"kind": "AgentFinishedCritic"}],
     )
 
+    tool_concurrency_limit: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of tool calls to execute concurrently within a single "
+            "agent step. Default is 1 (sequential). Values > 1 enable parallel "
+            "execution; concurrent tools share the conversation object, filesystem, "
+            "and working directory, so mutations to shared state may race."
+        ),
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -217,6 +228,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             The rendered system prompt template without dynamic context.
         """
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Auto-detect browser tools from the tool spec list
+        template_kwargs.setdefault(
+            "enable_browser",
+            any(t.name == "browser_tool_set" for t in self.tools),
+        )
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
