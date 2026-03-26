@@ -23,6 +23,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -336,7 +337,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     seed: int | None = Field(
         default=None, description="The seed to use for random number generation."
     )
-    # REMOVE_AT: 1.20.0 - Remove this field (REST API deprecation runway)
     safety_settings: list[dict[str, str]] | None = Field(
         default=None,
         deprecated=("Deprecated since v1.15.0 and scheduled for removal in v1.20.0."),
@@ -405,6 +405,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
+    @field_validator("safety_settings", mode="before")
+    @classmethod
+    def _warn_safety_settings_deprecated(
+        cls, v: list[dict[str, str]] | None
+    ) -> list[dict[str, str]] | None:
+        if v is not None:
+            warn_deprecated(
+                "LLM.safety_settings",
+                deprecated_in="1.15.0",
+                removed_in="1.20.0",
+                details="Safety settings are no longer applied.",
+            )
+        return v
+
     @field_validator("api_key", "aws_access_key_id", "aws_secret_access_key")
     @classmethod
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
