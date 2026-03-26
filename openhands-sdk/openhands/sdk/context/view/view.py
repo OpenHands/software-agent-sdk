@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from functools import cached_property
 from logging import getLogger
 from typing import overload
 
@@ -36,7 +35,7 @@ class View(BaseModel):
     def __len__(self) -> int:
         return len(self.events)
 
-    @cached_property
+    @property
     def manipulation_indices(self) -> ManipulationIndices:
         """The indices where the view events can be manipulated without violating the
         properties expected by LLM APIs.
@@ -84,6 +83,8 @@ class View(BaseModel):
         Since enforcement is intended as a fallback to inductively maintaining the
         properties via the associated manipulation indices, any time a property must be
         enforced a warning is logged.
+
+        Modifies the view in-place.
         """
         for property in ALL_PROPERTIES:
             events_to_forget = property.enforce(self.events, all_events)
