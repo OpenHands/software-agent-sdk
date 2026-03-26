@@ -140,7 +140,11 @@ Example — Multi-step exploration (good use of code-explorer):
 Example — Running tests (good use of bash-runner):
     subagent_type="bash-runner"
     prompt="Run: cd /workspace/django && python tests/runtests.py
-    utils_tests.test_dateformat -v 2. Report the full output."
+    utils_tests.test_dateformat -v 2. Provide a summary including
+    the total tests run, the final status, and a list of any
+    failing test names. For each failure, include the specific
+    cause or assertion error, but do not include the full stack
+    trace or the verbose setup/teardown output."
 """,
     "web researcher": """
 Example — Research information on a website (good use of web researcher):
