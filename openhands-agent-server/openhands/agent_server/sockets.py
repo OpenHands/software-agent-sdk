@@ -26,7 +26,7 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
-    AgentServerErrorEvent,
+    ServerErrorEvent,
     BashError,
     BashEventBase,
     ExecuteBashRequest,
@@ -208,7 +208,7 @@ async def events_socket(
             except Exception as e:
                 # Something went wrong - Tell the client
                 try:
-                    error_event = AgentServerErrorEvent(
+                    error_event = ServerErrorEvent(
                         source="environment",
                         code=e.__class__.__name__,
                         detail=str(e),

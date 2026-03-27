@@ -32,7 +32,7 @@ from openhands.sdk.workspace import LocalWorkspace
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
-class AgentServerErrorEvent(Event):
+class ServerErrorEvent(Event):
     """Event emitted by the agent server when a server-level error occurs.
 
     This event is used for errors that originate from the agent server itself,
