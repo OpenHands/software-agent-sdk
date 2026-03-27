@@ -217,8 +217,8 @@ async def events_socket(
                     )
                     await _send_event(error_event, websocket)
                 except Exception:
-                    # If the original excepiton was a runtime exception and the send failed
-                    # then it was the result of a socket close
+                    # Sending the error event to the client failed
+                    # set log level depending on whether original exception is likely a socket error
                     level = logging.DEBUG if isinstance(e, (WebSocketDisconnect, ConnectionError, RuntimeError)) else logging.ERROR
                     logger.log(level, 'error_in_subscription', exc_info=True, stack_info=True)
                     logger.info("Event websocket disconnected")
@@ -301,14 +301,7 @@ async def bash_events_socket(
                     # Sending the error event to the client failed
                     # set log level depending on whether original exception is likely a socket error
                     level = logging.DEBUG if isinstance(e, (WebSocketDisconnect, ConnectionError, RuntimeError)) else logging.ERROR
-                    logger.log(level, 'error_in_subscription', exc_info=True, stack_info=True)
-                    logger.info("Bash websocket disconnected")
-                    await _safe_close_websocket(websocket)
-                    return
-                
-
-                    # Sending failed - the socket may have been closed
-                    # Clean up and terminate loop
+                    logger.log(level, 'error_in_bash_subscription', exc_info=True, stack_info=True)
                     logger.info("Bash websocket disconnected")
                     await _safe_close_websocket(websocket)
                     return
