@@ -688,6 +688,10 @@ class ConversationService:
             )
             for webhook_spec in self.webhook_specs
         ]
+        logger.warning(
+            f"ConversationService.__aenter__: created {len(self._conversation_webhook_subscribers)} "
+            f"ConversationWebhookSubscribers with session_api_key={self.session_api_key!r}"
+        )
 
         return self
 
@@ -706,12 +710,20 @@ class ConversationService:
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
+        session_api_key = (
+            config.session_api_keys[0] if config.session_api_keys else None
+        )
+        logger.warning(
+            f"ConversationService.get_instance: "
+            f"session_api_keys={config.session_api_keys}, "
+            f"selected_session_api_key={session_api_key!r}, "
+            f"webhook_specs_count={len(config.webhooks)}, "
+            f"webhook_base_urls={[w.base_url for w in config.webhooks]}"
+        )
         return ConversationService(
             conversations_dir=config.conversations_path,
             webhook_specs=config.webhooks,
-            session_api_key=(
-                config.session_api_keys[0] if config.session_api_keys else None
-            ),
+            session_api_key=session_api_key,
             cipher=config.cipher,
         )
 
@@ -731,6 +743,10 @@ class ConversationService:
             await event_service.subscribe_to_events(
                 AutoTitleSubscriber(service=event_service)
             )
+        logger.warning(
+            f"_start_event_service: creating {len(self.webhook_specs)} WebhookSubscribers "
+            f"for conversation {stored.id} with session_api_key={self.session_api_key!r}"
+        )
         asyncio.gather(
             *[
                 event_service.subscribe_to_events(
@@ -843,6 +859,13 @@ class WebhookSubscriber(Subscriber):
         headers = self.spec.headers.copy()
         if self.session_api_key:
             headers["X-Session-API-Key"] = self.session_api_key
+        logger.warning(
+            f"WebhookSubscriber._post_events: "
+            f"session_api_key={self.session_api_key!r}, "
+            f"spec.headers={self.spec.headers}, "
+            f"final_headers={headers}, "
+            f"conversation_id={self.conversation_id}"
+        )
 
         # Convert events to serializable format
         event_data = [
@@ -917,6 +940,12 @@ class ConversationWebhookSubscriber:
         headers = self.spec.headers.copy()
         if self.session_api_key:
             headers["X-Session-API-Key"] = self.session_api_key
+        logger.warning(
+            f"ConversationWebhookSubscriber.post_conversation_info: "
+            f"session_api_key={self.session_api_key!r}, "
+            f"spec.headers={self.spec.headers}, "
+            f"final_headers={headers}"
+        )
 
         # Construct conversations URL
         conversations_url = f"{self.spec.base_url.rstrip('/')}/conversations"

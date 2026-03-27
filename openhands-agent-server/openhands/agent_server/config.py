@@ -24,10 +24,16 @@ def _default_session_api_keys():
     it is read automatically by the EnvParser and this function is never
     called.
     """
+    _logger.warning(
+        f"_default_session_api_keys called (V1 env var not found). "
+        f"V0 env var '{V0_SESSION_API_KEY_ENV}' present={V0_SESSION_API_KEY_ENV in os.environ}, "
+        f"value={os.getenv(V0_SESSION_API_KEY_ENV)!r}"
+    )
     result = []
     session_api_key = os.getenv(V0_SESSION_API_KEY_ENV)
     if session_api_key:
         result.append(session_api_key)
+    _logger.warning(f"_default_session_api_keys returning: {result}")
     return result
 
 
@@ -198,4 +204,9 @@ def get_default_config() -> Config:
         # Get the config from the environment variables
         _default_config = from_env(Config, ENVIRONMENT_VARIABLE_PREFIX)
         assert _default_config is not None
+        _logger.warning(
+            f"Config loaded: session_api_keys={_default_config.session_api_keys}, "
+            f"webhooks_count={len(_default_config.webhooks)}, "
+            f"webhook_base_urls={[w.base_url for w in _default_config.webhooks]}"
+        )
     return _default_config
