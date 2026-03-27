@@ -1,4 +1,6 @@
-"""Tests for OpenHandsCloudWorkspace.get_llm(), get_secrets(), and get_mcp_config() methods.
+"""Tests for OpenHandsCloudWorkspace settings methods.
+
+Tests for get_llm(), get_secrets(), and get_mcp_config().
 
 get_llm() returns a real LLM with the raw api_key from SaaS.
 get_secrets() returns LookupSecret references — raw values only flow
