@@ -26,10 +26,10 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
-    ServerErrorEvent,
     BashError,
     BashEventBase,
     ExecuteBashRequest,
+    ServerErrorEvent,
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event, Message
