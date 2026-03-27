@@ -103,7 +103,8 @@ When reviewing code, provide constructive feedback:
 
 ## Repository Memory
 - Programmatic settings live in `openhands-sdk/openhands/sdk/settings.py`. Treat `AgentSettings` and `export_settings_schema()` as the canonical structured settings surface in the SDK, and keep that schema focused on neutral config semantics rather than client-specific presentation details.
-- `SettingsFieldSchema.required` is derived from field nullability, not from whether Pydantic has a default. This keeps generated UIs from treating required settings like `llm.model` as optional just because the SDK provides a default.
+- `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
+- `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
 
 

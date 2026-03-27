@@ -33,9 +33,12 @@ def test_agent_settings_export_schema_groups_sections() -> None:
 
     # -- general section (top-level scalar fields) --
     general_fields = {f.key: f for f in sections["general"].fields}
-    assert "agent" in general_fields
+    assert set(general_fields) == {"agent", "tools", "mcp_config"}
     assert general_fields["agent"].default == "CodeActAgent"
     assert general_fields["agent"].prominence is SettingProminence.MAJOR
+    assert general_fields["tools"].value_type == "array"
+    assert general_fields["tools"].default == []
+    assert general_fields["tools"].prominence is SettingProminence.MAJOR
 
     # -- llm section --
     llm_fields = {f.key: f for f in sections["llm"].fields}
@@ -44,12 +47,10 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     }
     assert set(llm_fields) == expected_llm_keys
 
-    assert llm_fields["llm.model"].required is True
     assert llm_fields["llm.model"].value_type == "string"
     assert llm_fields["llm.model"].prominence is SettingProminence.CRITICAL
     assert llm_fields["llm.api_key"].label == "API Key"
     assert llm_fields["llm.api_key"].value_type == "string"
-    assert llm_fields["llm.api_key"].required is False
     assert llm_fields["llm.api_key"].secret is True
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL
     assert llm_fields["llm.base_url"].prominence is SettingProminence.CRITICAL
@@ -61,6 +62,8 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     llm_model_field_extra = LLM.model_fields["model"].json_schema_extra
     assert isinstance(llm_model_field_extra, dict)
     assert "openhands_settings" in llm_model_field_extra
+    schema_dump = schema.model_dump(mode="json")
+    assert "required" not in schema_dump["sections"][0]["fields"][0]
 
     assert llm_fields["llm.num_retries"].prominence is SettingProminence.MINOR
 

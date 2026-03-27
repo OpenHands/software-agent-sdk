@@ -50,7 +50,6 @@ class SettingsFieldSchema(BaseModel):
     section_label: str
     value_type: SettingsValueType
     default: Any = None
-    required: bool = False
     prominence: SettingProminence = SettingProminence.MINOR
     depends_on: list[str] = Field(default_factory=list)
     secret: bool = False
@@ -244,6 +243,12 @@ class AgentSettings(BaseModel):
     tools: list[Tool] = Field(
         default_factory=list,
         description="Tools available to the agent.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Tools",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
     )
     mcp_config: MCPConfig | None = Field(
         default=None,
@@ -445,7 +450,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         section_label=section_label,
                         value_type=_infer_value_type(nested_field.annotation),
                         default=_normalize_default(default_value),
-                        required=not _is_optional(nested_field.annotation),
                         prominence=(
                             metadata.prominence
                             if metadata is not None
@@ -483,7 +487,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 section_label=_GENERAL_SECTION_LABEL,
                 value_type=_infer_value_type(field.annotation),
                 default=_normalize_default(default_value),
-                required=not _is_optional(field.annotation),
                 prominence=metadata.prominence,
                 depends_on=list(metadata.depends_on),
                 secret=_contains_secret(field.annotation),
@@ -528,13 +531,6 @@ def _annotation_options(annotation: Any) -> tuple[Any, ...]:
             continue
         options.extend(_annotation_options(arg))
     return tuple(options) or (annotation,)
-
-
-def _is_optional(annotation: Any) -> bool:
-    origin = get_origin(annotation)
-    if origin is None:
-        return False
-    return any(arg is type(None) for arg in get_args(annotation))
 
 
 def _contains_secret(annotation: Any) -> bool:
