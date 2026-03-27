@@ -119,6 +119,11 @@ on:
                 required: false
                 default: ''
                 type: string
+            force_build:
+                description: Force rebuild images even if they already exist in the registry
+                required: false
+                default: false
+                type: boolean
 
 
 env:
@@ -346,6 +351,7 @@ jobs:
                   TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
                   AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
                   PARTIAL_ARCHIVE_URL: ${{ github.event.inputs.partial_archive_url || '' }}
+                  FORCE_BUILD: ${{ github.event.inputs.force_build || 'false' }}
                   TRIGGERED_BY: ${{ github.actor }}
               run: |
                   # Normalize instance_ids: strip all spaces
@@ -369,8 +375,9 @@ jobs:
                     --arg tool_preset "$TOOL_PRESET" \
                     --arg agent_type "$AGENT_TYPE" \
                     --arg partial_archive_url "$PARTIAL_ARCHIVE_URL" \
+                    --arg force_build "$FORCE_BUILD" \
                     --arg triggered_by "$TRIGGERED_BY" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, partial_archive_url: $partial_archive_url, triggered_by: $triggered_by}}')
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, partial_archive_url: $partial_archive_url, force_build: $force_build, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
@@ -416,3 +423,4 @@ jobs:
                     -H "Authorization: Bearer $GITHUB_TOKEN" \
                     "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
                     -d "$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')"
+
