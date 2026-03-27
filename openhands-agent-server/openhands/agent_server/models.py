@@ -473,6 +473,11 @@ class BashOutput(BashEventBase):
     )
 
 
+class BashError(BashEventBase):
+    code: str = Field(description="Code for the error - typically an error type")
+    detail: str = Field(description="Details about the error")
+
+
 class BashEventSortOrder(Enum):
     TIMESTAMP = "TIMESTAMP"
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
