@@ -17,6 +17,7 @@ from fastapi import (
     APIRouter,
     Query,
     WebSocket,
+    WebSocketDisconnect,
 )
 
 from openhands.agent_server.bash_service import get_default_bash_event_service
@@ -205,8 +206,11 @@ async def events_socket(
                 logger.info(f"Received message: {conversation_id}")
                 message = Message.model_validate(data)
                 await event_service.send_message(message, True)
+            except WebSocketDisconnect:
+                logger.info("Event websocket disconnected")
+                return
             except Exception as e:
-                # Something went wrong - Tell the client
+                # Something went wrong - Tell the client so they can handle it
                 try:
                     error_event = ServerErrorEvent(
                         source="environment",
@@ -219,8 +223,9 @@ async def events_socket(
                     logger.exception("error_in_subscription", stack_info=True)
                 except Exception:
                     # Sending the error event failed - likely a closed socket
+                    logger.info("Event websocket disconnected")
                     logger.debug("error_sending_error", exc_info=True, stack_info=True)
-                    await _safe_close(websocket)
+                    await _safe_close_websocket(websocket)
                     return
     finally:
         await event_service.unsubscribe_from_events(subscriber_id)
@@ -286,8 +291,11 @@ async def bash_events_socket(
                 logger.info("Received bash request")
                 request = ExecuteBashRequest.model_validate(data)
                 await bash_event_service.start_bash_command(request)
+            except WebSocketDisconnect:
+                logger.info("Bash websocket disconnected")
+                return
             except Exception as e:
-                # Something went wrong - Tell the client
+                # Something went wrong - Tell the client so they can handle it
                 try:
                     error_event = BashError(
                         code=e.__class__.__name__,
@@ -301,10 +309,11 @@ async def bash_events_socket(
                     )
                 except Exception:
                     # Sending the error event failed - likely a closed socket
+                    logger.info("Base websocket disconnected")
                     logger.debug(
                         "error_sending_bash_error", exc_info=True, stack_info=True
                     )
-                    await _safe_close(websocket)
+                    await _safe_close_websocket(websocket)
                     return
     finally:
         await bash_event_service.unsubscribe_from_events(subscriber_id)
@@ -318,12 +327,7 @@ async def _send_event(event: Event, websocket: WebSocket):
         logger.exception("error_sending_event: %r", event, stack_info=True)
 
 
-async def _safe_close(websocket: WebSocket):
-    """
-    Log a message depending on whether the exception given is likely due to the
-    socket being closed and try to close the socket.
-    """
-    logger.info("Websocket disconnected")
+async def _safe_close_websocket(websocket: WebSocket):
     try:
         await websocket.close(code=1000, reason="Connection closed")
     except Exception:
