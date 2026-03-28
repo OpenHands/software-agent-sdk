@@ -4,6 +4,7 @@ import pathlib
 import warnings
 from collections.abc import Mapping
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -21,6 +22,9 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.types import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
 
+
+if TYPE_CHECKING:
+    pass
 
 logger = get_logger(__name__)
 
@@ -131,12 +135,56 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or public skills if enabled."""
+        """Load user and/or public skills if enabled.
+
+        When `registered_marketplaces` is set, skills are loaded from marketplaces
+        with `auto_load='all'`. This is the new, preferred approach.
+
+        When only `marketplace_path` is set (deprecated), falls back to the legacy
+        `load_available_skills` path for backward compatibility.
+        """
         if not self.load_user_skills and not self.load_public_skills:
             return self
 
-        # Emit deprecation warning if using old marketplace_path field
-        if self.marketplace_path is not None and not self.registered_marketplaces:
+        existing_names = {skill.name for skill in self.skills}
+
+        # New path: use registered_marketplaces as source of truth
+        if self.registered_marketplaces:
+            # Load user skills via legacy path if requested (user skills are local)
+            if self.load_user_skills:
+                user_skills = load_available_skills(
+                    work_dir=None,
+                    include_user=True,
+                    include_project=False,
+                    include_public=False,
+                    marketplace_path=None,
+                )
+                for name, skill in user_skills.items():
+                    if name not in existing_names:
+                        self.skills.append(skill)
+                        existing_names.add(name)
+                    else:
+                        logger.warning(
+                            f"Skipping user skill '{name}' (already in explicit skills)"
+                        )
+
+            # Load public skills from registered marketplaces with auto_load='all'
+            if self.load_public_skills:
+                marketplace_skills = self._load_skills_from_marketplaces()
+                for skill in marketplace_skills:
+                    if skill.name not in existing_names:
+                        self.skills.append(skill)
+                        existing_names.add(skill.name)
+                    else:
+                        logger.warning(
+                            f"Skipping marketplace skill '{skill.name}' "
+                            "(already in explicit skills)"
+                        )
+
+            return self
+
+        # Legacy path: use marketplace_path (deprecated)
+        if self.marketplace_path is not None:
             warnings.warn(
                 "AgentContext.marketplace_path is deprecated. "
                 "Use registered_marketplaces instead.",
@@ -152,7 +200,6 @@ class AgentContext(BaseModel):
             marketplace_path=self.marketplace_path,
         )
 
-        existing_names = {skill.name for skill in self.skills}
         for name, skill in auto_skills.items():
             if name not in existing_names:
                 self.skills.append(skill)
@@ -162,6 +209,57 @@ class AgentContext(BaseModel):
                 )
 
         return self
+
+    def _load_skills_from_marketplaces(self) -> list[Skill]:
+        """Load skills from registered marketplaces with auto_load='all'.
+
+        Returns:
+            List of skills loaded from auto-load marketplaces.
+        """
+        # Import at runtime to avoid circular import
+        from openhands.sdk.plugin import (
+            MarketplaceRegistry,
+            Plugin,
+            fetch_plugin_with_resolution,
+        )
+
+        skills: list[Skill] = []
+        registry = MarketplaceRegistry(self.registered_marketplaces)
+
+        for reg in registry.get_auto_load_registrations():
+            try:
+                marketplace, repo_path = registry.get_marketplace(reg.name)
+                logger.info(
+                    f"Loading skills from marketplace '{reg.name}' "
+                    f"({len(marketplace.plugins)} plugins)"
+                )
+
+                for plugin_entry in marketplace.plugins:
+                    try:
+                        source, ref, subpath = marketplace.resolve_plugin_source(
+                            plugin_entry
+                        )
+                        path, resolved_ref = fetch_plugin_with_resolution(
+                            source=source,
+                            ref=ref,
+                            repo_path=subpath,
+                        )
+                        plugin = Plugin.load(path)
+                        plugin_skills = plugin.get_all_skills()
+                        skills.extend(plugin_skills)
+                        logger.debug(
+                            f"Loaded {len(plugin_skills)} skill(s) from plugin "
+                            f"'{plugin_entry.name}'"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to load plugin '{plugin_entry.name}' "
+                            f"from marketplace '{reg.name}': {e}"
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to fetch marketplace '{reg.name}': {e}")
+
+        return skills
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
         """Get secret information (name and description) from the secrets field.

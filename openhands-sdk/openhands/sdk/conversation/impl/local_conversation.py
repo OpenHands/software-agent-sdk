@@ -1184,7 +1184,8 @@ class LocalConversation(BaseConversation):
 
         Resolves the plugin reference against the agent's registered marketplaces
         and loads the plugin into the conversation. The plugin's skills, hooks,
-        and MCP configuration will be merged into the agent.
+        MCP configuration, and agent definitions will be merged into the
+        conversation.
 
         Plugin references can be:
         - "plugin-name@marketplace-name" - Explicit marketplace qualifier
@@ -1199,7 +1200,7 @@ class LocalConversation(BaseConversation):
             MarketplaceNotFoundError: If a specified marketplace is not registered.
             ValueError: If no marketplaces are registered.
         """
-        # Ensure plugins loaded first (initializes agent context)
+        # Ensure plugins loaded first (initializes agent context and hook processor)
         self._ensure_plugins_loaded()
 
         # Lazy-initialize the marketplace registry from agent_context
@@ -1252,6 +1253,22 @@ class LocalConversation(BaseConversation):
             self.agent = new_agent
             self._state.agent = new_agent
 
+        # Register plugin agents if any
+        if plugin.agents:
+            register_plugin_agents(
+                agents=plugin.agents,
+                work_dir=self.workspace.working_dir,
+            )
+            logger.debug(
+                f"Registered {len(plugin.agents)} agent(s) from plugin "
+                f"'{plugin.manifest.name}'"
+            )
+
+        # Merge plugin hooks into existing hook processor
+        if plugin.hooks and not plugin.hooks.is_empty():
+            self._merge_plugin_hooks(plugin.hooks)
+            logger.debug(f"Merged hooks from plugin '{plugin.manifest.name}'")
+
         # Track resolved plugin
         resolved = ResolvedPluginSource.from_plugin_source(
             resolved_source, resolved_ref
@@ -1259,6 +1276,49 @@ class LocalConversation(BaseConversation):
         if self._resolved_plugins is None:
             self._resolved_plugins = []
         self._resolved_plugins.append(resolved)
+
+    def _merge_plugin_hooks(self, plugin_hooks: HookConfig) -> None:
+        """Merge plugin hooks into the existing hook processor.
+
+        If no hook processor exists, creates one with the plugin hooks.
+        If a hook processor exists, merges the new hooks (plugin hooks
+        run after existing hooks).
+
+        Args:
+            plugin_hooks: HookConfig from the loaded plugin.
+        """
+        if self._hook_processor is None:
+            # No existing hook processor - create one with plugin hooks
+            self._hook_processor, self._on_event = create_hook_callback(
+                hook_config=plugin_hooks,
+                working_dir=str(self.workspace.working_dir),
+                session_id=str(self._state.id),
+                original_callback=self._base_callback,
+            )
+            self._hook_processor.set_conversation_state(self._state)
+            # Note: We don't run session_start here since the session is
+            # already started. The plugin's session_start hooks will miss
+            # the initial session start, which is expected for dynamically
+            # loaded plugins.
+            self._state.hook_config = plugin_hooks
+        else:
+            # Merge with existing hooks
+            existing_config = self._state.hook_config
+            if existing_config is not None:
+                merged_config = HookConfig.merge([existing_config, plugin_hooks])
+            else:
+                merged_config = plugin_hooks
+
+            if merged_config is not None:
+                # Recreate hook processor with merged config
+                self._hook_processor, self._on_event = create_hook_callback(
+                    hook_config=merged_config,
+                    working_dir=str(self.workspace.working_dir),
+                    session_id=str(self._state.id),
+                    original_callback=self._base_callback,
+                )
+                self._hook_processor.set_conversation_state(self._state)
+                self._state.hook_config = merged_config
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""
