@@ -217,7 +217,8 @@ async def events_socket(
                         code=e.__class__.__name__,
                         detail=str(e),
                     )
-                    await _send_event(error_event, websocket)
+                    dumped = error_event.model_dump(mode="json")
+                    await websocket.send_json(dumped)
                     # Log after - if send event raises an error logging is handled
                     # in the except block
                     logger.exception("error_in_subscription", stack_info=True)
@@ -301,7 +302,8 @@ async def bash_events_socket(
                         code=e.__class__.__name__,
                         detail=str(e),
                     )
-                    await _send_bash_event(error_event, websocket)
+                    dumped = error_event.model_dump(mode="json")
+                    await websocket.send_json(dumped)
                     # Log after - if send event raises an error logging is handled
                     # in the except block
                     logger.exception(

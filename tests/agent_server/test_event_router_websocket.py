@@ -155,6 +155,7 @@ async def test_websocket_general_exception_continues_loop(
             "openhands.agent_server.sockets.conversation_service"
         ) as mock_conv_service,
         patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.logger.exception") as log_exception,
     ):
         mock_config.return_value.session_api_keys = None
         mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
@@ -164,6 +165,8 @@ async def test_websocket_general_exception_continues_loop(
         await events_socket(
             sample_conversation_id, mock_websocket, session_api_key=None
         )
+
+        log_exception.assert_called_once()
 
     assert mock_websocket.receive_json.call_count == 2
     mock_event_service.unsubscribe_from_events.assert_called_once()
@@ -207,17 +210,20 @@ async def test_websocket_successful_message_processing(
 
 
 @pytest.mark.asyncio
-async def test_websocket_unsubscribe_in_finally_when_no_disconnect(
+async def test_disconnect_and_unsubscribe_when_send_error_fails(
     mock_websocket, mock_event_service, sample_conversation_id
 ):
-    """Test that unsubscribe is called even when there's no WebSocketDisconnect."""
+    """Test that unsubscribe is called and the socket disconnects when sending
+    an error event fails."""
     mock_websocket.receive_json.side_effect = RuntimeError("Connection broken")
+    mock_websocket.send_json.side_effect = RuntimeError("Connection broken")
 
     with (
         patch(
             "openhands.agent_server.sockets.conversation_service"
         ) as mock_conv_service,
         patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        patch("openhands.agent_server.sockets.logger.debug") as log_debug,
     ):
         mock_config.return_value.session_api_keys = None
         mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
@@ -230,6 +236,7 @@ async def test_websocket_unsubscribe_in_finally_when_no_disconnect(
             sample_conversation_id, mock_websocket, session_api_key=None
         )
 
+    log_debug.assert_called_once()
     mock_event_service.unsubscribe_from_events.assert_called_once()
 
 
