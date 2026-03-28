@@ -191,7 +191,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     aws_secret_access_key: str | SecretStr | None = Field(
         default=None,
     )
+    aws_session_token: str | SecretStr | None = Field(
+        default=None,
+    )
     aws_region_name: str | None = Field(
+        default=None,
+    )
+    aws_profile_name: str | None = Field(
+        default=None,
+    )
+    aws_role_name: str | None = Field(
+        default=None,
+    )
+    aws_session_name: str | None = Field(
+        default=None,
+    )
+    aws_bedrock_runtime_endpoint: str | None = Field(
         default=None,
     )
 
@@ -456,7 +471,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         return v
 
-    @field_validator("api_key", "aws_access_key_id", "aws_secret_access_key")
+    @field_validator(
+        "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
+    )
     @classmethod
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
@@ -500,8 +517,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             os.environ["AWS_SECRET_ACCESS_KEY"] = (
                 self.aws_secret_access_key.get_secret_value()
             )
+        if self.aws_session_token:
+            assert isinstance(self.aws_session_token, SecretStr)
+            os.environ["AWS_SESSION_TOKEN"] = self.aws_session_token.get_secret_value()
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
+        if self.aws_profile_name:
+            os.environ["AWS_PROFILE"] = self.aws_profile_name
 
         # Metrics + Telemetry wiring
         if self._metrics is None:
@@ -545,7 +567,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Serializers
     # =========================================================================
     @field_serializer(
-        "api_key", "aws_access_key_id", "aws_secret_access_key", when_used="always"
+        "api_key",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        when_used="always",
     )
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)

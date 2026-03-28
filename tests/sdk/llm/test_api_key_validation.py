@@ -144,3 +144,56 @@ def test_plain_string_aws_credentials():
     assert isinstance(llm.aws_secret_access_key, SecretStr)
     assert llm.aws_secret_access_key.get_secret_value() == "plain-secret-key"
     assert llm.aws_region_name == "us-west-2"
+
+
+def test_aws_session_token_handling():
+    """Test that aws_session_token is validated as a secret."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_access_key_id="access-key",
+        aws_secret_access_key="secret-key",
+        aws_session_token="session-token-value",
+        aws_region_name="us-west-2",
+    )
+    assert isinstance(llm.aws_session_token, SecretStr)
+    assert llm.aws_session_token.get_secret_value() == "session-token-value"
+
+
+def test_aws_profile_name_handling():
+    """Test that aws_profile_name is stored as a plain string."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_profile_name="dev-profile",
+        aws_region_name="us-west-2",
+    )
+    assert llm.aws_profile_name == "dev-profile"
+
+
+def test_aws_role_based_auth_fields():
+    """Test that STS role-based auth fields are accepted."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_role_name="arn:aws:iam::123456789012:role/MyRole",
+        aws_session_name="my-session",
+        aws_region_name="us-west-2",
+    )
+    assert llm.aws_role_name == "arn:aws:iam::123456789012:role/MyRole"
+    assert llm.aws_session_name == "my-session"
+
+
+def test_aws_bedrock_runtime_endpoint():
+    """Test that custom Bedrock endpoint is accepted."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_bedrock_runtime_endpoint="https://my-proxy.example.com",
+        aws_region_name="us-west-2",
+    )
+    assert llm.aws_bedrock_runtime_endpoint == "https://my-proxy.example.com"
