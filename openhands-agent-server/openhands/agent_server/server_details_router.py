@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import time
@@ -10,7 +11,7 @@ from pydantic import BaseModel, Field
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
 _start_time = time.time()
 _last_event_time = time.time()
-_initialization_complete = False
+_initialization_complete = asyncio.Event()
 
 
 def _package_version(dist_name: str) -> str:
@@ -60,8 +61,7 @@ def mark_initialization_complete() -> None:
     have finished initializing. Until this is called, the /ready endpoint will
     return 503 Service Unavailable.
     """
-    global _initialization_complete
-    _initialization_complete = True
+    _initialization_complete.set()
 
 
 @server_details_router.get("/alive")
@@ -83,7 +83,7 @@ async def ready(response: Response) -> dict[str, str]:
     This endpoint should be used by Kubernetes readiness probes to determine
     when the pod is ready to receive traffic. Returns 503 during initialization.
     """
-    if _initialization_complete:
+    if _initialization_complete.is_set():
         return {"status": "ready"}
     else:
         response.status_code = 503

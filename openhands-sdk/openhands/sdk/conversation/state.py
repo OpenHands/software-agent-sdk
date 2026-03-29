@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -35,7 +35,6 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -206,29 +205,6 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
-
-    @model_validator(mode="before")
-    @classmethod
-    def _handle_legacy_fields(cls, data: Any) -> Any:
-        """Handle legacy field names for backward compatibility."""
-        if not isinstance(data, dict):
-            return data
-
-        # Handle legacy 'secrets_manager' field name
-        if "secrets_manager" in data:
-            warn_deprecated(
-                "ConversationState.secrets_manager",
-                deprecated_in="1.12.0",
-                removed_in="1.15.0",
-                details=(
-                    "The 'secrets_manager' field has been renamed to "
-                    "'secret_registry'. Please update your code to use "
-                    "'secret_registry' instead."
-                ),
-                stacklevel=4,
-            )
-            data["secret_registry"] = data.pop("secrets_manager")
-        return data
 
     @property
     def events(self) -> EventLog:

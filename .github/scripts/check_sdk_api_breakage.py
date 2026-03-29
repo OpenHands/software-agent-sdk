@@ -298,12 +298,79 @@ def ensure_griffe() -> None:
         raise SystemExit(1)
 
 
+def _strip_balanced_param(text: str, param: str) -> str:
+    """Remove a keyword parameter whose value may contain nested delimiters.
+
+    Handles values like ``json_schema_extra={'key': {'nested': True}}`` where a
+    simple regex cannot reliably match the balanced braces/parens/brackets.
+
+    Returns *text* with the ``param=<value>`` fragment (and any surrounding
+    comma) removed.
+    """
+    pattern = re.compile(rf",?\s*{re.escape(param)}\s*=\s*")
+    match = pattern.search(text)
+    if not match:
+        return text
+
+    start = match.start()
+    pos = match.end()
+    if pos >= len(text):
+        return text
+
+    # Track balanced delimiters to find where the value ends.
+    openers = {"(": ")", "[": "]", "{": "}"}
+    closers = {")", "]", "}"}
+    stack: list[str] = []
+    in_string: str | None = None
+
+    while pos < len(text):
+        ch = text[pos]
+
+        # Handle string literals (skip their contents).
+        if in_string:
+            if ch == "\\" and pos + 1 < len(text):
+                pos += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            pos += 1
+            continue
+
+        if ch in ("'", '"'):
+            in_string = ch
+            pos += 1
+            continue
+
+        if ch in openers:
+            stack.append(openers[ch])
+            pos += 1
+            continue
+
+        if ch in closers:
+            if stack:
+                stack.pop()
+                pos += 1
+                if not stack:
+                    break
+                continue
+            # Unmatched closer — end of value.
+            break
+
+        # At depth 0, a comma or closing paren ends the value.
+        if not stack and ch in (",", ")"):
+            break
+
+        pos += 1
+
+    return text[:start] + text[pos:]
+
+
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     """Check if the change is only in Field metadata (description, title, etc.).
 
-    Field metadata parameters like ``description``, ``title``, ``examples``, and
-    ``deprecated`` don't affect runtime behavior. Changes to these should not be
-    considered breaking API changes.
+    Field metadata parameters like ``description``, ``title``, ``examples``,
+    ``json_schema_extra``, and ``deprecated`` don't affect runtime behavior.
+    Changes to these should not be considered breaking API changes.
 
     Returns:
         True if both values are Field() calls and only metadata parameters differ.
@@ -314,21 +381,29 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     if not (old_str.startswith("Field(") and new_str.startswith("Field(")):
         return False
 
-    # Metadata parameters that don't affect runtime behavior.
+    # Simple metadata parameters whose values are always plain quoted strings
+    # or simple literals.
     # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
-    metadata_patterns = {
+    simple_metadata_patterns = {
         "description": r'([\'"])([^\'"]*?)\1',
         "title": r'([\'"])([^\'"]*?)\1',
         "examples": r'([\'"])([^\'"]*?)\1',
-        "json_schema_extra": r'([\'"])([^\'"]*?)\1',
         "deprecated": r"(?:True|False|None|'[^']*'|\"[^\"]*\")",
     }
 
+    # Parameters whose values can be complex nested structures (dicts, function
+    # calls, etc.) and need balanced-delimiter parsing instead of a regex.
+    balanced_params = ("json_schema_extra",)
+
     def _normalize(value: str) -> str:
         normalized = value
-        for param, value_pattern in metadata_patterns.items():
+
+        for param, value_pattern in simple_metadata_patterns.items():
             pattern = rf",?\s*{param}\s*=\s*{value_pattern}"
             normalized = re.sub(pattern, "", normalized)
+
+        for param in balanced_params:
+            normalized = _strip_balanced_param(normalized, param)
 
         normalized = re.sub(r"\(\s*,", "(", normalized)
         normalized = re.sub(r",\s*\)", ")", normalized)
