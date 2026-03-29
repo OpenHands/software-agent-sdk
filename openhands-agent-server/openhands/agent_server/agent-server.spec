@@ -128,9 +128,14 @@ a = Analysis(
     optimize=0,
 )
 
-# Remove problematic system libraries that should use host versions
-# This prevents bundling incompatible libgcc_s.so.1 that lacks GCC_14.0 symbols
-a.binaries = [x for x in a.binaries if not x[0].startswith('libgcc_s.so')]
+# Remove system libraries that must come from the runtime image, not the builder.
+# The PyInstaller binary extracts to /tmp/_MEI*/ and sets LD_LIBRARY_PATH there.
+# Child processes (e.g. tmux) inherit this and pick up the bundled libs instead
+# of the runtime's system libs, causing version mismatches:
+#  - libgcc_s.so: builder may lack GCC_14.0 symbols the runtime expects
+#  - libtinfo/libncurses: builder's ncurses is older than runtime's tmux expects
+_EXCLUDE_LIB_PREFIXES = ('libgcc_s.so', 'libtinfo.so', 'libncurses')
+a.binaries = [x for x in a.binaries if not x[0].startswith(_EXCLUDE_LIB_PREFIXES)]
 
 pyz = PYZ(a.pure)
 

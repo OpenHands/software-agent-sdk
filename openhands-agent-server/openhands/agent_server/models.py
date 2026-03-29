@@ -7,11 +7,12 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
-from openhands.sdk import LLM, Agent, Event, ImageContent, Message, TextContent
+from openhands.sdk import LLM, Agent, ImageContent, Message, TextContent
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
@@ -29,6 +30,19 @@ from openhands.sdk.utils.models import (
 )
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+class ServerErrorEvent(Event):
+    """Event emitted by the agent server when a server-level error occurs.
+
+    This event is used for errors that originate from the agent server itself,
+    such as MCP connection failures, WebSocket errors, or other infrastructure
+    issues. Unlike ConversationErrorEvent which is for conversation-level failures,
+    this event indicates a problem with the server environment.
+    """
+
+    code: str = Field(description="Code for the error - typically an error type")
+    detail: str = Field(description="Details about the error")
 
 
 ACPEnabledAgent = Annotated[
@@ -457,6 +471,11 @@ class BashOutput(BashEventBase):
     stderr: str | None = Field(
         default=None, description="The error output from the command"
     )
+
+
+class BashError(BashEventBase):
+    code: str = Field(description="Code for the error - typically an error type")
+    detail: str = Field(description="Details about the error")
 
 
 class BashEventSortOrder(Enum):

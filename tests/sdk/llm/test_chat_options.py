@@ -14,7 +14,6 @@ class DummyLLM:
     extra_headers: dict[str, str] | None = None
     reasoning_effort: str | None = None
     extended_thinking_budget: int | None = None
-    safety_settings: list[dict[str, Any]] | None = None
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
