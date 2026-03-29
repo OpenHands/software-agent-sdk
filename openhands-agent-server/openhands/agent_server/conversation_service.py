@@ -30,8 +30,13 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.title_utils import (
+    generate_fallback_title,
+    generate_title_with_llm,
+)
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.llm.message import TextContent
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -774,6 +779,17 @@ class _EventSubscriber(Subscriber):
         update_last_execution_time()
 
 
+def _extract_message_text(event: MessageEvent) -> str | None:
+    """Extract text content from a MessageEvent."""
+    if not event.llm_message.content:
+        return None
+    text_parts = []
+    for content in event.llm_message.content:
+        if isinstance(content, TextContent):
+            text_parts.append(content.text)
+    return " ".join(text_parts).strip() or None
+
+
 @dataclass
 class AutoTitleSubscriber(Subscriber):
     service: EventService
@@ -786,9 +802,16 @@ class AutoTitleSubscriber(Subscriber):
         if self.service.stored.title is not None:
             return
 
+        # Extract the message text now, before spawning the background task,
+        # to avoid a race where the event hasn't been persisted to the events
+        # list yet when generate_title tries to read it.
+        message_text = _extract_message_text(event)
+        if not message_text:
+            return
+
         async def _generate_and_save() -> None:
             try:
-                title = await self.service.generate_title()
+                title = await self._generate_title_from_text(message_text)
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
                     self.service.stored.updated_at = utc_now()
@@ -801,6 +824,28 @@ class AutoTitleSubscriber(Subscriber):
                 )
 
         asyncio.create_task(_generate_and_save())
+
+    async def _generate_title_from_text(
+        self, message_text: str, max_length: int = 50
+    ) -> str:
+        """Generate a title from the already-extracted message text."""
+        conversation = self.service._conversation
+        if not conversation:
+            return generate_fallback_title(message_text, max_length)
+
+        llm = conversation.agent.llm
+        if llm.model == "acp-managed":
+            llm = None
+
+        if llm:
+            loop = asyncio.get_running_loop()
+            llm_title = await loop.run_in_executor(
+                None, generate_title_with_llm, message_text, llm, max_length
+            )
+            if llm_title:
+                return llm_title
+
+        return generate_fallback_title(message_text, max_length)
 
 
 @dataclass

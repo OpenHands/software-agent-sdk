@@ -1549,6 +1549,10 @@ class TestSafeRmtree:
 class TestAutoTitle:
     """Tests for AutoTitleSubscriber."""
 
+    _TITLE_WITH_LLM_PATH = (
+        "openhands.agent_server.conversation_service.generate_title_with_llm"
+    )
+
     def _make_service(self, title: str | None = None) -> AsyncMock:
         stored = StoredConversation(
             id=uuid4(),
@@ -1561,22 +1565,33 @@ class TestAutoTitle:
         )
         service = AsyncMock(spec=EventService)
         service.stored = stored
+        # Provide a mock conversation so _generate_title_from_text can
+        # resolve the agent LLM.
+        from unittest.mock import MagicMock
+
+        mock_conversation = MagicMock()
+        mock_conversation.agent.llm = stored.agent.llm
+        service._conversation = mock_conversation
         return service
 
-    def _user_message_event(self) -> MessageEvent:
-        return MessageEvent(id="evt-1", source="user", llm_message=Message(role="user"))
+    def _user_message_event(self, text: str = "Fix the login bug") -> MessageEvent:
+        from openhands.sdk.llm.message import TextContent
+
+        return MessageEvent(
+            id="evt-1",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text=text)]),
+        )
 
     @pytest.mark.asyncio
     async def test_autotitle_sets_title_on_first_user_message(self):
         """Title is generated and saved when the first user message arrives."""
         service = self._make_service()
-        service.generate_title.return_value = "✨ Generated Title"
 
-        subscriber = AutoTitleSubscriber(service=service)
-        await subscriber(self._user_message_event())
-
-        # Allow the background task to complete
-        await asyncio.sleep(0)
+        with patch(self._TITLE_WITH_LLM_PATH, return_value="✨ Generated Title"):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
 
         assert service.stored.title == "✨ Generated Title"
         service.save_meta.assert_called_once()
@@ -1602,8 +1617,6 @@ class TestAutoTitle:
         )
 
         await asyncio.sleep(0)
-
-        service.generate_title.assert_not_called()
         assert service.stored.title is None
 
     @pytest.mark.asyncio
@@ -1612,23 +1625,54 @@ class TestAutoTitle:
         service = self._make_service(title="Existing Title")
         subscriber = AutoTitleSubscriber(service=service)
 
-        await subscriber(self._user_message_event())
-        await asyncio.sleep(0)
+        with patch(self._TITLE_WITH_LLM_PATH) as mock_llm:
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
+            mock_llm.assert_not_called()
 
-        service.generate_title.assert_not_called()
         assert service.stored.title == "Existing Title"
 
     @pytest.mark.asyncio
     async def test_autotitle_handles_generate_title_failure(self):
         """A failed title generation is logged as a warning and not re-raised."""
         service = self._make_service()
-        service.generate_title.side_effect = Exception("LLM unavailable")
 
-        subscriber = AutoTitleSubscriber(service=service)
-        # Should not raise
-        await subscriber(self._user_message_event())
-        await asyncio.sleep(0)
+        with patch(self._TITLE_WITH_LLM_PATH, side_effect=Exception("LLM unavailable")):
+            subscriber = AutoTitleSubscriber(service=service)
+            # Should not raise
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
 
         # Title remains unset; save_meta was never called
         assert service.stored.title is None
         service.save_meta.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_empty_message(self):
+        """No title generation if the user message has no text content."""
+        service = self._make_service()
+        # Message with no content
+        event = MessageEvent(
+            id="evt-1", source="user", llm_message=Message(role="user")
+        )
+
+        with patch(self._TITLE_WITH_LLM_PATH) as mock_llm:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(event)
+            await asyncio.sleep(0)
+            mock_llm.assert_not_called()
+
+        assert service.stored.title is None
+
+    @pytest.mark.asyncio
+    async def test_autotitle_falls_back_when_llm_returns_none(self):
+        """Falls back to truncated message when LLM returns None."""
+        service = self._make_service()
+
+        with patch(self._TITLE_WITH_LLM_PATH, return_value=None):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            await asyncio.sleep(0)
+
+        assert service.stored.title == "Fix the login bug"
+        service.save_meta.assert_called_once()
