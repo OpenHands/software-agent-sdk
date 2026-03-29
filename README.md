@@ -101,16 +101,9 @@ The `examples/` directory contains comprehensive usage examples:
 
 ## Skills for modern package tooling
 
-OpenHands skills are the modern replacement for legacy "microagents". If you enable
-public skills with `AgentContext(load_public_skills=True)`, the default
-`OpenHands/extensions` marketplace already includes `uv` and `deno` skills.
-
-Those skills are defined in:
-- `OpenHands/extensions/skills/uv/SKILL.md`
-- `OpenHands/extensions/skills/deno/SKILL.md`
-
-They are also part of `OpenHands/extensions/marketplaces/default.json`, so agents
-can automatically pick up current package-management guidance for repositories
+If you enable public skills with `AgentContext(load_public_skills=True)`, the default
+`OpenHands/extensions` marketplace includes, for example, `uv` and `deno` skills.
+Agents can automatically pick up current package-management guidance for repositories
 that use markers like `uv.lock`, `deno.json`, `deno.jsonc`, or `deno.lock`.
 
 See `examples/01_standalone_sdk/03_activate_skill.py` for a minimal example that
