@@ -15,7 +15,7 @@ export type EventID = string;
 /**
  * Source of an event
  */
-export type EventSource = 'agent' | 'user' | 'environment' | 'system';
+export type EventSource = 'agent' | 'user' | 'environment' | 'system' | 'hook';
 
 /**
  * Base interface for all conversation events
@@ -281,6 +281,56 @@ export interface LLMCompletionLogEvent extends BaseEvent {
 }
 
 /**
+ * Hook execution event type - matches Python SDK's HookEventType literal.
+ */
+export type HookExecutionEventType =
+  | 'PreToolUse'
+  | 'PostToolUse'
+  | 'UserPromptSubmit'
+  | 'SessionStart'
+  | 'SessionEnd'
+  | 'Stop';
+
+/**
+ * Hook execution event - emitted when a hook is executed.
+ *
+ * Provides observability into hook execution, including which hook type
+ * was triggered, the command that was run, and the result.
+ */
+export interface HookExecutionEvent extends BaseEvent {
+  kind: 'HookExecutionEvent';
+  source: 'hook';
+  /** The type of hook event that triggered this execution */
+  hook_event_type: HookExecutionEventType;
+  /** The hook command that was executed */
+  hook_command: string;
+  /** Tool name for PreToolUse/PostToolUse hooks */
+  tool_name?: string | null;
+  /** Whether the hook executed successfully */
+  success: boolean;
+  /** Whether the hook blocked the operation (exit code 2 or deny) */
+  blocked: boolean;
+  /** Exit code from the hook command */
+  exit_code: number;
+  /** Standard output from the hook */
+  stdout: string;
+  /** Standard error from the hook */
+  stderr: string;
+  /** Reason provided by hook (for blocking) */
+  reason?: string | null;
+  /** Additional context injected by hook (e.g., for UserPromptSubmit) */
+  additional_context?: string | null;
+  /** Error message if hook execution failed */
+  error?: string | null;
+  /** ID of the action this hook is associated with (PreToolUse/PostToolUse) */
+  action_id?: string | null;
+  /** ID of the message this hook is associated with (UserPromptSubmit) */
+  message_id?: string | null;
+  /** The input data that was passed to the hook */
+  hook_input?: Record<string, unknown> | null;
+}
+
+/**
  * Union type of all conversation events
  */
 export type ConversationEvent =
@@ -302,7 +352,8 @@ export type ConversationEvent =
   | TokenEvent
   | StuckDetectionEvent
   | FinishEvent
-  | ThinkEvent;
+  | ThinkEvent
+  | HookExecutionEvent;
 
 /**
  * Type guard to check if an event is a MessageEvent
@@ -357,6 +408,13 @@ export function isConversationErrorEvent(event: BaseEvent): event is Conversatio
  */
 export function isCondensationEvent(event: BaseEvent): event is CondensationEvent {
   return event.kind === 'Condensation';
+}
+
+/**
+ * Type guard to check if an event is a HookExecutionEvent
+ */
+export function isHookExecutionEvent(event: BaseEvent): event is HookExecutionEvent {
+  return event.kind === 'HookExecutionEvent';
 }
 
 /**

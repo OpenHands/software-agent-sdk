@@ -68,6 +68,7 @@ export {
   isObservationLike,
   isConversationErrorEvent,
   isCondensationEvent,
+  isHookExecutionEvent,
 } from './events/types';
 export type {
   EventID,
@@ -92,8 +93,30 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
+  HookExecutionEvent as TypedHookExecutionEvent,
+  HookExecutionEventType,
   ConversationEvent as TypedConversationEvent,
 } from './events/types';
+
+// Hooks
+export {
+  HookEventType,
+  HookType,
+  HookDecision,
+  hookResultShouldContinue,
+  createSuccessResult,
+  HOOK_EVENT_FIELDS,
+  matcherMatches,
+  createEmptyHookConfig,
+  isHookConfigEmpty,
+  normalizeHooksInput,
+  hookConfigFromData,
+  getHooksForEvent,
+  hasHooksForEvent,
+  mergeHookConfigs,
+  hookConfigToJSON,
+} from './hooks';
+export type { HookEvent, HookResult, HookDefinition, HookMatcher, HookConfig } from './hooks';
 
 // Agent classes
 export { Agent } from './agent/agent';
@@ -251,6 +274,23 @@ import { HttpClient, HttpError } from './client/http-client';
 import { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
 import { Agent } from './agent/agent';
 import { LLM, OpenRouterLLM, createLLM, createOpenRouterLLM } from './llm';
+import {
+  HookEventType,
+  HookType,
+  HookDecision,
+  hookResultShouldContinue,
+  createSuccessResult,
+  HOOK_EVENT_FIELDS,
+  matcherMatches,
+  createEmptyHookConfig,
+  isHookConfigEmpty,
+  normalizeHooksInput,
+  hookConfigFromData,
+  getHooksForEvent,
+  hasHooksForEvent,
+  mergeHookConfigs,
+  hookConfigToJSON,
+} from './hooks';
 
 // Default export for convenience
 export default {
@@ -278,4 +318,19 @@ export default {
   OpenRouterLLM,
   createLLM,
   createOpenRouterLLM,
+  HookEventType,
+  HookType,
+  HookDecision,
+  hookResultShouldContinue,
+  createSuccessResult,
+  HOOK_EVENT_FIELDS,
+  matcherMatches,
+  createEmptyHookConfig,
+  isHookConfigEmpty,
+  normalizeHooksInput,
+  hookConfigFromData,
+  getHooksForEvent,
+  hasHooksForEvent,
+  mergeHookConfigs,
+  hookConfigToJSON,
 };

@@ -207,6 +207,31 @@ await conversation.close();
 - `createConversation({ type, agent, workspace, options })` - Explicit type selection
 - `createConversationAuto(agent, workspace, options)` - Auto-detect based on workspace type
 
+### Hooks Architecture
+
+The hooks module provides type-safe interfaces for the agent-server's hook system. Hooks are event-driven shell scripts that execute at specific lifecycle events during agent execution, enabling deterministic control over agent behavior.
+
+```
+src/hooks/
+├── types.ts          # Enums (HookEventType, HookType, HookDecision) and interfaces (HookEvent, HookResult)
+├── config.ts         # HookConfig interface and pure functions (matching, normalization, merging)
+└── index.ts          # Module exports
+```
+
+**Key Design Decisions:**
+- **Browser-compatible**: No file I/O or subprocess execution — hooks execute server-side
+- **Pure functions**: Config parsing, matching, and merging are all pure functions operating on plain data
+- **Type-safe**: Full TypeScript interfaces matching the Python SDK's Pydantic models
+- **Server-side execution**: Hook commands run on the agent-server; the client only sends configuration and receives `HookExecutionEvent` via WebSocket
+
+**Integration Points:**
+- `CreateConversationRequest.hook_config` - Send hooks when creating a conversation
+- `RemoteConversation.loadHooks()` - Load hooks from server's `.openhands/hooks.json`
+- `RemoteConversation.getHookConfig()` - Get hooks from current conversation info
+- `HookExecutionEvent` - Received via WebSocket when hooks execute server-side
+
+**Event Types:** `HookExecutionEvent` is emitted by the server for each hook execution, providing observability into hook results (success, blocked, stdout, stderr, etc.)
+
 ## Development Workflow
 
 1. **API Changes**: When the OpenAPI specification is updated, corresponding TypeScript interfaces and client methods should be updated

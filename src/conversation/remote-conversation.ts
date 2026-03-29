@@ -35,11 +35,19 @@ import {
 } from '../models/conversation';
 import { IConversation, BaseConversationOptions } from './base';
 import { Success } from '../types/base';
+import type { HookConfig } from '../hooks';
 
 /**
  * Options for creating a RemoteConversation instance.
  */
-export type RemoteConversationOptions = BaseConversationOptions;
+export interface RemoteConversationOptions extends BaseConversationOptions {
+  /**
+   * Optional hook configuration for this conversation.
+   * Hooks are shell scripts that run server-side at key lifecycle events
+   * (PreToolUse, PostToolUse, UserPromptSubmit, Stop, etc.).
+   */
+  hookConfig?: HookConfig;
+}
 
 /**
  * Remote conversation implementation that connects to an OpenHands agent server.
@@ -71,6 +79,7 @@ export class RemoteConversation implements IConversation {
   private client: HttpClient;
   private wsClient?: WebSocketCallbackClient;
   private callback?: ConversationCallbackType;
+  private hookConfig?: HookConfig;
 
   constructor(
     agent: AgentBase,
@@ -81,6 +90,7 @@ export class RemoteConversation implements IConversation {
     this.workspace = workspace;
     this.callback = options.callback;
     this._conversationId = options.conversationId;
+    this.hookConfig = options.hookConfig;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
@@ -109,7 +119,12 @@ export class RemoteConversation implements IConversation {
   }
 
   async start(
-    options: { initialMessage?: string; maxIterations?: number; stuckDetection?: boolean } = {}
+    options: {
+      initialMessage?: string;
+      maxIterations?: number;
+      stuckDetection?: boolean;
+      hookConfig?: HookConfig;
+    } = {}
   ): Promise<void> {
     if (this._conversationId) {
       // Existing conversation - verify it exists
@@ -126,17 +141,49 @@ export class RemoteConversation implements IConversation {
       };
     }
 
+    // Use hook config from start options, falling back to constructor option
+    const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
+
     const request: CreateConversationRequest = {
       agent: this.agent,
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 500,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
+      hook_config: hookConfig ?? null,
     };
 
     const response = await this.client.post<ConversationInfo>('/api/conversations', request);
     const conversationInfo = response.data;
     this._conversationId = conversationInfo.id;
+  }
+
+  /**
+   * Load hooks configuration from the server workspace.
+   *
+   * This calls the server's hooks endpoint to read `.openhands/hooks.json`
+   * from the project directory.
+   *
+   * @param projectDir - Optional project directory path. Defaults to the workspace working dir.
+   * @returns The hook configuration, or null if no hooks are configured.
+   */
+  async loadHooks(projectDir?: string): Promise<HookConfig | null> {
+    const response = await this.client.post<{ hook_config: HookConfig | null }>('/api/hooks', {
+      project_dir: projectDir ?? this.workspace.workingDir,
+    });
+    return response.data.hook_config;
+  }
+
+  /**
+   * Get the hook configuration for this conversation from the server.
+   *
+   * Fetches the current conversation info and returns the hook_config field.
+   *
+   * @returns The hook configuration, or null if no hooks are configured.
+   */
+  async getHookConfig(): Promise<HookConfig | null> {
+    const response = await this.client.get<ConversationInfo>(`/api/conversations/${this.id}`);
+    return response.data.hook_config ?? null;
   }
 
   async conversationStats(): Promise<ConversationStats> {

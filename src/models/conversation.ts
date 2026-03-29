@@ -12,6 +12,7 @@ import {
   AgentBase,
   Message,
 } from '../types/base';
+import type { HookConfig } from '../hooks';
 
 export interface ConversationInfo {
   id: ConversationID;
@@ -31,6 +32,9 @@ export interface ConversationInfo {
   persistence_dir: string;
   conversation_stats?: ConversationStats;
   stats?: any; // API returns stats instead of conversation_stats
+  hook_config?: HookConfig | null;
+  blocked_actions?: Record<string, string>;
+  blocked_messages?: Record<string, string>;
   title?: string;
   created_at?: string;
   updated_at?: string;
@@ -62,6 +66,7 @@ export interface CreateConversationRequest {
   max_iterations: number;
   stuck_detection: boolean;
   workspace: any;
+  hook_config?: HookConfig | null;
 }
 
 export interface GenerateTitleRequest {
