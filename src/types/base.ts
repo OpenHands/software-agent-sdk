@@ -58,7 +58,7 @@ export interface Message {
 export interface MessageContent {
   type: 'text' | 'image';
   text?: string;
-  image_url?: string;
+  image_urls?: string[];
 }
 
 export interface TextContent extends MessageContent {
@@ -68,7 +68,7 @@ export interface TextContent extends MessageContent {
 
 export interface ImageContent extends MessageContent {
   type: 'image';
-  image_url: string;
+  image_urls: string[];
 }
 
 export interface AgentBase {

@@ -16,6 +16,25 @@ The client is designed to mirror the structure and functionality of the Python S
 - **Error Handling**: Robust error handling with custom exception classes and retry logic
 - **Modern Tooling**: ESLint, Prettier, Jest testing framework, and GitHub Actions CI/CD
 
+## Browser Compatibility Requirement
+
+**All code in this library must be browser-compatible.** This is a hard constraint — the SDK is designed to run in browser environments and must never depend on Node.js-specific APIs.
+
+**Do NOT use:**
+- `fs`, `fs/promises`, or any filesystem APIs
+- `child_process`, `spawn`, `exec`, or any process execution APIs
+- `path` (Node.js module — use string manipulation or URL APIs instead)
+- `os`, `net`, `http`, `https`, `stream`, `buffer` (Node.js built-in), `crypto` (Node.js built-in), or any other Node.js built-in modules
+- Any npm package that depends on Node.js built-in modules
+
+**DO use:**
+- `fetch` for HTTP requests
+- `WebSocket` for real-time communication
+- Web-standard APIs (`URL`, `Blob`, `File`, `FormData`, `TextEncoder`/`TextDecoder`, etc.)
+- Browser-compatible npm packages only
+
+This applies to all source code under `src/`. Test files (`src/__tests__/`) are an exception since they run in Node.js via Jest.
+
 ## Source Material
 
 This TypeScript client is based on the following source materials:
@@ -67,7 +86,7 @@ The workspace module follows the Python SDK's architecture with a common interfa
 src/workspace/
 ├── base.ts           # IWorkspace interface defining the contract
 ├── remote-workspace.ts  # RemoteWorkspace - connects to remote agent server
-├── local-workspace.ts   # LocalWorkspace - local execution using Node.js APIs
+├── local-workspace.ts   # LocalWorkspace - stub (throws errors, directs to RemoteWorkspace)
 └── workspace.ts      # Factory functions and Workspace class (backwards compatible)
 ```
 
@@ -79,11 +98,7 @@ src/workspace/
 
 **RemoteWorkspace**: Fully implemented class that connects to a remote OpenHands agent server via HTTP API.
 
-**LocalWorkspace**: Fully implemented class for local execution using Node.js APIs:
-- Uses `child_process.spawn` for command execution with timeout support
-- Uses `fs/promises` for file operations
-- Parses `git status --porcelain` for git changes
-- Note: Requires Node.js environment, won't work in browsers
+**LocalWorkspace**: Stub implementation that throws descriptive errors directing users to RemoteWorkspace.
 
 **Factory Functions**:
 - `createWorkspace({ type, options })` - Explicit type selection
