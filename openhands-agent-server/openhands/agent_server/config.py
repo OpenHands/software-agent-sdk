@@ -59,8 +59,8 @@ def _default_web_url() -> str | None:
 
     warn_deprecated(
         "RUNTIME_URL environment variable",
-        deprecated_in="1.14.0",
-        removed_in="1.19.0",
+        deprecated_in="1.15.0",
+        removed_in="1.20.0",
         details="Use OH_WEB_URL instead.",
     )
     return legacy_web_url

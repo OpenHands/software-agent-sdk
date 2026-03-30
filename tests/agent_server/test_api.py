@@ -433,7 +433,7 @@ class TestConfigWebUrl:
             caught[0].message
         )
         assert "OH_WEB_URL" in str(caught[0].message)
-        assert "removed in 1.19.0" in str(caught[0].message)
+        assert "removed in 1.20.0" in str(caught[0].message)
 
     def test_web_url_prefers_oh_web_url_over_runtime_url(self):
         """Test that the canonical env var wins without warnings."""
