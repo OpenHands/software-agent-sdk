@@ -116,7 +116,7 @@ MODELS = {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
         "llm_config": {
-            "model": "litellm_proxy/gemini-3-pro-preview",
+            "model": "litellm_proxy/gemini-3-pro",
             "temperature": 0.0,
         },
     },

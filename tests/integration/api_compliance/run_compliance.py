@@ -57,7 +57,7 @@ DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "_display": "gpt",
     },
     "gemini-3-pro": {
-        "model": "litellm_proxy/gemini-3-pro-preview",
+        "model": "litellm_proxy/gemini-3-pro",
         "_display": "gemini",
     },
 }
