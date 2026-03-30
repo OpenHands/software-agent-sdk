@@ -106,6 +106,8 @@ When reviewing code, provide constructive feedback:
 - `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
+- Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
+
 
 
 ## Package-specific guidance
