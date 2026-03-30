@@ -1,6 +1,10 @@
+import os
+from unittest.mock import patch
+
+from litellm.types.utils import ModelResponse
 from pydantic import SecretStr
 
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, Message, TextContent
 
 
 def test_empty_api_key_string_converted_to_none():
@@ -201,12 +205,6 @@ def test_aws_bedrock_runtime_endpoint():
 
 def test_aws_bedrock_params_forwarded_to_litellm():
     """Verify all AWS params are passed as kwargs to litellm.completion()."""
-    from unittest.mock import patch
-
-    from litellm.types.utils import ModelResponse
-
-    from openhands.sdk.llm import Message, TextContent
-
     llm = LLM(
         usage_id="test-llm",
         model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -248,3 +246,26 @@ def test_aws_bedrock_params_forwarded_to_litellm():
         assert kw["aws_role_name"] == "arn:aws:iam::123456789012:role/MyRole"
         assert kw["aws_session_name"] == "my-session"
         assert kw["aws_bedrock_runtime_endpoint"] == "https://my-proxy.example.com"
+
+
+def test_aws_env_vars_set_on_init(monkeypatch):
+    """Verify pre-existing AWS env vars are still set for backward compatibility."""
+    for k in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_REGION_NAME",
+    ]:
+        monkeypatch.delenv(k, raising=False)
+
+    LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_access_key_id="AKID",
+        aws_secret_access_key="SECRET",
+        aws_region_name="us-west-2",
+    )
+
+    assert os.environ["AWS_ACCESS_KEY_ID"] == "AKID"
+    assert os.environ["AWS_SECRET_ACCESS_KEY"] == "SECRET"
+    assert os.environ["AWS_REGION_NAME"] == "us-west-2"

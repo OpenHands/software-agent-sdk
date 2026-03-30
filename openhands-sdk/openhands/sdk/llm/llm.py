@@ -509,6 +509,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             os.environ["OR_SITE_URL"] = self.openrouter_site_url
         if self.openrouter_app_name:
             os.environ["OR_APP_NAME"] = self.openrouter_app_name
+        if self.aws_access_key_id:
+            assert isinstance(self.aws_access_key_id, SecretStr)
+            os.environ["AWS_ACCESS_KEY_ID"] = self.aws_access_key_id.get_secret_value()
+        if self.aws_secret_access_key:
+            assert isinstance(self.aws_secret_access_key, SecretStr)
+            os.environ["AWS_SECRET_ACCESS_KEY"] = (
+                self.aws_secret_access_key.get_secret_value()
+            )
+        if self.aws_region_name:
+            os.environ["AWS_REGION_NAME"] = self.aws_region_name
 
         # Metrics + Telemetry wiring
         if self._metrics is None:
