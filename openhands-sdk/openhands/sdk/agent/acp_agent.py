@@ -185,6 +185,33 @@ async def _maybe_set_session_model(
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
+def _extract_token_usage(
+    response: Any,
+) -> tuple[int, int, int, int, int]:
+    """Extract token usage from an ACP PromptResponse.
+
+    Returns (input_tokens, output_tokens, cache_read, cache_write, reasoning).
+
+    Checks two locations:
+    - claude-agent-acp, codex-acp: ``response.usage`` (standard ACP field)
+    - gemini-cli: ``response._meta.quota.token_count`` (non-standard)
+    """
+    if response is not None and response.usage is not None:
+        u = response.usage
+        return (
+            u.input_tokens,
+            u.output_tokens,
+            u.cached_read_tokens or 0,
+            u.cached_write_tokens or 0,
+            u.thought_tokens or 0,
+        )
+    if response is not None and response.field_meta is not None:
+        quota = response.field_meta.get("quota", {})
+        tc = quota.get("token_count", {})
+        return (tc.get("input_tokens", 0), tc.get("output_tokens", 0), 0, 0, 0)
+    return (0, 0, 0, 0, 0)
+
+
 def _estimate_cost_from_tokens(
     model: str, input_tokens: int, output_tokens: int
 ) -> float:
@@ -548,43 +575,21 @@ class ACPAgent(AgentBase):
             self._client._last_cost = usage_update.cost.amount
 
         # -- Token usage recording --------------------------------------------
-        input_tokens = 0
-        output_tokens = 0
-
-        # claude-agent-acp, codex-acp: token usage in PromptResponse.usage
-        if response is not None and response.usage is not None:
-            usage = response.usage
-            input_tokens = usage.input_tokens
-            output_tokens = usage.output_tokens
+        input_tokens, output_tokens, cache_read, cache_write, reasoning = (
+            _extract_token_usage(response)
+        )
+        if input_tokens or output_tokens:
             self.llm.metrics.add_token_usage(
                 prompt_tokens=input_tokens,
                 completion_tokens=output_tokens,
-                cache_read_tokens=usage.cached_read_tokens or 0,
-                cache_write_tokens=usage.cached_write_tokens or 0,
-                reasoning_tokens=usage.thought_tokens or 0,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                reasoning_tokens=reasoning,
                 context_window=self._client._context_window_by_session.get(
                     session_id, self._client._context_window
                 ),
                 response_id=session_id,
             )
-        # gemini-cli: token usage in PromptResponse._meta.quota.token_count
-        elif response is not None and response.field_meta is not None:
-            quota = response.field_meta.get("quota", {})
-            token_count = quota.get("token_count", {})
-            input_tokens = token_count.get("input_tokens", 0)
-            output_tokens = token_count.get("output_tokens", 0)
-            if input_tokens or output_tokens:
-                self.llm.metrics.add_token_usage(
-                    prompt_tokens=input_tokens,
-                    completion_tokens=output_tokens,
-                    cache_read_tokens=0,
-                    cache_write_tokens=0,
-                    reasoning_tokens=0,
-                    context_window=self._client._context_window_by_session.get(
-                        session_id, self._client._context_window
-                    ),
-                    response_id=session_id,
-                )
 
         # -- Cost derivation from tokens --------------------------------------
         # gemini-cli: no UsageUpdate cost, so derive from token counts using
