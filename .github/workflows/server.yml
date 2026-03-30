@@ -164,13 +164,13 @@ jobs:
                     # Python variant
                     - variant: python
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
