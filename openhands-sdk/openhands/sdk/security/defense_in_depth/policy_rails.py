@@ -134,8 +134,13 @@ def _evaluate_rail_segments(segments: list[str]) -> RailDecision:
 
 
 def _evaluate_rail(content: str) -> RailDecision:
-    """Evaluate rails against a single string (convenience wrapper)."""
-    return _evaluate_rail_segments([content])
+    """Evaluate rails against a single string (convenience wrapper).
+
+    Normalizes the content before evaluation so callers do not need
+    to remember to pre-normalize. This matches the behavior of
+    PolicyRailSecurityAnalyzer.security_risk().
+    """
+    return _evaluate_rail_segments([_normalize(content)])
 
 
 # ---------------------------------------------------------------------------

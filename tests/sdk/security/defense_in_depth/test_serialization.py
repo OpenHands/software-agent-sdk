@@ -27,6 +27,8 @@ from openhands.sdk.security.defense_in_depth.pattern import (
     DEFAULT_INJECTION_MEDIUM_PATTERNS,
     DEFAULT_MEDIUM_PATTERNS,
     DET_EXEC_CODE_EVAL,
+    DET_EXEC_CODE_EXEC,
+    DET_EXEC_CODE_OS_SYSTEM,
     DET_EXEC_DESTRUCT_DD,
     DET_EXEC_DESTRUCT_MKFS,
     DET_EXEC_DESTRUCT_RM_RF,
@@ -272,6 +274,8 @@ class TestStableIDs:
         assert DET_EXEC_DESTRUCT_MKFS == "exec.destruct.mkfs"
         assert DET_EXEC_DESTRUCT_DD == "exec.destruct.dd_raw_disk"
         assert DET_EXEC_CODE_EVAL == "exec.code.eval_call"
+        assert DET_EXEC_CODE_EXEC == "exec.code.exec_call"
+        assert DET_EXEC_CODE_OS_SYSTEM == "exec.code.os_system"
         assert DET_EXEC_NET_CURL_EXEC == "exec.net.curl_pipe_exec"
         assert DET_EXEC_NET_WGET_EXEC == "exec.net.wget_pipe_exec"
         assert DET_EXEC_NET_CURL == "exec.net.curl"

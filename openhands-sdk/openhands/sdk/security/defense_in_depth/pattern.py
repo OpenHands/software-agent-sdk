@@ -36,6 +36,8 @@ DET_EXEC_DESTRUCT_SUDO_RM = "exec.destruct.sudo_rm"
 DET_EXEC_DESTRUCT_MKFS = "exec.destruct.mkfs"
 DET_EXEC_DESTRUCT_DD = "exec.destruct.dd_raw_disk"
 DET_EXEC_CODE_EVAL = "exec.code.eval_call"
+DET_EXEC_CODE_EXEC = "exec.code.exec_call"
+DET_EXEC_CODE_OS_SYSTEM = "exec.code.os_system"
 DET_EXEC_CODE_SUBPROCESS = "exec.code.subprocess"
 DET_EXEC_NET_CURL_EXEC = "exec.net.curl_pipe_exec"
 DET_EXEC_NET_WGET_EXEC = "exec.net.wget_pipe_exec"
@@ -51,9 +53,10 @@ DET_INJECT_IDENTITY = "inject.identity"
 # Format: (regex_pattern, description, detector_id)
 #
 # Pattern design constraints:
-# - Bounded quantifiers only ({0,N}, not * or +) to prevent ReDoS
+# - No unbounded .* or .+ around alternations (catastrophic backtracking)
+# - Risky spans are bounded ({0,N}) to prevent ReDoS
+# - \s* and \w+ are acceptable in non-alternation positions
 # - \b-anchored to avoid substring matches
-# - No unbounded .* around alternations
 # - IGNORECASE compiled in
 # ---------------------------------------------------------------------------
 
@@ -70,6 +73,8 @@ DEFAULT_HIGH_PATTERNS: list[tuple[str, str, str]] = [
     (r"\bdd\b.{0,100}of=/dev/", "Raw disk write", DET_EXEC_DESTRUCT_DD),
     # Code invocation via dynamic interpreters
     (r"\beval\s*\(", "Dynamic code evaluation", DET_EXEC_CODE_EVAL),
+    (r"\bexec\s*\(", "Dynamic code execution", DET_EXEC_CODE_EXEC),
+    (r"\bos\.system\s*\(", "OS-level command execution", DET_EXEC_CODE_OS_SYSTEM),
     (
         r"\bsubprocess\.(?:call|run|Popen|check_output|check_call)\s*\(",
         "Subprocess invocation",

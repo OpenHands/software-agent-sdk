@@ -116,7 +116,12 @@ def test_lt_unknown_raises():
 
 
 def test_max_on_concrete_risks():
-    """Test that max() works on concrete risk lists via __lt__."""
+    """Test that max() works on concrete risk lists.
+
+    SecurityRisk(str, Enum) inherits str.__gt__ via MRO, which gives
+    alphabetical ordering (HIGH < LOW < MEDIUM). __gt__ is defined
+    alongside __lt__ to override this and give the correct risk ordering.
+    """
     assert (
         max([SecurityRisk.LOW, SecurityRisk.MEDIUM, SecurityRisk.HIGH])
         == SecurityRisk.HIGH
