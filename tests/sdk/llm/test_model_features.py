@@ -45,6 +45,11 @@ def test_model_matches(name, pattern, expected):
         ("gemini-1.5-pro", False),
         # DeepSeek Reasoner
         ("deepseek/deepseek-reasoner", True),
+        # Moonshot Kimi thinking models expose reasoning content but do not
+        # accept the reasoning_effort parameter.
+        ("moonshot/kimi-k2.5", False),
+        ("moonshot/kimi-k2-thinking", False),
+        ("litellm_proxy/moonshot/kimi-k2-thinking", False),
         # OpenRouter docs list these as reasoning models, but LiteLLM capability
         # metadata does not currently mark them as reasoning-capable.
         ("openrouter/moonshotai/kimi-k2.5", False),

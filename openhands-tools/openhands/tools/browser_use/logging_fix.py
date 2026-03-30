@@ -15,12 +15,13 @@ from openhands.sdk.utils.deprecation import warn_cleanup
 
 warn_cleanup(
     "Monkey patching to prevent browser_use logging interference",
-    cleanup_by="1.15.0",
+    cleanup_by="1.17.0",
     details=(
-        "This workaround should be removed once browser_use PR #3717 "
-        "(https://github.com/browser-use/browser-use/pull/3717) is merged "
-        "and released. The upstream fix will allow bypassing the "
-        "problematic logging configuration code."
+        "This workaround should be removed once browser_use fixes the "
+        "problematic logging configuration code. The upstream PR #3717 "
+        "(https://github.com/browser-use/browser-use/pull/3717) was closed "
+        "without merge. Check if a newer browser_use release resolves the "
+        "logging interference issue."
     ),
 )
 
