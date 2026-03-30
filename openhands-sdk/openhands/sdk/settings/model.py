@@ -10,14 +10,15 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.llm import LLM
-from openhands.sdk.settings_metadata import (
+from openhands.sdk.tool import Tool
+
+from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
     SettingProminence,
     SettingsFieldMetadata,
     SettingsSectionMetadata,
 )
-from openhands.sdk.tool import Tool
 
 
 if TYPE_CHECKING:

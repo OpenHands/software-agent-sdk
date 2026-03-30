@@ -1,15 +1,28 @@
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
+import openhands.sdk.settings_metadata as settings_metadata_compat
 from openhands.sdk import LLM, Agent, AgentSettings, SettingProminence, Tool
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
-from openhands.sdk.settings import CondenserSettings, VerificationSettings
+from openhands.sdk.settings import (
+    CondenserSettings,
+    VerificationSettings,
+    metadata as settings_metadata_package,
+)
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
 _LLM_EXCLUDED_FIELDS = {name for name, fi in LLM.model_fields.items() if fi.exclude}
+
+
+def test_settings_metadata_compatibility_module_re_exports_package_symbols() -> None:
+    assert (
+        settings_metadata_compat.SettingProminence
+        is settings_metadata_package.SettingProminence
+    )
+    assert settings_metadata_compat.field_meta is settings_metadata_package.field_meta
 
 
 # ---------------------------------------------------------------------------

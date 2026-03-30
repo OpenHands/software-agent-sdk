@@ -59,7 +59,7 @@ from openhands.sdk.settings import (
     VerificationSettings,
     export_settings_schema,
 )
-from openhands.sdk.settings_metadata import (
+from openhands.sdk.settings.metadata import (
     SettingProminence,
     SettingsFieldMetadata,
     SettingsSectionMetadata,
