@@ -5,7 +5,15 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-TargetType = Literal["binary", "binary-minimal", "source", "source-minimal"]
+TargetType = Literal[
+    "binary",
+    "binary-minimal",
+    "source",
+    "source-minimal",
+    "base-image-minimal",
+    "base-image",
+    "builder",
+]
 PlatformType = Literal["linux/amd64", "linux/arm64"]
 
 

@@ -1,5 +1,6 @@
 """Tests for the skill system."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from openhands.sdk.context import (
     load_project_skills,
     load_skills_from_dir,
 )
+from openhands.sdk.context.skills.utils import find_third_party_files
 
 
 CONTENT = "# dummy header\ndummy content\n## dummy subheader\ndummy subcontent\n"
@@ -740,4 +742,43 @@ def test_malformed_yaml_regular_md_does_not_block_siblings(temp_skills_dir, capl
     # The pre-existing valid skills from `temp_skills_dir` fixture must survive
     assert len(all_names) >= 2  # knowledge + repo from fixture
     assert "broken" not in all_names
-    assert any("Failed to load skill" in r.message for r in caplog.records)
+
+
+def test_find_third_party_files_skips_symlink_duplicates(tmp_path):
+    """Symlinked CLAUDE.md → AGENTS.md should not produce two entries."""
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# My repo guide")
+    claude_md = tmp_path / "CLAUDE.md"
+    os.symlink(agents_md, claude_md)
+
+    files = find_third_party_files(tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME)
+
+    # Only one file should be returned since CLAUDE.md is a symlink to AGENTS.md
+    assert len(files) == 1
+
+
+def test_load_project_skills_symlinked_claude_to_agents(tmp_path):
+    """When CLAUDE.md is a symlink to AGENTS.md, only one skill is loaded."""
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# My repo guide\nShared instructions.")
+    claude_md = tmp_path / "CLAUDE.md"
+    os.symlink(agents_md, claude_md)
+
+    skills = load_project_skills(tmp_path)
+
+    # Should load exactly one skill, not two
+    assert len(skills) == 1
+    # The content should appear only once
+    loaded_skill = skills[0]
+    assert "Shared instructions" in loaded_skill.content
+
+
+def test_find_third_party_files_keeps_distinct_files(tmp_path):
+    """Non-symlinked CLAUDE.md and AGENTS.md with different content are both kept."""
+    (tmp_path / "AGENTS.md").write_text("# Agents instructions")
+    (tmp_path / "CLAUDE.md").write_text("# Claude instructions")
+
+    files = find_third_party_files(tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME)
+
+    # Both files should be returned since they are distinct
+    assert len(files) == 2

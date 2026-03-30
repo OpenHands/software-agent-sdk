@@ -552,7 +552,7 @@ class ConversationService:
 
         Args:
             conversation_id: The ID of the conversation to update
-            request: Request object containing fields to update (e.g., title)
+            request: Request object containing fields to update (e.g., title, tags)
 
         Returns:
             bool: True if the conversation was updated successfully, False if not found
@@ -563,22 +563,36 @@ class ConversationService:
         if event_service is None:
             return False
 
-        # Update the title and timestamp in stored conversation
-        event_service.stored.title = request.title.strip()
+        state: ConversationState | None = None
+        if request.title is not None:
+            event_service.stored.title = request.title.strip()
+        if request.tags is not None:
+            event_service.stored.tags = request.tags
+            # Keep the persisted ConversationState update under the state lock so
+            # autosave and state-change callbacks observe a consistent mutation.
+            state = await event_service.get_state()
+            with state:
+                state.tags = request.tags
         event_service.stored.updated_at = utc_now()
         # Save the updated metadata to disk
         await event_service.save_meta()
 
         # Notify conversation webhooks about the updated conversation
-        state = await event_service.get_state()
-        conversation_info = _compose_webhook_conversation_info(
-            event_service.stored, state
-        )
+        state = state or await event_service.get_state()
+        with state:
+            conversation_info = _compose_webhook_conversation_info(
+                event_service.stored, state
+            )
         await self._notify_conversation_webhooks(conversation_info)
 
+        updated_fields = []
+        if request.title is not None:
+            updated_fields.append(f"title: {request.title}")
+        if request.tags is not None:
+            updated_fields.append(f"tags: {request.tags}")
         logger.info(
             f"Successfully updated conversation {conversation_id} "
-            f"with title: {request.title}"
+            f"with {', '.join(updated_fields)}"
         )
         return True
 

@@ -2,7 +2,7 @@ import asyncio
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -993,6 +993,40 @@ class TestConversationServiceUpdateConversation:
         assert result is True
         assert mock_service.stored.title == "Whitespace Test"
         mock_service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_conversation_tags_uses_state_lock(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Test that tag updates hold the ConversationState lock."""
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        acquire_spy = MagicMock(wraps=mock_state._lock.acquire)
+        release_spy = MagicMock(wraps=mock_state._lock.release)
+        mock_state._lock.acquire = acquire_spy
+        mock_state._lock.release = release_spy
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        request = UpdateConversationRequest(tags={"env": "prod"})
+        result = await conversation_service.update_conversation(
+            conversation_id, request
+        )
+
+        assert result is True
+        assert mock_service.stored.tags == {"env": "prod"}
+        assert mock_state.tags == {"env": "prod"}
+        assert acquire_spy.call_count >= 2
+        assert release_spy.call_count == acquire_spy.call_count
 
     @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):
