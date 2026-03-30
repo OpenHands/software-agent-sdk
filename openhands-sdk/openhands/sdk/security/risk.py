@@ -98,3 +98,35 @@ class SecurityRisk(str, Enum):
             SecurityRisk.HIGH: 3,
         }
         return risk_order[self] > risk_order[other] or (reflexive and self == other)
+
+    def __lt__(self, other: object) -> bool:
+        """Compare risk levels for ordering: LOW < MEDIUM < HIGH.
+
+        UNKNOWN is not comparable -- raises ValueError, consistent with is_riskier().
+        This enables max() on concrete risk lists without helper dicts.
+        """
+        if not isinstance(other, SecurityRisk):
+            return NotImplemented
+        if self == SecurityRisk.UNKNOWN or other == SecurityRisk.UNKNOWN:
+            raise ValueError("Cannot compare unknown risk levels.")
+        risk_order = {
+            SecurityRisk.LOW: 1,
+            SecurityRisk.MEDIUM: 2,
+            SecurityRisk.HIGH: 3,
+        }
+        return risk_order[self] < risk_order[other]
+
+    def __gt__(self, other: object) -> bool:
+        """Reverse of __lt__. Required because str.__gt__ would otherwise
+        take precedence via MRO, breaking max() on SecurityRisk lists.
+        """
+        if not isinstance(other, SecurityRisk):
+            return NotImplemented
+        if self == SecurityRisk.UNKNOWN or other == SecurityRisk.UNKNOWN:
+            raise ValueError("Cannot compare unknown risk levels.")
+        risk_order = {
+            SecurityRisk.LOW: 1,
+            SecurityRisk.MEDIUM: 2,
+            SecurityRisk.HIGH: 3,
+        }
+        return risk_order[self] > risk_order[other]
