@@ -622,6 +622,7 @@ class TestACPAgentTelemetry:
             mock_response.usage = mock_usage
         else:
             mock_response.usage = None
+            mock_response.field_meta = None
 
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")

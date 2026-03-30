@@ -532,6 +532,25 @@ class ACPAgent(AgentBase):
                 ),
                 response_id=session_id,
             )
+        elif response is not None and response.field_meta is not None:
+            # Fallback: some ACP servers (e.g. Gemini CLI) report token
+            # usage in _meta.quota.token_count instead of response.usage.
+            quota = response.field_meta.get("quota", {})
+            token_count = quota.get("token_count", {})
+            input_tokens = token_count.get("input_tokens", 0)
+            output_tokens = token_count.get("output_tokens", 0)
+            if input_tokens or output_tokens:
+                self.llm.metrics.add_token_usage(
+                    prompt_tokens=input_tokens,
+                    completion_tokens=output_tokens,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
+                    reasoning_tokens=0,
+                    context_window=self._client._context_window_by_session.get(
+                        session_id, self._client._context_window
+                    ),
+                    response_id=session_id,
+                )
 
         if elapsed is not None:
             self.llm.metrics.add_response_latency(elapsed, session_id)
