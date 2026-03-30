@@ -181,6 +181,25 @@ async def _maybe_set_session_model(
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
+def _estimate_cost_from_tokens(
+    model: str, input_tokens: int, output_tokens: int
+) -> float:
+    """Estimate cost from token counts using LiteLLM's pricing database.
+
+    Returns 0.0 if pricing is unavailable for the model.
+    """
+    try:
+        import litellm
+
+        cost_map = litellm.get_model_cost_map("")
+        info = cost_map.get(model, {})
+        input_cost = info.get("input_cost_per_token", 0) or 0
+        output_cost = info.get("output_cost_per_token", 0) or 0
+        return input_tokens * input_cost + output_tokens * output_cost
+    except Exception:
+        return 0.0
+
+
 def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] | None:
     """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
     if not content:
@@ -511,19 +530,26 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        cost_recorded = False
         if usage_update is not None and usage_update.cost is not None:
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
                 self.llm.metrics.add_cost(delta)
+                cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
 
+        input_tokens = 0
+        output_tokens = 0
+
         if response is not None and response.usage is not None:
             usage = response.usage
+            input_tokens = usage.input_tokens
+            output_tokens = usage.output_tokens
             self.llm.metrics.add_token_usage(
-                prompt_tokens=usage.input_tokens,
-                completion_tokens=usage.output_tokens,
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
                 cache_read_tokens=usage.cached_read_tokens or 0,
                 cache_write_tokens=usage.cached_write_tokens or 0,
                 reasoning_tokens=usage.thought_tokens or 0,
@@ -551,6 +577,15 @@ class ACPAgent(AgentBase):
                     ),
                     response_id=session_id,
                 )
+
+        # Derive cost from token counts when the ACP server didn't report it.
+        # Uses LiteLLM's model pricing database (same source the proxy uses).
+        if not cost_recorded and (input_tokens or output_tokens) and self.acp_model:
+            cost = _estimate_cost_from_tokens(
+                self.acp_model, input_tokens, output_tokens
+            )
+            if cost > 0:
+                self.llm.metrics.add_cost(cost)
 
         if elapsed is not None:
             self.llm.metrics.add_response_latency(elapsed, session_id)
