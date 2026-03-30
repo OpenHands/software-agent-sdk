@@ -3,6 +3,12 @@
 See: https://github.com/OpenHands/software-agent-sdk/issues/2244
 """
 
+import tempfile
+
+import pytest
+
+from openhands.tools.terminal.definition import TerminalAction
+from openhands.tools.terminal.terminal import create_terminal_session
 from openhands.tools.terminal.utils.escape_filter import (
     TerminalQueryFilter,
     filter_terminal_queries,
@@ -292,3 +298,126 @@ class TestTerminalQueryFilter:
         r3 += f.flush()
 
         assert r1 + r2 + r3 == "\x1b[32mgreenmoretext\x1b[0m"
+
+
+# ── Integration tests: filter wired into TerminalSession ──────────────
+# These tests execute real commands through TerminalSession to verify
+# that terminal query sequences are filtered from captured output.
+# They exercise the full pipeline (PTY → output capture → filter)
+# rather than just the TerminalQueryFilter class in isolation.
+#
+# On main (without the filter), these tests FAIL because the raw
+# query sequences pass through to the observation text.
+
+terminal_types = ["subprocess", "tmux"]
+parametrize_terminal = pytest.mark.parametrize("terminal_type", terminal_types)
+
+
+@parametrize_terminal
+def test_session_filters_osc_background_query(terminal_type):
+    """OSC 11 background-color query in command output is stripped.
+
+    Tools like `gh` and `npm` emit OSC queries for terminal capability
+    detection. Without filtering, these leak into the observation text
+    and produce visible garbage when displayed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        session = create_terminal_session(work_dir=tmp, terminal_type=terminal_type)
+        session.initialize()
+        try:
+            obs = session.execute(
+                TerminalAction(command="printf 'before\\x1b]11;?\\x07after\\n'")
+            )
+            assert "\x1b]11;?" not in obs.text
+            assert "before" in obs.text
+            assert "after" in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal
+def test_session_filters_dsr_cursor_query(terminal_type):
+    """DSR cursor-position query (\\x1b[6n) is stripped from output.
+
+    Spinner libraries send DSR to determine cursor position. The query
+    must not appear in the returned observation.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        session = create_terminal_session(work_dir=tmp, terminal_type=terminal_type)
+        session.initialize()
+        try:
+            obs = session.execute(
+                TerminalAction(command="printf 'hello\\x1b[6nworld\\n'")
+            )
+            assert "\x1b[6n" not in obs.text
+            assert "hello" in obs.text
+            assert "world" in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal
+def test_session_filters_multiple_query_types(terminal_type):
+    """Multiple query types in a single command output are all stripped."""
+    with tempfile.TemporaryDirectory() as tmp:
+        session = create_terminal_session(work_dir=tmp, terminal_type=terminal_type)
+        session.initialize()
+        try:
+            obs = session.execute(
+                TerminalAction(command=("printf 'a\\x1b[6nb\\x1b]11;?\\x07c\\n'"))
+            )
+            assert "\x1b[6n" not in obs.text
+            assert "\x1b]11;?" not in obs.text
+            assert "a" in obs.text
+            assert "b" in obs.text
+            assert "c" in obs.text
+        finally:
+            session.close()
+
+
+def test_session_preserves_ansi_colors():
+    """ANSI color codes must survive filtering (not queries).
+
+    Only tested with subprocess; tmux capture-pane strips ANSI attributes.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        session = create_terminal_session(work_dir=tmp, terminal_type="subprocess")
+        session.initialize()
+        try:
+            obs = session.execute(
+                TerminalAction(command=("printf '\\x1b[32mgreen text\\x1b[0m\\n'"))
+            )
+            assert "\x1b[32m" in obs.text
+            assert "\x1b[0m" in obs.text
+            assert "green text" in obs.text
+        finally:
+            session.close()
+
+
+def test_session_filters_query_but_preserves_colors():
+    """Mixed output: queries removed, formatting kept.
+
+    Simulates real-world scenario where a tool emits both ANSI colors
+    for display formatting and terminal queries for capability detection
+    in the same output stream.
+
+    Only tested with subprocess; tmux capture-pane strips ANSI attributes.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        session = create_terminal_session(work_dir=tmp, terminal_type="subprocess")
+        session.initialize()
+        try:
+            obs = session.execute(
+                TerminalAction(
+                    command=("printf '\\x1b[32mgreen\\x1b]11;?\\x07text\\x1b[0m\\n'")
+                )
+            )
+            # Query removed
+            assert "\x1b]11;?" not in obs.text
+            # Colors preserved
+            assert "\x1b[32m" in obs.text
+            assert "\x1b[0m" in obs.text
+            assert "green" in obs.text
+            assert "text" in obs.text
+        finally:
+            session.close()
