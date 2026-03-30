@@ -20,6 +20,12 @@ ARG PORT=8000
 # Docker-in-Docker) reject dlopen() on such libraries with:
 #   "cannot enable executable stack as shared object requires: Invalid argument"
 # Debian's CPython packages do not have this issue.
+#
+# PORTABILITY: After the venv is built we bundle the interpreter, stdlib,
+# and libpython into /agent-server/.python/ and repoint the venv at it.
+# This makes /agent-server fully self-contained — downstream consumers
+# (e.g. eval images) can COPY it onto any base image without needing a
+# compatible system Python.
 ####################################################################################
 FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
@@ -39,6 +45,51 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv venv --python-preference only-system .venv && uv sync --frozen --no-editable --extra boto3
+
+# Bundle the Python runtime inside /agent-server so that the entire directory
+# is self-contained and portable.  Eval images (and any other consumer) can
+# COPY /agent-server onto *any* base image without requiring that base image
+# to ship a compatible system Python.
+#
+# What we copy:
+#   .python/bin/python3.13     – the interpreter binary
+#   .python/lib/python3.13/    – the standard library (minus tests)
+#   .python/lib/libpython*.so* – shared libraries (Debian builds --enable-shared)
+#
+# We then repoint the venv's symlinks and pyvenv.cfg at the bundled copy.
+RUN set -eux; \
+    REAL_PYTHON=$(readlink -f .venv/bin/python3); \
+    PY_VER=$("${REAL_PYTHON}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"); \
+    PYTHON_PREFIX=$("${REAL_PYTHON}" -c "import sys; print(sys.base_prefix)"); \
+    # --- copy interpreter binary ------------------------------------------------- \
+    mkdir -p .python/bin; \
+    cp "${REAL_PYTHON}" ".python/bin/python${PY_VER}"; \
+    ln -s "python${PY_VER}" .python/bin/python3; \
+    ln -s "python${PY_VER}" .python/bin/python; \
+    # --- copy standard library (skip test suite to save ~30 MB) ------------------ \
+    mkdir -p .python/lib; \
+    cp -a "${PYTHON_PREFIX}/lib/python${PY_VER}" ".python/lib/python${PY_VER}"; \
+    rm -rf ".python/lib/python${PY_VER}/test" \
+           ".python/lib/python${PY_VER}/tests" \
+           ".python/lib/python${PY_VER}/idle_test" \
+           ".python/lib/python${PY_VER}/idlelib"; \
+    # --- copy shared libraries (libpython) --------------------------------------- \
+    for lib in "${PYTHON_PREFIX}"/lib/libpython*.so*; do \
+        [ -e "$lib" ] && cp -a "$lib" .python/lib/; \
+    done; \
+    # --- repoint venv at the bundled Python -------------------------------------- \
+    for f in .venv/bin/python*; do \
+        [ -L "$f" ] || continue; \
+        name=$(basename "$f"); \
+        rm "$f"; \
+        ln -s "../../.python/bin/${name}" "$f"; \
+    done; \
+    # Ensure canonical names resolve (some venvs only create python3 + python) \
+    [ -L .venv/bin/python ] || ln -s "../../.python/bin/python" .venv/bin/python; \
+    [ -L .venv/bin/python3 ] || ln -s "../../.python/bin/python3" .venv/bin/python3; \
+    sed -i "s|^home = .*|home = /agent-server/.python/bin|" .venv/pyvenv.cfg; \
+    # --- quick smoke-test inside the builder ------------------------------------- \
+    .venv/bin/python -c "import sys; print('bundled python:', sys.executable, sys.version)"
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -246,11 +297,14 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 FROM base-image AS source
 ARG USERNAME
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
+# Bundled Python's libpython*.so lives under /agent-server/.python/lib
+ENV LD_LIBRARY_PATH=/agent-server/.python/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 FROM base-image-minimal AS source-minimal
 ARG USERNAME
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
+ENV LD_LIBRARY_PATH=/agent-server/.python/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 ############################

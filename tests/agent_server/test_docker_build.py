@@ -865,3 +865,64 @@ def test_cache_export_modes(
         assert f"mode={expect_mode_value}" in cmd_str
     else:
         assert "--cache-to" not in cmd_str
+
+
+# ---------------------------------------------------------------------------
+# Portability contract tests — verify that the Dockerfile bundles Python
+# inside /agent-server so that COPY /agent-server works on any base image.
+# These tests parse the Dockerfile text (no Docker daemon needed).
+# ---------------------------------------------------------------------------
+
+_DOCKERFILE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "openhands-agent-server"
+    / "openhands"
+    / "agent_server"
+    / "docker"
+    / "Dockerfile"
+)
+
+
+@pytest.fixture()
+def dockerfile_text() -> str:
+    return _DOCKERFILE_PATH.read_text()
+
+
+def test_builder_bundles_python_runtime(dockerfile_text: str):
+    """The builder stage must copy the interpreter into .python/."""
+    assert ".python/bin" in dockerfile_text, (
+        "Builder must copy the Python binary into .python/bin"
+    )
+    assert "pyvenv.cfg" in dockerfile_text, (
+        "Builder must update pyvenv.cfg to point at the bundled Python"
+    )
+
+
+def test_source_targets_set_ld_library_path(dockerfile_text: str):
+    """source and source-minimal targets need LD_LIBRARY_PATH for libpython."""
+    # Find all lines between "AS source" and next "FROM" or EOF
+    lines = dockerfile_text.splitlines()
+    in_source_target = False
+    found_ld_path = False
+    for line in lines:
+        if "AS source-minimal" in line or "AS source" in line:
+            in_source_target = True
+            continue
+        if in_source_target and line.startswith("FROM "):
+            in_source_target = False
+        if in_source_target and "LD_LIBRARY_PATH" in line:
+            assert "/agent-server/.python/lib" in line
+            found_ld_path = True
+    assert found_ld_path, (
+        "source / source-minimal targets must set "
+        "LD_LIBRARY_PATH=/agent-server/.python/lib"
+    )
+
+
+def test_portability_test_dockerfile_exists():
+    """A portability-test Dockerfile must exist for CI validation."""
+    portability_df = _DOCKERFILE_PATH.parent / "Dockerfile.portability-test"
+    assert portability_df.exists(), (
+        "Dockerfile.portability-test should exist alongside the main "
+        "Dockerfile for CI-based portability validation"
+    )
