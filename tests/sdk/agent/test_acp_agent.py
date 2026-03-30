@@ -896,6 +896,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"path": "/tmp/test.py"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -907,6 +908,7 @@ class TestACPToolCallAccumulation:
         assert tc["status"] == "in_progress"
         assert tc["raw_input"] == {"path": "/tmp/test.py"}
         assert tc["raw_output"] is None
+        assert tc["content"] is None
 
     @pytest.mark.asyncio
     async def test_session_update_merges_tool_call_progress(self):
@@ -923,6 +925,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"command": "ls"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -934,6 +937,7 @@ class TestACPToolCallAccumulation:
         progress.status = "completed"
         progress.raw_input = None  # not updated
         progress.raw_output = "file1.py\nfile2.py"
+        progress.content = None
 
         await client.session_update("sess-1", progress)
 
@@ -959,6 +963,7 @@ class TestACPToolCallAccumulation:
             start.status = "completed"
             start.raw_input = None
             start.raw_output = None
+            start.content = None
             await client.session_update("sess-1", start)
 
         assert len(client.accumulated_tool_calls) == 3

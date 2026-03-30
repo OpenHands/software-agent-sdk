@@ -181,6 +181,13 @@ async def _maybe_set_session_model(
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
+def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] | None:
+    """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
+    if not content:
+        return None
+    return [c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in content]
+
+
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     """Read lines from *source* and forward only JSON-RPC lines to *dest*.
 
@@ -307,6 +314,7 @@ class _OpenHandsACPBridge:
                     "status": update.status,
                     "raw_input": update.raw_input,
                     "raw_output": update.raw_output,
+                    "content": _serialize_tool_content(update.content),
                 }
             )
             logger.debug("ACP tool call start: %s", update.tool_call_id)
@@ -324,6 +332,8 @@ class _OpenHandsACPBridge:
                         tc["raw_input"] = update.raw_input
                     if update.raw_output is not None:
                         tc["raw_output"] = update.raw_output
+                    if update.content is not None:
+                        tc["content"] = _serialize_tool_content(update.content)
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
         else:
@@ -853,6 +863,7 @@ class ACPAgent(AgentBase):
                     tool_kind=tc.get("tool_kind"),
                     raw_input=tc.get("raw_input"),
                     raw_output=tc.get("raw_output"),
+                    content=tc.get("content"),
                     is_error=tc.get("status") == "failed",
                 )
                 on_event(tc_event)
