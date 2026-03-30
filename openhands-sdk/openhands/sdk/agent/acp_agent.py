@@ -679,7 +679,14 @@ class ACPAgent(AgentBase):
                 method_id = _select_auth_method(auth_methods, env)
                 if method_id is not None:
                     logger.info("Authenticating with ACP method: %s", method_id)
-                    await conn.authenticate(method_id=method_id)
+                    auth_kwargs: dict[str, Any] = {}
+                    # Gemini CLI accepts a gateway baseUrl during auth to
+                    # route API calls through a proxy (e.g. LiteLLM).
+                    if method_id == "gemini-api-key":
+                        gemini_base_url = env.get("GEMINI_BASE_URL")
+                        if gemini_base_url:
+                            auth_kwargs["gateway"] = {"baseUrl": gemini_base_url}
+                    await conn.authenticate(method_id=method_id, **auth_kwargs)
                 else:
                     logger.warning(
                         "ACP server offers auth methods %s but no matching "
