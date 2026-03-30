@@ -973,8 +973,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         timeout=self.timeout,
                         drop_params=self.drop_params,
                         seed=self.seed,
-                        **self._aws_kwargs(),
-                        **final_kwargs,
+                        **{**self._aws_kwargs(), **final_kwargs},
                     )
                     if isinstance(ret, ResponsesAPIResponse):
                         if user_enable_streaming:
@@ -1143,8 +1142,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     drop_params=self.drop_params,
                     seed=self.seed,
                     messages=messages,
-                    **self._aws_kwargs(),
-                    **kwargs,
+                    **{**self._aws_kwargs(), **kwargs},
                 )
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)
