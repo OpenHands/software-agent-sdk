@@ -106,7 +106,8 @@ on:
                 description: >-
                     Agent type: 'default' for standard Agent,
                     'acp-claude' for ACPAgent with Claude Code,
-                    'acp-codex' for ACPAgent with Codex.
+                    'acp-codex' for ACPAgent with Codex,
+                    'acp-gemini' for ACPAgent with Gemini CLI.
                 required: false
                 default: default
                 type: choice
@@ -114,6 +115,7 @@ on:
                     - default
                     - acp-claude
                     - acp-codex
+                    - acp-gemini
             partial_archive_url:
                 description: Resume partial work from full archive tar.gz
                 required: false
