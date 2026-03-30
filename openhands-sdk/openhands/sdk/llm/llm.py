@@ -509,21 +509,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             os.environ["OR_SITE_URL"] = self.openrouter_site_url
         if self.openrouter_app_name:
             os.environ["OR_APP_NAME"] = self.openrouter_app_name
-        if self.aws_access_key_id:
-            assert isinstance(self.aws_access_key_id, SecretStr)
-            os.environ["AWS_ACCESS_KEY_ID"] = self.aws_access_key_id.get_secret_value()
-        if self.aws_secret_access_key:
-            assert isinstance(self.aws_secret_access_key, SecretStr)
-            os.environ["AWS_SECRET_ACCESS_KEY"] = (
-                self.aws_secret_access_key.get_secret_value()
-            )
-        if self.aws_session_token:
-            assert isinstance(self.aws_session_token, SecretStr)
-            os.environ["AWS_SESSION_TOKEN"] = self.aws_session_token.get_secret_value()
-        if self.aws_region_name:
-            os.environ["AWS_REGION_NAME"] = self.aws_region_name
-        if self.aws_profile_name:
-            os.environ["AWS_PROFILE"] = self.aws_profile_name
 
         # Metrics + Telemetry wiring
         if self._metrics is None:
@@ -551,6 +536,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _aws_kwargs(self) -> dict[str, str]:
+        """Build kwargs dict for AWS params to pass to litellm calls."""
+        kw: dict[str, str] = {}
+        if self.aws_access_key_id:
+            assert isinstance(self.aws_access_key_id, SecretStr)
+            kw["aws_access_key_id"] = self.aws_access_key_id.get_secret_value()
+        if self.aws_secret_access_key:
+            assert isinstance(self.aws_secret_access_key, SecretStr)
+            kw["aws_secret_access_key"] = self.aws_secret_access_key.get_secret_value()
+        if self.aws_session_token:
+            assert isinstance(self.aws_session_token, SecretStr)
+            kw["aws_session_token"] = self.aws_session_token.get_secret_value()
+        if self.aws_region_name:
+            kw["aws_region_name"] = self.aws_region_name
+        if self.aws_profile_name:
+            kw["aws_profile_name"] = self.aws_profile_name
+        if self.aws_role_name:
+            kw["aws_role_name"] = self.aws_role_name
+        if self.aws_session_name:
+            kw["aws_session_name"] = self.aws_session_name
+        if self.aws_bedrock_runtime_endpoint:
+            kw["aws_bedrock_runtime_endpoint"] = self.aws_bedrock_runtime_endpoint
+        return kw
 
     def _retry_listener_fn(
         self, attempt_number: int, num_retries: int, _err: BaseException | None
@@ -951,9 +960,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         timeout=self.timeout,
                         drop_params=self.drop_params,
                         seed=self.seed,
-                        aws_role_name=self.aws_role_name,
-                        aws_session_name=self.aws_session_name,
-                        aws_bedrock_runtime_endpoint=self.aws_bedrock_runtime_endpoint,
+                        **self._aws_kwargs(),
                         **final_kwargs,
                     )
                     if isinstance(ret, ResponsesAPIResponse):
@@ -1123,9 +1130,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     drop_params=self.drop_params,
                     seed=self.seed,
                     messages=messages,
-                    aws_role_name=self.aws_role_name,
-                    aws_session_name=self.aws_session_name,
-                    aws_bedrock_runtime_endpoint=self.aws_bedrock_runtime_endpoint,
+                    **self._aws_kwargs(),
                     **kwargs,
                 )
                 if enable_streaming and on_token is not None:
