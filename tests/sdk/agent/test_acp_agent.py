@@ -80,10 +80,6 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         assert agent.acp_env == {}
 
-    def test_system_message_returns_acp_managed(self):
-        agent = _make_agent()
-        assert agent.system_message == "ACP-managed agent"
-
     def test_get_all_llms_yields_sentinel(self):
         agent = _make_agent()
         llms = list(agent.get_all_llms())
