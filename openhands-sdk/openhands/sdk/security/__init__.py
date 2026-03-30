@@ -5,6 +5,11 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmRisky,
     NeverConfirm,
 )
+from openhands.sdk.security.defense_in_depth import (
+    EnsembleSecurityAnalyzer,
+    PatternSecurityAnalyzer,
+    PolicyRailSecurityAnalyzer,
+)
 from openhands.sdk.security.grayswan import GraySwanAnalyzer
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
@@ -15,6 +20,9 @@ __all__ = [
     "SecurityAnalyzerBase",
     "LLMSecurityAnalyzer",
     "GraySwanAnalyzer",
+    "PatternSecurityAnalyzer",
+    "PolicyRailSecurityAnalyzer",
+    "EnsembleSecurityAnalyzer",
     "ConfirmationPolicyBase",
     "AlwaysConfirm",
     "NeverConfirm",
