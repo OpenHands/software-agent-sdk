@@ -272,3 +272,32 @@ def test_aws_env_vars_set_on_init(monkeypatch):
     assert os.environ["AWS_SECRET_ACCESS_KEY"] == "SECRET"
     assert os.environ["AWS_SESSION_TOKEN"] == "TOKEN"
     assert os.environ["AWS_REGION_NAME"] == "us-west-2"
+
+
+def test_aws_kwargs_returns_all_params():
+    """Verify _aws_kwargs() builds the correct dict from LLM fields."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_access_key_id="AKID",
+        aws_secret_access_key="SECRET",
+        aws_session_token="TOKEN",
+        aws_region_name="us-west-2",
+        aws_profile_name="dev",
+        aws_role_name="arn:aws:iam::123:role/R",
+        aws_session_name="sess",
+        aws_bedrock_runtime_endpoint="https://proxy.example.com",
+    )
+
+    kw = llm._aws_kwargs()
+    assert kw == {
+        "aws_access_key_id": "AKID",
+        "aws_secret_access_key": "SECRET",
+        "aws_session_token": "TOKEN",
+        "aws_region_name": "us-west-2",
+        "aws_profile_name": "dev",
+        "aws_role_name": "arn:aws:iam::123:role/R",
+        "aws_session_name": "sess",
+        "aws_bedrock_runtime_endpoint": "https://proxy.example.com",
+    }
