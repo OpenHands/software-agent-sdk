@@ -78,10 +78,10 @@ def test_chat_serializes_images_when_vision_supported(model):
 
 
 @patch(
-    "openhands.sdk.llm.llm.get_litellm_model_info",
+    "openhands.sdk.llm.capabilities.get_litellm_model_info",
     return_value={"supports_vision": False},
 )
-@patch("openhands.sdk.llm.llm.supports_vision", return_value=False)
+@patch("openhands.sdk.llm.capabilities.supports_vision", return_value=False)
 def test_message_with_image_does_not_enable_vision_for_text_only_model(
     mock_sv, _mock_model_info
 ):
@@ -147,10 +147,10 @@ def test_disable_vision_overrides_litellm_detection():
 
 
 @patch(
-    "openhands.sdk.llm.llm.get_litellm_model_info",
+    "openhands.sdk.llm.capabilities.get_litellm_model_info",
     return_value={"supports_vision": False},
 )
-@patch("openhands.sdk.llm.llm.supports_vision", return_value=False)
+@patch("openhands.sdk.llm.capabilities.supports_vision", return_value=False)
 def test_message_with_image_in_responses_does_not_include_input_image(
     mock_sv, _mock_model_info
 ):
