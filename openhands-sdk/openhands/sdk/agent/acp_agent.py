@@ -163,8 +163,10 @@ def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any
     """Build ACP session metadata for server-specific model selection."""
     if not acp_model:
         return {}
+    # claude-agent-acp: model selection via session _meta (claudeCode.options.model)
     if "claude" in agent_name.lower():
         return {"claudeCode": {"options": {"model": acp_model}}}
+    # codex-acp, gemini-cli: use protocol-level set_session_model instead (see below)
     return {}
 
 
@@ -177,6 +179,8 @@ async def _maybe_set_session_model(
     """Apply a protocol-level session model override when the server supports it."""
     if not acp_model:
         return
+    # codex-acp, gemini-cli: model selection via set_session_model protocol method
+    # claude-agent-acp: uses session _meta instead (see _build_session_meta)
     if "codex-acp" in agent_name.lower() or "gemini-cli" in agent_name.lower():
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
@@ -530,6 +534,9 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        # -- Cost recording ---------------------------------------------------
+        # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
+        # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
         cost_recorded = False
         if usage_update is not None and usage_update.cost is not None:
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
@@ -540,9 +547,11 @@ class ACPAgent(AgentBase):
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
 
+        # -- Token usage recording --------------------------------------------
         input_tokens = 0
         output_tokens = 0
 
+        # claude-agent-acp, codex-acp: token usage in PromptResponse.usage
         if response is not None and response.usage is not None:
             usage = response.usage
             input_tokens = usage.input_tokens
@@ -558,9 +567,8 @@ class ACPAgent(AgentBase):
                 ),
                 response_id=session_id,
             )
+        # gemini-cli: token usage in PromptResponse._meta.quota.token_count
         elif response is not None and response.field_meta is not None:
-            # Fallback: some ACP servers (e.g. Gemini CLI) report token
-            # usage in _meta.quota.token_count instead of response.usage.
             quota = response.field_meta.get("quota", {})
             token_count = quota.get("token_count", {})
             input_tokens = token_count.get("input_tokens", 0)
@@ -578,8 +586,10 @@ class ACPAgent(AgentBase):
                     response_id=session_id,
                 )
 
-        # Derive cost from token counts when the ACP server didn't report it.
-        # Uses LiteLLM's model pricing database (same source the proxy uses).
+        # -- Cost derivation from tokens --------------------------------------
+        # gemini-cli: no UsageUpdate cost, so derive from token counts using
+        # LiteLLM's model pricing database (same source the proxy uses).
+        # claude-agent-acp, codex-acp: skipped since cost_recorded is True.
         if not cost_recorded and (input_tokens or output_tokens) and self.acp_model:
             cost = _estimate_cost_from_tokens(
                 self.acp_model, input_tokens, output_tokens
@@ -752,8 +762,9 @@ class ACPAgent(AgentBase):
                 if method_id is not None:
                     logger.info("Authenticating with ACP method: %s", method_id)
                     auth_kwargs: dict[str, Any] = {}
-                    # Gemini CLI accepts a gateway baseUrl during auth to
-                    # route API calls through a proxy (e.g. LiteLLM).
+                    # gemini-cli: pass gateway baseUrl to route API calls
+                    # through LiteLLM proxy. claude-agent-acp and codex-acp
+                    # read their provider base URL from env vars directly.
                     if method_id == "gemini-api-key":
                         gemini_base_url = env.get("GEMINI_BASE_URL")
                         if gemini_base_url:
