@@ -12,12 +12,12 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         # Plain model names
         "claude-sonnet-4-5-20250929",
         "gemini-2.5-flash",
-        "gemini-3-pro",
+        "gemini-3-pro-preview",
         # With provider/proxy prefixes
         "anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/gemini-2.5-flash",
-        "litellm_proxy/gemini-3-pro",
+        "litellm_proxy/gemini-3-pro-preview",
     ],
 )
 def test_vision_is_active_supported_models(model):
@@ -56,7 +56,7 @@ def _has_input_image(item: dict) -> bool:
     [
         "claude-sonnet-4-5-20250929",
         "gemini-2.5-flash",
-        "gemini-3-pro",
+        "gemini-3-pro-preview",
     ],
 )
 def test_chat_serializes_images_when_vision_supported(model):
@@ -174,7 +174,7 @@ def test_message_with_image_in_responses_does_not_include_input_image(
     [
         "claude-sonnet-4-5-20250929",
         "gemini-2.5-flash",
-        "gemini-3-pro",
+        "gemini-3-pro-preview",
     ],
 )
 def test_responses_serializes_images_when_vision_supported(model):
