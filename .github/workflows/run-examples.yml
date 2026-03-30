@@ -27,7 +27,7 @@ jobs:
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
-              if: github.event_name == 'pull_request'
+              if: false
               uses: lewagon/wait-on-check-action@v1.5.0
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
@@ -69,14 +69,14 @@ jobs:
               shell: bash
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  LLM_MODEL: openhands/claude-haiku-4-5-20251001
+                  LLM_MODEL: ${{ github.event_name == 'pull_request' && 'openhands/gemini-3.1-pro-preview' || 'openhands/claude-haiku-4-5-20251001' }}
                   LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   RUNTIME_API_KEY: ${{ secrets.RUNTIME_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PR_NUMBER: ${{ github.event.pull_request.number }}
                   REPO_OWNER: ${{ github.repository_owner }}
                   REPO_NAME: ${{ github.event.repository.name }}
-                  GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+                  GITHUB_SHA: ${{ github.event_name == 'pull_request' && '' || github.sha }}
                   OPENHANDS_CLOUD_API_KEY: ${{ secrets.ALLHANDS_BOT_OPENHANDS_SAAS_API_KEY }}
                   # ACP agents (Claude Code, Codex) route through LiteLLM proxy
                   ANTHROPIC_BASE_URL: https://llm-proxy.app.all-hands.dev
