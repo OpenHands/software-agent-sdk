@@ -951,6 +951,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         timeout=self.timeout,
                         drop_params=self.drop_params,
                         seed=self.seed,
+                        aws_role_name=self.aws_role_name,
+                        aws_session_name=self.aws_session_name,
+                        aws_bedrock_runtime_endpoint=self.aws_bedrock_runtime_endpoint,
                         **final_kwargs,
                     )
                     if isinstance(ret, ResponsesAPIResponse):
@@ -1120,6 +1123,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     drop_params=self.drop_params,
                     seed=self.seed,
                     messages=messages,
+                    aws_role_name=self.aws_role_name,
+                    aws_session_name=self.aws_session_name,
+                    aws_bedrock_runtime_endpoint=self.aws_bedrock_runtime_endpoint,
                     **kwargs,
                 )
                 if enable_streaming and on_token is not None:

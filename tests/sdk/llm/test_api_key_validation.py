@@ -197,3 +197,49 @@ def test_aws_bedrock_runtime_endpoint():
         aws_region_name="us-west-2",
     )
     assert llm.aws_bedrock_runtime_endpoint == "https://my-proxy.example.com"
+
+
+def test_aws_bedrock_params_forwarded_to_litellm():
+    """Verify aws_role_name, aws_session_name, and aws_bedrock_runtime_endpoint
+    are passed as kwargs to litellm.completion()."""
+    from unittest.mock import patch
+
+    from litellm.types.utils import ModelResponse
+
+    from openhands.sdk.llm import Message, TextContent
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_role_name="arn:aws:iam::123456789012:role/MyRole",
+        aws_session_name="my-session",
+        aws_bedrock_runtime_endpoint="https://my-proxy.example.com",
+        aws_region_name="us-west-2",
+    )
+
+    with patch("openhands.sdk.llm.llm.litellm_completion") as mock_completion:
+        mock_completion.return_value = ModelResponse(
+            id="test-id",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hi"},
+                    "finish_reason": "stop",
+                }
+            ],
+            created=1234567890,
+            model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            object="chat.completion",
+        )
+
+        messages = [Message(role="user", content=[TextContent(text="Hello")])]
+        llm.completion(messages=messages)
+
+        call_kwargs = mock_completion.call_args[1]
+        assert call_kwargs["aws_role_name"] == "arn:aws:iam::123456789012:role/MyRole"
+        assert call_kwargs["aws_session_name"] == "my-session"
+        assert (
+            call_kwargs["aws_bedrock_runtime_endpoint"]
+            == "https://my-proxy.example.com"
+        )
