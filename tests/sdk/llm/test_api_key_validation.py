@@ -253,6 +253,7 @@ def test_aws_env_vars_set_on_init(monkeypatch):
     for k in [
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
         "AWS_REGION_NAME",
     ]:
         monkeypatch.delenv(k, raising=False)
@@ -263,9 +264,11 @@ def test_aws_env_vars_set_on_init(monkeypatch):
         api_key=None,
         aws_access_key_id="AKID",
         aws_secret_access_key="SECRET",
+        aws_session_token="TOKEN",
         aws_region_name="us-west-2",
     )
 
     assert os.environ["AWS_ACCESS_KEY_ID"] == "AKID"
     assert os.environ["AWS_SECRET_ACCESS_KEY"] == "SECRET"
+    assert os.environ["AWS_SESSION_TOKEN"] == "TOKEN"
     assert os.environ["AWS_REGION_NAME"] == "us-west-2"

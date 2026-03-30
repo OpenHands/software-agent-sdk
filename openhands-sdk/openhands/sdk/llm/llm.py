@@ -517,6 +517,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             os.environ["AWS_SECRET_ACCESS_KEY"] = (
                 self.aws_secret_access_key.get_secret_value()
             )
+        if self.aws_session_token:
+            assert isinstance(self.aws_session_token, SecretStr)
+            os.environ["AWS_SESSION_TOKEN"] = self.aws_session_token.get_secret_value()
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
 
