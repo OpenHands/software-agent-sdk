@@ -72,13 +72,18 @@ _DECRQSS_PATTERN = re.compile(
 #   - \x1b alone (CSI/OSC/DCS start)
 #   - \x1b[ followed by optional digits/params but no command char
 #   - \x1b] followed by digits but no terminator
-#   - \x1bP followed by content but no ST terminator
+#   - \x1bP followed by content but no ST terminator (including partial ST)
+#
+# NOTE: DCS sequences are terminated by ST (\x1b\\). When a chunk ends with
+# the ESC that starts ST, we must hold the ENTIRE DCS sequence, not just
+# the trailing ESC. The pattern handles this by matching \x1bP followed by
+# any content that doesn't contain a complete ST terminator.
 _INCOMPLETE_ESC_PATTERN = re.compile(
     rb"(?:"
     rb"\x1b$|"  # ESC at end (might be start of any sequence)
     rb"\x1b\[[0-9;>]*$|"  # CSI without command char
     rb"\x1b\][^\x07]*$|"  # OSC without BEL terminator (ST needs \x1b\)
-    rb"\x1bP[^\x1b]*$"  # DCS without ST terminator
+    rb"\x1bP(?:[^\x1b]|\x1b(?!\\))*$"  # DCS without complete ST terminator
     rb")"
 )
 

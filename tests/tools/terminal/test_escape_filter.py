@@ -252,6 +252,22 @@ class TestTerminalQueryFilter:
         result2 += f.flush()
         assert result1 + result2 == "textmore"
 
+    def test_decrqss_split_at_st_terminator(self):
+        """DECRQSS query split exactly at ST terminator boundary should be removed.
+
+        Regression test for: https://github.com/OpenHands/software-agent-sdk/pull/2334
+        When the chunk boundary falls between the ESC and backslash of the ST
+        terminator (\x1b\\), the entire DCS sequence must still be filtered.
+        """
+        f = TerminalQueryFilter()
+        # Split exactly at the ST terminator: ESC is at end of chunk 1
+        # chunk 1: "text\x1bP$qsetting\x1b" - ESC is start of ST terminator
+        # chunk 2: "\\more" - backslash completes ST
+        result1 = f.filter("text\x1bP$qsetting\x1b")
+        result2 = f.filter("\\more")
+        result2 += f.flush()
+        assert result1 + result2 == "textmore"
+
     def test_formatting_preserved_across_chunks(self):
         """Color/formatting codes split across chunks should be preserved."""
         f = TerminalQueryFilter()
