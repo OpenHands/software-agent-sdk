@@ -111,6 +111,7 @@ def _make_dummy_llm() -> LLM:
 _BYPASS_MODE_MAP: dict[str, str] = {
     "claude-agent": "bypassPermissions",
     "codex-acp": "full-access",
+    "gemini-cli": "yolo",
 }
 _DEFAULT_BYPASS_MODE = "full-access"
 
@@ -122,6 +123,7 @@ _DEFAULT_BYPASS_MODE = "full-access"
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "codex-api-key": "CODEX_API_KEY",
     "openai-api-key": "OPENAI_API_KEY",
+    "gemini-api-key": "GEMINI_API_KEY",
 }
 
 
@@ -147,6 +149,7 @@ def _resolve_bypass_mode(agent_name: str) -> str:
     Different ACP servers use different mode IDs for the same concept:
     - claude-agent-acp → ``bypassPermissions``
     - codex-acp        → ``full-access``
+    - gemini-cli       → ``yolo``
 
     Falls back to ``full-access`` for unknown servers.
     """
@@ -174,7 +177,7 @@ async def _maybe_set_session_model(
     """Apply a protocol-level session model override when the server supports it."""
     if not acp_model:
         return
-    if "codex-acp" in agent_name.lower():
+    if "codex-acp" in agent_name.lower() or "gemini-cli" in agent_name.lower():
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
