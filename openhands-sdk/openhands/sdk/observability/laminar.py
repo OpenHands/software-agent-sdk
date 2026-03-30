@@ -24,7 +24,11 @@ def _get_int_env(key: str) -> int | None:
     """Read an environment variable as an optional int."""
     val = get_env(key)
     if val is not None and val != "":
-        return int(val)
+        try:
+            return int(val)
+        except ValueError:
+            logger.warning("%s must be an integer, got %r", key, val)
+            return None
     return None
 
 
