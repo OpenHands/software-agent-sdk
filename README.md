@@ -95,9 +95,19 @@ The documentation includes:
 
 The `examples/` directory contains comprehensive usage examples:
 
-- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and microagents
+- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and skills
 - **Remote Agent Server** (`examples/02_remote_agent_server/`) - Client-server architecture and WebSocket connections
 - **GitHub Workflows** (`examples/03_github_workflows/`) - CI/CD integration and automated workflows
+
+## Skills for modern package tooling
+
+If you enable public skills with `AgentContext(load_public_skills=True)`, the default
+`OpenHands/extensions` marketplace includes, for example, `uv` and `deno` skills.
+Agents can automatically pick up current package-management guidance for repositories
+that use markers like `uv.lock`, `deno.json`, `deno.jsonc`, or `deno.lock`.
+
+See `examples/01_standalone_sdk/03_activate_skill.py` for a minimal example that
+turns on public skill loading.
 
 ## Contributing
 

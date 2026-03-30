@@ -12,6 +12,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
@@ -156,6 +157,13 @@ class _StartConversationRequestBase(BaseModel):
             "hooks."
         ),
     )
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description=(
+            "Key-value tags for the conversation. Keys must be lowercase "
+            "alphanumeric. Values are arbitrary strings up to 256 characters."
+        ),
+    )
     autotitle: bool = Field(
         default=True,
         description=(
@@ -280,6 +288,14 @@ class _ConversationInfoBase(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description=(
+            "Key-value tags for the conversation. Keys must be lowercase "
+            "alphanumeric. Values are arbitrary strings up to 256 characters."
+        ),
+    )
+
 
 class ConversationInfo(_ConversationInfoBase):
     """Information about a conversation running locally without a Runtime sandbox."""
@@ -398,8 +414,19 @@ class SetSecurityAnalyzerRequest(BaseModel):
 class UpdateConversationRequest(BaseModel):
     """Payload to update conversation metadata."""
 
-    title: str = Field(
-        ..., min_length=1, max_length=200, description="New conversation title"
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="New conversation title",
+    )
+    tags: ConversationTags | None = Field(
+        default=None,
+        description=(
+            "Key-value tags to set on the conversation. Keys must be lowercase "
+            "alphanumeric. Values are arbitrary strings up to 256 characters. "
+            "Replaces all existing tags when provided."
+        ),
     )
 
 
