@@ -42,11 +42,6 @@ Both PRs require human review:
    changes or new features that need adoption
 3. **Merge** once satisfied
 
-## Slack Notification
-
-The workflow posts to `#agent-team` (channel `C08E1SYKEM9`) with links
-to the release and version bump PRs. Confirm the notification was sent.
-
 ## Evaluation on OpenHands Index
 
 If not already done pre-release, trigger a full evaluation run
