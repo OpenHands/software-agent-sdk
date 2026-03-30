@@ -19,6 +19,10 @@ When adding non-Python files (JS, templates, etc.) loaded at runtime, add them t
 The agent-server **REST API** (the FastAPI OpenAPI surface under `/api/**`) is a
 public API and must remain backward compatible across releases.
 
+All REST contract breaks need a deprecation notice and a runway of
+**5 minor releases** before removing the old contract or making an
+incompatible replacement mandatory.
+
 ### Deprecating an endpoint
 
 When deprecating a REST endpoint:
@@ -27,7 +31,7 @@ When deprecating a REST endpoint:
    FastAPI route decorator.
 2. Add a docstring note that includes:
    - the version it was deprecated in
-   - the version it is scheduled for removal in (default: **3 minor releases** later)
+   - the version it is scheduled for removal in (default: **5 minor releases** later)
 3. Do **not** use `openhands.sdk.utils.deprecation.deprecated` for FastAPI routes.
    That decorator affects Python warnings/docstrings, not OpenAPI, and may be a
    no-op before the declared deprecation version.
@@ -39,16 +43,34 @@ Example:
 async def foo():
     """Do something.
 
-    Deprecated since v1.2.3 and scheduled for removal in v1.5.0.
+    Deprecated since v1.2.3 and scheduled for removal in v1.7.0.
     """
 ```
 
-### Removing an endpoint
+That exact sentence shape is what the CI checks look for, so keep the wording
+close to the example above.
 
-Removing an endpoint is a breaking change.
+### Deprecating a REST contract change
 
-- Endpoints must be deprecated for **at least one release** before removal.
-- Any breaking REST API change requires at least a **MINOR** SemVer bump.
+If an existing endpoint's request or response schema needs an incompatible change:
+
+1. Do **not** replace the old contract in place without a migration path.
+2. Add a deprecation notice for the old contract in the endpoint documentation and
+   release notes, including the deprecated-in version and the removal target.
+3. Keep the old contract available for **5 minor releases** while clients migrate.
+   Prefer additive schema changes, parallel fields, or a versioned endpoint or
+   versioned contract during the runway.
+4. Only remove the old contract or make the incompatible shape mandatory after the
+   runway has elapsed.
+
+### Removing an endpoint or legacy contract
+
+Removing an endpoint or a previously supported REST contract is a breaking change.
+
+- Endpoints and legacy contracts must have a deprecation notice for **5 minor
+  releases** before removal.
+- Any release that introduces an allowed breaking REST API change should be
+  at least a **MINOR** SemVer bump, after a 5-minor-release deprecation runway.
 
 ### CI enforcement
 
@@ -61,8 +83,19 @@ It currently enforces:
 - FastAPI route handlers must not use `openhands.sdk.utils.deprecation.deprecated`.
 - Endpoints that document deprecation in their OpenAPI description must also set
   `deprecated: true`.
-- No removal of operations (path + method) unless they were already marked
-  `deprecated: true` in the previous release.
-- Breaking changes require a MINOR (or MAJOR) version bump.
+- Removed operations must already be marked `deprecated: true` in the previous
+  release and must have reached the scheduled removal version documented in the
+  baseline OpenAPI description.
+- The recognized removal note uses the same wording as the deprecation checks,
+  for example: `Deprecated since v1.14.0 and scheduled for removal in v1.19.0.`
+- Other breaking REST contract changes fail the check; the replacement must ship
+  additively or behind a versioned contract until the 5-minor-release runway has
+  elapsed.
+- The CI check enforces the deprecation runway, not release-wide SemVer policy.
+  Whether a release also needs a MINOR bump still depends on the full scope of
+  changes in that release.
+
+Some contract-level migration-path details still rely on human review because
+OpenAPI automation cannot fully infer every compatible rollout strategy.
 
 WebSocket/SSE endpoints are not covered by this policy (OpenAPI only).

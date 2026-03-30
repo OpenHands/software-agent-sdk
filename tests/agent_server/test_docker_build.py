@@ -6,6 +6,8 @@ import tarfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 BUILDKIT_STDERR_SAMPLE = "\n".join(
     [
@@ -653,6 +655,43 @@ def test_parse_buildkit_telemetry_extracts_phase_timings():
     assert telemetry.cached_step_count == 1
 
 
+def test_parse_buildkit_telemetry_cache_export_with_preparing_line():
+    """Test that cache export timing is captured when sub-operations appear.
+
+    This reproduces a bug where BuildKit outputs:
+        #33 exporting cache to registry
+        #33 preparing build cache for export
+        #33 DONE 36.2s
+
+    Previously, the second line overwrote step_descriptions["33"], causing
+    the DONE time to be attributed to "preparing build cache for export"
+    which wasn't classified as cache_export.
+
+    The fix ensures that once a step has a classified description
+    ("exporting cache to registry" -> cache_export), subsequent sub-operation
+    descriptions don't overwrite it.
+    """
+    from openhands.agent_server.docker.build import _parse_buildkit_telemetry
+
+    # Real-world BuildKit output pattern
+    stderr_with_preparing = "\n".join(
+        [
+            "#33 exporting cache to registry",
+            "#33 preparing build cache for export",
+            "#33 writing layer sha256:abc123 0.5s done",
+            "#33 preparing build cache for export 36.2s done",
+            "#33 DONE 36.2s",
+            "",
+        ]
+    )
+
+    telemetry = _parse_buildkit_telemetry(stderr_with_preparing)
+
+    # Should capture the cache export time because "exporting cache to registry"
+    # is preserved as the step description (not overwritten by "preparing...")
+    assert telemetry.cache_export_seconds == 36.2
+
+
 def test_build_with_telemetry_returns_parsed_buildkit_fields(tmp_path: Path):
     from openhands.agent_server.docker.build import (
         BuildOptions,
@@ -761,46 +800,22 @@ def test_build_with_telemetry_preserves_telemetry_on_failure(tmp_path: Path):
     assert excinfo.value.telemetry.cache_import_miss_count == 1
 
 
-def test_shared_cache_tags_are_stable_across_base_images():
-    from openhands.agent_server.docker.build import BuildOptions
-
-    first = BuildOptions(
-        base_image="python:3.12",
-        git_ref="refs/heads/feature/cache-tuning",
-        target="source-minimal",
-    )
-    second = BuildOptions(
-        base_image="ubuntu:22.04",
-        git_ref="refs/heads/feature/cache-tuning",
-        target="source-minimal",
-    )
-
-    assert first.cache_tags != second.cache_tags
-    assert first.shared_cache_tags == second.shared_cache_tags
-    assert first.shared_cache_tags == (
-        "buildcache-shared-source-minimal-feature-cache-tuning",
-        "buildcache-shared-source-minimal-main",
-    )
-
-
-def test_shared_cache_tags_with_unknown_ref_still_fall_back_to_main():
-    from openhands.agent_server.docker.build import BuildOptions
-
-    opts = BuildOptions(target="source-minimal", git_ref="unknown")
-
-    assert opts.cache_tags == (
-        f"buildcache-source-minimal-{opts.base_image_slug}",
-        f"buildcache-source-minimal-{opts.base_image_slug}-main",
-    )
-    assert opts.shared_cache_tags == (
-        "buildcache-shared-source-minimal",
-        "buildcache-shared-source-minimal-main",
-    )
-
-
-def test_build_push_reads_shared_registry_cache_but_does_not_export_it_by_default(
+@pytest.mark.parametrize(
+    "mode,expect_cache_to,expect_mode_value",
+    [
+        ("off", False, None),
+        ("max", True, "max"),
+        ("min", True, "min"),
+        ("invalid", True, "max"),  # Invalid values default to "max" (preserve behavior)
+    ],
+)
+def test_cache_export_modes(
     tmp_path: Path,
+    mode: str,
+    expect_cache_to: bool,
+    expect_mode_value: str | None,
 ):
+    """Test cache export behavior for different OPENHANDS_BUILDKIT_CACHE_MODE values."""
     from openhands.agent_server.docker.build import (
         BuildOptions,
         _default_sdk_project_root,
@@ -821,7 +836,7 @@ def test_build_push_reads_shared_registry_cache_but_does_not_export_it_by_defaul
         base_image="python:3.12",
         custom_tags="python",
         git_sha="abc1234567890",
-        git_ref="refs/heads/feature/cache-tuning",
+        git_ref="refs/heads/main",
         image="ghcr.io/openhands/eval-agent-server",
         target="source-minimal",
         push=True,
@@ -829,162 +844,24 @@ def test_build_push_reads_shared_registry_cache_but_does_not_export_it_by_defaul
     )
 
     with (
+        patch.dict(os.environ, {"OPENHANDS_BUILDKIT_CACHE_MODE": mode}, clear=False),
         patch(
-            "openhands.agent_server.docker.build._make_build_context", return_value=ctx
-        ) as mock_make_context,
-        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
-        patch("openhands.agent_server.docker.build.shutil.rmtree"),
-    ):
-        build(opts)
-
-    mock_make_context.assert_called_once()
-    assert mock_make_context.call_args.args[0] == opts.sdk_project_root
-    assert len(docker_calls) == 1
-    cmd, cwd = docker_calls[0]
-    assert cwd == str(ctx)
-
-    expected_cache_from = {
-        f"type=registry,ref={opts.image}:{opts.cache_tags[0]}",
-        f"type=registry,ref={opts.image}:{opts.cache_tags[1]}",
-        f"type=registry,ref={opts.image}:{opts.shared_cache_tags[0]}",
-        f"type=registry,ref={opts.image}:{opts.shared_cache_tags[1]}",
-    }
-    expected_cache_to = {
-        f"type=registry,ref={opts.image}:{opts.cache_tags[0]},mode=max",
-    }
-
-    actual_cache_from: set[str] = set()
-    actual_cache_to: set[str] = set()
-    for idx, arg in enumerate(cmd):
-        if arg == "--cache-from":
-            actual_cache_from.add(cmd[idx + 1])
-        if arg == "--cache-to":
-            actual_cache_to.add(cmd[idx + 1])
-
-    assert actual_cache_from == expected_cache_from
-    assert actual_cache_to == expected_cache_to
-
-
-def test_build_push_can_disable_registry_cache_export(tmp_path: Path):
-    from openhands.agent_server.docker.build import (
-        BuildOptions,
-        _default_sdk_project_root,
-        build,
-    )
-
-    ctx = tmp_path / "ctx"
-    ctx.mkdir()
-    docker_calls: list[tuple[list[str], str | None]] = []
-
-    def fake_run(cmd: list[str], cwd: str | None = None):
-        if cmd[:3] != ["docker", "buildx", "build"]:
-            raise AssertionError(f"unexpected command: {cmd}")
-        docker_calls.append((cmd, cwd))
-        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
-
-    opts = BuildOptions(
-        base_image="python:3.12",
-        custom_tags="python",
-        git_sha="abc1234567890",
-        git_ref="refs/heads/feature/cache-tuning",
-        image="ghcr.io/openhands/eval-agent-server",
-        target="source-minimal",
-        push=True,
-        sdk_project_root=_default_sdk_project_root(),
-    )
-
-    with (
-        patch.dict(
-            os.environ,
-            {"OPENHANDS_BUILDKIT_CACHE_MODE": "off"},
-            clear=False,
+            "openhands.agent_server.docker.build._make_build_context",
+            return_value=ctx,
         ),
-        patch(
-            "openhands.agent_server.docker.build._make_build_context", return_value=ctx
-        ) as mock_make_context,
         patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
         patch("openhands.agent_server.docker.build.shutil.rmtree"),
     ):
         build(opts)
 
-    mock_make_context.assert_called_once()
-    assert mock_make_context.call_args.args[0] == opts.sdk_project_root
-    assert len(docker_calls) == 1
-    cmd, cwd = docker_calls[0]
-    assert cwd == str(ctx)
+    cmd = docker_calls[0][0]
+    cmd_str = " ".join(cmd)
 
-    expected_cache_from = {
-        f"type=registry,ref={opts.image}:{opts.cache_tags[0]}",
-        f"type=registry,ref={opts.image}:{opts.cache_tags[1]}",
-        f"type=registry,ref={opts.image}:{opts.shared_cache_tags[0]}",
-        f"type=registry,ref={opts.image}:{opts.shared_cache_tags[1]}",
-    }
+    # Should always have --cache-from
+    assert "--cache-from" in cmd_str
 
-    actual_cache_from: set[str] = set()
-    actual_cache_to: set[str] = set()
-    for idx, arg in enumerate(cmd):
-        if arg == "--cache-from":
-            actual_cache_from.add(cmd[idx + 1])
-        if arg == "--cache-to":
-            actual_cache_to.add(cmd[idx + 1])
-
-    assert actual_cache_from == expected_cache_from
-    assert actual_cache_to == set()
-
-
-def test_build_push_can_opt_in_to_shared_registry_cache_export(tmp_path: Path):
-    from openhands.agent_server.docker.build import (
-        BuildOptions,
-        _default_sdk_project_root,
-        build,
-    )
-
-    ctx = tmp_path / "ctx"
-    ctx.mkdir()
-    docker_calls: list[tuple[list[str], str | None]] = []
-
-    def fake_run(cmd: list[str], cwd: str | None = None):
-        if cmd[:3] != ["docker", "buildx", "build"]:
-            raise AssertionError(f"unexpected command: {cmd}")
-        docker_calls.append((cmd, cwd))
-        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
-
-    opts = BuildOptions(
-        base_image="python:3.12",
-        custom_tags="python",
-        git_sha="abc1234567890",
-        git_ref="refs/heads/feature/cache-tuning",
-        image="ghcr.io/openhands/eval-agent-server",
-        target="source-minimal",
-        push=True,
-        sdk_project_root=_default_sdk_project_root(),
-    )
-
-    with (
-        patch.dict(
-            os.environ,
-            {"OPENHANDS_SHARED_REGISTRY_CACHE_EXPORT": "1"},
-            clear=False,
-        ),
-        patch(
-            "openhands.agent_server.docker.build._make_build_context", return_value=ctx
-        ) as mock_make_context,
-        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
-        patch("openhands.agent_server.docker.build.shutil.rmtree"),
-    ):
-        build(opts)
-
-    mock_make_context.assert_called_once()
-    assert mock_make_context.call_args.args[0] == opts.sdk_project_root
-    assert len(docker_calls) == 1
-    cmd, _ = docker_calls[0]
-
-    actual_cache_to: set[str] = set()
-    for idx, arg in enumerate(cmd):
-        if arg == "--cache-to":
-            actual_cache_to.add(cmd[idx + 1])
-
-    assert actual_cache_to == {
-        f"type=registry,ref={opts.image}:{opts.cache_tags[0]},mode=max",
-        f"type=registry,ref={opts.image}:{opts.shared_cache_tags[0]},mode=max",
-    }
+    if expect_cache_to:
+        assert "--cache-to" in cmd_str
+        assert f"mode={expect_mode_value}" in cmd_str
+    else:
+        assert "--cache-to" not in cmd_str

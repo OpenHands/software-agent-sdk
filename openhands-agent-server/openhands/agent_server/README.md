@@ -152,6 +152,18 @@ This provides a complete reference for all available endpoints, request/response
 - **`POST /conversations/{conversation_id}/events`**: Send a message to the agent
 - **`WebSocket /conversations/{conversation_id}/events/socket`**: Real-time event streaming
 
+### Event schema compatibility
+
+The event endpoints use extensible discriminated unions in their OpenAPI
+response schemas. New event, action, observation, or tool variants may be added
+over time as the platform grows.
+
+If you build a generated or hand-written client, treat discriminator values
+such as `kind` as open-ended: **skip or ignore unknown variants instead of
+assuming the current set is exhaustive**. This keeps clients
+forward-compatible when the server starts returning newer event types.
+
+
 ## WebSocket Communication
 
 The server supports WebSocket connections for real-time communication with agents:
