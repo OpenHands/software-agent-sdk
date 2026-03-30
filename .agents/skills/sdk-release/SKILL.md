@@ -6,21 +6,16 @@ description: >-
   "do a release", or mentions the SDK release checklist or release process.
   Guides through the full software-agent-sdk release workflow
   from version bump to PyPI publication, emphasizing human checkpoints.
-triggers:
-- release SDK
-- prepare release
-- publish version
-- cut release
-- release checklist
-- new SDK version
 ---
 
 # SDK Release Guide
 
 This skill walks through the software-agent-sdk release process step by step.
-**Important**: Releasing is a human-supervised process. Each phase has decision
-points that require human judgment — do not proceed past a checkpoint without
-explicit confirmation.
+
+> **🚨 CRITICAL**: NEVER merge the release PR or create/publish a GitHub
+> release without the human's explicit approval. Release is the last line
+> of human defense. Always present the current status and ask for
+> confirmation before performing any irreversible action.
 
 ## Phase 1: Trigger the Prepare-Release Workflow
 
@@ -143,13 +138,20 @@ drops should block the release.
 
 ## Phase 5: Merge the Release PR
 
-Once all checks pass and the team is satisfied:
+> **🚨 STOP — Do NOT merge without explicit human approval.**
+> Present the CI status summary and ask the human to confirm before merging.
+
+Once the human approves:
 
 ```bash
 gh pr merge <PR_NUMBER> --repo OpenHands/software-agent-sdk --merge
 ```
 
 ## Phase 6: Create and Publish the GitHub Release
+
+> **🚨 STOP — Do NOT create or publish a release without explicit human
+> approval.** Publishing is irreversible — it triggers PyPI publication.
+> Present the release details and ask the human to confirm.
 
 Navigate to <https://github.com/OpenHands/software-agent-sdk/releases/new>
 and:
@@ -178,13 +180,21 @@ done
 
 All should return `200`. Allow a few minutes for PyPI indexing.
 
-## Phase 7: Post-Release (Automated)
+## Phase 7: Post-Release — Notify the Team
 
-After PyPI publication, the `version-bump-prs.yml` workflow automatically:
+After PyPI publication, the `version-bump-prs.yml` workflow automatically
+creates downstream version bump PRs. Compose a Slack message for the human
+to post, including links to those PRs:
 
-1. Creates a version bump PR on **OpenHands/openhands-cli**
-2. Creates a version bump PR on **All-Hands-AI/OpenHands**
-3. Posts a notification to the `#agent-team` Slack channel
+```
+🚀 *SDK v<version> published to PyPI!*
+
+Version bump PRs:
+• <https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-<version>|OpenHands>
+• <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-<version>|OpenHands-CLI>
+
+Release: <https://github.com/OpenHands/software-agent-sdk/releases/tag/v<version>|v<version>>
+```
 
 See `references/post-release-checklist.md` for details on reviewing
 downstream PRs and handling any issues.
@@ -198,8 +208,8 @@ downstream PRs and handling any issues.
 - [ ] Behavior tests pass
 - [ ] Example tests pass
 - [ ] (Optional) Evaluation run shows no regressions
-- [ ] Merge the release PR
-- [ ] Create GitHub release with tag `v<version>`
+- [ ] **🚨 Get human approval**, then merge the release PR
+- [ ] **🚨 Get human approval**, then create GitHub release with tag `v<version>`
 - [ ] Auto-generate release notes and publish
 - [ ] Verify packages appear on PyPI
-- [ ] Review downstream version bump PRs (automated)
+- [ ] Send Slack message with downstream version bump PR links
