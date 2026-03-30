@@ -1,10 +1,15 @@
-"""Deterministic segment-aware policy rails for composed-action threats.
+"""Block obviously dangerous composed actions before pattern scanning runs.
 
-Rails evaluate normalized executable segments only. Composed conditions
-(e.g. curl + pipe to sh) require both tokens in the same segment to
-prevent cross-field false positives.
+Some threats are structural, not lexical: ``curl ... | bash`` is
+dangerous because of the *combination* of fetch + pipe-to-exec, not
+because either token is dangerous alone. Rails express these composed
+conditions as deterministic rules evaluated per-segment, so that
+tokens from different fields (thought vs. tool arguments) cannot
+accidentally satisfy a composed condition.
 
-v1 rails: fetch-to-exec, raw-disk-op, catastrophic-delete.
+v1 ships three rails: fetch-to-exec, raw-disk-op, catastrophic-delete.
+Each rail maps to ``SecurityRisk.HIGH`` at the SDK boundary. The
+confirmation policy decides whether to prompt the user.
 """
 
 from __future__ import annotations
@@ -149,12 +154,24 @@ def _evaluate_rail(content: str) -> RailDecision:
 
 
 class PolicyRailSecurityAnalyzer(SecurityAnalyzerBase):
-    """Deterministic segment-aware policy rails for composed-action threats.
+    """Catch composed threats that plain regex signatures would miss.
 
-    Evaluates normalized executable segments against structural rules
-    that are stronger as composed conditions than plain regex signatures.
+    Use this when you need to detect threats defined by *combinations*
+    of tokens (e.g., ``curl`` piped to ``bash``) rather than individual
+    signatures. It evaluates normalized executable segments only --
+    reasoning text is never scanned.
+
+    Returns ``SecurityRisk.HIGH`` when a rail fires, ``LOW`` otherwise.
+    Pair with ``ConfirmRisky`` and compose via ``EnsembleSecurityAnalyzer``.
 
     v1 rails: fetch-to-exec, raw-disk-op, catastrophic-delete.
+
+    Example::
+
+        from openhands.sdk.security import PolicyRailSecurityAnalyzer
+
+        analyzer = PolicyRailSecurityAnalyzer()
+        # risk = analyzer.security_risk(action)
     """
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:

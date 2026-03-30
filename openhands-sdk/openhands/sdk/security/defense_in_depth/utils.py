@@ -1,10 +1,21 @@
-"""Extraction and normalization utilities for defense-in-depth security analysis.
+"""Extraction and normalization for action-boundary security analysis.
 
-Extraction determines what gets scanned (the attack surface). Normalization
-collapses encoding evasions before pattern matching.
+Before an agent action can be classified as safe or dangerous, two
+things need to happen: the right content must be extracted from the
+ActionEvent (extraction), and encoding tricks that hide dangerous
+commands must be neutralized (normalization).
 
-These are internal helpers -- underscore-prefixed, not re-exported from
-__init__.py. Tests import them via direct module path.
+Extraction controls the attack surface. Fields not extracted are
+invisible to every downstream layer. Two corpora are maintained:
+the *executable corpus* (what the agent will do) and the *text corpus*
+(what it thought about). Shell-destructive patterns only see the
+first; injection patterns see both.
+
+Normalization collapses invisible characters, control codes, and
+fullwidth substitutions so that ``r\\u200bm`` matches ``rm`` and
+``\\uff52\\uff4d`` matches ``rm`` before any pattern is tested.
+
+These are internal helpers (underscore-prefixed, not re-exported).
 """
 
 from __future__ import annotations
@@ -294,19 +305,22 @@ _INVISIBLE_RE: re.Pattern[str] = re.compile(_INVISIBLE_PATTERN)
 
 
 def _normalize(text: str) -> str:
-    """Normalize text so encoding evasions collapse before pattern matching.
+    """Collapse encoding evasions so dangerous commands match their patterns.
 
-    Four stages in order:
-    1. Strip null bytes (prevent C-level string truncation)
-    2. Strip invisible characters (compiled regex, ~200+ chars across
-       zero-width, format/control, bidi, variation selectors, tag block,
-       C0, C1 -- informed by navi-sanitize, inlined without dependency)
-    3. NFKC normalization (fullwidth -> ASCII, ligatures decomposed)
-    4. Collapse whitespace (NFKC may produce new whitespace)
+    An attacker can make ``rm`` not look like ``rm`` to a regex engine
+    while still looking like ``rm`` to a shell: zero-width characters,
+    fullwidth ASCII, bidi controls, and null bytes all achieve this.
+    This function neutralizes those techniques in four stages:
 
-    What this does NOT cover (documented limitations, strict xfails):
-    - Cyrillic homoglyphs (needs curated confusable map -- deferred)
-    - Combining marks (needs diacritic stripping -- lossy for non-Latin)
+    1. **Null bytes** -- prevent C-level string truncation.
+    2. **Invisible characters** -- strip ~200+ chars across zero-width,
+       format/control, bidi, variation selectors, tag block, C0, C1.
+       (Informed by navi-sanitize, MIT, inlined without dependency.)
+    3. **NFKC** -- fullwidth ``\\uff52\\uff4d`` becomes ASCII ``rm``.
+    4. **Whitespace collapse** -- NFKC may produce new whitespace.
+
+    Does NOT cover Cyrillic homoglyphs or combining-mark evasion
+    (documented as strict xfails, deferred to follow-up).
     """
     # Stage 1: Null bytes
     text = text.replace("\x00", "")

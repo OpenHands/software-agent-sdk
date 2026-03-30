@@ -1,7 +1,9 @@
-"""Ensemble security analyzer -- pure combiner via max-severity fusion.
+"""Combine multiple security analyzers into a single risk assessment.
 
-Does not perform any detection, extraction, or normalization of its own.
-Delegates to child analyzers and fuses results.
+If you have a ``PatternSecurityAnalyzer`` catching known signatures and
+a ``PolicyRailSecurityAnalyzer`` catching composed threats, you want one
+answer: what is the worst-case risk across all of them? That is what
+this module does -- pure fusion, no detection of its own.
 """
 
 from __future__ import annotations
@@ -18,19 +20,40 @@ logger = get_logger(__name__)
 
 
 class EnsembleSecurityAnalyzer(SecurityAnalyzerBase):
-    """Combines multiple analyzers via max-severity fusion.
+    """Wire multiple analyzers together and take the worst-case risk.
 
-    Pure combiner: delegates to child analyzers and fuses results.
-    Does not perform any detection, extraction, or normalization of its own.
+    Use this as the top-level analyzer you set on a conversation. It
+    calls each child analyzer, collects their risk assessments, and
+    returns the highest concrete risk. It does not perform any detection,
+    extraction, or normalization of its own.
 
-    Fusion algorithm:
-    1. Collect results from all child analyzers
-    2. Partition into concrete (LOW, MEDIUM, HIGH) and UNKNOWN
-    3. If any concrete results exist, return max(concrete)
-    4. If all results are UNKNOWN, return UNKNOWN
+    How UNKNOWN works: if *all* children return UNKNOWN, the ensemble
+    returns UNKNOWN (which ``ConfirmRisky`` confirms by default). If any
+    child returns a concrete level, UNKNOWN results are filtered out and
+    the highest concrete level wins. UNKNOWN is never passed to ``max()``
+    -- that would raise ``ValueError`` by design.
 
-    Never pass UNKNOWN to max() -- it raises ValueError by design.
-    Analyzer exception -> HIGH (fail-closed, logged).
+    If a child analyzer raises an exception, it contributes HIGH
+    (fail-closed, logged). This prevents a broken analyzer from silently
+    degrading safety.
+
+    Example::
+
+        from openhands.sdk.security import (
+            EnsembleSecurityAnalyzer,
+            PatternSecurityAnalyzer,
+            PolicyRailSecurityAnalyzer,
+            ConfirmRisky,
+            SecurityRisk,
+        )
+
+        analyzer = EnsembleSecurityAnalyzer(
+            analyzers=[
+                PolicyRailSecurityAnalyzer(),
+                PatternSecurityAnalyzer(),
+            ]
+        )
+        policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
     """
 
     analyzers: list[SecurityAnalyzerBase] = Field(

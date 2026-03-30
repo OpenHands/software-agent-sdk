@@ -1,9 +1,16 @@
-"""Pattern-based security analyzer with two-corpus scanning.
+"""Classify agent actions by matching content against known threat signatures.
 
-Shell-destructive patterns scan the executable corpus only.
-Injection patterns scan the all-field corpus (invocation + reasoning).
-This prevents false positives from reasoning text that merely
-discusses dangerous commands.
+When an agent is about to run ``rm -rf /``, you want to catch it. When
+the agent merely *thinks about* ``rm -rf /`` while running ``ls /tmp``,
+you do not. This module solves that with two scanning corpora:
+
+- **Executable corpus** (tool_name, tool_call arguments): scanned for
+  shell-destructive, code-execution, and network-to-exec patterns.
+- **All-field corpus** (executable + thought/reasoning/summary): scanned
+  for injection and social-engineering patterns that are dangerous
+  wherever they appear.
+
+Each pattern carries a stable detector ID for telemetry readiness.
 """
 
 from __future__ import annotations
@@ -131,14 +138,26 @@ DEFAULT_INJECTION_MEDIUM_PATTERNS: list[tuple[str, str, str]] = [
 
 
 class PatternSecurityAnalyzer(SecurityAnalyzerBase):
-    """Regex-based threat detection with two scanning corpora.
+    """Catch dangerous agent actions through deterministic signature scanning.
 
-    The executable corpus (tool_name, tool_call.name, tool_call.arguments)
-    is scanned for shell/destructive patterns. The all-field corpus
-    (executable + thought/reasoning/summary) is scanned for
-    injection/social-engineering patterns.
+    Use this when you want fast, local, no-network threat detection at the
+    action boundary. It returns ``SecurityRisk.HIGH``, ``MEDIUM``, or ``LOW``
+    -- pair it with ``ConfirmRisky`` to decide what gets confirmed.
 
-    Normalization is always on.
+    The key design choice: shell-destructive patterns only scan what the
+    agent will *execute* (tool arguments), never what it *thought about*
+    (reasoning text). Injection patterns scan everything, because
+    "ignore all previous instructions" is dangerous wherever it appears.
+
+    Normalization is always on -- invisible characters and fullwidth
+    substitutions are collapsed before matching.
+
+    Example::
+
+        from openhands.sdk.security import PatternSecurityAnalyzer, ConfirmRisky
+
+        analyzer = PatternSecurityAnalyzer()
+        policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
     """
 
     high_patterns: list[tuple[str, str, str]] = Field(
