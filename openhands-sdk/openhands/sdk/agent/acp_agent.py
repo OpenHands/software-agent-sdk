@@ -610,6 +610,14 @@ class ACPAgent(AgentBase):
 
         self._initialized = True
 
+        # Store agent info in agent_state so it's accessible from remote
+        # conversations (PrivateAttrs aren't serialized in state updates).
+        state.agent_state = {
+            **state.agent_state,
+            "acp_agent_name": self._agent_name,
+            "acp_agent_version": self._agent_version,
+        }
+
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
