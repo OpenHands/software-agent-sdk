@@ -25,7 +25,7 @@ _log_dir = "logs/gemini"
 os.makedirs(_log_dir, exist_ok=True)
 
 llm = LLM(
-    model=os.getenv("LLM_MODEL", "gemini/gemini-3-pro"),
+    model=os.getenv("LLM_MODEL", "gemini/gemini-3-pro-preview"),
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_BASE_URL", None),
     log_completions=True,
