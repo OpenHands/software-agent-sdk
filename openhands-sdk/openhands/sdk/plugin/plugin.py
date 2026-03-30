@@ -87,6 +87,22 @@ class Plugin(BaseModel):
         """Get the plugin description."""
         return self.manifest.description
 
+    @property
+    def entry_slash_command(self) -> str | None:
+        """Get the full slash command for the entry point, if defined.
+
+        Returns the slash command in format /<plugin-name>:<command-name>,
+        or None if no entry_command is defined in the manifest.
+
+        Example:
+            >>> plugin = Plugin.load(path)
+            >>> plugin.entry_slash_command
+            '/city-weather:now'
+        """
+        if not self.manifest.entry_command:
+            return None
+        return f"/{self.name}:{self.manifest.entry_command}"
+
     def get_all_skills(self) -> list[Skill]:
         """Get all skills including those converted from commands.
 

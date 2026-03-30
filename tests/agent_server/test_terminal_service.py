@@ -488,3 +488,88 @@ async def test_search_pagination(bash_service):
     page1_ids = {event.id for event in page1.items}
     page2_ids = {event.id for event in page2.items}
     assert len(page1_ids.intersection(page2_ids)) == 0  # No overlap
+
+
+@pytest.mark.asyncio
+async def test_terminal_does_not_expose_session_api_key(bash_service, monkeypatch):
+    """Verify SESSION_API_KEY is not accessible to bash commands.
+
+    This is a security test: SESSION_API_KEY grants access to user secrets via
+    the SaaS API. If an LLM-driven agent could read this env var via terminal
+    commands, it could exfiltrate all user secrets. The sanitized_env() function
+    must strip this variable before passing the environment to subprocesses.
+    """
+    # Simulate the automation service injecting SESSION_API_KEY into os.environ
+    secret_value = "super-secret-session-key-12345"
+    monkeypatch.setenv("SESSION_API_KEY", secret_value)
+
+    collector = EventCollector()
+    await bash_service.subscribe_to_events(collector)
+
+    # An agent might try to read the env var via echo or printenv
+    request = ExecuteBashRequest(
+        command='echo "SESSION_API_KEY=$SESSION_API_KEY"',
+        cwd="/tmp",
+    )
+    command, task = await bash_service.start_bash_command(request)
+    await task
+
+    # Collect the output
+    assert len(collector.outputs) >= 1
+    combined_stdout = "".join(
+        output.stdout or ""
+        for output in sorted(collector.outputs, key=lambda x: x.order)
+    )
+
+    # The secret value should NOT appear in the output
+    assert secret_value not in combined_stdout, (
+        f"SESSION_API_KEY was exposed to terminal command! Output: {combined_stdout}"
+    )
+    # The env var should be empty/unset
+    assert (
+        "SESSION_API_KEY=$" in combined_stdout
+        or "SESSION_API_KEY=\n" in combined_stdout
+    ), f"SESSION_API_KEY should be unset in subprocess. Output: {combined_stdout}"
+
+
+@pytest.mark.asyncio
+async def test_terminal_does_not_expose_session_api_key_via_env_command(
+    bash_service, monkeypatch
+):
+    """Verify SESSION_API_KEY doesn't appear in 'env' command output.
+
+    An agent might run 'env' or 'printenv' to discover available environment
+    variables. SESSION_API_KEY must not be visible.
+    """
+    secret_value = "another-secret-key-67890"
+    monkeypatch.setenv("SESSION_API_KEY", secret_value)
+    # Also set a safe var to confirm env command works
+    monkeypatch.setenv("SAFE_TEST_VAR", "visible-value")
+
+    collector = EventCollector()
+    await bash_service.subscribe_to_events(collector)
+
+    request = ExecuteBashRequest(
+        command="env | grep -E '(SESSION_API_KEY|SAFE_TEST_VAR)' || true",
+        cwd="/tmp",
+    )
+    command, task = await bash_service.start_bash_command(request)
+    await task
+
+    assert len(collector.outputs) >= 1
+    combined_stdout = "".join(
+        output.stdout or ""
+        for output in sorted(collector.outputs, key=lambda x: x.order)
+    )
+
+    # SESSION_API_KEY should not appear at all
+    assert "SESSION_API_KEY" not in combined_stdout, (
+        f"SESSION_API_KEY appeared in env output! Output: {combined_stdout}"
+    )
+    assert secret_value not in combined_stdout, (
+        f"Secret value leaked! Output: {combined_stdout}"
+    )
+    # But SAFE_TEST_VAR should be visible (confirms env command worked)
+    assert "SAFE_TEST_VAR=visible-value" in combined_stdout, (
+        f"Safe var not found - env command may have failed. Output: {combined_stdout}"
+    )

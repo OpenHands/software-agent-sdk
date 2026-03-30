@@ -187,6 +187,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         examples=[{"kind": "AgentFinishedCritic"}],
     )
 
+    tool_concurrency_limit: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of tool calls to execute concurrently within a single "
+            "agent step. Default is 1 (sequential). Values > 1 enable parallel "
+            "execution; concurrent tools share the conversation object, filesystem, "
+            "and working directory, so mutations to shared state may race."
+        ),
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -217,6 +228,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             The rendered system prompt template without dynamic context.
         """
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Auto-detect browser tools from the tool spec list
+        template_kwargs.setdefault(
+            "enable_browser",
+            any(t.name == "browser_tool_set" for t in self.tools),
+        )
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
@@ -415,11 +431,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         Compatibility requirements:
         - Agent class/type must match.
-        - Tools must match exactly (same tool names).
+        - Tools may only be added, never removed.
 
-        Tools are part of the system prompt and cannot be changed mid-conversation.
-        To use different tools, start a new conversation or use conversation forking
-        (see https://github.com/OpenHands/OpenHands/issues/8560).
+        Removing tools breaks backward compatibility because the LLM may have
+        already been told about them.  Adding new tools is safe — the LLM
+        simply gains new capabilities on the next turn.
 
         All other configuration (LLM, agent_context, condenser, etc.) can be
         freely changed between sessions.
@@ -457,24 +473,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if tool_class is not None:
                 persisted_names.add(tool_class.name)
 
-        if runtime_names == persisted_names:
-            return self
-
-        # Tools don't match - this is not allowed
+        # Removing tools breaks backward compatibility because the LLM may
+        # have already been told about them.  Adding new tools is safe — the
+        # LLM simply gains new capabilities on the next turn.
         missing_in_runtime = persisted_names - runtime_names
-        added_in_runtime = runtime_names - persisted_names
-
-        details: list[str] = []
         if missing_in_runtime:
-            details.append(f"removed: {sorted(missing_in_runtime)}")
-        if added_in_runtime:
-            details.append(f"added: {sorted(added_in_runtime)}")
+            raise ValueError(
+                f"Cannot resume conversation: tools were removed mid-conversation "
+                f"(removed: {sorted(missing_in_runtime)}). "
+                f"To use different tools, start a new conversation."
+            )
 
-        raise ValueError(
-            f"Cannot resume conversation: tools cannot be changed mid-conversation "
-            f"({'; '.join(details)}). "
-            f"To use different tools, start a new conversation."
-        )
+        return self
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
