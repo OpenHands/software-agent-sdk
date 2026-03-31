@@ -161,9 +161,7 @@ class Conversation:
                 plugin_urls = [p.source_url for p in plugins if p.source_url]
                 if plugin_urls:
                     effective_tags["plugins"] = ",".join(plugin_urls)
-                    logger.debug(
-                        f"Added plugins tag with {len(plugin_urls)} plugin(s)"
-                    )
+                    logger.debug(f"Added plugins tag with {len(plugin_urls)} plugin(s)")
 
             # 3. User-provided tags override everything
             if tags:

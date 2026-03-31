@@ -323,9 +323,7 @@ class TestPluginSourceUrl:
         """Should append ref for non-GitHub git URLs."""
         from openhands.sdk.plugin import PluginSource
 
-        plugin = PluginSource(
-            source="https://gitlab.com/owner/repo.git", ref="v2.0.0"
-        )
+        plugin = PluginSource(source="https://gitlab.com/owner/repo.git", ref="v2.0.0")
         assert plugin.source_url == "https://gitlab.com/owner/repo.git@v2.0.0"
 
 
@@ -366,8 +364,7 @@ class TestPluginsTagInConversation:
             plugin_urls = effective_tags["plugins"].split(",")
             assert len(plugin_urls) == 2
             assert (
-                "https://github.com/OpenHands/security-skill/tree/v1.0.0"
-                in plugin_urls
+                "https://github.com/OpenHands/security-skill/tree/v1.0.0" in plugin_urls
             )
             assert "https://github.com/OpenHands/review-skill" in plugin_urls
 
