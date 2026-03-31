@@ -2,7 +2,6 @@ import asyncio
 import bisect
 import json
 import os
-import re
 import threading
 import time
 import uuid
@@ -52,6 +51,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -59,47 +59,6 @@ logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 ACP_CONVERSATIONS_PATH = "/api/acp/conversations"
-_SECRET_KEY_PATTERN = re.compile(
-    r"(api[_-]?key|token|secret|password|authorization|auth)", re.IGNORECASE
-)
-_REDACT_ALL_VALUES_KEYS = {"environment", "env", "headers", "acp_env"}
-
-
-def _redact_content(value):
-    """Redact nested values while preserving key names where possible."""
-    if isinstance(value, Mapping):
-        return {k: _redact_content(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact_content(item) for item in value]
-    return "<redacted>"
-
-
-def _sanitize_error_content(content):
-    """Recursively redact likely secrets from structured error payloads."""
-    if isinstance(content, Mapping):
-        sanitized = {}
-        for key, value in content.items():
-            key_str = str(key)
-            key_lower = key_str.lower()
-            if key_lower in _REDACT_ALL_VALUES_KEYS:
-                sanitized[key] = _redact_content(value)
-            elif _SECRET_KEY_PATTERN.search(key_str):
-                sanitized[key] = "<redacted>"
-            else:
-                sanitized[key] = _sanitize_error_content(value)
-        return sanitized
-    if isinstance(content, list):
-        return [_sanitize_error_content(item) for item in content]
-    return content
-
-
-def _http_error_log_content(response: httpx.Response):
-    """Return a sanitized representation of an HTTP error body for logs."""
-    try:
-        return _sanitize_error_content(response.json())
-    except Exception:
-        body_len = len(response.text or "")
-        return f"<non-JSON response body omitted ({body_len} chars)>"
 
 
 def _uses_acp_conversation_contract(agent: AgentBase) -> bool:
@@ -136,7 +95,7 @@ def _send_request(
         response.raise_for_status()
         return response
     except httpx.HTTPStatusError as e:
-        content = _http_error_log_content(e.response)
+        content = http_error_log_content(e.response)
         logger.error(
             "HTTP request failed (%d %s): %s",
             e.response.status_code,
