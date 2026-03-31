@@ -563,6 +563,14 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        logger.info(
+            "ACP _record_usage: response.usage=%s, response.field_meta=%s, "
+            "usage_update=%s, acp_model=%s",
+            response.usage if response else None,
+            response.field_meta if response else None,
+            usage_update,
+            self.acp_model,
+        )
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
