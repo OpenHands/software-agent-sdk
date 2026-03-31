@@ -178,10 +178,6 @@ class TerminalQueryFilter:
         return filtered.decode("utf-8", errors="surrogateescape")
 
 
-# Singleton instance for simple stateless usage (backward compatibility)
-_default_filter = TerminalQueryFilter()
-
-
 def filter_terminal_queries(output: str) -> str:
     """Filter terminal query sequences from captured terminal output.
 
