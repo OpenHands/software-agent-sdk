@@ -116,7 +116,7 @@ class TestDefaultConversationTags:
             assert tags["automation_id"] == "auto-abc"
             assert tags["automation_name"] == "PR Review Bot"
             assert tags["run_id"] == "run-xyz"
-            # Skills are NOT included in workspace tags - they come from conversation creation
+            # Skills are NOT included in workspace tags
             assert "skills" not in tags
 
 

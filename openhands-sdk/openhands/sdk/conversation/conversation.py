@@ -142,9 +142,9 @@ class Conversation:
                 )
 
             # Build effective tags by merging multiple sources:
-            # 1. Workspace default tags (automation context: trigger, automation_id, run_id)
+            # 1. Workspace default tags (automation context)
             # 2. Auto-generated tags (plugins/skills)
-            # 3. User-provided tags (highest priority, can override everything)
+            # 3. User-provided tags (highest priority)
             effective_tags: dict[str, str] = {}
 
             # 1. Start with workspace default tags
@@ -153,7 +153,7 @@ class Conversation:
                 if default_tags:
                     effective_tags.update(default_tags)
                     logger.debug(
-                        f"Merged workspace default tags into conversation: {list(default_tags.keys())}"
+                        f"Merged workspace default tags: {list(default_tags.keys())}"
                     )
 
             # 2. Auto-generate plugins/skills tag from plugins parameter
