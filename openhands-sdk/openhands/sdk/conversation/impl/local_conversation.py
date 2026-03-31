@@ -692,7 +692,7 @@ class LocalConversation(BaseConversation):
                         self._on_event(
                             ConversationIterationLimitEvent(
                                 source="environment",
-                                max_iterations=self.max_iteration_per_run,
+                                max_iteration_per_run=self.max_iteration_per_run,
                             )
                         )
                         break
