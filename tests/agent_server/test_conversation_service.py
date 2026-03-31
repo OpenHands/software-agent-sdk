@@ -1,5 +1,7 @@
 import asyncio
 import tempfile
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1027,6 +1029,72 @@ class TestConversationServiceUpdateConversation:
         assert mock_state.tags == {"env": "prod"}
         assert acquire_spy.call_count >= 2
         assert release_spy.call_count == acquire_spy.call_count
+
+    @pytest.mark.asyncio
+    async def test_update_conversation_tags_wait_does_not_block_event_loop(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Waiting on the state lock must not stall unrelated async work."""
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        lock_acquired = threading.Event()
+        release_lock = threading.Event()
+        timings: dict[str, float] = {}
+
+        def hold_state_lock() -> None:
+            with state:
+                timings["lock_start"] = time.monotonic()
+                lock_acquired.set()
+                release_lock.wait(timeout=1.0)
+                timings["lock_end"] = time.monotonic()
+
+        holder = threading.Thread(target=hold_state_lock, daemon=True)
+        holder.start()
+        assert lock_acquired.wait(timeout=1.0)
+
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.05)
+            timings["heartbeat"] = time.monotonic()
+
+        async def release_after_delay() -> None:
+            await asyncio.sleep(0.2)
+            release_lock.set()
+
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ):
+            await asyncio.wait_for(
+                asyncio.gather(
+                    conversation_service.update_conversation(
+                        conversation_id,
+                        UpdateConversationRequest(tags={"env": "prod"}),
+                    ),
+                    heartbeat(),
+                    release_after_delay(),
+                ),
+                timeout=1.0,
+            )
+
+        holder.join(timeout=1.0)
+        assert not holder.is_alive()
+        assert mock_service.stored.tags == {"env": "prod"}
+        assert state.tags == {"env": "prod"}
+        assert timings["heartbeat"] < timings["lock_end"], (
+            "update_conversation blocked the async loop while waiting for the "
+            "state lock"
+        )
 
     @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):

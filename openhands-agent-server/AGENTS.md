@@ -18,6 +18,7 @@ When adding non-Python files (JS, templates, etc.) loaded at runtime, add them t
 
 - `ConversationState` uses a synchronous `FIFOLock`. In async agent-server code, never do `with conversation._state` directly on the event loop when the conversation may be running.
 - WebSocket reconnects call `EventService.subscribe_to_events()` immediately; if initial state snapshot creation blocks on the state lock in async context, the whole FastAPI event loop can stop serving `/ready` and similar probes.
+- The same rule applies to metadata updates in `ConversationService.update_conversation()`: keep the locked mutation/snapshot semantics, but move the synchronous lock wait into a worker thread first.
 - In async routes/services, move state-lock acquisition into `run_in_executor(...)` (or another worker-thread boundary) before awaiting network I/O.
 
 
