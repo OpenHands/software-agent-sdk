@@ -106,7 +106,7 @@ When reviewing code, provide constructive feedback:
 - `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
-
+- OpenHands-CLI#574 ("Bridge — Unified Server-Client Architecture for CLI ↔ Cloud") belongs in the SDK flexibility umbrella alongside LLM switching and teleport: it keeps the runtime local behind a local `openhands-agent-server`, while teleport moves or restores a conversation across runtimes.
 
 ## Package-specific guidance
 When reviewing or modifying code, read the closest AGENTS file for the
