@@ -235,7 +235,9 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
     if not content:
         return None
-    return [c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in content]
+    return [
+        c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in content
+    ]
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:

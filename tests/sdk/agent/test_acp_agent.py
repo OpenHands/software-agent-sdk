@@ -1677,7 +1677,9 @@ class TestGeminiSessionModel:
     @pytest.mark.asyncio
     async def test_gemini_cli_uses_protocol_model_override(self):
         conn = AsyncMock()
-        await _maybe_set_session_model(conn, "gemini-cli", "session-1", "gemini-3-flash")
+        await _maybe_set_session_model(
+            conn, "gemini-cli", "session-1", "gemini-3-flash"
+        )
         conn.set_session_model.assert_awaited_once_with(
             model_id="gemini-3-flash",
             session_id="session-1",
@@ -1752,7 +1754,9 @@ class TestEstimateCostFromTokens:
 
     def test_import_failure_returns_zero(self):
         with patch.dict("sys.modules", {"litellm": None}):
-            assert _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500) == 0.0
+            assert (
+                _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500) == 0.0
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1769,9 +1773,16 @@ class TestSerializeToolContent:
 
     def test_pydantic_model(self):
         model = MagicMock()
-        model.model_dump.return_value = {"type": "diff", "path": "a.py", "old_text": "x", "new_text": "y"}
+        model.model_dump.return_value = {
+            "type": "diff",
+            "path": "a.py",
+            "old_text": "x",
+            "new_text": "y",
+        }
         result = _serialize_tool_content([model])
-        assert result == [{"type": "diff", "path": "a.py", "old_text": "x", "new_text": "y"}]
+        assert result == [
+            {"type": "diff", "path": "a.py", "old_text": "x", "new_text": "y"}
+        ]
         model.model_dump.assert_called_once_with(mode="json")
 
     def test_plain_dict_passthrough(self):
