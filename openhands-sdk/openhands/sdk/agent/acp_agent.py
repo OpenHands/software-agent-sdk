@@ -563,14 +563,6 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
-        logger.info(
-            "ACP _record_usage: response.usage=%s, response.field_meta=%s, "
-            "usage_update=%s, acp_model=%s",
-            response.usage if response else None,
-            response.field_meta if response else None,
-            usage_update,
-            self.acp_model,
-        )
         # -- Cost recording ---------------------------------------------------
         # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
         # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
@@ -611,6 +603,15 @@ class ACPAgent(AgentBase):
             )
             if cost > 0:
                 self.llm.metrics.add_cost(cost)
+
+        if not cost_recorded and not input_tokens and not output_tokens:
+            # gemini-cli currently returns response.usage=None and
+            # response.field_meta=None (ACP SDK strips _meta during
+            # serialization). Tracked in google-gemini/gemini-cli#24280.
+            logger.debug(
+                "No usage data from ACP server %s — token/cost tracking unavailable",
+                self._agent_name or "unknown",
+            )
 
         if elapsed is not None:
             self.llm.metrics.add_response_latency(elapsed, session_id)
