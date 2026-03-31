@@ -111,18 +111,17 @@ class CriticMixin:
             logger.warning("Iterative refinement: no critic result on FinishAction")
             return False, None
 
-        # Check if score meets threshold
-        if critic_result.score >= config.success_threshold:
+        decision = config.evaluate(critic_result)
+        if not decision.should_refine:
             logger.info(
                 f"Iterative refinement: success threshold "
                 f"({config.success_threshold:.0%}) met with score "
-                f"{critic_result.score:.3f}"
+                f"{critic_result.score:.3f} and no high-probability issues"
             )
             return False, None
 
-        # Score below threshold AND we haven't hit max iterations
-        # NOW we increment the counter since we're actually continuing
-        # Use reassignment pattern to trigger autosave
+        # Refinement is needed and we haven't hit max iterations.
+        # NOW we increment the counter since we're actually continuing.
         new_iteration = iteration + 1
         state.agent_state = {
             **state.agent_state,
@@ -130,9 +129,15 @@ class CriticMixin:
         }
 
         logger.info(
-            f"Iterative refinement: score {critic_result.score:.3f} < "
-            f"threshold {config.success_threshold:.3f}, "
-            f"iteration {new_iteration}/{config.max_iterations}"
+            "Iterative refinement: continuing after critic evaluation "
+            f"(score={critic_result.score:.3f}, "
+            f"threshold={config.success_threshold:.3f}, "
+            f"issues={len(decision.triggered_issues)}, "
+            f"iteration {new_iteration}/{config.max_iterations})"
         )
-        followup = self.critic.get_followup_prompt(critic_result, new_iteration)
+        followup = config.build_followup_prompt(
+            critic_result,
+            new_iteration,
+            decision=decision,
+        )
         return True, followup
