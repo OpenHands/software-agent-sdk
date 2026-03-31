@@ -408,6 +408,119 @@ def test_main_rejects_non_removal_breakage_even_with_newer_version(monkeypatch, 
     assert "other than removing previously-deprecated operations" in captured.out
 
 
+def test_split_breaking_changes_separates_three_buckets():
+    changes = [
+        {
+            "id": "removed-operation",
+            "details": {"path": "/foo", "method": "get", "deprecated": True},
+            "text": "removed GET /foo",
+        },
+        {
+            "id": "response-property-one-of-added",
+            "details": {},
+            "text": "added '#/components/schemas/NewTool' to response oneOf",
+        },
+        {
+            "id": "response-body-one-of-added",
+            "details": {},
+            "text": "added body oneOf member",
+        },
+        {
+            "id": "response-body-any-of-added",
+            "details": {},
+            "text": "added body anyOf member",
+        },
+        {
+            "id": "response-body-changed",
+            "details": {},
+            "text": "response body changed",
+        },
+    ]
+    removed, additive_oneof, other = _prod._split_breaking_changes(changes)
+    assert len(removed) == 1
+    assert removed[0]["path"] == "/foo"
+    assert {change["id"] for change in additive_oneof} == {
+        "response-property-one-of-added",
+        "response-body-one-of-added",
+        "response-body-any-of-added",
+    }
+    assert len(other) == 1
+    assert other[0]["id"] == "response-body-changed"
+
+
+def test_main_passes_when_only_additive_oneof(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-one-of-added",
+                    "details": {},
+                    "text": "added NewTool to response oneOf",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Additive oneOf/anyOf expansion detected" in captured.out
+    assert "additive response oneOf expansions" in captured.out
+
+
+def test_main_fails_when_additive_oneof_mixed_with_real_breakage(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-one-of-added",
+                    "details": {},
+                    "text": "added NewTool to response oneOf",
+                },
+                {
+                    "id": "response-body-changed",
+                    "details": {},
+                    "text": "response body changed",
+                },
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 1
+
+    captured = capsys.readouterr()
+    assert "Additive oneOf/anyOf expansion detected" in captured.out
+    assert "other than removing previously-deprecated operations" in captured.out
+
+
 def test_normalize_openapi_converts_numeric_exclusive_bounds():
     schema = {
         "components": {

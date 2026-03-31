@@ -47,7 +47,7 @@ VERIFIED_MISTRAL_MODELS = [
 ]
 
 VERIFIED_GEMINI_MODELS = [
-    "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
 ]
 
 VERIFIED_DEEPSEEK_MODELS = [
@@ -65,12 +65,12 @@ VERIFIED_MINIMAX_MODELS = [
 
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-6",
-    "claude-sonnet-4-5-20250929",
+    "claude-sonnet-4-6",
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
     "minimax-m2.5",
-    "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
     "deepseek-chat",
     "kimi-k2-thinking",
     "kimi-k2.5",

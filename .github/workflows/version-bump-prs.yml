@@ -24,7 +24,7 @@ jobs:
             (github.event.workflow_run.conclusion == 'success' &&
              github.event.workflow_run.event == 'release')
         env:
-            GH_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+            GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         steps:
             - name: Checkout
               uses: actions/checkout@v5

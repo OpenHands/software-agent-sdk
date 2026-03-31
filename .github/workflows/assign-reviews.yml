@@ -190,7 +190,7 @@ jobs:
             - name: Run task
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
                   PYTHONPATH: ''
               run: |
                   echo "Running agent script: $AGENT_SCRIPT_URL"
@@ -214,7 +214,7 @@ jobs:
                   fi
 
             - name: Upload logs as artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               if: always()
               with:
                   name: openhands-task-logs

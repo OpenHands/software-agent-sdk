@@ -11,6 +11,8 @@ import pytest
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _build_session_meta,
+    _maybe_set_session_model,
     _OpenHandsACPBridge,
     _resolve_bypass_mode,
     _select_auth_method,
@@ -77,10 +79,6 @@ class TestACPAgentInstantiation:
     def test_acp_env_default_empty(self):
         agent = _make_agent()
         assert agent.acp_env == {}
-
-    def test_system_message_returns_acp_managed(self):
-        agent = _make_agent()
-        assert agent.system_message == "ACP-managed agent"
 
     def test_get_all_llms_yields_sentinel(self):
         agent = _make_agent()
@@ -1428,6 +1426,52 @@ class TestSelectAuthMethod:
         methods = [self._make_auth_method("chatgpt")]
         env = {"OPENAI_API_KEY": "sk-test"}
         assert _select_auth_method(methods, env) is None
+
+
+# ---------------------------------------------------------------------------
+# ACP model overrides
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSessionMeta:
+    def test_claude_agent_adds_model_override(self):
+        assert _build_session_meta("claude-agent-acp", "claude-opus-4-6") == {
+            "claudeCode": {"options": {"model": "claude-opus-4-6"}}
+        }
+
+    def test_codex_agent_does_not_use_session_meta(self):
+        assert _build_session_meta("codex-acp", "gpt-5.4") == {}
+
+    def test_missing_model_does_not_add_session_meta(self):
+        assert _build_session_meta("claude-agent-acp", None) == {}
+
+
+class TestMaybeSetSessionModel:
+    @pytest.mark.asyncio
+    async def test_codex_agent_uses_protocol_model_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(conn, "codex-acp", "session-1", "gpt-5.4")
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gpt-5.4",
+            session_id="session-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_codex_agent_skips_protocol_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(
+            conn,
+            "claude-agent-acp",
+            "session-1",
+            "claude-opus-4-6",
+        )
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_model_skips_protocol_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
+        conn.set_session_model.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
