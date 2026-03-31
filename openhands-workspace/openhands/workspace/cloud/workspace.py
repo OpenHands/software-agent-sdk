@@ -159,7 +159,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
           - automation_id: The automation's unique identifier
           - automation_name: Human-readable automation name
           - run_id: The specific run identifier
-          - skills: Comma-separated list of skill URLs/refs used
+
+        Note: Skills/plugins are NOT included here - they are passed when creating
+        the RemoteConversation and merged at that level.
 
         These tags are automatically merged into conversations created via this
         workspace, allowing the Cloud platform to track automation context.
@@ -179,14 +181,6 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                     tags["automation_id"] = str(payload["automation_id"])
                 if payload.get("automation_name"):
                     tags["automation_name"] = str(payload["automation_name"])
-                # Extract skills/plugins from event payload if present
-                if payload.get("skills"):
-                    # Skills can be a list of canonical URLs or refs
-                    skills = payload["skills"]
-                    if isinstance(skills, list):
-                        tags["skills"] = ",".join(str(s) for s in skills)
-                    elif isinstance(skills, str):
-                        tags["skills"] = skills
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Failed to parse AUTOMATION_EVENT_PAYLOAD")
 

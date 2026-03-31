@@ -60,20 +60,6 @@ class TestDefaultConversationTags:
             tags = workspace.default_conversation_tags
             assert tags["automation_name"] == "Daily Report"
 
-    def test_parses_skills_list_from_payload(self, workspace):
-        """Should extract skills list and join with commas."""
-        payload = {"skills": ["github:org/skill1", "github:org/skill2"]}
-        with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
-            tags = workspace.default_conversation_tags
-            assert tags["skills"] == "github:org/skill1,github:org/skill2"
-
-    def test_parses_skills_string_from_payload(self, workspace):
-        """Should pass through skills string as-is."""
-        payload = {"skills": "github:org/skill1"}
-        with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
-            tags = workspace.default_conversation_tags
-            assert tags["skills"] == "github:org/skill1"
-
     def test_parses_run_id_from_env_var(self, workspace):
         """Should extract run_id from AUTOMATION_RUN_ID env var."""
         with patch.dict(os.environ, {"AUTOMATION_RUN_ID": "run-456"}):
@@ -117,7 +103,6 @@ class TestDefaultConversationTags:
             "trigger": "webhook",
             "automation_id": "auto-abc",
             "automation_name": "PR Review Bot",
-            "skills": ["github:OpenHands/security-skill@v1.0"],
         }
         with patch.dict(
             os.environ,
@@ -130,8 +115,9 @@ class TestDefaultConversationTags:
             assert tags["trigger"] == "webhook"
             assert tags["automation_id"] == "auto-abc"
             assert tags["automation_name"] == "PR Review Bot"
-            assert tags["skills"] == "github:OpenHands/security-skill@v1.0"
             assert tags["run_id"] == "run-xyz"
+            # Skills are NOT included in workspace tags - they come from conversation creation
+            assert "skills" not in tags
 
 
 class TestConversationTagMerging:
