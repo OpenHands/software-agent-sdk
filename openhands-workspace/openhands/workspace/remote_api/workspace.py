@@ -212,7 +212,16 @@ class APIRemoteWorkspace(RemoteWorkspace):
             payload["resource_factor"] = self.resource_factor
 
         logger.info(f"Starting runtime with {self.server_image}")
-        logger.info(f"Payload: {payload}")
+        logger.info(
+            "Runtime start payload: image=%s session_id=%s image_pull_policy=%s "
+            "runtime_class=%s resource_factor=%s environment_keys=%s",
+            payload["image"],
+            payload["session_id"],
+            payload["image_pull_policy"],
+            payload.get("runtime_class"),
+            payload.get("resource_factor", 1),
+            sorted(environment),
+        )
         resp = self._send_api_request(
             "POST",
             f"{self.runtime_api_url}/start",
