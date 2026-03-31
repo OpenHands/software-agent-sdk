@@ -140,6 +140,19 @@ class Conversation:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
                 )
+
+            # Auto-inject default tags from workspace if available (e.g., automation context)
+            # User-provided tags take precedence over workspace defaults
+            effective_tags = tags
+            if hasattr(workspace, "default_conversation_tags"):
+                default_tags = workspace.default_conversation_tags
+                if default_tags:
+                    # Merge: default tags first, then user tags override
+                    effective_tags = {**default_tags, **(tags or {})}
+                    logger.debug(
+                        f"Merged workspace default tags into conversation: {list(default_tags.keys())}"
+                    )
+
             return RemoteConversation(
                 agent=agent,
                 plugins=plugins,
@@ -154,7 +167,7 @@ class Conversation:
                 workspace=workspace,
                 secrets=secrets,
                 delete_on_close=delete_on_close,
-                tags=tags,
+                tags=effective_tags,
             )
 
         return LocalConversation(

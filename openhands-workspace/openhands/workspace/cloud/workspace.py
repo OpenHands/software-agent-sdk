@@ -147,6 +147,57 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     _automation_run_id: str | None = PrivateAttr(default=None)
 
     @property
+    def default_conversation_tags(self) -> dict[str, str]:
+        """Build default tags from automation env vars for conversation creation.
+
+        When running inside an OpenHands Cloud Runtime (local_agent_server_mode=True),
+        this property extracts automation metadata from environment variables and
+        returns them as tags that can be attached to conversations.
+
+        The tags include:
+          - trigger: The trigger type (e.g., 'cron', 'webhook', 'manual')
+          - automation_id: The automation's unique identifier
+          - automation_name: Human-readable automation name
+          - run_id: The specific run identifier
+          - skills: Comma-separated list of skill URLs/refs used
+
+        These tags are automatically merged into conversations created via this
+        workspace, allowing the Cloud platform to track automation context.
+        """
+        import json
+
+        tags: dict[str, str] = {}
+
+        # Parse AUTOMATION_EVENT_PAYLOAD (injected by dispatcher)
+        payload_str = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
+        if payload_str:
+            try:
+                payload = json.loads(payload_str)
+                if payload.get("trigger"):
+                    tags["trigger"] = str(payload["trigger"])
+                if payload.get("automation_id"):
+                    tags["automation_id"] = str(payload["automation_id"])
+                if payload.get("automation_name"):
+                    tags["automation_name"] = str(payload["automation_name"])
+                # Extract skills/plugins from event payload if present
+                if payload.get("skills"):
+                    # Skills can be a list of canonical URLs or refs
+                    skills = payload["skills"]
+                    if isinstance(skills, list):
+                        tags["skills"] = ",".join(str(s) for s in skills)
+                    elif isinstance(skills, str):
+                        tags["skills"] = skills
+            except (json.JSONDecodeError, TypeError):
+                logger.debug("Failed to parse AUTOMATION_EVENT_PAYLOAD")
+
+        # Add run_id from env var or private attr
+        run_id = os.environ.get("AUTOMATION_RUN_ID") or self._automation_run_id
+        if run_id:
+            tags["run_id"] = run_id
+
+        return tags
+
+    @property
     def client(self) -> httpx.Client:
         """Override client property to use api_timeout for HTTP requests."""
         client = self._client
