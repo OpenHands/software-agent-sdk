@@ -249,41 +249,37 @@ class TestConversationTagMerging:
             assert call_kwargs["tags"] == user_tags
 
 
-class TestPluginSourceToUrl:
-    """Tests for _plugin_source_to_url helper function."""
+class TestPluginSourceUrl:
+    """Tests for PluginSource.source_url property."""
 
     def test_github_shorthand_basic(self):
         """Should convert github:owner/repo to full URL."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         plugin = PluginSource(source="github:OpenHands/skills")
-        url = _plugin_source_to_url(plugin)
-        assert url == "https://github.com/OpenHands/skills"
+        assert plugin.source_url == "https://github.com/OpenHands/skills"
 
     def test_github_shorthand_with_ref(self):
         """Should add tree/ref for github: sources with ref."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         plugin = PluginSource(source="github:OpenHands/skills", ref="v1.0.0")
-        url = _plugin_source_to_url(plugin)
-        assert url == "https://github.com/OpenHands/skills/tree/v1.0.0"
+        assert plugin.source_url == "https://github.com/OpenHands/skills/tree/v1.0.0"
 
     def test_github_shorthand_with_repo_path(self):
         """Should add tree/main/path for github: sources with repo_path."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         plugin = PluginSource(
             source="github:OpenHands/monorepo", repo_path="plugins/security"
         )
-        url = _plugin_source_to_url(plugin)
-        assert url == "https://github.com/OpenHands/monorepo/tree/main/plugins/security"
+        assert (
+            plugin.source_url
+            == "https://github.com/OpenHands/monorepo/tree/main/plugins/security"
+        )
 
     def test_github_shorthand_with_ref_and_path(self):
         """Should include both ref and path in URL."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         plugin = PluginSource(
@@ -291,52 +287,46 @@ class TestPluginSourceToUrl:
             ref="feature-branch",
             repo_path="plugins/security",
         )
-        url = _plugin_source_to_url(plugin)
         assert (
-            url
+            plugin.source_url
             == "https://github.com/OpenHands/monorepo/tree/feature-branch/plugins/security"
         )
 
     def test_full_github_url_preserved(self):
         """Should preserve full GitHub URLs."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         plugin = PluginSource(source="https://github.com/OpenHands/skills")
-        url = _plugin_source_to_url(plugin)
-        assert url == "https://github.com/OpenHands/skills"
+        assert plugin.source_url == "https://github.com/OpenHands/skills"
 
     def test_github_blob_url_preserved(self):
         """Should preserve GitHub blob URLs as-is."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         plugin = PluginSource(
             source="https://github.com/OpenHands/skills/blob/main/SKILL.md"
         )
-        url = _plugin_source_to_url(plugin)
-        assert url == "https://github.com/OpenHands/skills/blob/main/SKILL.md"
+        assert (
+            plugin.source_url
+            == "https://github.com/OpenHands/skills/blob/main/SKILL.md"
+        )
 
     def test_local_path_returns_none(self):
         """Should return None for local paths (not portable)."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         for path in ["/absolute/path", "./relative", "../parent", "~/home"]:
             plugin = PluginSource(source=path)
-            url = _plugin_source_to_url(plugin)
-            assert url is None, f"Expected None for {path}"
+            assert plugin.source_url is None, f"Expected None for {path}"
 
     def test_other_git_url_with_ref(self):
         """Should append ref for non-GitHub git URLs."""
-        from openhands.sdk.conversation.conversation import _plugin_source_to_url
         from openhands.sdk.plugin import PluginSource
 
         plugin = PluginSource(
             source="https://gitlab.com/owner/repo.git", ref="v2.0.0"
         )
-        url = _plugin_source_to_url(plugin)
-        assert url == "https://gitlab.com/owner/repo.git@v2.0.0"
+        assert plugin.source_url == "https://gitlab.com/owner/repo.git@v2.0.0"
 
 
 class TestPluginsTagInConversation:

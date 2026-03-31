@@ -28,63 +28,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _plugin_source_to_url(plugin: PluginSource) -> str | None:
-    """Convert a PluginSource to a canonical URL for storage in tags.
-
-    Converts various source formats to GitHub URLs where possible:
-    - 'github:owner/repo' -> 'https://github.com/owner/repo'
-    - 'github:owner/repo@ref' -> 'https://github.com/owner/repo/tree/ref'
-    - 'github:owner/repo' with repo_path -> 'https://github.com/owner/repo/tree/main/path'
-    - Git URLs (https://...) -> preserved as-is with ref/path appended
-    - Local paths -> None (not stored, as they're not portable)
-
-    Returns:
-        Canonical URL string, or None for local paths.
-    """
-    source = plugin.source
-
-    # Handle github: shorthand
-    if source.startswith("github:"):
-        # Extract owner/repo from 'github:owner/repo'
-        repo_part = source[7:]  # Remove 'github:' prefix
-        base_url = f"https://github.com/{repo_part}"
-
-        # Add ref and/or path if present
-        if plugin.ref or plugin.repo_path:
-            ref = plugin.ref or "main"
-            if plugin.repo_path:
-                return f"{base_url}/tree/{ref}/{plugin.repo_path}"
-            return f"{base_url}/tree/{ref}"
-        return base_url
-
-    # Handle full GitHub URLs (already in URL form)
-    if source.startswith("https://github.com/"):
-        # If it's already a blob/tree URL, return as-is
-        if "/blob/" in source or "/tree/" in source:
-            return source
-        # Otherwise, add ref/path if provided
-        if plugin.ref or plugin.repo_path:
-            ref = plugin.ref or "main"
-            if plugin.repo_path:
-                return f"{source}/tree/{ref}/{plugin.repo_path}"
-            return f"{source}/tree/{ref}"
-        return source
-
-    # Handle other git URLs (gitlab, bitbucket, etc.)
-    if source.startswith(("https://", "http://", "git@", "git://")):
-        # For non-GitHub git URLs, append ref as fragment or query
-        if plugin.ref:
-            return f"{source}@{plugin.ref}"
-        return source
-
-    # Local paths - don't store in tags (not portable)
-    if source.startswith(("/", "./", "../", "~", "file://")):
-        return None
-
-    # Unknown format - return as-is
-    return source
-
-
 class Conversation:
     """Factory class for creating conversation instances with OpenHands agents.
 
@@ -215,11 +158,7 @@ class Conversation:
 
             # 2. Auto-generate plugins/skills tag from plugins parameter
             if plugins:
-                plugin_urls = []
-                for plugin in plugins:
-                    url = _plugin_source_to_url(plugin)
-                    if url:
-                        plugin_urls.append(url)
+                plugin_urls = [p.source_url for p in plugins if p.source_url]
                 if plugin_urls:
                     effective_tags["plugins"] = ",".join(plugin_urls)
                     logger.debug(

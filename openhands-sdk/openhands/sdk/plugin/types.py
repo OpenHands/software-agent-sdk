@@ -67,6 +67,71 @@ class PluginSource(BaseModel):
             )
         return v
 
+    @property
+    def source_url(self) -> str | None:
+        """Convert the plugin source to a canonical URL.
+
+        Converts various source formats to GitHub URLs where possible:
+        - 'github:owner/repo' -> 'https://github.com/owner/repo'
+        - 'github:owner/repo' with ref -> 'https://github.com/owner/repo/tree/ref'
+        - 'github:owner/repo' with repo_path -> 'https://github.com/owner/repo/tree/main/path'
+        - Git URLs (https://...) -> preserved as-is with ref/path appended
+        - Local paths -> None (not portable)
+
+        Returns:
+            Canonical URL string, or None for local paths.
+
+        Examples:
+            >>> PluginSource(source="github:owner/repo").source_url
+            'https://github.com/owner/repo'
+
+            >>> PluginSource(source="github:owner/repo", ref="v1.0").source_url
+            'https://github.com/owner/repo/tree/v1.0'
+
+            >>> PluginSource(source="/local/path").source_url
+            None
+        """
+        # Handle github: shorthand
+        if self.source.startswith("github:"):
+            # Extract owner/repo from 'github:owner/repo'
+            repo_part = self.source[7:]  # Remove 'github:' prefix
+            base_url = f"https://github.com/{repo_part}"
+
+            # Add ref and/or path if present
+            if self.ref or self.repo_path:
+                ref = self.ref or "main"
+                if self.repo_path:
+                    return f"{base_url}/tree/{ref}/{self.repo_path}"
+                return f"{base_url}/tree/{ref}"
+            return base_url
+
+        # Handle full GitHub URLs (already in URL form)
+        if self.source.startswith("https://github.com/"):
+            # If it's already a blob/tree URL, return as-is
+            if "/blob/" in self.source or "/tree/" in self.source:
+                return self.source
+            # Otherwise, add ref/path if provided
+            if self.ref or self.repo_path:
+                ref = self.ref or "main"
+                if self.repo_path:
+                    return f"{self.source}/tree/{ref}/{self.repo_path}"
+                return f"{self.source}/tree/{ref}"
+            return self.source
+
+        # Handle other git URLs (gitlab, bitbucket, etc.)
+        if self.source.startswith(("https://", "http://", "git@", "git://")):
+            # For non-GitHub git URLs, append ref as fragment or query
+            if self.ref:
+                return f"{self.source}@{self.ref}"
+            return self.source
+
+        # Local paths - not portable, return None
+        if self.source.startswith(("/", "./", "../", "~", "file://")):
+            return None
+
+        # Unknown format - return as-is
+        return self.source
+
 
 class ResolvedPluginSource(BaseModel):
     """A plugin source with resolved ref (pinned to commit SHA).
