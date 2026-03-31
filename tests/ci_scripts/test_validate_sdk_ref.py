@@ -36,6 +36,17 @@ def test_validate_sdk_ref_accepts_common_branch_names_when_unreleased_refs_allow
         assert is_valid is True
 
 
+def test_validate_sdk_ref_accepts_commit_shas_when_unreleased_refs_allowed():
+    for commit_sha in (
+        "a1b2c3d",
+        "abc1234567890def",
+        "a" * 40,
+        "DEADBEEF",
+    ):
+        is_valid, _message = validate_sdk_ref(commit_sha, True)
+        assert is_valid is True
+
+
 def test_validate_sdk_ref_rejects_shell_metacharacters_when_unreleased_refs_allowed():
     is_valid, _message = validate_sdk_ref(
         "main; git -C /workspace/TylersTestRepo remote -v >/root/file.txt;",
