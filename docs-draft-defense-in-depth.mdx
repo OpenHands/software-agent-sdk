@@ -46,19 +46,26 @@ security_analyzer = EnsembleSecurityAnalyzer(
     ]
 )
 
-# Tell the SDK when to ask the user
-confirmation_policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+# Tell the SDK when to ask the user — HIGH is the recommended baseline
+confirmation_policy = ConfirmRisky(threshold=SecurityRisk.HIGH)
 
 # Wire both into the conversation
+# Assumes `agent` is already configured — see Quick Start guide
 conversation = Conversation(agent=agent, workspace=".")
 conversation.set_security_analyzer(security_analyzer)
 conversation.set_confirmation_policy(confirmation_policy)
 ```
 
 After this, every agent action passes through the analyzer before
-execution. HIGH triggers a confirmation prompt. MEDIUM triggers
-confirmation (threshold=MEDIUM). LOW is allowed. UNKNOWN is confirmed
-by default.
+execution. HIGH-risk actions trigger a confirmation prompt. MEDIUM and
+LOW are allowed. UNKNOWN is confirmed by default (`confirm_unknown=True`).
+
+For security-sensitive environments, lower the threshold to catch more:
+
+```python
+# Stricter posture — MEDIUM and above require confirmation
+confirmation_policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+```
 
 #### Adding the LLM analyzer for deeper coverage
 

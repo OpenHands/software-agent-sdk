@@ -25,8 +25,8 @@ security_analyzer = EnsembleSecurityAnalyzer(
     ]
 )
 
-# Confirmation policy: prompt the user for MEDIUM and above
-confirmation_policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
+# Confirmation policy: prompt the user for HIGH-risk actions
+confirmation_policy = ConfirmRisky(threshold=SecurityRisk.HIGH)
 
 # Wire into a conversation:
 #
@@ -35,8 +35,11 @@ confirmation_policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
 #   conversation.set_confirmation_policy(confirmation_policy)
 #
 # Every agent action now passes through the analyzer.
-# HIGH -> confirmation prompt. MEDIUM -> confirmed. LOW -> allowed.
+# HIGH -> confirmation prompt. MEDIUM/LOW -> allowed.
 # UNKNOWN -> confirmed by default (confirm_unknown=True).
+#
+# For stricter environments, lower the threshold:
+#   confirmation_policy = ConfirmRisky(threshold=SecurityRisk.MEDIUM)
 
 print("Defense-in-depth security analyzer configured.")
 print(f"Analyzer: {security_analyzer}")
