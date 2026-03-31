@@ -1747,7 +1747,7 @@ class TestEstimateCostFromTokens:
             }
         }
         mock_litellm = MagicMock()
-        mock_litellm.get_model_cost_map.return_value = mock_cost_map
+        mock_litellm.model_cost = mock_cost_map
         with patch.dict("sys.modules", {"litellm": mock_litellm}):
             cost = _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500)
             assert cost == pytest.approx(1000 * 5e-07 + 500 * 3e-06)

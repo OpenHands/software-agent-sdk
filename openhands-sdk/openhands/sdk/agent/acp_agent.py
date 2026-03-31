@@ -222,7 +222,7 @@ def _estimate_cost_from_tokens(
     try:
         import litellm
 
-        cost_map = litellm.get_model_cost_map("")
+        cost_map = litellm.model_cost
         info = cost_map.get(model, {})
         input_cost = info.get("input_cost_per_token", 0) or 0
         output_cost = info.get("output_cost_per_token", 0) or 0
