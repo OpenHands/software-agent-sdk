@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -61,6 +64,10 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
@@ -127,7 +134,8 @@ class _ActionBatch:
         state: ConversationState,
         executor: ParallelToolExecutor,
         tool_runner: Callable[[ActionEvent], list[Event]],
-    ) -> "_ActionBatch":
+        tools: dict[str, ToolDefinition] | None = None,
+    ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
         action_events, has_finish = cls._truncate_at_finish(action_events)
 
@@ -140,7 +148,7 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = executor.execute_batch(executable, tool_runner)
+        executed_results = executor.execute_batch(executable, tool_runner, tools)
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -407,6 +415,7 @@ class Agent(CriticMixin, AgentBase):
             state=state,
             executor=self._parallel_executor,
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
         )
         batch.emit(on_event)
         batch.finalize(

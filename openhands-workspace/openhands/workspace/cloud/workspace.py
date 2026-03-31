@@ -628,6 +628,98 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
+    def get_mcp_config(self) -> dict[str, Any]:
+        """Fetch MCP configuration from the user's SaaS account.
+
+        Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
+        and transforms it into the format expected by the SDK Agent and
+        ``fastmcp.mcp_config.MCPConfig``.
+
+        Returns:
+            A dictionary with ``mcpServers`` key containing server configurations
+            (compatible with ``MCPConfig.model_validate()``), or an empty dict
+            if no MCP config is set.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the sandbox is not running.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     llm = workspace.get_llm()
+            ...     mcp_config = workspace.get_mcp_config()
+            ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
+            ...
+            ...     # Or validate as MCPConfig:
+            ...     from fastmcp.mcp_config import MCPConfig
+            ...     config = MCPConfig.model_validate(mcp_config)
+        """
+        if not self._sandbox_id:
+            raise RuntimeError("Sandbox is not running")
+
+        resp = self._send_api_request(
+            "GET",
+            f"{self.cloud_api_url}/api/v1/users/me",
+            headers={"X-Session-API-Key": self._session_api_key or ""},
+        )
+        data = resp.json()
+
+        mcp_config_data = data.get("mcp_config")
+        if not mcp_config_data:
+            return {}
+
+        mcp_servers: dict[str, dict[str, Any]] = {}
+
+        # Transform SSE servers → RemoteMCPServer format
+        for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
+            server_config: dict[str, Any] = {
+                "url": sse_server["url"],
+                "transport": "sse",
+            }
+            if sse_server.get("api_key"):
+                server_config["headers"] = {
+                    "Authorization": f"Bearer {sse_server['api_key']}"
+                }
+            server_name = f"sse_{i}"
+            mcp_servers[server_name] = server_config
+
+        # Transform SHTTP servers → RemoteMCPServer format
+        for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
+            server_config = {
+                "url": shttp_server["url"],
+                "transport": "streamable-http",
+            }
+            if shttp_server.get("api_key"):
+                server_config["headers"] = {
+                    "Authorization": f"Bearer {shttp_server['api_key']}"
+                }
+            if shttp_server.get("timeout"):
+                server_config["timeout"] = shttp_server["timeout"]
+            server_name = f"shttp_{i}"
+            mcp_servers[server_name] = server_config
+
+        # Transform STDIO servers → StdioMCPServer format
+        for stdio_server in mcp_config_data.get("stdio_servers") or []:
+            server_config = {
+                "command": stdio_server["command"],
+                "args": stdio_server.get("args", []),
+            }
+            if stdio_server.get("env"):
+                server_config["env"] = stdio_server["env"]
+            # STDIO servers have an explicit name field
+            mcp_servers[stdio_server["name"]] = server_config
+
+        if not mcp_servers:
+            return {}
+
+        return {"mcpServers": mcp_servers}
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
     def _send_settings_request(
         self, method: str, url: str, **kwargs: Any
     ) -> httpx.Response:

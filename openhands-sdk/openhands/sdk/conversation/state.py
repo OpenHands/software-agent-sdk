@@ -13,7 +13,11 @@ from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTags,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -159,6 +163,14 @@ class ConversationState(OpenHandsModel):
         description="Registry for handling secrets and sensitive data",
     )
 
+    # User-defined tags (key-value metadata)
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description="User-defined key-value tags for the conversation. "
+        "Keys must be lowercase alphanumeric. Values are arbitrary strings "
+        "up to 256 characters.",
+    )
+
     # Agent-specific runtime state (simple dict for flexibility)
     agent_state: dict[str, Any] = Field(
         default_factory=dict,
@@ -245,6 +257,7 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -272,6 +285,8 @@ class ConversationState(OpenHandsModel):
                     persisted state. If provided, secrets are encrypted when
                     saving and decrypted when loading. If not provided, secrets
                     are redacted (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
 
         Returns:
             ConversationState ready for use
@@ -341,6 +356,7 @@ class ConversationState(OpenHandsModel):
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
+            tags=tags or {},
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)

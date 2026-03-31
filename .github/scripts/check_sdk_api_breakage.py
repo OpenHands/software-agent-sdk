@@ -414,6 +414,32 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     return _normalize(old_str) == _normalize(new_str)
 
 
+def _was_deprecated(
+    cls_obj: object,
+    member_name: str,
+    deprecated: DeprecatedSymbols,
+) -> bool:
+    """Check if a class member was deprecated, including in parent classes.
+
+    When a member like ``system_message`` is deprecated on a base class
+    (``AgentBase``) but removed from a subclass (``Agent``), griffe reports
+    the removal against the subclass name.  This helper walks the MRO so
+    that ``Agent.system_message`` is correctly recognised as deprecated if
+    ``AgentBase.system_message`` carried the ``@deprecated`` marker.
+    """
+    cls_name = getattr(cls_obj, "name", "")
+    feature = f"{cls_name}.{member_name}"
+    if feature in deprecated.qualified or cls_name in deprecated.top_level:
+        return True
+
+    # Walk griffe-style resolved bases (if available)
+    for base in getattr(cls_obj, "resolved_bases", []):
+        base_name = getattr(base, "name", None)
+        if base_name and f"{base_name}.{member_name}" in deprecated.qualified:
+            return True
+    return False
+
+
 def _collect_breakages_pairs(
     objs: Iterable[tuple[object, object]],
     *,
@@ -464,17 +490,16 @@ def _collect_breakages_pairs(
                     continue
 
                 feature = f"{parent.name}.{obj.name}"
-                if (
-                    feature not in deprecated.qualified
-                    and parent.name not in deprecated.top_level
-                ):
-                    print(
-                        f"::error title={title}::Removed '{feature}' without prior "
-                        "deprecation. Mark it with @deprecated(...) or "
-                        f"warn_deprecated('{feature}', ...) for at least one release "
-                        "before removing."
-                    )
-                    undeprecated_removals += 1
+                if _was_deprecated(parent, obj.name, deprecated):
+                    continue
+
+                print(
+                    f"::error title={title}::Removed '{feature}' without prior "
+                    "deprecation. Mark it with @deprecated(...) or "
+                    f"warn_deprecated('{feature}', ...) for at least one release "
+                    "before removing."
+                )
+                undeprecated_removals += 1
         except AliasResolutionError as e:
             if isinstance(old, Alias) or isinstance(new, Alias):
                 old_target = old.target_path if isinstance(old, Alias) else None
