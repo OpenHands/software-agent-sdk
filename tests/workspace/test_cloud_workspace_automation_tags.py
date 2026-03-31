@@ -247,3 +247,206 @@ class TestConversationTagMerging:
             call_kwargs = mock_convo_class.call_args.kwargs
             # When default tags are empty, effective_tags should be user_tags
             assert call_kwargs["tags"] == user_tags
+
+
+class TestPluginSourceToUrl:
+    """Tests for _plugin_source_to_url helper function."""
+
+    def test_github_shorthand_basic(self):
+        """Should convert github:owner/repo to full URL."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(source="github:OpenHands/skills")
+        url = _plugin_source_to_url(plugin)
+        assert url == "https://github.com/OpenHands/skills"
+
+    def test_github_shorthand_with_ref(self):
+        """Should add tree/ref for github: sources with ref."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(source="github:OpenHands/skills", ref="v1.0.0")
+        url = _plugin_source_to_url(plugin)
+        assert url == "https://github.com/OpenHands/skills/tree/v1.0.0"
+
+    def test_github_shorthand_with_repo_path(self):
+        """Should add tree/main/path for github: sources with repo_path."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(
+            source="github:OpenHands/monorepo", repo_path="plugins/security"
+        )
+        url = _plugin_source_to_url(plugin)
+        assert url == "https://github.com/OpenHands/monorepo/tree/main/plugins/security"
+
+    def test_github_shorthand_with_ref_and_path(self):
+        """Should include both ref and path in URL."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(
+            source="github:OpenHands/monorepo",
+            ref="feature-branch",
+            repo_path="plugins/security",
+        )
+        url = _plugin_source_to_url(plugin)
+        assert (
+            url
+            == "https://github.com/OpenHands/monorepo/tree/feature-branch/plugins/security"
+        )
+
+    def test_full_github_url_preserved(self):
+        """Should preserve full GitHub URLs."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(source="https://github.com/OpenHands/skills")
+        url = _plugin_source_to_url(plugin)
+        assert url == "https://github.com/OpenHands/skills"
+
+    def test_github_blob_url_preserved(self):
+        """Should preserve GitHub blob URLs as-is."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(
+            source="https://github.com/OpenHands/skills/blob/main/SKILL.md"
+        )
+        url = _plugin_source_to_url(plugin)
+        assert url == "https://github.com/OpenHands/skills/blob/main/SKILL.md"
+
+    def test_local_path_returns_none(self):
+        """Should return None for local paths (not portable)."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        for path in ["/absolute/path", "./relative", "../parent", "~/home"]:
+            plugin = PluginSource(source=path)
+            url = _plugin_source_to_url(plugin)
+            assert url is None, f"Expected None for {path}"
+
+    def test_other_git_url_with_ref(self):
+        """Should append ref for non-GitHub git URLs."""
+        from openhands.sdk.conversation.conversation import _plugin_source_to_url
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(
+            source="https://gitlab.com/owner/repo.git", ref="v2.0.0"
+        )
+        url = _plugin_source_to_url(plugin)
+        assert url == "https://gitlab.com/owner/repo.git@v2.0.0"
+
+
+class TestPluginsTagInConversation:
+    """Tests for automatic plugins tag generation in Conversation factory."""
+
+    def test_plugins_added_as_urls_in_tags(self):
+        """Should serialize plugins to URLs in the tags."""
+        from unittest.mock import MagicMock
+
+        from openhands.sdk.conversation.conversation import Conversation
+        from openhands.sdk.plugin import PluginSource
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        mock_workspace = MagicMock(spec=RemoteWorkspace)
+        mock_workspace.default_conversation_tags = {}
+
+        plugins = [
+            PluginSource(source="github:OpenHands/security-skill", ref="v1.0.0"),
+            PluginSource(source="github:OpenHands/review-skill"),
+        ]
+
+        with patch(
+            "openhands.sdk.conversation.conversation.RemoteConversation"
+        ) as mock_convo_class:
+            mock_convo_class.return_value = MagicMock()
+
+            Conversation(
+                agent=MagicMock(),
+                workspace=mock_workspace,
+                plugins=plugins,
+            )
+
+            call_kwargs = mock_convo_class.call_args.kwargs
+            effective_tags = call_kwargs["tags"]
+
+            assert "plugins" in effective_tags
+            plugin_urls = effective_tags["plugins"].split(",")
+            assert len(plugin_urls) == 2
+            assert (
+                "https://github.com/OpenHands/security-skill/tree/v1.0.0"
+                in plugin_urls
+            )
+            assert "https://github.com/OpenHands/review-skill" in plugin_urls
+
+    def test_local_plugins_not_included_in_tags(self):
+        """Should not include local path plugins in tags."""
+        from unittest.mock import MagicMock
+
+        from openhands.sdk.conversation.conversation import Conversation
+        from openhands.sdk.plugin import PluginSource
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        mock_workspace = MagicMock(spec=RemoteWorkspace)
+        mock_workspace.default_conversation_tags = {}
+
+        plugins = [
+            PluginSource(source="github:OpenHands/skill"),
+            PluginSource(source="/local/path/to/plugin"),  # Should be skipped
+        ]
+
+        with patch(
+            "openhands.sdk.conversation.conversation.RemoteConversation"
+        ) as mock_convo_class:
+            mock_convo_class.return_value = MagicMock()
+
+            Conversation(
+                agent=MagicMock(),
+                workspace=mock_workspace,
+                plugins=plugins,
+            )
+
+            call_kwargs = mock_convo_class.call_args.kwargs
+            effective_tags = call_kwargs["tags"]
+
+            # Should only have one plugin (the GitHub one)
+            assert effective_tags["plugins"] == "https://github.com/OpenHands/skill"
+
+    def test_plugins_tag_merges_with_other_tags(self):
+        """Plugins tag should merge with workspace and user tags."""
+        from unittest.mock import MagicMock
+
+        from openhands.sdk.conversation.conversation import Conversation
+        from openhands.sdk.plugin import PluginSource
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        mock_workspace = MagicMock(spec=RemoteWorkspace)
+        mock_workspace.default_conversation_tags = {
+            "trigger": "webhook",
+            "automation_id": "auto-123",
+        }
+
+        plugins = [PluginSource(source="github:OpenHands/skill")]
+
+        with patch(
+            "openhands.sdk.conversation.conversation.RemoteConversation"
+        ) as mock_convo_class:
+            mock_convo_class.return_value = MagicMock()
+
+            Conversation(
+                agent=MagicMock(),
+                workspace=mock_workspace,
+                plugins=plugins,
+                tags={"custom": "value"},
+            )
+
+            call_kwargs = mock_convo_class.call_args.kwargs
+            effective_tags = call_kwargs["tags"]
+
+            # All tags should be present
+            assert effective_tags["trigger"] == "webhook"
+            assert effective_tags["automation_id"] == "auto-123"
+            assert effective_tags["plugins"] == "https://github.com/OpenHands/skill"
+            assert effective_tags["custom"] == "value"
