@@ -532,10 +532,6 @@ class ACPAgent(AgentBase):
     # -- Override base properties to be no-ops for ACP ---------------------
 
     @property
-    def system_message(self) -> str:
-        return "ACP-managed agent"
-
-    @property
     def agent_name(self) -> str:
         """Name of the ACP server (from InitializeResponse.agent_info)."""
         return self._agent_name

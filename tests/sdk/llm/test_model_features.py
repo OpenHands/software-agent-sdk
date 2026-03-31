@@ -33,9 +33,8 @@ def test_model_matches(name, pattern, expected):
         ("claude-opus-4-5", True),
         ("nova-2-lite", False),
         # Gemini 3 family
-        ("gemini-3-pro-preview", True),
-        ("gemini-3-flash-preview", True),
         ("gemini-3.1-pro-preview", True),
+        ("gemini-3-flash-preview", True),
         # GPT-5 family
         ("gpt-5.2", True),
         ("gpt-5.2-codex", True),

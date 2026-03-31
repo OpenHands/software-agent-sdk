@@ -1,6 +1,7 @@
 """Tests for session factory and auto-detection logic."""
 
 import tempfile
+import warnings
 from unittest.mock import patch
 
 import pytest
@@ -84,6 +85,26 @@ def test_auto_detection_unix(mock_system):
             assert isinstance(session, TerminalSession)
             assert isinstance(session.terminal, SubprocessTerminal)
             session.close()
+
+
+@patch("platform.system")
+def test_warning_when_tmux_not_available(mock_system):
+    """Test that a warning is emitted when tmux is not installed."""
+    mock_system.return_value = "Linux"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with patch(
+            "openhands.tools.terminal.terminal.factory._is_tmux_available",
+            return_value=False,
+        ):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                session = create_terminal_session(work_dir=temp_dir)
+                session.close()
+
+            assert len(w) == 1
+            assert "tmux is not installed" in str(w[0].message)
+            assert "install tmux" in str(w[0].message)
 
 
 def test_session_parameters_passed():
