@@ -1,32 +1,6 @@
 from datetime import UTC, datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field
-
-
-class CommandSpec(BaseModel):
-    """Specification for a shell command to execute for dynamic context.
-
-    **Security Warning**: Commands are executed via shell with full process
-    privileges. Only use with trusted skill sources. Avoid loading skills
-    with commands from untrusted third parties.
-    """
-
-    name: str = Field(description="Variable name for template substitution")
-    command: str = Field(description="Shell command to execute")
-    timeout: float = Field(default=10.0, gt=0.0, description="Timeout in seconds")
-    on_error: Literal["fail", "empty", "message"] = Field(
-        default="message",
-        description=(
-            "Error handling strategy when the command fails, i.e,"
-            "non-zero exit code or timeout."
-            "- 'fail' raises an exception, aborting skill loading. "
-            "- 'empty' silently returns an empty string, useful when the "
-            "command output is optional. "
-            "- 'message' returns a human-readable error description, "
-            "allowing the skill to proceed with diagnostic context."
-        ),
-    )
 
 
 class InputMetadata(BaseModel):

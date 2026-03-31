@@ -11,11 +11,12 @@ from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
+from openhands.sdk.context.skills.execute import render_content_with_commands
 from openhands.sdk.context.skills.trigger import (
     KeywordTrigger,
     TaskTrigger,
 )
-from openhands.sdk.context.skills.types import CommandSpec, InputMetadata
+from openhands.sdk.context.skills.types import InputMetadata
 from openhands.sdk.context.skills.utils import (
     discover_skill_resources,
     find_mcp_config,
@@ -205,13 +206,6 @@ class Skill(BaseModel):
         description=(
             "Resource directories for the skill (scripts/, references/, assets/). "
             "AgentSkills standard field. Only populated for SKILL.md directory format."
-        ),
-    )
-    commands: list[CommandSpec] = Field(
-        default_factory=list,
-        description=(
-            "Shell commands to execute for dynamic context injection. "
-            "Command outputs are available as {{name}} template variables in content."
         ),
     )
 
@@ -428,14 +422,6 @@ class Skill(BaseModel):
             k: v for k, v in agentskills_fields.items() if v is not None
         }
 
-        # Parse commands for dynamic context injection
-        commands: list[CommandSpec] = []
-        commands_raw = metadata_dict.get("commands", [])
-        if commands_raw:
-            if not isinstance(commands_raw, list):
-                raise SkillValidationError("commands must be a list")
-            commands = [CommandSpec.model_validate(c) for c in commands_raw]
-
         # Get trigger keywords from metadata
         keywords = metadata_dict.get("triggers", [])
         if not isinstance(keywords, list):
@@ -465,7 +451,6 @@ class Skill(BaseModel):
                 mcp_tools=mcp_tools,
                 resources=resources,
                 is_agentskills_format=is_agentskills_format,
-                commands=commands,
                 **agentskills_fields,
             )
 
@@ -478,7 +463,6 @@ class Skill(BaseModel):
                 mcp_tools=mcp_tools,
                 resources=resources,
                 is_agentskills_format=is_agentskills_format,
-                commands=commands,
                 **agentskills_fields,
             )
         else:
@@ -491,7 +475,6 @@ class Skill(BaseModel):
                 mcp_tools=mcp_tools,
                 resources=resources,
                 is_agentskills_format=is_agentskills_format,
-                commands=commands,
                 **agentskills_fields,
             )
 
@@ -646,29 +629,21 @@ class Skill(BaseModel):
     def render_content(
         self,
         working_dir: Path | None = None,
-        extra_vars: dict[str, str] | None = None,
     ) -> str:
-        """Render skill content with command execution and variable substitution.
+        """Render skill content, executing inline !`command` blocks.
 
-        If commands are defined, executes them and substitutes {{name}} patterns
-        in content with command outputs.
+        Inline !`command` patterns in the content are executed and
+        replaced with their stdout output. Code blocks (fenced and
+        inline) are preserved. Unclosed fenced blocks are treated as
+        extending to EOF. Use \\!`cmd` to produce literal !`cmd` text.
 
         Args:
             working_dir: Directory to run commands in.
-            extra_vars: Additional variables for substitution.
 
         Returns:
-            Processed content with variables substituted.
+            Processed content with command outputs substituted.
         """
-        if not self.commands and not extra_vars:
-            return self.content
-
-        # Lazy import to avoid circular dependency: skill -> execute -> types -> skill
-        from openhands.sdk.context.skills.execute import render_content_with_commands
-
-        return render_content_with_commands(
-            self.content, self.commands, working_dir, extra_vars
-        )
+        return render_content_with_commands(self.content, working_dir)
 
 
 def load_skills_from_dir(

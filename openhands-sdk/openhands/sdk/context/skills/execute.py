@@ -1,4 +1,17 @@
-"""Command execution for dynamic skill context injection."""
+"""Command execution for dynamic skill context injection.
+
+Supports inline !`command` syntax in skill content. Commands are executed
+at render time and their output replaces the placeholder.
+
+Safety rules:
+- Fenced (```) and inline (`) code blocks are preserved, never executed.
+- An unclosed fenced block (odd number of ```) extends to EOF, protecting
+  any trailing content from accidental execution.
+- Use \\!`cmd` to produce the literal text !`cmd` without execution.
+
+**Security Warning**: Commands are executed via shell with full process
+privileges. Only use with trusted skill sources.
+"""
 
 from __future__ import annotations
 
@@ -7,33 +20,59 @@ import subprocess
 from pathlib import Path
 from typing import Final
 
-from openhands.sdk.context.skills.exceptions import SkillError
-from openhands.sdk.context.skills.types import CommandSpec
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
 
-# 50KB per command
+# 50KB per command output
 MAX_OUTPUT_SIZE: Final[int] = 50 * 1024
 
+# Default timeout per command in seconds
+DEFAULT_TIMEOUT: Final[float] = 10.0
 
-def _execute_command(spec: CommandSpec, working_dir: Path | None = None) -> str:
-    """Execute a single command and return its output."""
+# Single-pass pattern: matches fenced code blocks, escaped commands, inline code,
+# or !`command`.  Order matters – earlier alternatives take priority.
+#
+# 1. Fenced blocks (``` ... ```).  An *unclosed* fence (odd number of ```)
+#    matches through to the end of the string so that content after the last
+#    opening ``` is never accidentally executed.
+# 2. Escaped commands (\!`...`) – the backslash is stripped and the rest is
+#    kept as a literal !`...` so authors can document the syntax itself.
+# 3. Inline code (`...`) not preceded by `!`.
+# 4. Executable commands (!`...`).
+_COMBINED_PATTERN: re.Pattern[str] = re.compile(
+    r"(?P<fenced>```[\s\S]*?(?:```|$))"  # fenced code block (unclosed → EOF)
+    r"|(?P<escaped>\\!`[^`]+`)"  # escaped \!`command` → literal
+    r"|(?P<inline>(?<!!)`[^`]+`)"  # inline code (not preceded by !)
+    r"|!`(?P<cmd>[^`]+)`"  # !`command`
+)
+
+
+def _execute_inline_command(
+    command: str,
+    working_dir: Path | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> str:
+    """Execute a single inline shell command and return its output."""
     cwd = str(working_dir) if working_dir else None
     try:
         result = subprocess.run(
-            spec.command,
+            command,
             shell=True,
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=spec.timeout,
+            timeout=timeout,
         )
         if result.returncode != 0:
-            return _handle_error(
-                spec, f"Command exited with code {result.returncode}: {result.stderr}"
+            message = (
+                f"Command `{command}` exited with "
+                f"code {result.returncode}: {result.stderr}"
             )
+            logger.warning("Skill command failed: %s", message)
+            return f"[Error: {message}]"
+
         output = result.stdout.strip()
         if len(output.encode()) > MAX_OUTPUT_SIZE:
             output = output.encode()[:MAX_OUTPUT_SIZE].decode("utf-8", errors="ignore")
@@ -41,55 +80,34 @@ def _execute_command(spec: CommandSpec, working_dir: Path | None = None) -> str:
         return output
 
     except subprocess.TimeoutExpired:
-        return _handle_error(spec, f"Command timed out after {spec.timeout}s")
+        message = f"Command `{command}` timed out after {timeout}s"
+        logger.warning("Skill command failed: %s", message)
+        return f"[Error: {message}]"
     except Exception as e:
-        return _handle_error(spec, f"Failed to execute command: {e}")
-
-
-def _handle_error(spec: CommandSpec, message: str) -> str:
-    """Handle command execution error based on on_error setting."""
-    if spec.on_error == "fail":
-        raise SkillError(message)
-    logger.warning("Skill command '%s' failed: %s", spec.name, message)
-    if spec.on_error == "empty":
-        return ""
-    return f"[Error: {message}]"
-
-
-def _execute_commands(
-    commands: list[CommandSpec],
-    working_dir: Path | None = None,
-) -> dict[str, str]:
-    """Execute all commands and return name->output mapping."""
-    return {spec.name: _execute_command(spec, working_dir) for spec in commands}
+        message = f"Failed to execute command `{command}`: {e}"
+        logger.warning("Skill command failed: %s", message)
+        return f"[Error: {message}]"
 
 
 def render_content_with_commands(
     content: str,
-    commands: list[CommandSpec],
     working_dir: Path | None = None,
-    extra_vars: dict[str, str] | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
-    """Execute commands and substitute {{var_name}} patterns in content."""
-    if not commands and not extra_vars:
-        return content
+    """Execute inline !`command` patterns in content and replace with output.
 
-    # Execute commands
-    variables = _execute_commands(commands, working_dir) if commands else {}
-    if extra_vars:
-        collisions = set(variables) & set(extra_vars)
-        if collisions:
-            logger.warning("extra_vars overriding command outputs: %s", collisions)
-        variables.update(extra_vars)
+    Code blocks (fenced ``` and inline `) are preserved and not executed.
+    Unclosed fenced blocks (odd number of ```) are treated as extending to
+    EOF so that trailing content is never accidentally executed.
+    Use \\!`cmd` to produce the literal text !`cmd` without execution.
+    """
 
-    if not variables:
-        return content
+    def _replace(match: re.Match[str]) -> str:
+        if match.group("fenced") or match.group("inline"):
+            return match.group(0)
+        if match.group("escaped"):
+            # Strip leading backslash: \!`cmd` → !`cmd`
+            return match.group("escaped")[1:]
+        return _execute_inline_command(match.group("cmd"), working_dir, timeout)
 
-    # Substitute {{var_name}} patterns
-    def replace_var(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        if var_name in variables:
-            return variables[var_name]
-        return match.group(0)
-
-    return re.sub(r"\{\{(\w+)\}\}", replace_var, content)
+    return _COMBINED_PATTERN.sub(_replace, content)

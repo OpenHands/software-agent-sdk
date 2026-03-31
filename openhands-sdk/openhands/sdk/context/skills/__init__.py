@@ -14,7 +14,7 @@ from openhands.sdk.context.skills.trigger import (
     KeywordTrigger,
     TaskTrigger,
 )
-from openhands.sdk.context.skills.types import CommandSpec, SkillKnowledge
+from openhands.sdk.context.skills.types import SkillKnowledge
 from openhands.sdk.context.skills.utils import (
     RESOURCE_DIRECTORIES,
     discover_skill_resources,
@@ -23,7 +23,6 @@ from openhands.sdk.context.skills.utils import (
 
 
 __all__ = [
-    "CommandSpec",
     "Skill",
     "SkillResources",
     "BaseTrigger",
