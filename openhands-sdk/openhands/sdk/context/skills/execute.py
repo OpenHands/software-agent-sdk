@@ -54,7 +54,13 @@ def _execute_inline_command(
     working_dir: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> str:
-    """Execute a single inline shell command and return its output."""
+    """Execute a single inline shell command and return its output.
+
+    When *working_dir* is None the command inherits the current process's
+    cwd.  Callers rendering skills during agent execution should pass the
+    workspace path explicitly so that workspace-relative commands (e.g.
+    ``git status``) resolve correctly.
+    """
     cwd = str(working_dir) if working_dir else None
     try:
         result = subprocess.run(
