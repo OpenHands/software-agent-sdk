@@ -220,25 +220,25 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
         # HIGH: patterns on executable fields only
         for pattern, _desc, det_id in self._compiled_high:
             if pattern.search(exec_content):
-                logger.info("Pattern matched: %s -> HIGH", det_id)
+                logger.debug("Pattern matched: %s -> HIGH", det_id)
                 return SecurityRisk.HIGH
 
         # HIGH: injection patterns on all fields
         for pattern, _desc, det_id in self._compiled_injection_high:
             if pattern.search(all_content):
-                logger.info("Pattern matched: %s -> HIGH", det_id)
+                logger.debug("Pattern matched: %s -> HIGH", det_id)
                 return SecurityRisk.HIGH
 
         # MEDIUM: patterns on executable fields only
         for pattern, _desc, det_id in self._compiled_medium:
             if pattern.search(exec_content):
-                logger.info("Pattern matched: %s -> MEDIUM", det_id)
+                logger.debug("Pattern matched: %s -> MEDIUM", det_id)
                 return SecurityRisk.MEDIUM
 
         # MEDIUM: injection patterns on all fields
         for pattern, _desc, det_id in self._compiled_injection_medium:
             if pattern.search(all_content):
-                logger.info("Pattern matched: %s -> MEDIUM", det_id)
+                logger.debug("Pattern matched: %s -> MEDIUM", det_id)
                 return SecurityRisk.MEDIUM
 
         return SecurityRisk.LOW

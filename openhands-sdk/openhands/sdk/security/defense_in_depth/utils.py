@@ -50,24 +50,25 @@ def _walk_json_strings(obj: Any) -> list[str]:
     """Recursively collect leaf strings from a parsed JSON structure.
 
     Walking to leaves and returning each as a separate segment preserves
-    field boundaries for segment-aware rail evaluation. Catches
-    RecursionError to defend against JSON bomb payloads.
+    field boundaries for segment-aware rail evaluation.
+
+    RecursionError is NOT caught here -- it propagates to
+    _extract_exec_segments() which falls back to scanning the raw
+    arguments string. Returning [] would silently drop all leaves,
+    creating a false-negative path for deeply nested payloads.
     """
-    try:
-        if isinstance(obj, str):
-            return [obj]
-        if isinstance(obj, dict):
-            parts: list[str] = []
-            for v in obj.values():
-                parts.extend(_walk_json_strings(v))
-            return parts
-        if isinstance(obj, list):
-            parts = []
-            for item in obj:
-                parts.extend(_walk_json_strings(item))
-            return parts
-    except RecursionError:
-        return []
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        parts: list[str] = []
+        for v in obj.values():
+            parts.extend(_walk_json_strings(v))
+        return parts
+    if isinstance(obj, list):
+        parts = []
+        for item in obj:
+            parts.extend(_walk_json_strings(item))
+        return parts
     return []
 
 
@@ -184,8 +185,10 @@ _FORMAT_CHARS: set[str] = {
     "\u034f",  # combining grapheme joiner
     "\u2009",  # thin space
     "\u200a",  # hair space
-    "\u2028",  # line separator
-    "\u2029",  # paragraph separator
+    # U+2028 (line separator) and U+2029 (paragraph separator) are NOT
+    # stripped here -- they are whitespace-like and should be collapsed
+    # by the \s+ stage, not deleted. Deleting them merges tokens and
+    # can bypass word-boundary regex detectors.
     "\ufff9",  # interlinear annotation anchor
     "\ufffa",  # interlinear annotation separator
     "\ufffb",  # interlinear annotation terminator

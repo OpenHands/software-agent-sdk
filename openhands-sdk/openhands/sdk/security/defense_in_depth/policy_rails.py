@@ -179,7 +179,7 @@ class PolicyRailSecurityAnalyzer(SecurityAnalyzerBase):
         segments = [_normalize(s) for s in _extract_exec_segments(action)]
         rail = _evaluate_rail_segments(segments)
         if rail.outcome != RailOutcome.PASS:
-            logger.info(
+            logger.debug(
                 "Policy rail fired: %s (%s) -> HIGH",
                 rail.rule_name,
                 rail.reason,
