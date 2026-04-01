@@ -319,12 +319,55 @@ class TestPluginSourceUrl:
             plugin = PluginSource(source=path)
             assert plugin.source_url is None, f"Expected None for {path}"
 
-    def test_other_git_url_with_ref(self):
-        """Should append ref for non-GitHub git URLs."""
+    def test_gitlab_url_with_ref(self):
+        """Should use GitLab's /-/tree/ format for refs."""
         from openhands.sdk.plugin import PluginSource
 
-        plugin = PluginSource(source="https://gitlab.com/owner/repo.git", ref="v2.0.0")
-        assert plugin.source_url == "https://gitlab.com/owner/repo.git@v2.0.0"
+        plugin = PluginSource(source="https://gitlab.com/owner/repo", ref="v2.0.0")
+        assert plugin.source_url == "https://gitlab.com/owner/repo/-/tree/v2.0.0"
+
+    def test_gitlab_url_with_ref_and_path(self):
+        """Should include path in GitLab URL."""
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(
+            source="https://gitlab.com/owner/repo",
+            ref="main",
+            repo_path="plugins/skill",
+        )
+        assert (
+            plugin.source_url
+            == "https://gitlab.com/owner/repo/-/tree/main/plugins/skill"
+        )
+
+    def test_bitbucket_url_with_ref(self):
+        """Should use Bitbucket's /src/ format for refs."""
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(source="https://bitbucket.org/owner/repo", ref="v1.0.0")
+        assert plugin.source_url == "https://bitbucket.org/owner/repo/src/v1.0.0/"
+
+    def test_bitbucket_url_with_ref_and_path(self):
+        """Should include path in Bitbucket URL."""
+        from openhands.sdk.plugin import PluginSource
+
+        plugin = PluginSource(
+            source="https://bitbucket.org/owner/repo",
+            ref="develop",
+            repo_path="lib/plugin",
+        )
+        assert (
+            plugin.source_url
+            == "https://bitbucket.org/owner/repo/src/develop/lib/plugin"
+        )
+
+    def test_other_git_url_returns_as_is(self):
+        """Should return other git URLs as-is without ref appended."""
+        from openhands.sdk.plugin import PluginSource
+
+        # Unknown git hosts can't have refs appended safely
+        plugin = PluginSource(source="https://git.example.com/repo.git", ref="v1.0")
+        assert plugin.source_url == "https://git.example.com/repo.git"
 
 
 class TestPluginsTagInConversation:

@@ -71,11 +71,12 @@ class PluginSource(BaseModel):
     def source_url(self) -> str | None:
         """Convert the plugin source to a canonical URL.
 
-        Converts various source formats to GitHub URLs where possible:
+        Converts various source formats to browsable URLs:
         - 'github:owner/repo' -> 'https://github.com/owner/repo'
-        - 'github:owner/repo' with ref -> 'https://github.com/owner/repo/tree/ref'
-        - 'github:owner/repo' with repo_path -> 'https://github.com/owner/repo/tree/main/path'
-        - Git URLs (https://...) -> preserved as-is with ref/path appended
+        - GitHub URLs with ref -> 'https://github.com/owner/repo/tree/ref'
+        - GitLab URLs with ref -> 'https://gitlab.com/owner/repo/-/tree/ref'
+        - Bitbucket URLs with ref -> 'https://bitbucket.org/owner/repo/src/ref/'
+        - Other git URLs -> preserved as-is (ref not appended)
         - Local paths -> None (not portable)
 
         Returns:
@@ -93,36 +94,33 @@ class PluginSource(BaseModel):
         """
         # Handle github: shorthand
         if self.source.startswith("github:"):
-            # Extract owner/repo from 'github:owner/repo'
             repo_part = self.source[7:]  # Remove 'github:' prefix
             base_url = f"https://github.com/{repo_part}"
+            return self._append_github_ref_path(base_url)
 
-            # Add ref and/or path if present
-            if self.ref or self.repo_path:
-                ref = self.ref or "main"
-                if self.repo_path:
-                    return f"{base_url}/tree/{ref}/{self.repo_path}"
-                return f"{base_url}/tree/{ref}"
-            return base_url
-
-        # Handle full GitHub URLs (already in URL form)
+        # Handle full GitHub URLs
         if self.source.startswith("https://github.com/"):
             # If it's already a blob/tree URL, return as-is
             if "/blob/" in self.source or "/tree/" in self.source:
                 return self.source
-            # Otherwise, add ref/path if provided
-            if self.ref or self.repo_path:
-                ref = self.ref or "main"
-                if self.repo_path:
-                    return f"{self.source}/tree/{ref}/{self.repo_path}"
-                return f"{self.source}/tree/{ref}"
-            return self.source
+            return self._append_github_ref_path(self.source)
 
-        # Handle other git URLs (gitlab, bitbucket, etc.)
+        # Handle GitLab URLs
+        if self.source.startswith("https://gitlab.com/"):
+            # If it's already a tree URL, return as-is
+            if "/-/tree/" in self.source or "/-/blob/" in self.source:
+                return self.source
+            return self._append_gitlab_ref_path(self.source)
+
+        # Handle Bitbucket URLs
+        if self.source.startswith("https://bitbucket.org/"):
+            # If it's already a src URL, return as-is
+            if "/src/" in self.source:
+                return self.source
+            return self._append_bitbucket_ref_path(self.source)
+
+        # Handle other git URLs - return as-is without ref (can't construct valid URL)
         if self.source.startswith(("https://", "http://", "git@", "git://")):
-            # For non-GitHub git URLs, append ref as fragment or query
-            if self.ref:
-                return f"{self.source}@{self.ref}"
             return self.source
 
         # Local paths - not portable, return None
@@ -131,6 +129,35 @@ class PluginSource(BaseModel):
 
         # Unknown format - return as-is
         return self.source
+
+    def _append_github_ref_path(self, base_url: str) -> str:
+        """Append ref and/or path to a GitHub URL."""
+        if self.ref or self.repo_path:
+            ref = self.ref or "main"
+            if self.repo_path:
+                return f"{base_url}/tree/{ref}/{self.repo_path}"
+            return f"{base_url}/tree/{ref}"
+        return base_url
+
+    def _append_gitlab_ref_path(self, base_url: str) -> str:
+        """Append ref and/or path to a GitLab URL."""
+        # GitLab uses /-/tree/ref/path format
+        if self.ref or self.repo_path:
+            ref = self.ref or "main"
+            if self.repo_path:
+                return f"{base_url}/-/tree/{ref}/{self.repo_path}"
+            return f"{base_url}/-/tree/{ref}"
+        return base_url
+
+    def _append_bitbucket_ref_path(self, base_url: str) -> str:
+        """Append ref and/or path to a Bitbucket URL."""
+        # Bitbucket uses /src/ref/path format
+        if self.ref or self.repo_path:
+            ref = self.ref or "main"
+            if self.repo_path:
+                return f"{base_url}/src/{ref}/{self.repo_path}"
+            return f"{base_url}/src/{ref}/"
+        return base_url
 
 
 class ResolvedPluginSource(BaseModel):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
@@ -166,8 +167,6 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         These tags are automatically merged into conversations created via this
         workspace, allowing the Cloud platform to track automation context.
         """
-        import json
-
         tags: dict[str, str] = {}
 
         # Parse AUTOMATION_EVENT_PAYLOAD (injected by dispatcher)
