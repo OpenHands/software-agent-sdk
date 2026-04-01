@@ -148,13 +148,12 @@ class Conversation:
             effective_tags: dict[str, str] = {}
 
             # 1. Start with workspace default tags
-            if hasattr(workspace, "default_conversation_tags"):
-                default_tags = workspace.default_conversation_tags
-                if default_tags:
-                    effective_tags.update(default_tags)
-                    logger.debug(
-                        f"Merged workspace default tags: {list(default_tags.keys())}"
-                    )
+            default_tags = workspace.default_conversation_tags
+            if default_tags:
+                effective_tags.update(default_tags)
+                logger.debug(
+                    f"Merged workspace default tags: {list(default_tags.keys())}"
+                )
 
             # 2. Auto-generate plugins/skills tag from plugins parameter
             if plugins:

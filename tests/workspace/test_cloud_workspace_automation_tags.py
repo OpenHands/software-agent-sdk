@@ -193,16 +193,16 @@ class TestConversationTagMerging:
             assert effective_tags["trigger"] == "cron"
             assert effective_tags["automation_id"] == "auto-123"
 
-    def test_no_merge_when_workspace_has_no_default_tags_property(self):
-        """Should not fail when workspace doesn't have default_conversation_tags."""
+    def test_no_merge_when_workspace_returns_none_for_default_tags(self):
+        """Should not merge when workspace returns None for default tags."""
         from unittest.mock import MagicMock
 
         from openhands.sdk.conversation.conversation import Conversation
         from openhands.sdk.workspace import RemoteWorkspace
 
-        # Create mock without default_conversation_tags attribute
+        # Create mock with default_conversation_tags returning None
         mock_workspace = MagicMock(spec=RemoteWorkspace)
-        del mock_workspace.default_conversation_tags
+        mock_workspace.default_conversation_tags = None
 
         with patch(
             "openhands.sdk.conversation.conversation.RemoteConversation"
