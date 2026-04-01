@@ -78,6 +78,24 @@ from openhands.sdk.tool.builtins import (
 logger = get_logger(__name__)
 maybe_init_laminar()
 
+
+def _tool_has_summary_param(tool: ToolDefinition) -> bool:
+    """Return True if the tool's own schema declares ``summary`` as a parameter.
+
+    Checks both regular tool action_type model_fields and MCP tool inputSchema
+    so that ``_extract_summary`` can avoid popping the field when it belongs
+    to the tool (e.g. Jira's ticket title).
+    """
+    if "summary" in tool.action_type.model_fields:
+        return True
+    mcp_tool = getattr(tool, "mcp_tool", None)
+    if mcp_tool is not None:
+        props = getattr(mcp_tool, "inputSchema", {}).get("properties", {})
+        if "summary" in props:
+            return True
+    return False
+
+
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
@@ -708,20 +726,36 @@ class Agent(CriticMixin, AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
-    def _extract_summary(self, tool_name: str, arguments: dict) -> str:
+    def _extract_summary(
+        self,
+        tool_name: str,
+        arguments: dict,
+        tool: ToolDefinition | None = None,
+    ) -> str:
         """Extract and validate the summary field from tool arguments.
 
         Summary field is always requested but optional - if LLM doesn't provide
         it or provides invalid data, we generate a default summary using the
         tool name and arguments.
 
+        When the tool's own schema declares ``summary`` as a real parameter
+        (e.g. Jira's ticket title), the field is left untouched so that
+        downstream ``action_from_arguments`` validation does not fail.
+
         Args:
             tool_name: Name of the tool being called
             arguments: Dictionary of tool arguments from LLM
+            tool: The tool definition (used to check if "summary" is a
+                declared parameter of the tool's schema)
 
         Returns:
             The summary string - either from LLM or a default generated one
         """
+        if tool is not None and _tool_has_summary_param(tool):
+            # "summary" belongs to the tool — don't pop it.
+            args_str = json.dumps(arguments)
+            return f"{tool_name}: {args_str}"
+
         summary = arguments.pop("summary", None)
 
         # If valid summary provided by LLM, use it
@@ -804,7 +838,7 @@ class Agent(CriticMixin, AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
-            summary = self._extract_summary(tool.name, arguments)
+            summary = self._extract_summary(tool.name, arguments, tool=tool)
 
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
