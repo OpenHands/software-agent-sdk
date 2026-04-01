@@ -1,37 +1,22 @@
 #!/usr/bin/env python3
-"""Compare two OpenHands evaluation runs and output a markdown report.
+"""Trigger, compare, and report on OpenHands evaluation runs.
 
-Usage:
-    python compare_eval_runs.py <current_run_path> [--baseline <baseline_run_path>]
-    python compare_eval_runs.py <current_run_path> --auto-baseline
-    python compare_eval_runs.py <current_run_path> --auto-baseline --post-comment --pr <PR_NUMBER> --repo <OWNER/REPO>
-
-Arguments:
-    current_run_path   Run path (e.g., swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/)
-
-Options:
-    --baseline PATH    Explicit baseline run path to compare against
-    --auto-baseline    Automatically find the most recent previous run with
-                       matching benchmark/model
-    --lookback-days N  Days to search backward for baseline (default: 14)
-    --post-comment     Post the comparison as a GitHub PR comment
-    --pr NUMBER        PR number (required with --post-comment)
-    --repo OWNER/REPO  Repository (required with --post-comment)
-
-Environment:
-    GITHUB_TOKEN       Required for --post-comment
-    RESULTS_CDN        Override results CDN base URL
-                       (default: https://results.eval.all-hands.dev)
+Subcommands:
+    trigger   Dispatch an evaluation workflow via the GitHub API
+    compare   Compare two evaluation runs and produce a markdown report
 
 Examples:
-    # Auto-find baseline and print markdown
-    python compare_eval_runs.py swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/ --auto-baseline
+    # Trigger a swebench eval on a PR branch
+    python compare_eval_runs.py trigger --sdk-ref my-branch --benchmark swebench --eval-limit 50
 
-    # Explicit comparison
-    python compare_eval_runs.py swebench/.../23775164157/ --baseline swebench/.../23773892085/
+    # Trigger a GAIA eval on a release tag
+    python compare_eval_runs.py trigger --sdk-ref v1.16.0 --benchmark gaia --eval-limit 50
 
-    # Post to PR
-    python compare_eval_runs.py swebench/.../23775164157/ --auto-baseline \
+    # Auto-find baseline and print comparison markdown
+    python compare_eval_runs.py compare swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/ --auto-baseline
+
+    # Post comparison to PR
+    python compare_eval_runs.py compare swebench/.../23775164157/ --auto-baseline \\
         --post-comment --pr 2334 --repo OpenHands/software-agent-sdk
 """  # noqa: E501
 
@@ -48,6 +33,18 @@ from typing import Any
 
 RESULTS_CDN = os.environ.get("RESULTS_CDN", "https://results.eval.all-hands.dev")
 DASHBOARD_BASE = "https://openhands-eval-monitor.vercel.app"
+
+SDK_REPO = "OpenHands/software-agent-sdk"
+BENCHMARKS = [
+    "swebench",
+    "gaia",
+    "swtbench",
+    "commit0",
+    "swebenchmultimodal",
+    "terminalbench",
+]
+TOOL_PRESETS = ["default", "gemini", "gpt5", "planning"]
+AGENT_TYPES = ["default", "acp-claude", "acp-codex"]
 
 
 def fetch_json(url: str) -> dict[str, Any] | None:
@@ -323,83 +320,142 @@ def compute_diff(
     return "\n".join(lines)
 
 
-def post_github_comment(repo: str, pr_number: int, body: str, token: str) -> None:
-    """Post a comment on a GitHub PR."""
-    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-    data = json.dumps({"body": body}).encode()
+def github_api_request(
+    url: str,
+    token: str,
+    *,
+    method: str = "GET",
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Make a GitHub API request. Returns parsed JSON or None for 204."""
+    body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(
         url,
-        data=data,
-        method="POST",
+        data=body,
+        method=method,
         headers={
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        result = json.loads(resp.read().decode())
-        print(
-            f"Posted comment: {result.get('html_url', 'unknown')}",
-            file=sys.stderr,
-        )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.status == 204:
+            return None
+        return json.loads(resp.read().decode())
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Compare two OpenHands evaluation runs"
-    )
-    parser.add_argument(
-        "current_run_path",
-        help=(
-            "Run path, e.g., "
-            "swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/"
-        ),
-    )
-    parser.add_argument(
-        "--baseline",
-        help="Explicit baseline run path",
-    )
-    parser.add_argument(
-        "--auto-baseline",
-        action="store_true",
-        help="Auto-find the most recent previous run as baseline",
-    )
-    parser.add_argument(
-        "--lookback-days",
-        type=int,
-        default=14,
-        help="Days to search for baseline (default: 14)",
-    )
-    parser.add_argument(
-        "--post-comment",
-        action="store_true",
-        help="Post result as a GitHub PR comment",
-    )
-    parser.add_argument("--pr", type=int, help="PR number for commenting")
-    parser.add_argument("--repo", help="Repository (OWNER/REPO) for commenting")
+def post_github_comment(repo: str, pr_number: int, body: str, token: str) -> None:
+    """Post a comment on a GitHub PR."""
+    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+    result = github_api_request(url, token, method="POST", data={"body": body})
+    if result:
+        print(f"Posted comment: {result.get('html_url', 'unknown')}", file=sys.stderr)
 
-    args = parser.parse_args()
 
-    # Validate
-    if args.post_comment and (not args.pr or not args.repo):
-        parser.error("--post-comment requires --pr and --repo")
-    if not args.baseline and not args.auto_baseline:
-        parser.error("Specify --baseline or --auto-baseline")
+def trigger_eval(
+    token: str,
+    *,
+    sdk_ref: str,
+    benchmark: str = "swebench",
+    eval_limit: int = 50,
+    model_ids: str = "",
+    reason: str = "",
+    repo: str = SDK_REPO,
+    allow_unreleased: bool = True,
+    benchmarks_branch: str = "main",
+    eval_branch: str = "main",
+    tool_preset: str = "default",
+    agent_type: str = "default",
+    instance_ids: str = "",
+) -> None:
+    """Dispatch an evaluation workflow via the GitHub Actions API."""
+    inputs: dict[str, str] = {
+        "benchmark": benchmark,
+        "sdk_ref": sdk_ref,
+        "eval_limit": str(eval_limit),
+        "reason": reason,
+        "benchmarks_branch": benchmarks_branch,
+        "eval_branch": eval_branch,
+        "tool_preset": tool_preset,
+        "agent_type": agent_type,
+        "allow_unreleased_branches": str(allow_unreleased).lower(),
+    }
+    if model_ids:
+        inputs["model_ids"] = model_ids
+    if instance_ids:
+        inputs["instance_ids"] = instance_ids
 
-    benchmark, model_slug, run_id = parse_run_path(args.current_run_path)
+    url = (
+        f"https://api.github.com/repos/{repo}/actions/workflows/run-eval.yml/dispatches"
+    )
+    payload = {"ref": sdk_ref, "inputs": inputs}
+
+    print(f"Dispatching eval workflow on {repo}...", file=sys.stderr)
+    print(f"  benchmark:    {benchmark}", file=sys.stderr)
+    print(f"  sdk_ref:      {sdk_ref}", file=sys.stderr)
+    print(f"  eval_limit:   {eval_limit}", file=sys.stderr)
+    print(f"  model_ids:    {model_ids or '(default)'}", file=sys.stderr)
+    print(f"  tool_preset:  {tool_preset}", file=sys.stderr)
+    print(f"  agent_type:   {agent_type}", file=sys.stderr)
+    if instance_ids:
+        print(f"  instance_ids: {instance_ids}", file=sys.stderr)
+    if reason:
+        print(f"  reason:       {reason}", file=sys.stderr)
+
+    github_api_request(url, token, method="POST", data=payload)
+    print("✓ Workflow dispatched successfully.", file=sys.stderr)
     print(
-        f"Current run: {benchmark}/{model_slug}/{run_id}",
+        f"  Monitor at: https://github.com/{repo}/actions/workflows/run-eval.yml",
         file=sys.stderr,
     )
+
+
+def _require_token() -> str:
+    """Return GITHUB_TOKEN or exit with error."""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        print("ERROR: GITHUB_TOKEN environment variable not set", file=sys.stderr)
+        sys.exit(1)
+    return token
+
+
+def cmd_trigger(args: argparse.Namespace) -> None:
+    """Handle the 'trigger' subcommand."""
+    token = _require_token()
+    trigger_eval(
+        token,
+        sdk_ref=args.sdk_ref,
+        benchmark=args.benchmark,
+        eval_limit=args.eval_limit,
+        model_ids=args.model_ids or "",
+        reason=args.reason or "",
+        repo=args.repo,
+        benchmarks_branch=args.benchmarks_branch,
+        eval_branch=args.eval_branch,
+        tool_preset=args.tool_preset,
+        agent_type=args.agent_type,
+        instance_ids=args.instance_ids or "",
+    )
+
+
+def cmd_compare(args: argparse.Namespace) -> None:
+    """Handle the 'compare' subcommand."""
+    # Validate
+    if args.post_comment and (not args.pr or not args.repo):
+        print("ERROR: --post-comment requires --pr and --repo", file=sys.stderr)
+        sys.exit(1)
+    if not args.baseline and not args.auto_baseline:
+        print("ERROR: Specify --baseline or --auto-baseline", file=sys.stderr)
+        sys.exit(1)
+
+    benchmark, model_slug, run_id = parse_run_path(args.current_run_path)
+    print(f"Current run: {benchmark}/{model_slug}/{run_id}", file=sys.stderr)
 
     # Fetch current run data
     current_report = get_report(args.current_run_path)
     if not current_report:
-        print(
-            f"ERROR: No report found for {args.current_run_path}",
-            file=sys.stderr,
-        )
+        print(f"ERROR: No report found for {args.current_run_path}", file=sys.stderr)
         sys.exit(1)
 
     current_params = get_params(args.current_run_path)
@@ -417,28 +473,18 @@ def main() -> None:
             file=sys.stderr,
         )
         baseline_path = find_baseline_run(
-            benchmark,
-            model_slug,
-            run_id,
-            args.lookback_days,
-            current_eval_limit,
+            benchmark, model_slug, run_id, args.lookback_days, current_eval_limit
         )
 
     if not baseline_path:
-        print(
-            "No baseline run found. Cannot produce comparison.",
-            file=sys.stderr,
-        )
+        print("No baseline run found. Cannot produce comparison.", file=sys.stderr)
         sys.exit(1)
 
     print(f"Baseline run: {baseline_path}", file=sys.stderr)
 
     baseline_report = get_report(baseline_path)
     if not baseline_report:
-        print(
-            f"ERROR: No report found for baseline {baseline_path}",
-            file=sys.stderr,
-        )
+        print(f"ERROR: No report found for baseline {baseline_path}", file=sys.stderr)
         sys.exit(1)
 
     baseline_params = get_params(baseline_path)
@@ -447,21 +493,11 @@ def main() -> None:
     markdown = compute_diff(
         current_report, baseline_report, current_params, baseline_params
     )
-
-    # Output
     print(markdown)
 
     # Post comment if requested
     if args.post_comment:
-        token = os.environ.get("GITHUB_TOKEN", "")
-        if not token:
-            print(
-                "ERROR: GITHUB_TOKEN not set, cannot post comment",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        # Add AI disclosure
+        token = _require_token()
         body = (
             markdown
             + "\n---\n"
@@ -469,6 +505,115 @@ def main() -> None:
             + "(OpenHands) on behalf of the user.*\n"
         )
         post_github_comment(args.repo, args.pr, body, token)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Trigger, compare, and report on OpenHands evaluation runs",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # --- trigger subcommand ---
+    p_trigger = subparsers.add_parser(
+        "trigger",
+        help="Dispatch an evaluation workflow",
+        description="Trigger an eval run via the GitHub Actions workflow_dispatch API.",
+    )
+    p_trigger.add_argument(
+        "--sdk-ref",
+        required=True,
+        help="SDK branch, tag, or commit to evaluate (e.g., main, v1.16.0, my-branch)",
+    )
+    p_trigger.add_argument(
+        "--benchmark",
+        default="swebench",
+        choices=BENCHMARKS,
+        help="Benchmark to run (default: swebench)",
+    )
+    p_trigger.add_argument(
+        "--eval-limit",
+        type=int,
+        default=50,
+        help="Number of instances to evaluate (default: 50)",
+    )
+    p_trigger.add_argument(
+        "--model-ids",
+        default="",
+        help=(
+            "Comma-separated model IDs "
+            "(see .github/run-eval/resolve_model_config.py; default: first model)"
+        ),
+    )
+    p_trigger.add_argument("--reason", default="", help="Human-readable trigger reason")
+    p_trigger.add_argument(
+        "--repo",
+        default=SDK_REPO,
+        help=f"Repository to trigger on (default: {SDK_REPO})",
+    )
+    p_trigger.add_argument(
+        "--benchmarks-branch",
+        default="main",
+        help="Benchmarks repo branch (default: main)",
+    )
+    p_trigger.add_argument(
+        "--eval-branch",
+        default="main",
+        help="Evaluation repo branch (default: main)",
+    )
+    p_trigger.add_argument(
+        "--tool-preset",
+        default="default",
+        choices=TOOL_PRESETS,
+        help="Tool preset for file editing (default: default)",
+    )
+    p_trigger.add_argument(
+        "--agent-type",
+        default="default",
+        choices=AGENT_TYPES,
+        help="Agent type (default: default)",
+    )
+    p_trigger.add_argument(
+        "--instance-ids",
+        default="",
+        help="Comma-separated instance IDs to evaluate (overrides eval-limit)",
+    )
+
+    # --- compare subcommand ---
+    p_compare = subparsers.add_parser(
+        "compare",
+        help="Compare two evaluation runs",
+        description="Fetch results for two eval runs and produce a diff report.",
+    )
+    p_compare.add_argument(
+        "current_run_path",
+        help="Run path (e.g., swebench/litellm_proxy-claude-.../23775164157/)",
+    )
+    p_compare.add_argument("--baseline", help="Explicit baseline run path")
+    p_compare.add_argument(
+        "--auto-baseline",
+        action="store_true",
+        help="Auto-find the most recent previous run as baseline",
+    )
+    p_compare.add_argument(
+        "--lookback-days",
+        type=int,
+        default=14,
+        help="Days to search for baseline (default: 14)",
+    )
+    p_compare.add_argument(
+        "--post-comment",
+        action="store_true",
+        help="Post result as a GitHub PR comment",
+    )
+    p_compare.add_argument("--pr", type=int, help="PR number for commenting")
+    p_compare.add_argument("--repo", help="Repository (OWNER/REPO) for commenting")
+
+    args = parser.parse_args()
+
+    if args.command == "trigger":
+        cmd_trigger(args)
+    elif args.command == "compare":
+        cmd_compare(args)
 
 
 if __name__ == "__main__":

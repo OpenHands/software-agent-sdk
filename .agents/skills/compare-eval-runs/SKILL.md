@@ -1,6 +1,6 @@
 ---
 name: compare-eval-runs
-description: This skill should be used when the user asks to "compare eval runs", "compare evaluation results", "check eval regression", "compare benchmark results", "what changed in the eval", "diff eval runs", or mentions comparing SWE-bench, GAIA, or other benchmark evaluation results between runs. Provides workflow for finding, comparing, and reporting evaluation performance differences.
+description: This skill should be used when the user asks to "compare eval runs", "compare evaluation results", "check eval regression", "compare benchmark results", "what changed in the eval", "diff eval runs", "trigger an eval", "run evaluation", "run swebench", "run gaia", "run benchmark", or mentions triggering, comparing, or reporting on SWE-bench, GAIA, or other benchmark evaluation results. Provides workflow for triggering evaluations on different benchmarks, finding and comparing runs, and reporting performance differences.
 ---
 
 # Comparing Evaluation Runs
@@ -11,24 +11,89 @@ OpenHands evaluations produce results stored on a CDN at `https://results.eval.a
 
 ## Quick Start
 
-Run the bundled comparison script with auto-baseline detection:
+### Trigger an Evaluation
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py \
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+    --sdk-ref <BRANCH_OR_TAG> --benchmark swebench --eval-limit 50
+```
+
+### Compare Runs
+
+```bash
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
     "<benchmark>/<model_slug>/<run_id>/" \
     --auto-baseline
 ```
 
-To post results as a PR comment:
+### Compare and Post to PR
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py \
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
     "<benchmark>/<model_slug>/<run_id>/" \
     --auto-baseline \
     --post-comment --pr <PR_NUMBER> --repo OpenHands/software-agent-sdk
 ```
 
-## Step-by-Step Workflow
+## Triggering Evaluations
+
+### Using the Script
+
+```bash
+# SWE-bench (default) on a PR branch
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+    --sdk-ref my-feature-branch --eval-limit 50
+
+# GAIA benchmark
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+    --sdk-ref main --benchmark gaia --eval-limit 50
+
+# With a specific model
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+    --sdk-ref v1.16.0 --benchmark swebench --model-ids gemini-3-flash --eval-limit 50
+
+# Multiple benchmarks (run the command multiple times)
+for bench in swebench gaia; do
+    python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+        --sdk-ref main --benchmark "$bench" --eval-limit 50 --reason "Multi-benchmark eval"
+done
+```
+
+### Available Benchmarks
+
+| Benchmark | Description |
+|-----------|-------------|
+| `swebench` | SWE-bench (default) — software engineering tasks |
+| `gaia` | GAIA — general AI assistant tasks |
+| `swtbench` | SWT-bench — software testing tasks |
+| `commit0` | Commit0 — commit generation tasks |
+| `swebenchmultimodal` | SWE-bench Multimodal — tasks with images |
+| `terminalbench` | TerminalBench — terminal interaction tasks |
+
+### Trigger Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--sdk-ref` | *(required)* | Branch, tag, or commit SHA to evaluate |
+| `--benchmark` | `swebench` | Benchmark to run |
+| `--eval-limit` | `50` | Number of instances to evaluate |
+| `--model-ids` | *(first in config)* | Comma-separated model IDs from `resolve_model_config.py` |
+| `--tool-preset` | `default` | Tool preset: `default`, `gemini`, `gpt5`, `planning` |
+| `--agent-type` | `default` | Agent type: `default`, `acp-claude`, `acp-codex` |
+| `--instance-ids` | | Specific instance IDs to evaluate (overrides eval-limit) |
+| `--reason` | | Human-readable reason (shown in notifications) |
+| `--benchmarks-branch` | `main` | Branch of the benchmarks repo |
+| `--eval-branch` | `main` | Branch of the evaluation repo |
+
+### Via PR Labels (Alternative)
+
+Adding a label to a PR also triggers evaluations:
+- `run-eval-1` — 1 instance (quick sanity check)
+- `run-eval-50` — 50 instances (standard comparison)
+- `run-eval-200` — 200 instances
+- `run-eval-500` — 500 instances (full benchmark)
+
+## Comparing Evaluation Runs
 
 ### Step 1: Find the Current PR's Eval Run
 
@@ -93,7 +158,7 @@ curl -s "https://results.eval.all-hands.dev/metadata/$(date -u -d yesterday +%Y-
 ### Step 5: Run the Comparison
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py \
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
     "swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/" \
     --baseline "swebench/litellm_proxy-claude-sonnet-4-5-20250929/23773892085/"
 ```
@@ -101,7 +166,7 @@ python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py \
 Or with auto-baseline and PR comment posting:
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py \
+python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
     "swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/" \
     --auto-baseline \
     --post-comment --pr 2334 --repo OpenHands/software-agent-sdk
