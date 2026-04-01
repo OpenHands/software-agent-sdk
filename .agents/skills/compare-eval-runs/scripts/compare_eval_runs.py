@@ -42,12 +42,11 @@ import json
 import os
 import sys
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-RESULTS_CDN = os.environ.get(
-    "RESULTS_CDN", "https://results.eval.all-hands.dev"
-)
+
+RESULTS_CDN = os.environ.get("RESULTS_CDN", "https://results.eval.all-hands.dev")
 DASHBOARD_BASE = "https://openhands-eval-monitor.vercel.app"
 
 
@@ -91,8 +90,7 @@ def parse_run_path(path: str) -> tuple[str, str, str]:
     parts = path.strip("/").split("/")
     if len(parts) != 3:
         raise ValueError(
-            f"Invalid run path: {path!r}. "
-            f"Expected: benchmark/model_slug/run_id"
+            f"Invalid run path: {path!r}. Expected: benchmark/model_slug/run_id"
         )
     return parts[0], parts[1], parts[2]
 
@@ -133,7 +131,7 @@ def find_baseline_run(
 
     Returns the run path or None if no baseline found.
     """
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     prefix = f"{benchmark}/{model_slug}/"
 
     # Two-pass: first look for matching eval_limit, then any completed run
@@ -259,15 +257,9 @@ def compute_diff(
         f"| **Resolved** | {c_resolved}/{c_denom} ({c_rate:.1f}%) "
         f"| {b_resolved}/{b_denom} ({b_rate:.1f}%) |"
     )
-    lines.append(
-        f"| **Δ Resolved** | {delta_str(c_resolved - b_resolved)} | — |"
-    )
-    lines.append(
-        f"| **Empty Patches** | {c_empty} | {b_empty} |"
-    )
-    lines.append(
-        f"| **Errors** | {c_error} | {b_error} |"
-    )
+    lines.append(f"| **Δ Resolved** | {delta_str(c_resolved - b_resolved)} | — |")
+    lines.append(f"| **Empty Patches** | {c_empty} | {b_empty} |")
+    lines.append(f"| **Errors** | {c_error} | {b_error} |")
     lines.append("")
 
     # Instance-level changes
@@ -295,8 +287,7 @@ def compute_diff(
 
     if not gained and not lost and c_resolved_ids and b_resolved_ids:
         lines.append(
-            "*Identical set of resolved instances — "
-            "no regressions or improvements.*"
+            "*Identical set of resolved instances — no regressions or improvements.*"
         )
         lines.append("")
 
@@ -313,10 +304,7 @@ def compute_diff(
             .replace("@", "-")
             .replace(".", "-")
         )
-        c_dash = (
-            f"{DASHBOARD_BASE}/?run="
-            f"{benchmark}/{model_slug}/{c_run_id}/"
-        )
+        c_dash = f"{DASHBOARD_BASE}/?run={benchmark}/{model_slug}/{c_run_id}/"
         lines.append(f"- [Current run dashboard]({c_dash})")
     if b_run_id:
         benchmark = (baseline_params or {}).get("benchmark", "swebench")
@@ -328,23 +316,16 @@ def compute_diff(
             .replace("@", "-")
             .replace(".", "-")
         )
-        b_dash = (
-            f"{DASHBOARD_BASE}/?run="
-            f"{benchmark}/{model_slug}/{b_run_id}/"
-        )
+        b_dash = f"{DASHBOARD_BASE}/?run={benchmark}/{model_slug}/{b_run_id}/"
         lines.append(f"- [Baseline run dashboard]({b_dash})")
     lines.append("")
 
     return "\n".join(lines)
 
 
-def post_github_comment(
-    repo: str, pr_number: int, body: str, token: str
-) -> None:
+def post_github_comment(repo: str, pr_number: int, body: str, token: str) -> None:
     """Post a comment on a GitHub PR."""
-    url = (
-        f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-    )
+    url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
     data = json.dumps({"body": body}).encode()
     req = urllib.request.Request(
         url,
@@ -396,9 +377,7 @@ def main() -> None:
         help="Post result as a GitHub PR comment",
     )
     parser.add_argument("--pr", type=int, help="PR number for commenting")
-    parser.add_argument(
-        "--repo", help="Repository (OWNER/REPO) for commenting"
-    )
+    parser.add_argument("--repo", help="Repository (OWNER/REPO) for commenting")
 
     args = parser.parse_args()
 
