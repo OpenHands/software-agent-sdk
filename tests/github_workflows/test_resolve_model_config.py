@@ -568,6 +568,6 @@ def test_converse_nemotron_super_3_120b_config():
     assert model["display_name"] == "NVIDIA Converse Nemotron Super 3 120B"
     assert (
         model["llm_config"]["model"]
-        == "litellm_proxy/nvidia/converse-nemotron-super-3-120b"
+        == "litellm_proxy/converse-nemotron-super-3-120b"
     )
     assert model["llm_config"]["temperature"] == 0.0
