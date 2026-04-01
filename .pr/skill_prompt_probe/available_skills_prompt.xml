@@ -1,0 +1,17 @@
+<available_skills>
+  <skill>
+    <name>babysit-pr</name>
+    <description>Babysit a GitHub pull request by continuously polling CI checks/workflow runs, new review comments, and mergeability state until the PR is ready to merge (or merged/closed). Diagnose failures, retry l... [352 characters truncated. View /workspace/project/extensions/skills/babysit-pr/SKILL.md for complete information]</description>
+    <location>/workspace/project/extensions/skills/babysit-pr/SKILL.md</location>
+  </skill>
+  <skill>
+    <name>readiness-report</name>
+    <description>Evaluate how well a codebase supports autonomous AI development. Analyzes repositories across eight technical pillars (Style &amp; Validation, Build System, Testing, Documentation, Dev Environment, Debugg... [232 characters truncated. View /workspace/project/extensions/skills/readiness-report/SKILL.md for complete information]</description>
+    <location>/workspace/project/extensions/skills/readiness-report/SKILL.md</location>
+  </skill>
+  <skill>
+    <name>frontend-design</name>
+    <description>Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, artifacts, posters, or applications (examples inclu... [199 characters truncated. View /workspace/project/extensions/skills/frontend-design/SKILL.md for complete information]</description>
+    <location>/workspace/project/extensions/skills/frontend-design/SKILL.md</location>
+  </skill>
+</available_skills>

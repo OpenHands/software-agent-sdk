@@ -1,0 +1,26 @@
+[
+  {
+    "name": "babysit-pr",
+    "path": "/workspace/project/extensions/skills/babysit-pr/SKILL.md",
+    "full_description_length": 552,
+    "prompt_description_length": 318,
+    "sent_in_full": false,
+    "prompt_description": "Babysit a GitHub pull request by continuously polling CI checks/workflow runs, new review comments, and mergeability state until the PR is ready to merge (or merged/closed). Diagnose failures, retry l... [352 characters truncated. View /workspace/project/extensions/skills/babysit-pr/SKILL.md for complete information]"
+  },
+  {
+    "name": "readiness-report",
+    "path": "/workspace/project/extensions/skills/readiness-report/SKILL.md",
+    "full_description_length": 432,
+    "prompt_description_length": 324,
+    "sent_in_full": false,
+    "prompt_description": "Evaluate how well a codebase supports autonomous AI development. Analyzes repositories across eight technical pillars (Style & Validation, Build System, Testing, Documentation, Dev Environment, Debugg... [232 characters truncated. View /workspace/project/extensions/skills/readiness-report/SKILL.md for complete information]"
+  },
+  {
+    "name": "frontend-design",
+    "path": "/workspace/project/extensions/skills/frontend-design/SKILL.md",
+    "full_description_length": 399,
+    "prompt_description_length": 323,
+    "sent_in_full": false,
+    "prompt_description": "Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, artifacts, posters, or applications (examples inclu... [199 characters truncated. View /workspace/project/extensions/skills/frontend-design/SKILL.md for complete information]"
+  }
+]
