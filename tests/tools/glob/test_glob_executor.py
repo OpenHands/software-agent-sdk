@@ -1,7 +1,10 @@
 """Tests for GlobExecutor implementation."""
 
 import tempfile
+import threading
 from pathlib import Path
+
+import pytest
 
 from openhands.tools.glob import GlobAction
 from openhands.tools.glob.impl import GlobExecutor
@@ -322,3 +325,60 @@ def test_extract_search_path_from_pattern_deep_nesting():
 
     assert search_path == Path("/usr/local/lib/python3.13").resolve()
     assert pattern == "**/*.so"
+
+
+def test_glob_executor_concurrent_with_ripgrep():
+    """Test that concurrent ripgrep-based glob calls return correct results.
+
+    Ripgrep spawns independent subprocesses with their own working directory,
+    so concurrent calls are inherently thread-safe.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        dir_a = Path(temp_dir) / "dir_a"
+        dir_a.mkdir()
+        for i in range(5):
+            (dir_a / f"alpha_{i}.py").write_text(f"# alpha {i}")
+
+        dir_b = Path(temp_dir) / "dir_b"
+        dir_b.mkdir()
+        for i in range(5):
+            (dir_b / f"beta_{i}.txt").write_text(f"# beta {i}")
+
+        executor = GlobExecutor(working_dir=temp_dir)
+        if not executor.is_parallel_safe():
+            pytest.skip("ripgrep not installed")
+
+        results: list[tuple[str, list[str]]] = []
+        results_lock = threading.Lock()
+        errors: list[Exception] = []
+
+        def search_dir(name: str, path: str, pattern: str):
+            try:
+                action = GlobAction(pattern=pattern, path=path)
+                obs = executor(action)
+                with results_lock:
+                    results.append((name, obs.files))
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for _ in range(4):
+            t_a = threading.Thread(target=search_dir, args=("a", str(dir_a), "*.py"))
+            t_b = threading.Thread(target=search_dir, args=("b", str(dir_b), "*.txt"))
+            threads.extend([t_a, t_b])
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent glob calls raised errors: {errors}"
+        assert len(results) == 8, f"Expected 8 results, got {len(results)}"
+        results_a = [files for name, files in results if name == "a"]
+        results_b = [files for name, files in results if name == "b"]
+        assert len(results_a) == 4
+        assert len(results_b) == 4
+        assert all(len(files) == 5 for files in results_a)
+        assert all(len(files) == 5 for files in results_b)
+        assert all(all("alpha_" in Path(f).name for f in files) for files in results_a)
+        assert all(all("beta_" in Path(f).name for f in files) for files in results_b)

@@ -61,6 +61,7 @@ VERIFIED_MOONSHOT_MODELS = [
 
 VERIFIED_MINIMAX_MODELS = [
     "minimax-m2.5",
+    "minimax-m2.7",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
@@ -70,6 +71,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "gpt-5.2",
     "gpt-5.2-codex",
     "minimax-m2.5",
+    "minimax-m2.7",
     "gemini-3.1-pro-preview",
     "deepseek-chat",
     "kimi-k2-thinking",
