@@ -61,6 +61,11 @@ on:
                 required: false
                 default: main
                 type: string
+            extensions_branch:
+                description: Extensions repo branch to use (for testing feature branches with skills/plugins)
+                required: false
+                default: main
+                type: string
             instance_ids:
                 description: >-
                     Comma-separated instance IDs to evaluate.
@@ -153,6 +158,7 @@ jobs:
                   echo "reason: ${{ github.event.inputs.reason || 'N/A' }}"
                   echo "eval_branch: ${{ github.event.inputs.eval_branch || 'main' }}"
                   echo "benchmarks_branch: ${{ github.event.inputs.benchmarks_branch || 'main' }}"
+                  echo "extensions_branch: ${{ github.event.inputs.extensions_branch || 'main' }}"
                   echo "instance_ids: ${{ github.event.inputs.instance_ids || 'N/A' }}"
                   echo "num_infer_workers: ${{ github.event.inputs.num_infer_workers || '(default)' }}"
                   echo "num_eval_workers: ${{ github.event.inputs.num_eval_workers || '(default)' }}"
@@ -335,6 +341,7 @@ jobs:
                   EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
                   EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
                   BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
+                  EXTENSIONS_BRANCH: ${{ github.event.inputs.extensions_branch || 'main' }}
                   BENCHMARK: ${{ github.event.inputs.benchmark || 'swebench' }}
                   TRIGGER_REASON: ${{ github.event.inputs.reason }}
                   PR_NUMBER: ${{ steps.params.outputs.pr_number }}
@@ -351,7 +358,7 @@ jobs:
                   # Normalize instance_ids: strip all spaces
                   INSTANCE_IDS=$(printf '%s' "$INSTANCE_IDS" | tr -d ' ')
 
-                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH, tool preset: $TOOL_PRESET)"
+                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH, extensions branch: $EXTENSIONS_BRANCH, tool preset: $TOOL_PRESET)"
                   PAYLOAD=$(jq -n \
                     --arg sdk "$SDK_SHA" \
                     --arg sdk_run_id "${{ github.run_id }}" \
@@ -361,6 +368,7 @@ jobs:
                     --arg reason "$TRIGGER_REASON" \
                     --arg pr "$PR_NUMBER" \
                     --arg benchmarks "$BENCHMARKS_BRANCH" \
+                    --arg extensions "$EXTENSIONS_BRANCH" \
                     --arg benchmark "$BENCHMARK" \
                     --arg instance_ids "$INSTANCE_IDS" \
                     --arg num_infer_workers "$NUM_INFER_WORKERS" \
@@ -371,7 +379,7 @@ jobs:
                     --arg agent_type "$AGENT_TYPE" \
                     --arg partial_archive_url "$PARTIAL_ARCHIVE_URL" \
                     --arg triggered_by "$TRIGGERED_BY" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, sdk_workflow_run_id: $sdk_run_id, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, partial_archive_url: $partial_archive_url, triggered_by: $triggered_by}}')
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, sdk_workflow_run_id: $sdk_run_id, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, extensions_branch: $extensions, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, tool_preset: $tool_preset, agent_type: $agent_type, partial_archive_url: $partial_archive_url, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
