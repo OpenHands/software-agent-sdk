@@ -112,14 +112,6 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "gemini-3-pro": {
-        "id": "gemini-3-pro",
-        "display_name": "Gemini 3 Pro",
-        "llm_config": {
-            "model": "litellm_proxy/gemini-3-pro-preview",
-            "temperature": 0.0,
-        },
-    },
     "gemini-3-flash": {
         "id": "gemini-3-flash",
         "display_name": "Gemini 3 Flash",
