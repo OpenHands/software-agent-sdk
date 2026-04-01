@@ -86,19 +86,19 @@ def test_to_prompt_content_fallback_counts_remaining_as_truncated() -> None:
 
 def test_to_prompt_truncates_long_descriptions() -> None:
     """to_prompt() should truncate long descriptions with indicator."""
-    long_desc = "A" * 250  # 250 characters
+    long_desc = "A" * 1010
     skill = Skill(name="test", content="# Test", description=long_desc)
     result = to_prompt([skill])
 
     # Should contain truncation indicator
-    assert "... [50 characters truncated]" in result
-    # Should contain first 200 chars
-    assert "A" * 200 in result
+    assert "... [10 characters truncated]" in result
+    # Should contain first 1000 chars
+    assert "A" * 1000 in result
 
 
 def test_to_prompt_truncation_includes_source() -> None:
     """to_prompt() should include source path in truncation message."""
-    long_desc = "B" * 250
+    long_desc = "B" * 1010
     skill = Skill(
         name="test",
         content="# Test",
@@ -107,5 +107,5 @@ def test_to_prompt_truncation_includes_source() -> None:
     )
     result = to_prompt([skill])
 
-    assert "... [50 characters truncated" in result
+    assert "... [10 characters truncated" in result
     assert "View /path/to/skill.md for complete information]" in result

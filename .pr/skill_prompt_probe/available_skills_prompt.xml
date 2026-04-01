@@ -1,17 +1,17 @@
 <available_skills>
   <skill>
     <name>babysit-pr</name>
-    <description>Babysit a GitHub pull request by continuously polling CI checks/workflow runs, new review comments, and mergeability state until the PR is ready to merge (or merged/closed). Diagnose failures, retry l... [352 characters truncated. View /workspace/project/extensions/skills/babysit-pr/SKILL.md for complete information]</description>
+    <description>Babysit a GitHub pull request by continuously polling CI checks/workflow runs, new review comments, and mergeability state until the PR is ready to merge (or merged/closed). Diagnose failures, retry likely flaky failures up to 3 times, fix/push branch-related issues when appropriate, and stop only when user help is required (e.g., CI infrastructure outages, exhausted flaky retries, permissions, or ambiguous/blocking situations). Use when the user asks to monitor/watch/babysit a PR, watch CI, handle review comments, or keep an eye on mergeability.</description>
     <location>/workspace/project/extensions/skills/babysit-pr/SKILL.md</location>
   </skill>
   <skill>
     <name>readiness-report</name>
-    <description>Evaluate how well a codebase supports autonomous AI development. Analyzes repositories across eight technical pillars (Style &amp; Validation, Build System, Testing, Documentation, Dev Environment, Debugg... [232 characters truncated. View /workspace/project/extensions/skills/readiness-report/SKILL.md for complete information]</description>
+    <description>Evaluate how well a codebase supports autonomous AI development. Analyzes repositories across eight technical pillars (Style &amp; Validation, Build System, Testing, Documentation, Dev Environment, Debugging &amp; Observability, Security, Task Discovery) and five maturity levels. Use when users request `/readiness-report` or want to assess agent readiness, codebase maturity, or identify gaps preventing effective AI-assisted development.</description>
     <location>/workspace/project/extensions/skills/readiness-report/SKILL.md</location>
   </skill>
   <skill>
     <name>frontend-design</name>
-    <description>Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, artifacts, posters, or applications (examples inclu... [199 characters truncated. View /workspace/project/extensions/skills/frontend-design/SKILL.md for complete information]</description>
+    <description>Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, artifacts, posters, or applications (examples include websites, landing pages, dashboards, React components, HTML/CSS layouts, or when styling/beautifying any web UI). Generates creative, polished code and UI design that avoids generic AI aesthetics.</description>
     <location>/workspace/project/extensions/skills/frontend-design/SKILL.md</location>
   </skill>
 </available_skills>
