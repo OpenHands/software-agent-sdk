@@ -107,6 +107,7 @@ When reviewing code, provide constructive feedback:
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
 - AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
+- Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 
 
 ## Package-specific guidance
