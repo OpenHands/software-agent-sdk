@@ -347,14 +347,16 @@ def test_glob_executor_concurrent_different_directories():
 
         executor = GlobExecutor(working_dir=temp_dir)
 
-        results: dict[str, list[str]] = {}
+        results: list[tuple[str, list[str]]] = []
+        results_lock = threading.Lock()
         errors: list[Exception] = []
 
         def search_dir(name: str, path: str, pattern: str):
             try:
                 action = GlobAction(pattern=pattern, path=path)
                 obs = executor(action)
-                results[name] = obs.files
+                with results_lock:
+                    results.append((name, obs.files))
             except Exception as e:
                 errors.append(e)
 
@@ -370,8 +372,12 @@ def test_glob_executor_concurrent_different_directories():
             t.join()
 
         assert not errors, f"Concurrent glob calls raised errors: {errors}"
-        # At minimum, both directories should have returned results
-        assert len(results["a"]) == 5
-        assert len(results["b"]) == 5
-        assert all("alpha_" in Path(f).name for f in results["a"])
-        assert all("beta_" in Path(f).name for f in results["b"])
+        assert len(results) == 8, f"Expected 8 results, got {len(results)}"
+        results_a = [files for name, files in results if name == "a"]
+        results_b = [files for name, files in results if name == "b"]
+        assert len(results_a) == 4
+        assert len(results_b) == 4
+        assert all(len(files) == 5 for files in results_a)
+        assert all(len(files) == 5 for files in results_b)
+        assert all(all("alpha_" in Path(f).name for f in files) for files in results_a)
+        assert all(all("beta_" in Path(f).name for f in files) for files in results_b)
