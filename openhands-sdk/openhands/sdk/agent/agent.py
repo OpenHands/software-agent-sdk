@@ -68,6 +68,7 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
@@ -88,9 +89,8 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     """
     if "summary" in tool.action_type.model_fields:
         return True
-    mcp_tool = getattr(tool, "mcp_tool", None)
-    if mcp_tool is not None:
-        props = getattr(mcp_tool, "inputSchema", {}).get("properties", {})
+    if isinstance(tool, MCPToolDefinition):
+        props = tool.mcp_tool.inputSchema.get("properties", {})
         if "summary" in props:
             return True
     return False
