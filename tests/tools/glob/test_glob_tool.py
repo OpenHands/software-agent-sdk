@@ -14,6 +14,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.tool.tool import DeclaredResources
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.glob import GlobAction, GlobObservation, GlobTool
+from openhands.tools.glob.impl import GlobExecutor
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
@@ -310,18 +311,55 @@ def test_glob_tool_to_llm_content_error():
         "wildcard-custom-path",
     ],
 )
-def test_glob_tool_declared_resources_is_declared_with_no_keys(pattern, path):
-    """Test that GlobTool declares resources as safe (no locking) for any action."""
+def test_glob_tool_declared_resources_with_ripgrep(pattern, path):
+    """Test that GlobTool declares no resources when ripgrep is available."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
         tools = GlobTool.create(conv_state)
         tool = tools[0]
+
+        assert isinstance(tool.executor, GlobExecutor)
+        if not tool.executor._ripgrep_available:
+            pytest.skip("ripgrep not installed")
 
         action = GlobAction(pattern=pattern, path=path)
         resources = tool.declared_resources(action)
 
         assert isinstance(resources, DeclaredResources)
         assert resources.declared is True
+        assert resources.keys == ()
+
+
+@pytest.mark.parametrize(
+    "pattern, path",
+    [
+        ("**/*.py", None),
+        ("*.txt", "/some/custom/path"),
+        ("src/**/*.ts", None),
+        ("config.*", "/another/path"),
+    ],
+    ids=[
+        "recursive-no-path",
+        "simple-custom-path",
+        "nested-no-path",
+        "wildcard-custom-path",
+    ],
+)
+def test_glob_tool_declared_resources_without_ripgrep(pattern, path):
+    """Test that GlobTool falls back to tool-wide mutex when ripgrep is unavailable."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = GlobTool.create(conv_state)
+        tool = tools[0]
+
+        assert isinstance(tool.executor, GlobExecutor)
+        tool.executor._ripgrep_available = False
+
+        action = GlobAction(pattern=pattern, path=path)
+        resources = tool.declared_resources(action)
+
+        assert isinstance(resources, DeclaredResources)
+        assert resources.declared is False
         assert resources.keys == ()
 
 

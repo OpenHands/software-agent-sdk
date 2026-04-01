@@ -66,8 +66,18 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
     """A ToolDefinition subclass that automatically initializes a GlobExecutor."""
 
     def declared_resources(self, action: Action) -> DeclaredResources:
+        """Declare resource usage based on the active backend.
+
+        With ripgrep, each call spawns an independent subprocess — safe for
+        lock-free parallel execution. The Python fallback uses process-global
+        os.chdir(), so concurrent calls must be serialized via the tool-wide mutex.
+        """
         assert isinstance(action, GlobAction)
-        return DeclaredResources(keys=(), declared=True)
+        from openhands.tools.glob.impl import GlobExecutor
+
+        if isinstance(self.executor, GlobExecutor) and self.executor._ripgrep_available:
+            return DeclaredResources(keys=(), declared=True)
+        return DeclaredResources(keys=(), declared=False)
 
     @classmethod
     def create(

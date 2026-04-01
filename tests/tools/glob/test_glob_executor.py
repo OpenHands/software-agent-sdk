@@ -4,6 +4,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+import pytest
+
 from openhands.tools.glob import GlobAction
 from openhands.tools.glob.impl import GlobExecutor
 
@@ -325,16 +327,13 @@ def test_extract_search_path_from_pattern_deep_nesting():
     assert pattern == "**/*.so"
 
 
-def test_glob_executor_concurrent_different_directories():
-    """Test that concurrent glob calls on different directories return correct results.
+def test_glob_executor_concurrent_with_ripgrep():
+    """Test that concurrent ripgrep-based glob calls return correct results.
 
-    This exercises the fallback (Python glob) path. Because _execute_with_glob
-    uses os.chdir(), concurrent calls can interfere with each other if not
-    properly handled. With ripgrep available the subprocess path is used
-    instead, which is inherently thread-safe.
+    Ripgrep spawns independent subprocesses with their own working directory,
+    so concurrent calls are inherently thread-safe.
     """
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create two separate directories with distinct files
         dir_a = Path(temp_dir) / "dir_a"
         dir_a.mkdir()
         for i in range(5):
@@ -346,6 +345,8 @@ def test_glob_executor_concurrent_different_directories():
             (dir_b / f"beta_{i}.txt").write_text(f"# beta {i}")
 
         executor = GlobExecutor(working_dir=temp_dir)
+        if not executor._ripgrep_available:
+            pytest.skip("ripgrep not installed")
 
         results: list[tuple[str, list[str]]] = []
         results_lock = threading.Lock()
