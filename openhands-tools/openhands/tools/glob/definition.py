@@ -8,6 +8,7 @@ from pydantic import Field
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -63,6 +64,10 @@ Examples:
 
 class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
     """A ToolDefinition subclass that automatically initializes a GlobExecutor."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        assert isinstance(action, GlobAction)
+        return DeclaredResources(keys=(), declared=True)
 
     @classmethod
     def create(

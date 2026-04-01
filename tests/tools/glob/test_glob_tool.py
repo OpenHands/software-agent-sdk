@@ -5,11 +5,13 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
+from openhands.sdk.tool.tool import DeclaredResources
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.glob import GlobAction, GlobObservation, GlobTool
 
@@ -291,6 +293,50 @@ def test_glob_tool_to_llm_content_error():
         assert content[0].text == GlobObservation.ERROR_MESSAGE_HEADER
         text_content = content[1].text
         assert "is not a valid directory" in text_content
+
+
+@pytest.mark.parametrize(
+    "pattern, path",
+    [
+        ("**/*.py", None),
+        ("*.txt", "/some/custom/path"),
+        ("src/**/*.ts", None),
+        ("config.*", "/another/path"),
+    ],
+    ids=[
+        "recursive-no-path",
+        "simple-custom-path",
+        "nested-no-path",
+        "wildcard-custom-path",
+    ],
+)
+def test_glob_tool_declared_resources_is_declared_with_no_keys(pattern, path):
+    """Test that GlobTool declares resources as safe (no locking) for any action."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = GlobTool.create(conv_state)
+        tool = tools[0]
+
+        action = GlobAction(pattern=pattern, path=path)
+        resources = tool.declared_resources(action)
+
+        assert isinstance(resources, DeclaredResources)
+        assert resources.declared is True
+        assert resources.keys == ()
+
+
+def test_glob_tool_declared_resources_requires_glob_action():
+    """Test that declared_resources asserts the action is a GlobAction."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = GlobTool.create(conv_state)
+        tool = tools[0]
+
+        from unittest.mock import MagicMock
+
+        fake_action = MagicMock()
+        with pytest.raises(AssertionError):
+            tool.declared_resources(fake_action)
 
 
 def test_glob_tool_truncation():

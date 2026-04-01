@@ -1,6 +1,7 @@
 """Tests for GlobExecutor implementation."""
 
 import tempfile
+import threading
 from pathlib import Path
 
 from openhands.tools.glob import GlobAction
@@ -322,3 +323,55 @@ def test_extract_search_path_from_pattern_deep_nesting():
 
     assert search_path == Path("/usr/local/lib/python3.13").resolve()
     assert pattern == "**/*.so"
+
+
+def test_glob_executor_concurrent_different_directories():
+    """Test that concurrent glob calls on different directories return correct results.
+
+    This exercises the fallback (Python glob) path. Because _execute_with_glob
+    uses os.chdir(), concurrent calls can interfere with each other if not
+    properly handled. With ripgrep available the subprocess path is used
+    instead, which is inherently thread-safe.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create two separate directories with distinct files
+        dir_a = Path(temp_dir) / "dir_a"
+        dir_a.mkdir()
+        for i in range(5):
+            (dir_a / f"alpha_{i}.py").write_text(f"# alpha {i}")
+
+        dir_b = Path(temp_dir) / "dir_b"
+        dir_b.mkdir()
+        for i in range(5):
+            (dir_b / f"beta_{i}.txt").write_text(f"# beta {i}")
+
+        executor = GlobExecutor(working_dir=temp_dir)
+
+        results: dict[str, list[str]] = {}
+        errors: list[Exception] = []
+
+        def search_dir(name: str, path: str, pattern: str):
+            try:
+                action = GlobAction(pattern=pattern, path=path)
+                obs = executor(action)
+                results[name] = obs.files
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for _ in range(4):
+            t_a = threading.Thread(target=search_dir, args=("a", str(dir_a), "*.py"))
+            t_b = threading.Thread(target=search_dir, args=("b", str(dir_b), "*.txt"))
+            threads.extend([t_a, t_b])
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent glob calls raised errors: {errors}"
+        # At minimum, both directories should have returned results
+        assert len(results["a"]) == 5
+        assert len(results["b"]) == 5
+        assert all("alpha_" in Path(f).name for f in results["a"])
+        assert all("beta_" in Path(f).name for f in results["b"])
