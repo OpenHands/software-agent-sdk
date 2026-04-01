@@ -103,8 +103,9 @@ RUN set -eux; \
     mkdir -p "$ACP_NODE_DIR"; \
     curl -fsSL "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" \
       | tar -xJ --strip-components=1 -C "$ACP_NODE_DIR"; \
-    "$ACP_NODE_DIR/bin/node" --version; \
-    "$ACP_NODE_DIR/bin/npm" install -g \
+    PATH="$ACP_NODE_DIR/bin:$PATH"; \
+    node --version; \
+    npm install -g \
       @zed-industries/claude-agent-acp \
       @zed-industries/codex-acp \
       @google/gemini-cli; \
