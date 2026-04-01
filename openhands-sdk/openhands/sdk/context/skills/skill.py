@@ -1107,7 +1107,7 @@ def load_available_skills(
     return available
 
 
-def to_prompt(skills: list[Skill], max_description_length: int = 1000) -> str:
+def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
     """Generate XML prompt block for available skills.
 
     Creates an `<available_skills>` XML block suitable for inclusion
@@ -1115,7 +1115,7 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1000) -> str:
 
     Args:
         skills: List of skills to include in the prompt
-        max_description_length: Maximum length for descriptions (default 1000)
+        max_description_length: Maximum length for descriptions (default 1024)
 
     Returns:
         XML string in AgentSkills format with name, description, and location
