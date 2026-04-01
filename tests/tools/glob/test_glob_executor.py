@@ -345,7 +345,7 @@ def test_glob_executor_concurrent_with_ripgrep():
             (dir_b / f"beta_{i}.txt").write_text(f"# beta {i}")
 
         executor = GlobExecutor(working_dir=temp_dir)
-        if not executor._ripgrep_available:
+        if not executor.is_parallel_safe():
             pytest.skip("ripgrep not installed")
 
         results: list[tuple[str, list[str]]] = []

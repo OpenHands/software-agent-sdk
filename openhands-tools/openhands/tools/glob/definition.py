@@ -72,10 +72,12 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
         lock-free parallel execution. The Python fallback uses process-global
         os.chdir(), so concurrent calls must be serialized via the tool-wide mutex.
         """
-        assert isinstance(action, GlobAction)
+        if not isinstance(action, GlobAction):
+            raise TypeError(f"Expected GlobAction, got {type(action).__name__}")
+        # Import here to avoid circular imports (definition ↔ impl)
         from openhands.tools.glob.impl import GlobExecutor
 
-        if isinstance(self.executor, GlobExecutor) and self.executor._ripgrep_available:
+        if isinstance(self.executor, GlobExecutor) and self.executor.is_parallel_safe():
             return DeclaredResources(keys=(), declared=True)
         return DeclaredResources(keys=(), declared=False)
 

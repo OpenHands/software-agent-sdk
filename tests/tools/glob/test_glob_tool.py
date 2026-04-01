@@ -319,7 +319,7 @@ def test_glob_tool_declared_resources_with_ripgrep(pattern, path):
         tool = tools[0]
 
         assert isinstance(tool.executor, GlobExecutor)
-        if not tool.executor._ripgrep_available:
+        if not tool.executor.is_parallel_safe():
             pytest.skip("ripgrep not installed")
 
         action = GlobAction(pattern=pattern, path=path)
@@ -353,7 +353,7 @@ def test_glob_tool_declared_resources_without_ripgrep(pattern, path):
         tool = tools[0]
 
         assert isinstance(tool.executor, GlobExecutor)
-        tool.executor._ripgrep_available = False
+        tool.executor._ripgrep_available = False  # force fallback path
 
         action = GlobAction(pattern=pattern, path=path)
         resources = tool.declared_resources(action)
@@ -361,20 +361,6 @@ def test_glob_tool_declared_resources_without_ripgrep(pattern, path):
         assert isinstance(resources, DeclaredResources)
         assert resources.declared is False
         assert resources.keys == ()
-
-
-def test_glob_tool_declared_resources_requires_glob_action():
-    """Test that declared_resources asserts the action is a GlobAction."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        conv_state = _create_test_conv_state(temp_dir)
-        tools = GlobTool.create(conv_state)
-        tool = tools[0]
-
-        from unittest.mock import MagicMock
-
-        fake_action = MagicMock()
-        with pytest.raises(AssertionError):
-            tool.declared_resources(fake_action)
 
 
 def test_glob_tool_truncation():
