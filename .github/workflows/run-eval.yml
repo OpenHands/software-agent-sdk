@@ -94,7 +94,8 @@ on:
                 description: >-
                     Tool preset for file editing. 'default' uses FileEditorTool,
                     'gemini' uses read_file/write_file/edit/list_directory,
-                    'gpt5' uses apply_patch tool.
+                    'gpt5' uses apply_patch tool,
+                    'nemotron' uses bash/str_replace (Anthropic-compatible).
                 required: false
                 default: default
                 type: choice
@@ -103,6 +104,7 @@ on:
                     - gemini
                     - gpt5
                     - planning
+                    - nemotron
             agent_type:
                 description: >-
                     Agent type: 'default' for standard Agent,
