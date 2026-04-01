@@ -161,6 +161,7 @@ class Skill(BaseModel):
         ),
     )
 
+    # AgentSkills specification: description must be 1-1024 characters.
     MAX_DESCRIPTION_LENGTH: ClassVar[int] = 1024
 
     # AgentSkills standard fields (https://agentskills.io/specification)
