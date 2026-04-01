@@ -310,7 +310,9 @@ def test_issue_2642(request):
 
     request.addfinalizer(_cleanup)
 
-    # Step 1 — "parent conversation" creates WithRisk wrappers.
+    # Step 1 — Simulate the parent conversation creating WithRisk wrappers.
+    # In production this happens when the agent calls
+    # _get_tool_schema(add_security_risk_prediction=True) for each tool.
     first_gen: list[type] = []
     for action_type in bug_actions:
         with_risk = create_action_type_with_risk(action_type)
@@ -320,14 +322,14 @@ def test_issue_2642(request):
     # Sanity: no duplicates yet.
     _get_checked_concrete_subclasses(Action)
 
-    # Step 2 — Clear the cache while old classes are still alive.
-    # This simulates what happens when the cache key no longer matches
-    # (e.g. the base action_type is a different object in a sub-agent
-    # context) or an explicit reset occurs.
+    # Step 2 — Simulate the cache losing track of the old classes.
+    # In production this happens when the delegate tool spawns a sub-agent
+    # whose action_type is a different object (e.g. from a re-import or
+    # dynamic tool recreation), causing a cache-key mismatch.
     _action_types_with_risk.clear()
     _action_types_with_summary.clear()
 
-    # Step 3 — "sub-agent conversation" re-creates WithRisk wrappers.
+    # Step 3 — Simulate the sub-agent conversation re-initialising its tools.
     # Cache miss → type() is called again → second class with same __name__.
     for action_type in bug_actions:
         create_action_type_with_risk(action_type)
