@@ -5,13 +5,16 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
+from openhands.sdk.tool.tool import DeclaredResources
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.grep import GrepAction, GrepObservation, GrepTool
+from openhands.tools.grep.impl import GrepExecutor
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
@@ -273,6 +276,73 @@ def test_grep_tool_to_llm_content_error():
         assert content[0].text == GrepObservation.ERROR_MESSAGE_HEADER
         text = content[1].text
         assert "Invalid regex pattern" in text
+
+
+@pytest.mark.parametrize(
+    "pattern, path, include",
+    [
+        ("log.*Error", None, None),
+        ("function\\s+\\w+", "/some/custom/path", None),
+        ("TODO", None, "*.py"),
+        ("import", "/another/path", "*.{ts,tsx}"),
+    ],
+    ids=[
+        "regex-no-path",
+        "regex-custom-path",
+        "simple-with-include",
+        "custom-path-with-include",
+    ],
+)
+def test_grep_tool_declared_resources_with_ripgrep(pattern, path, include):
+    """Test that GrepTool declares no resources when ripgrep is available."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = GrepTool.create(conv_state)
+        tool = tools[0]
+
+        assert isinstance(tool.executor, GrepExecutor)
+        if not tool.executor.is_parallel_safe():
+            pytest.skip("ripgrep not installed")
+
+        action = GrepAction(pattern=pattern, path=path, include=include)
+        resources = tool.declared_resources(action)
+
+        assert isinstance(resources, DeclaredResources)
+        assert resources.declared is True
+        assert resources.keys == ()
+
+
+@pytest.mark.parametrize(
+    "pattern, path, include",
+    [
+        ("log.*Error", None, None),
+        ("function\\s+\\w+", "/some/custom/path", None),
+        ("TODO", None, "*.py"),
+        ("import", "/another/path", "*.{ts,tsx}"),
+    ],
+    ids=[
+        "regex-no-path",
+        "regex-custom-path",
+        "simple-with-include",
+        "custom-path-with-include",
+    ],
+)
+def test_grep_tool_declared_resources_without_ripgrep(pattern, path, include):
+    """Test that GrepTool falls back to tool-wide mutex when ripgrep is unavailable."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = GrepTool.create(conv_state)
+        tool = tools[0]
+
+        assert isinstance(tool.executor, GrepExecutor)
+        tool.executor._ripgrep_available = False  # force fallback path
+
+        action = GrepAction(pattern=pattern, path=path, include=include)
+        resources = tool.declared_resources(action)
+
+        assert isinstance(resources, DeclaredResources)
+        assert resources.declared is False
+        assert resources.keys == ()
 
 
 def test_grep_tool_truncation():

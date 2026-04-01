@@ -8,6 +8,7 @@ from pydantic import Field
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -65,6 +66,23 @@ TOOL_DESCRIPTION = """Fast content search tool.
 
 class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     """A ToolDefinition subclass that automatically initializes a GrepExecutor."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        """Declare resource usage based on the active backend.
+
+        With ripgrep, each call spawns an independent subprocess — safe for
+        lock-free parallel execution. The grep fallback may have
+        platform-specific limitations, so concurrent calls are serialized
+        via the tool-wide mutex.
+        """
+        if not isinstance(action, GrepAction):
+            raise TypeError(f"Expected GrepAction, got {type(action).__name__}")
+        # Import here to avoid circular imports (definition ↔ impl)
+        from openhands.tools.grep.impl import GrepExecutor
+
+        if isinstance(self.executor, GrepExecutor) and self.executor.is_parallel_safe():
+            return DeclaredResources(keys=(), declared=True)
+        return DeclaredResources(keys=(), declared=False)
 
     @classmethod
     def create(
