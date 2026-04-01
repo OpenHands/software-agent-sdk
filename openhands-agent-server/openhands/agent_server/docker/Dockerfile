@@ -93,13 +93,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Pre-install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI)
-# Install Node.js/npm if not present (SWE-bench base images may lack them)
+# Always install Node.js 22+ even if an older version exists (e.g. SWE-bench
+# images ship NVM-managed Node 8-14 which cannot run modern ACP packages).
 RUN set -eux; \
-    if ! command -v npm >/dev/null 2>&1; then \
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-        apt-get install -y --no-install-recommends nodejs && \
-        rm -rf /var/lib/apt/lists/*; \
-    fi; \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/* && \
+    node --version && \
     npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp @google/gemini-cli
 
 # Configure Claude Code managed settings for headless operation:
