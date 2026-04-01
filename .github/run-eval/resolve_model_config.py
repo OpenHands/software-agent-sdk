@@ -266,6 +266,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "converse-nemotron-super-3-120b": {
+        "id": "converse-nemotron-super-3-120b",
+        "display_name": "NVIDIA Converse Nemotron Super 3 120B",
+        "llm_config": {
+            "model": "litellm_proxy/nvidia/converse-nemotron-super-3-120b",
+            "temperature": 0.0,
+        },
+    },
 }
 
 
