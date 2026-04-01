@@ -189,11 +189,11 @@ def test_grep_executor_invalid_regex():
         assert "Invalid regex pattern" in observation.text
 
 
-def test_grep_executor_concurrent_with_ripgrep():
-    """Test that concurrent ripgrep-based grep calls return correct results.
+def test_grep_executor_concurrent():
+    """Test that concurrent grep calls return correct results.
 
-    Ripgrep spawns independent subprocesses with their own working directory,
-    so concurrent calls are inherently thread-safe.
+    Both backends spawn independent subprocesses, so concurrent calls
+    are inherently thread-safe.
     """
     import threading
 
@@ -209,8 +209,6 @@ def test_grep_executor_concurrent_with_ripgrep():
             (dir_b / f"beta_{i}.txt").write_text(f"hello_beta {i}")
 
         executor = GrepExecutor(working_dir=temp_dir)
-        if not executor.is_parallel_safe():
-            pytest.skip("ripgrep not installed")
 
         results: list[tuple[str, list[str]]] = []
         results_lock = threading.Lock()

@@ -68,21 +68,15 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     """A ToolDefinition subclass that automatically initializes a GrepExecutor."""
 
     def declared_resources(self, action: Action) -> DeclaredResources:
-        """Declare resource usage based on the active backend.
+        """Declare resource usage for parallel execution.
 
-        With ripgrep, each call spawns an independent subprocess — safe for
-        lock-free parallel execution. The grep fallback may have
-        platform-specific limitations, so concurrent calls are serialized
-        via the tool-wide mutex.
+        Both backends (ripgrep and regular grep) spawn independent
+        subprocesses with no shared mutable state, so all grep calls
+        are safe to run lock-free in parallel.
         """
         if not isinstance(action, GrepAction):
             raise TypeError(f"Expected GrepAction, got {type(action).__name__}")
-        # Import here to avoid circular imports (definition ↔ impl)
-        from openhands.tools.grep.impl import GrepExecutor
-
-        if isinstance(self.executor, GrepExecutor) and self.executor.is_parallel_safe():
-            return DeclaredResources(keys=(), declared=True)
-        return DeclaredResources(keys=(), declared=False)
+        return DeclaredResources(keys=(), declared=True)
 
     @classmethod
     def create(

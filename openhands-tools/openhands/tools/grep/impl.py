@@ -38,14 +38,6 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         if not self._ripgrep_available:
             _log_ripgrep_fallback_warning("grep", "regular grep command")
 
-    def is_parallel_safe(self) -> bool:
-        """Whether the executor is safe for lock-free parallel execution.
-
-        True when ripgrep is available (independent subprocesses).
-        False for the grep fallback (may have platform-specific limitations).
-        """
-        return self._ripgrep_available
-
     def __call__(
         self,
         action: GrepAction,
