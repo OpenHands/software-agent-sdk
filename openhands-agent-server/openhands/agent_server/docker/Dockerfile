@@ -93,14 +93,32 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Pre-install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI)
-# Always install Node.js 22+ even if an older version exists (e.g. SWE-bench
-# images ship NVM-managed Node 8-14 which cannot run modern ACP packages).
+# Install Node.js 22 to a dedicated prefix so ACP packages get a modern runtime
+# WITHOUT overwriting the repo-specific Node.js that test suites depend on.
+# SWE-bench images ship NVM/apt-managed Node 8-14 which cannot run ACP packages.
+ENV ACP_NODE_DIR=/opt/acp-node
 RUN set -eux; \
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/* && \
-    node --version && \
-    npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp @google/gemini-cli
+    ARCH=$(dpkg --print-architecture); \
+    case "$ARCH" in amd64) NARCH=x64;; arm64) NARCH=arm64;; *) NARCH=$ARCH;; esac; \
+    mkdir -p "$ACP_NODE_DIR"; \
+    curl -fsSL "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" \
+      | tar -xJ --strip-components=1 -C "$ACP_NODE_DIR"; \
+    "$ACP_NODE_DIR/bin/node" --version; \
+    "$ACP_NODE_DIR/bin/npm" install -g \
+      @zed-industries/claude-agent-acp \
+      @zed-industries/codex-acp \
+      @google/gemini-cli; \
+    # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
+    # This ensures the ACP binary's #!/usr/bin/env node shebang resolves to
+    # Node 22, while the repo's own node (NVM/system) stays untouched for tests.
+    for bin in claude-agent-acp codex-acp gemini; do \
+      if [ -e "$ACP_NODE_DIR/bin/$bin" ]; then \
+        printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
+          "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
+          > /usr/local/bin/"$bin"; \
+        chmod +x /usr/local/bin/"$bin"; \
+      fi; \
+    done
 
 # Configure Claude Code managed settings for headless operation:
 # Allow all tool permissions (no human in the loop to approve).
