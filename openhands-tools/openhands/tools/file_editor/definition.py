@@ -1,6 +1,7 @@
 """String replace editor tool implementation."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, PrivateAttr
@@ -201,7 +202,8 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         *different* files run in parallel.
         """
         assert isinstance(action, FileEditorAction)
-        return DeclaredResources(keys=(f"file:{action.path}",), declared=True)
+        normalized_path = Path(action.path).resolve()
+        return DeclaredResources(keys=(f"file:{normalized_path}",), declared=True)
 
     @classmethod
     def create(

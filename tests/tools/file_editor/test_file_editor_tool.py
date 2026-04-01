@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -234,8 +235,9 @@ def test_declared_resources_locks_on_file_path(command):
     with tempfile.TemporaryDirectory() as temp_dir:
         tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
         action = FileEditorAction(command=command, path="/a.py")
+        expected_path = Path("/a.py").resolve()
         assert tool.declared_resources(action) == DeclaredResources(
-            keys=("file:/a.py",), declared=True
+            keys=(f"file:{expected_path}",), declared=True
         )
 
 
@@ -259,6 +261,35 @@ def test_declared_resources_same_path_same_key_across_commands():
             FileEditorAction(command="str_replace", path="/a.py")
         )
         assert r1.keys == r2.keys
+
+
+def test_declared_resources_normalizes_dotdot_paths():
+    """Paths with '..' that resolve to the same file produce the same key."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a/c.py"))
+        r2 = tool.declared_resources(
+            FileEditorAction(command="view", path="/a/b/../c.py")
+        )
+        assert r1.keys == r2.keys
+
+
+def test_declared_resources_normalizes_dot_paths():
+    """Paths with '.' that resolve to the same file produce the same key."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a/c.py"))
+        r2 = tool.declared_resources(FileEditorAction(command="view", path="/a/./c.py"))
+        assert r1.keys == r2.keys
+
+
+def test_declared_resources_normalizes_relative_paths():
+    """Relative paths are resolved to absolute path."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(FileEditorAction(command="view", path="a.py"))
+        expected_path = Path("a.py").resolve()
+        assert r1.keys == (f"file:{expected_path}",)
 
 
 def test_file_editor_tool_image_viewing_line_with_vision_enabled():
