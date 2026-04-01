@@ -1,8 +1,14 @@
+from unittest.mock import patch
+
 from pydantic import SecretStr
 
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation import Conversation, LocalConversation
-from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTokenCallbackType,
@@ -153,3 +159,35 @@ def test_send_message_with_message_object():
     assert len(user_event.llm_message.content) == 1
     assert isinstance(user_event.llm_message.content[0], TextContent)
     assert user_event.llm_message.content[0].text == test_text
+
+
+def test_acp_send_message_defers_initialization_until_run(tmp_path):
+    """ACP conversations should enqueue messages before starting ACP bootstrap."""
+
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(agent=agent, workspace=str(tmp_path))
+
+    def _finish_immediately(self, conv, on_event, on_token=None):
+        conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    with (
+        patch.object(ACPAgent, "init_state", autospec=True) as mock_init_state,
+        patch.object(
+            ACPAgent,
+            "step",
+            autospec=True,
+            side_effect=_finish_immediately,
+        ) as mock_step,
+    ):
+        conversation.send_message("Hello from ACP")
+
+        assert mock_init_state.call_count == 0
+        assert mock_step.call_count == 0
+        assert len(conversation.state.events) == 1
+        assert isinstance(conversation.state.events[-1], MessageEvent)
+        assert conversation.state.events[-1].source == "user"
+
+        conversation.run()
+
+        assert mock_init_state.call_count == 1
+        assert mock_step.call_count == 1
