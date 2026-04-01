@@ -33,6 +33,7 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
 from openhands.agent_server.sockets import sockets_router
 from openhands.agent_server.tool_preload_service import get_tool_preload_service
@@ -210,6 +211,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(skills_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(settings_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 
