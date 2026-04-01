@@ -70,11 +70,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         gt=0,
     )
     api_timeout: float = Field(
-        default=600.0,
-        description="Timeout in seconds for reading HTTP responses from the "
-        "agent-server. Must be long enough for conversation creation, which "
-        "triggers lazy agent initialisation (ACP subprocess startup, model "
-        "config loading, etc.).",
+        default=60.0, description="API request timeout (seconds)"
     )
     keep_alive: bool = Field(default=False, description="Keep runtime alive on cleanup")
     pause_on_close: bool = Field(
