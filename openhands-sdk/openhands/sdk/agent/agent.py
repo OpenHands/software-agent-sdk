@@ -708,6 +708,11 @@ class Agent(CriticMixin, AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
+    # Tools where empty summary is preferred over raw JSON default.
+    # Frontend shows translated titles ("Thinking", "Reading <path>") for these.
+    # See: https://github.com/OpenHands/OpenHands/issues/13690
+    _EMPTY_SUMMARY_TOOLS = frozenset({"think", "file_editor"})
+
     def _extract_summary(self, tool_name: str, arguments: dict) -> str:
         """Extract and validate the summary field from tool arguments.
 
@@ -727,6 +732,11 @@ class Agent(CriticMixin, AgentBase):
         # If valid summary provided by LLM, use it
         if summary is not None and isinstance(summary, str) and summary.strip():
             return summary
+
+        # Return empty for tools where frontend provides better titles
+        # (e.g., "Thinking" for think, "Reading <path>" for file_editor)
+        if tool_name in self._EMPTY_SUMMARY_TOOLS:
+            return ""
 
         # Generate default summary: {tool_name}: {arguments}
         args_str = json.dumps(arguments)
