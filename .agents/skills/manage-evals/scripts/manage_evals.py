@@ -7,16 +7,16 @@ Subcommands:
 
 Examples:
     # Trigger a swebench eval on a PR branch
-    python compare_eval_runs.py trigger --sdk-ref my-branch --benchmark swebench --eval-limit 50
+    python manage_evals.py trigger --sdk-ref my-branch --benchmark swebench --eval-limit 50
 
     # Trigger a GAIA eval on a release tag
-    python compare_eval_runs.py trigger --sdk-ref v1.16.0 --benchmark gaia --eval-limit 50
+    python manage_evals.py trigger --sdk-ref v1.16.0 --benchmark gaia --eval-limit 50
 
     # Auto-find baseline and print comparison markdown
-    python compare_eval_runs.py compare swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/ --auto-baseline
+    python manage_evals.py compare swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/ --auto-baseline
 
     # Post comparison to PR
-    python compare_eval_runs.py compare swebench/.../23775164157/ --auto-baseline \\
+    python manage_evals.py compare swebench/.../23775164157/ --auto-baseline \\
         --post-comment --pr 2334 --repo OpenHands/software-agent-sdk
 """  # noqa: E501
 

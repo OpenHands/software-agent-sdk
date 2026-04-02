@@ -1,27 +1,27 @@
 ---
-name: compare-eval-runs
-description: This skill should be used when the user asks to "compare eval runs", "compare evaluation results", "check eval regression", "compare benchmark results", "what changed in the eval", "diff eval runs", "trigger an eval", "run evaluation", "run swebench", "run gaia", "run benchmark", or mentions triggering, comparing, or reporting on SWE-bench, GAIA, or other benchmark evaluation results. Provides workflow for triggering evaluations on different benchmarks, finding and comparing runs, and reporting performance differences.
+name: manage-evals
+description: This skill should be used when the user asks to "trigger an eval", "run evaluation", "run swebench", "run gaia", "run benchmark", "compare eval runs", "compare evaluation results", "check eval regression", "compare benchmark results", "what changed in the eval", "diff eval runs", or mentions triggering, comparing, or reporting on SWE-bench, GAIA, or other benchmark evaluation results. Provides workflow for triggering evaluations on different benchmarks, finding and comparing runs, and reporting performance differences.
 ---
 
-# Comparing Evaluation Runs
+# Managing Evaluations
 
 ## Overview
 
-OpenHands evaluations produce results stored on a CDN at `https://results.eval.all-hands.dev/`. Each run is identified by a path: `{benchmark}/{model_slug}/{github_run_id}/`. This skill enables comparison of two evaluation runs and posting the results as a GitHub PR comment.
+OpenHands evaluations produce results stored on a CDN at `https://results.eval.all-hands.dev/`. Each run is identified by a path: `{benchmark}/{model_slug}/{github_run_id}/`. This skill enables triggering evaluation runs, comparing results between runs, and posting performance reports as GitHub PR comments.
 
 ## Quick Start
 
 ### Trigger an Evaluation
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+python .agents/skills/manage-evals/scripts/manage_evals.py trigger \
     --sdk-ref <BRANCH_OR_TAG> --benchmark swebench --eval-limit 50
 ```
 
 ### Compare Runs
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
+python .agents/skills/manage-evals/scripts/manage_evals.py compare \
     "<benchmark>/<model_slug>/<run_id>/" \
     --auto-baseline
 ```
@@ -29,7 +29,7 @@ python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
 ### Compare and Post to PR
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
+python .agents/skills/manage-evals/scripts/manage_evals.py compare \
     "<benchmark>/<model_slug>/<run_id>/" \
     --auto-baseline \
     --post-comment --pr <PR_NUMBER> --repo OpenHands/software-agent-sdk
@@ -41,20 +41,20 @@ python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
 
 ```bash
 # SWE-bench (default) on a PR branch
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+python .agents/skills/manage-evals/scripts/manage_evals.py trigger \
     --sdk-ref my-feature-branch --eval-limit 50
 
 # GAIA benchmark
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+python .agents/skills/manage-evals/scripts/manage_evals.py trigger \
     --sdk-ref main --benchmark gaia --eval-limit 50
 
 # With a specific model
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+python .agents/skills/manage-evals/scripts/manage_evals.py trigger \
     --sdk-ref v1.16.0 --benchmark swebench --model-ids gemini-3-flash --eval-limit 50
 
 # Multiple benchmarks (run the command multiple times)
 for bench in swebench gaia; do
-    python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py trigger \
+    python .agents/skills/manage-evals/scripts/manage_evals.py trigger \
         --sdk-ref main --benchmark "$bench" --eval-limit 50 --reason "Multi-benchmark eval"
 done
 ```
@@ -158,7 +158,7 @@ curl -s "https://results.eval.all-hands.dev/metadata/$(date -u -d yesterday +%Y-
 ### Step 5: Run the Comparison
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
+python .agents/skills/manage-evals/scripts/manage_evals.py compare \
     "swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/" \
     --baseline "swebench/litellm_proxy-claude-sonnet-4-5-20250929/23773892085/"
 ```
@@ -166,7 +166,7 @@ python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
 Or with auto-baseline and PR comment posting:
 
 ```bash
-python .agents/skills/compare-eval-runs/scripts/compare_eval_runs.py compare \
+python .agents/skills/manage-evals/scripts/manage_evals.py compare \
     "swebench/litellm_proxy-claude-sonnet-4-5-20250929/23775164157/" \
     --auto-baseline \
     --post-comment --pr 2334 --repo OpenHands/software-agent-sdk
@@ -204,4 +204,4 @@ https://openhands-eval-monitor.vercel.app/?run={benchmark}/{model_slug}/{run_id}
 - **`references/eval-infrastructure.md`** — Detailed documentation on the evaluation infrastructure, GCS paths, metadata format, and workflow triggers
 
 ### Scripts
-- **`scripts/compare_eval_runs.py`** — Standalone comparison script with auto-baseline detection and GitHub comment posting
+- **`scripts/manage_evals.py`** — Standalone comparison script with auto-baseline detection and GitHub comment posting
