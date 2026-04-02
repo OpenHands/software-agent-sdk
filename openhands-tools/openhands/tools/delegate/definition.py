@@ -1,4 +1,9 @@
-"""Delegate tool definitions for OpenHands agents."""
+"""Delegate tool definitions for OpenHands agents.
+
+.. deprecated:: 1.16.0
+    DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
+    sub-agent delegation. DelegateTool will be removed in version 2.0.0.
+"""
 
 import pathlib
 from collections.abc import Sequence
@@ -14,6 +19,7 @@ from openhands.sdk.tool.tool import (
     ToolAnnotations,
     ToolDefinition,
 )
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
@@ -61,7 +67,12 @@ class DelegateObservation(Observation):
 
 
 class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
-    """A ToolDefinition subclass that automatically initializes a DelegateExecutor."""
+    """A ToolDefinition subclass that automatically initializes a DelegateExecutor.
+
+    .. deprecated:: 1.16.0
+        DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
+        sub-agent delegation. DelegateTool will be removed in version 2.0.0.
+    """
 
     @classmethod
     def create(
@@ -71,6 +82,9 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         confirmation_handler: "ConfirmationHandler | None" = None,
     ) -> Sequence["DelegateTool"]:
         """Initialize DelegateTool with a DelegateExecutor.
+
+        .. deprecated:: 1.16.0
+            Use TaskToolSet instead. DelegateTool will be removed in version 2.0.0.
 
         Args:
             conv_state: Conversation state (used to get workspace location)
@@ -84,6 +98,13 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         Returns:
             List containing a single delegate tool definition
         """
+        warn_deprecated(
+            "DelegateTool",
+            deprecated_in="1.16.0",
+            removed_in="2.0.0",
+            details="Use TaskToolSet instead for sub-agent delegation.",
+        )
+
         # Import here to avoid circular imports
         from openhands.sdk.subagent import get_factory_info
         from openhands.tools.delegate.impl import DelegateExecutor
