@@ -6,7 +6,7 @@
  */
 
 import { ActionEvent } from '../events/types';
-import { RiskLevel, SecurityAnalysisResult } from './confirmation-policy';
+import { RiskLevel, SecurityAnalysisResult, riskLevelToNumeric } from './confirmation-policy';
 
 /**
  * Base interface for security analyzers.
@@ -228,7 +228,7 @@ export class CompositeAnalyzer implements SecurityAnalyzer {
     const explanations: string[] = [];
 
     for (const result of results) {
-      if (this.riskValue(result.riskLevel) > this.riskValue(highestRisk)) {
+      if (riskLevelToNumeric(result.riskLevel) > riskLevelToNumeric(highestRisk)) {
         highestRisk = result.riskLevel;
       }
       if (result.concerns) {
@@ -245,19 +245,6 @@ export class CompositeAnalyzer implements SecurityAnalyzer {
       explanation: explanations.join('; '),
       concerns: allConcerns.length > 0 ? allConcerns : undefined,
     };
-  }
-
-  private riskValue(level: RiskLevel): number {
-    switch (level) {
-      case 'low':
-        return 1;
-      case 'medium':
-        return 2;
-      case 'high':
-        return 3;
-      case 'unknown':
-        return 2;
-    }
   }
 }
 

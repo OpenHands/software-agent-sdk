@@ -4,6 +4,7 @@
 
 export {
   RiskLevel,
+  riskLevelToNumeric,
   SecurityAnalysisResult,
   ConfirmationPolicy,
   NeverConfirm,

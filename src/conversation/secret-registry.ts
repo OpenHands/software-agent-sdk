@@ -6,11 +6,10 @@
  * This mirrors the Python SDK's SecretRegistry class.
  */
 
-/**
- * A secret value can be a static string or a function that returns a string.
- * Functions are evaluated lazily when the secret is needed.
- */
-export type SecretValue = string | (() => string);
+import { SecretValue } from '../types/base';
+
+// Re-export so existing consumers of this module still find the type
+export type { SecretValue } from '../types/base';
 
 /**
  * Secret source types

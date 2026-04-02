@@ -13,6 +13,22 @@ import { ActionEvent } from '../events/types';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'unknown';
 
 /**
+ * Convert a risk level to a numeric value for comparison.
+ */
+export function riskLevelToNumeric(level: RiskLevel): number {
+  switch (level) {
+    case 'low':
+      return 1;
+    case 'medium':
+      return 2;
+    case 'high':
+      return 3;
+    case 'unknown':
+      return 2; // Treat unknown as medium
+  }
+}
+
+/**
  * Result of a security analysis
  */
 export interface SecurityAnalysisResult {
@@ -80,22 +96,9 @@ export class RiskBasedConfirm implements ConfirmationPolicy {
     this.threshold = threshold;
   }
 
-  private riskValue(level: RiskLevel): number {
-    switch (level) {
-      case 'low':
-        return 1;
-      case 'medium':
-        return 2;
-      case 'high':
-        return 3;
-      case 'unknown':
-        return 2; // Treat unknown as medium
-    }
-  }
-
   requiresConfirmation(_action: ActionEvent, riskLevel?: RiskLevel): boolean {
     const level = riskLevel || 'unknown';
-    return this.riskValue(level) >= this.riskValue(this.threshold);
+    return riskLevelToNumeric(level) >= riskLevelToNumeric(this.threshold);
   }
 }
 
