@@ -29,7 +29,11 @@ export class RemoteState {
   private conversationId: string;
   private _events: RemoteEventsList;
   private cachedState: ConversationInfo | null = null;
+  private cachedAt = 0;
   private lock = new AsyncLock();
+
+  /** Cache TTL in milliseconds. Cached state older than this triggers a re-fetch. */
+  static CACHE_TTL_MS = 2000;
 
   constructor(client: HttpClient, conversationId: string) {
     this.client = client;
@@ -39,12 +43,12 @@ export class RemoteState {
 
   private async getConversationInfo(): Promise<ConversationInfo> {
     return await this.lock.acquire(async () => {
-      // Return cached state if available
-      if (this.cachedState !== null) {
+      // Return cached state if available and fresh
+      if (this.cachedState !== null && Date.now() - this.cachedAt < RemoteState.CACHE_TTL_MS) {
         return this.cachedState;
       }
 
-      // Fallback to REST API if no cached state
+      // Fetch from REST API
       const response = await this.client.get<any>(`/api/conversations/${this.conversationId}`);
 
       // Handle the case where the API returns a full_state wrapper
@@ -56,28 +60,35 @@ export class RemoteState {
       }
 
       this.cachedState = conversationInfo;
+      this.cachedAt = Date.now();
       return conversationInfo;
     });
+  }
+
+  /**
+   * Force a fresh fetch from the server, ignoring the cache.
+   */
+  async refresh(): Promise<ConversationInfo> {
+    this.cachedState = null;
+    return this.getConversationInfo();
   }
 
   async updateStateFromEvent(event: ConversationStateUpdateEvent): Promise<void> {
     await this.lock.acquire(async () => {
       // Handle full state snapshot
       if (event.key === FULL_STATE_KEY) {
-        // Update cached state with the full snapshot
         if (this.cachedState === null) {
           this.cachedState = {} as ConversationInfo;
         }
-        // Unwrap full_state if present (API may return wrapped state)
         const stateValue = event.value?.full_state ?? event.value;
         Object.assign(this.cachedState, stateValue);
       } else {
-        // Handle individual field updates
         if (this.cachedState === null) {
           this.cachedState = {} as ConversationInfo;
         }
         (this.cachedState as any)[event.key] = event.value;
       }
+      this.cachedAt = Date.now();
     });
   }
 
@@ -194,7 +205,7 @@ export class RemoteState {
   }
 }
 
-// Simple async lock implementation (reused from remote-events-list.ts)
+// Simple async lock for serializing state access
 class AsyncLock {
   private locked = false;
   private queue: Array<() => void> = [];
