@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from typing import TYPE_CHECKING, Literal
 
@@ -70,16 +71,13 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         # Pool mode: use TmuxPanePool for parallel execution
         self._pool: TmuxPanePool | None = None
         self._sessions: dict[int, TerminalSession] = {}
+        self._sessions_lock = threading.Lock()
 
         use_pool = terminal_type in (None, "tmux") and _is_tmux_available()
 
         if use_pool:
             self._pool = TmuxPanePool(working_dir, username, max_panes=max_panes)
             self._pool.initialize()
-            # Create a primary session for backwards-compat property access
-            primary_terminal = self._pool.checkout()
-            self.session = self._wrap_session(primary_terminal)
-            self._pool.checkin(primary_terminal)
             logger.info(
                 f"TerminalExecutor initialized (pool mode) "
                 f"working_dir: {working_dir}, username: {username}, "
@@ -102,16 +100,37 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 f"{terminal_type or self.session.__class__.__name__}"
             )
 
+    # ------------------------------------------------------------------
+    # Pool helpers
+    # ------------------------------------------------------------------
+
     def _wrap_session(self, terminal: TmuxTerminal) -> TerminalSession:
         """Get or create a TerminalSession for a pooled TmuxTerminal."""
         pane_id = id(terminal)
-        if pane_id not in self._sessions:
-            session = TerminalSession(terminal, self._no_change_timeout_seconds)
-            # The pool already initialized the terminal — skip
-            # session.initialize() which would create a new tmux session.
-            session._initialized = True
-            self._sessions[pane_id] = session
-        return self._sessions[pane_id]
+        with self._sessions_lock:
+            if pane_id not in self._sessions:
+                session = TerminalSession(terminal, self._no_change_timeout_seconds)
+                # The pool already initialized the terminal — skip
+                # session.initialize() which would create a new tmux session.
+                session._initialized = True
+                self._sessions[pane_id] = session
+            return self._sessions[pane_id]
+
+    def _discard_session(self, terminal: TmuxTerminal) -> None:
+        """Remove cached TerminalSession for a terminal being replaced.
+
+        We mark the session (and its underlying terminal) as closed
+        *before* dropping the reference.  This prevents
+        ``TerminalSessionBase.__del__`` from calling ``close()`` which
+        would kill the pooled terminal's window — and potentially the
+        entire shared tmux session if that window is the last one.
+        """
+        with self._sessions_lock:
+            session = self._sessions.pop(id(terminal), None)
+        if session is not None:
+            session._closed = True
+            # Also mark the terminal so the pooled close() is a no-op
+            terminal._closed = True
 
     @staticmethod
     def _prepare_pooled_session(session: TerminalSession) -> None:
@@ -133,6 +152,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             session.terminal.clear_screen()
         session.prev_status = None
         session.prev_output = ""
+
+    # ------------------------------------------------------------------
+    # Env export / secret masking
+    # ------------------------------------------------------------------
 
     def _export_envs(
         self,
@@ -175,104 +198,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             )
         )
 
-    def reset(self) -> TerminalObservation:
-        """Reset the terminal session by creating a new instance.
-
-        Returns:
-            TerminalObservation with reset confirmation message
-        """
-        if self._pool is not None:
-            # Pool mode: close and recreate the pool
-            self._pool.close()
-            self._sessions.clear()
-            self._pool = TmuxPanePool(
-                self._working_dir,
-                self._username,
-                max_panes=self._pool.max_panes,
-            )
-            self._pool.initialize()
-            # Recreate primary session reference
-            primary = self._pool.checkout()
-            self.session = self._wrap_session(primary)
-            self._pool.checkin(primary)
-        else:
-            original_work_dir = self.session.work_dir
-            original_username = self.session.username
-            original_no_change_timeout = self.session.no_change_timeout_seconds
-
-            self.session.close()
-            self.session = create_terminal_session(
-                work_dir=original_work_dir,
-                username=original_username,
-                no_change_timeout_seconds=original_no_change_timeout,
-                terminal_type=None,
-                shell_path=self.shell_path,
-            )
-            self.session.initialize()
-
-        logger.info(
-            f"Terminal session reset successfully with working_dir: {self._working_dir}"
-        )
-
-        return TerminalObservation.from_text(
-            text=(
-                "Terminal session has been reset. All previous environment "
-                "variables and session state have been cleared."
-            ),
-            command="[RESET]",
-            exit_code=0,
-        )
-
-    def _execute_on_session(
+    def _mask_observation(
         self,
-        session: TerminalSession,
-        action: TerminalAction,
+        observation: TerminalObservation,
         conversation: "LocalConversation | None" = None,
     ) -> TerminalObservation:
-        """Run *action* on the given *session*, handling reset/envs/masking."""
-        if action.reset or session._closed:
-            reset_result = self.reset()
-
-            if action.command.strip():
-                # After reset the old session/terminal is dead.
-                # In pool mode, checkout a fresh pane for the command.
-                fresh: TmuxTerminal | None = None
-                if self._pool is not None:
-                    fresh = self._pool.checkout()
-                    session = self._wrap_session(fresh)
-                    self._prepare_pooled_session(session)
-                else:
-                    session = self.session
-
-                command_action = TerminalAction(
-                    command=action.command,
-                    timeout=action.timeout,
-                    is_input=False,
-                )
-                self._export_envs(command_action, conversation, session=session)
-                command_result = session.execute(command_action)
-
-                if fresh is not None:
-                    self._pool.checkin(fresh)  # type: ignore[union-attr]
-
-                reset_text = reset_result.text
-                command_text = command_result.text
-
-                observation = command_result.model_copy(
-                    update={
-                        "content": [
-                            TextContent(text=f"{reset_text}\n\n{command_text}")
-                        ],
-                        "command": f"[RESET] {action.command}",
-                    }
-                )
-            else:
-                observation = reset_result
-        else:
-            self._export_envs(action, conversation, session=session)
-            observation = session.execute(action)
-
-        # Apply automatic secrets masking
+        """Apply automatic secrets masking to *observation*."""
         content_text = observation.text
 
         if content_text and conversation is not None:
@@ -293,6 +224,149 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
         return observation
 
+    # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
+
+    def reset(self) -> TerminalObservation:
+        """Public reset – delegates to the appropriate backend."""
+        return self._reset_single_session()
+
+    def _reset_single_session(self) -> TerminalObservation:
+        """Reset the single-session terminal."""
+        original_work_dir = self.session.work_dir
+        original_username = self.session.username
+        original_no_change_timeout = self.session.no_change_timeout_seconds
+
+        self.session.close()
+        self.session = create_terminal_session(
+            work_dir=original_work_dir,
+            username=original_username,
+            no_change_timeout_seconds=original_no_change_timeout,
+            terminal_type=None,
+            shell_path=self.shell_path,
+        )
+        self.session.initialize()
+
+        logger.info(
+            f"Terminal session reset successfully with working_dir: {self._working_dir}"
+        )
+
+        return TerminalObservation.from_text(
+            text=(
+                "Terminal session has been reset. All previous environment "
+                "variables and session state have been cleared."
+            ),
+            command="[RESET]",
+            exit_code=0,
+        )
+
+    _RESET_TEXT = (
+        "Terminal session has been reset. All previous environment "
+        "variables and session state have been cleared."
+    )
+
+    # ------------------------------------------------------------------
+    # Execution paths
+    # ------------------------------------------------------------------
+
+    def _execute_single_session(
+        self,
+        action: TerminalAction,
+        conversation: "LocalConversation | None" = None,
+    ) -> TerminalObservation:
+        """Execute *action* in single-session (non-pool) mode."""
+        if action.reset or self.session._closed:
+            reset_result = self._reset_single_session()
+
+            if action.command.strip():
+                session = self.session  # reset created a fresh one
+                command_action = TerminalAction(
+                    command=action.command,
+                    timeout=action.timeout,
+                    is_input=False,
+                )
+                self._export_envs(command_action, conversation, session=session)
+                command_result = session.execute(command_action)
+
+                reset_text = reset_result.text
+                command_text = command_result.text
+
+                observation = command_result.model_copy(
+                    update={
+                        "content": [
+                            TextContent(text=f"{reset_text}\n\n{command_text}")
+                        ],
+                        "command": f"[RESET] {action.command}",
+                    }
+                )
+            else:
+                observation = reset_result
+        else:
+            self._export_envs(action, conversation, session=self.session)
+            observation = self.session.execute(action)
+
+        return self._mask_observation(observation, conversation)
+
+    def _execute_pooled(
+        self,
+        action: TerminalAction,
+        conversation: "LocalConversation | None" = None,
+    ) -> TerminalObservation:
+        """Execute *action* in pool mode with proper checkout/checkin.
+
+        All pane lifecycle (checkout, optional replace, checkin) is
+        contained here so there is exactly one checkout and one checkin
+        per call, and the checkin is guaranteed by ``finally``.
+        """
+        terminal = self._pool.checkout()  # type: ignore[union-attr]
+        try:
+            reset_text: str | None = None
+
+            if action.reset or terminal._closed:
+                self._discard_session(terminal)
+                terminal = self._pool.replace(terminal)  # type: ignore[union-attr]
+                reset_text = self._RESET_TEXT
+                logger.info(
+                    f"Terminal pane replaced (reset) working_dir: {self._working_dir}"
+                )
+
+                if not action.command.strip():
+                    return TerminalObservation.from_text(
+                        text=reset_text,
+                        command="[RESET]",
+                        exit_code=0,
+                    )
+
+            session = self._wrap_session(terminal)
+            self._prepare_pooled_session(session)
+
+            cmd_action = (
+                action
+                if reset_text is None
+                else TerminalAction(
+                    command=action.command,
+                    timeout=action.timeout,
+                    is_input=False,
+                )
+            )
+            self._export_envs(cmd_action, conversation, session=session)
+            observation = session.execute(cmd_action)
+
+            if reset_text is not None:
+                observation = observation.model_copy(
+                    update={
+                        "content": [
+                            TextContent(text=f"{reset_text}\n\n{observation.text}")
+                        ],
+                        "command": f"[RESET] {action.command}",
+                    }
+                )
+
+            return self._mask_observation(observation, conversation)
+        finally:
+            self._pool.checkin(terminal)  # type: ignore[union-attr]
+
     def __call__(
         self,
         action: TerminalAction,
@@ -302,17 +376,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             raise ValueError("Cannot use reset=True with is_input=True")
 
         if self._pool is not None:
-            with self._pool.pane() as terminal:
-                session = self._wrap_session(terminal)
-                self._prepare_pooled_session(session)
-                return self._execute_on_session(session, action, conversation)
+            return self._execute_pooled(action, conversation)
         else:
-            return self._execute_on_session(self.session, action, conversation)
+            return self._execute_single_session(action, conversation)
 
     def close(self) -> None:
         """Close the terminal session and clean up resources."""
         if self._pool is not None:
             self._pool.close()
-            self._sessions.clear()
+            with self._sessions_lock:
+                self._sessions.clear()
         elif hasattr(self, "session"):
             self.session.close()

@@ -236,9 +236,20 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
     """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
 
     def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
-        # Pane-level isolation is handled internally by TmuxPanePool;
-        # no external serialization needed.
-        return DeclaredResources(keys=(), declared=True)
+        from openhands.tools.terminal.impl import TerminalExecutor
+
+        # When using the tmux backend, TmuxPanePool handles concurrency
+        # internally via pane-level isolation — opt out of framework
+        # serialization so parallel calls are allowed.
+        # When using the subprocess backend there is only a single
+        # session, so we declare a resource key to serialize terminal
+        # calls against each other without blocking unrelated tools.
+        if (
+            isinstance(self.executor, TerminalExecutor)
+            and self.executor._pool is not None
+        ):
+            return DeclaredResources(keys=(), declared=True)
+        return DeclaredResources(keys=("terminal:session",), declared=True)
 
     @classmethod
     def create(

@@ -7,6 +7,8 @@ tmux session, enabling concurrent command execution across panes.
 from __future__ import annotations
 
 import threading
+import time
+import types
 import uuid
 from collections import deque
 from collections.abc import Generator
@@ -17,7 +19,6 @@ import libtmux
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import HISTORY_LIMIT
-from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
@@ -69,6 +70,7 @@ class TmuxPanePool:
 
         self._initialized = False
         self._closed = False
+        self._initial_window: libtmux.Window | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -93,7 +95,9 @@ class TmuxPanePool:
             self._session.set_environment(k, v)
         self._session.set_option("history-limit", str(HISTORY_LIMIT))
 
-        # Kill the default window — panes will each get their own window
+        # Keep a reference to the default window so we can kill it once
+        # the first real pane window is created (tmux requires at least
+        # one window to keep the session alive).
         self._initial_window = self._session.active_window
 
         self._initialized = True
@@ -110,13 +114,13 @@ class TmuxPanePool:
 
         with self._lock:
             for terminal in self._all_panes:
-                try:
-                    terminal.close()
-                except Exception as e:
-                    logger.debug(f"Error closing pooled pane: {e}")
+                terminal._closed = True
             self._all_panes.clear()
             self._available.clear()
 
+        # Kill the entire tmux session (destroys all windows/panes at once).
+        # We deliberately skip per-terminal close() because that also calls
+        # session.kill() and would fail on the second pane.
         try:
             if self._session is not None:
                 self._session.kill()
@@ -143,19 +147,38 @@ class TmuxPanePool:
         active_pane = window.active_pane
         assert active_pane is not None
 
-        # Build a TmuxTerminal that reuses this session's window/pane
-        terminal = TmuxTerminal.__new__(TmuxTerminal)
-        terminal.work_dir = self.work_dir
-        terminal.username = self.username
-        terminal._initialized = False
-        terminal._closed = False
-        terminal.PS1 = CmdOutputMetadata.to_ps1_prompt()
+        # Kill the default window now that a real window exists.
+        if self._initial_window is not None:
+            try:
+                self._initial_window.kill()
+            except Exception:
+                pass
+            self._initial_window = None
+
+        # Use __init__ to properly initialise base-class attributes,
+        # then attach to the pool's existing tmux session/window/pane
+        # instead of letting initialize() create its own session.
+        terminal = TmuxTerminal(work_dir=self.work_dir, username=self.username)
         terminal.server = self._server  # type: ignore[assignment]
         terminal.session = self._session
         terminal.window = window
         terminal.pane = active_pane
 
-        import time
+        # Override close() so it only kills this terminal's window
+        # instead of the entire shared tmux session.  This is critical
+        # because TerminalSessionBase.__del__ calls close(), and GC of
+        # a cached TerminalSession wrapper would otherwise destroy the
+        # session that all other pool panes depend on.
+        def _pooled_close(self: TmuxTerminal) -> None:  # type: ignore[misc]
+            if self._closed:
+                return
+            try:
+                self.window.kill()
+            except Exception:
+                pass
+            self._closed = True
+
+        terminal.close = types.MethodType(_pooled_close, terminal)
 
         # Configure PS1 (same as TmuxTerminal.initialize)
         ps1 = terminal.PS1
@@ -215,6 +238,41 @@ class TmuxPanePool:
 
         self._semaphore.release()
         logger.debug(f"Checked in pane: {terminal.pane}")
+
+    def replace(self, old_terminal: TmuxTerminal) -> TmuxTerminal:
+        """Replace a checked-out pane with a fresh one.
+
+        The caller must currently hold *old_terminal* (i.e. it was
+        checked out and not yet checked in).  The old terminal is
+        closed and removed from the pool, and a brand-new pane is
+        returned **in its place** — the semaphore count is unchanged
+        because we swap 1-for-1.
+        """
+        with self._lock:
+            # Create the replacement pane BEFORE killing the old window,
+            # because tmux destroys the session when the last window dies.
+            new_terminal = self._create_pane()
+            self._all_panes.append(new_terminal)
+
+            if old_terminal in self._all_panes:
+                self._all_panes.remove(old_terminal)
+            if old_terminal in self._available:
+                self._available.remove(old_terminal)
+
+        # Capture IDs before killing (repr would fail after kill).
+        old_pane_id = old_terminal.pane.pane_id
+        new_pane_id = new_terminal.pane.pane_id
+
+        # Only destroy the old terminal's window — NOT terminal.close()
+        # which would kill the entire shared tmux session.
+        try:
+            old_terminal.window.kill()
+        except Exception as e:
+            logger.debug(f"Error killing replaced pane window: {e}")
+        old_terminal._closed = True
+
+        logger.debug(f"Replaced pane {old_pane_id} -> {new_pane_id}")
+        return new_terminal
 
     @contextmanager
     def pane(self, timeout: float | None = None) -> Generator[TmuxTerminal]:

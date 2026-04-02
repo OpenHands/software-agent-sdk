@@ -53,8 +53,8 @@ def test_terminal_executor_with_conversation_secrets():
             secrets=test_secrets,
         )
 
-        # Create executor without env_provider
-        executor = TerminalExecutor(working_dir=temp_dir)
+        # Force subprocess mode so we have a single session to mock
+        executor = TerminalExecutor(working_dir=temp_dir, terminal_type="subprocess")
 
         try:
             # Mock the session to avoid subprocess issues in tests

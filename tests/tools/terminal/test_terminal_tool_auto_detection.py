@@ -16,7 +16,6 @@ from openhands.tools.terminal.impl import TerminalExecutor
 from openhands.tools.terminal.terminal import (
     SubprocessTerminal,
     TerminalSession,
-    TmuxTerminal,
 )
 
 
@@ -42,12 +41,14 @@ def test_default_auto_detection():
         executor = tool.executor
         assert isinstance(executor, TerminalExecutor)
 
-        # Should always use TerminalSession now
-        assert isinstance(executor.session, TerminalSession)
-
-        # Check that the terminal backend is appropriate
-        terminal_type = type(executor.session.terminal).__name__
-        assert terminal_type in ["TmuxTerminal", "SubprocessTerminal"]
+        # In pool mode there is no single session attribute;
+        # in single-session mode there is.
+        if executor._pool is not None:
+            assert executor._pool.max_panes >= 1
+        else:
+            assert isinstance(executor.session, TerminalSession)
+            terminal_type = type(executor.session.terminal).__name__
+            assert terminal_type in ["TmuxTerminal", "SubprocessTerminal"]
 
         # Test that it works
         action = TerminalAction(command="echo 'Auto-detection test'")
@@ -81,7 +82,7 @@ def test_unix_auto_detection(mock_system):
     mock_system.return_value = "Linux"
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Mock tmux as available
+        # Mock tmux as available → pool mode
         with patch(
             "openhands.tools.terminal.terminal.factory._is_tmux_available",
             return_value=True,
@@ -91,13 +92,19 @@ def test_unix_auto_detection(mock_system):
             assert tool.executor is not None
             executor = tool.executor
             assert isinstance(executor, TerminalExecutor)
-            assert isinstance(executor.session, TerminalSession)
-            assert isinstance(executor.session.terminal, TmuxTerminal)
+            # Pool mode: no single session, pool is active
+            assert executor._pool is not None
 
-        # Mock tmux as unavailable
-        with patch(
-            "openhands.tools.terminal.terminal.factory._is_tmux_available",
-            return_value=False,
+        # Mock tmux as unavailable → single-session / subprocess mode
+        with (
+            patch(
+                "openhands.tools.terminal.terminal.factory._is_tmux_available",
+                return_value=False,
+            ),
+            patch(
+                "openhands.tools.terminal.impl._is_tmux_available",
+                return_value=False,
+            ),
         ):
             tools = TerminalTool.create(_create_conv_state(temp_dir))
             tool = tools[0]
