@@ -94,6 +94,23 @@ class TestACPAgentInstantiation:
         with pytest.raises(Exception):
             agent.acp_command = ["other"]  # type: ignore[misc]
 
+    def test_acp_model_propagated_to_metrics(self):
+        """When acp_model is set, metrics.model_name should reflect the actual model."""
+        agent = _make_agent(acp_model="gemini-3-flash-preview")
+        assert agent.llm.metrics.model_name == "gemini-3-flash-preview"
+        assert agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
+
+    def test_no_acp_model_keeps_sentinel(self):
+        """Without acp_model, metrics.model_name remains the sentinel value."""
+        agent = _make_agent()
+        assert agent.llm.metrics.model_name == "acp-managed"
+
+    def test_acp_model_used_in_cost_entries(self):
+        """Cost entries should use the actual model name, not the sentinel."""
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        agent.llm.metrics.add_cost(0.05)
+        assert agent.llm.metrics.costs[0].model == "claude-opus-4-6"
+
 
 # ---------------------------------------------------------------------------
 # Serialization

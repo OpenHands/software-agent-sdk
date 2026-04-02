@@ -530,6 +530,16 @@ class ACPAgent(AgentBase):
         ),
     )
 
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        # Propagate the actual model name to metrics so that cost/token
+        # entries are attributed to the real model, not the sentinel
+        # "acp-managed" placeholder.
+        if self.acp_model:
+            self.llm.metrics.model_name = self.acp_model
+            if self.llm.metrics.accumulated_token_usage is not None:
+                self.llm.metrics.accumulated_token_usage.model = self.acp_model
+
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
     _conn: Any = PrivateAttr(default=None)  # ClientSideConnection
