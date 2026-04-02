@@ -83,6 +83,11 @@ def test_list_bedrock_models_with_boto3(monkeypatch):
     assert result == ["bedrock/anthropic.claude-3"]
 
 
+def test_gpt_5_4_is_listed_as_verified_for_openai_and_openhands():
+    assert "gpt-5.4" in VERIFIED_MODELS["openai"]
+    assert "gpt-5.4" in VERIFIED_OPENHANDS_MODELS
+
+
 def test_openhands_models_all_have_provider_list():
     """Every model in VERIFIED_OPENHANDS_MODELS must also appear in at least one
     provider-specific list so that the UI can display it under its actual provider.

@@ -63,6 +63,8 @@ async def test_list_verified_models():
     assert response.models == VERIFIED_MODELS
     assert "openai" in response.models
     assert "anthropic" in response.models
+    assert "gpt-5.4" in response.models["openai"]
+    assert "gpt-5.4" in response.models["openhands"]
 
 
 def test_providers_endpoint_integration(client):
