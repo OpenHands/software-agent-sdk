@@ -87,9 +87,7 @@ export class HttpClient {
         delete headers['Content-Type'];
         requestInit.body = options.data;
       } else {
-        const bodyData = JSON.stringify(options.data);
-        console.log('HTTP Request Body:', bodyData);
-        requestInit.body = bodyData;
+        requestInit.body = JSON.stringify(options.data);
       }
     }
 
