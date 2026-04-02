@@ -175,19 +175,20 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             try:
                 payload = json.loads(payload_str)
                 if payload.get("trigger"):
-                    tags["trigger"] = str(payload["trigger"])
+                    tags["automation_trigger"] = str(payload["trigger"])
                 if payload.get("automation_id"):
                     tags["automation_id"] = str(payload["automation_id"])
                 if payload.get("automation_name"):
                     tags["automation_name"] = str(payload["automation_name"])
             except (json.JSONDecodeError, TypeError):
-                logger.debug("Failed to parse AUTOMATION_EVENT_PAYLOAD")
+                logger.info("Failed to parse AUTOMATION_EVENT_PAYLOAD")
 
         # Add run_id from env var or private attr
         run_id = os.environ.get("AUTOMATION_RUN_ID") or self._automation_run_id
         if run_id:
-            tags["run_id"] = run_id
+            tags["automation_run_id"] = run_id
 
+        logger.info(f"Workspace tags found: {tags}")
         return tags
 
     @property
