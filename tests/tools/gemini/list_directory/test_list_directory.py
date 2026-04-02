@@ -1,6 +1,15 @@
 """Tests for list_directory tool."""
 
-from openhands.tools.gemini.list_directory.definition import ListDirectoryAction
+import threading
+
+import pytest
+
+from openhands.sdk.tool.tool import DeclaredResources
+from openhands.tools.gemini.list_directory.definition import (
+    ListDirectoryAction,
+    ListDirectoryObservation,
+    ListDirectoryTool,
+)
 from openhands.tools.gemini.list_directory.impl import ListDirectoryExecutor
 
 
@@ -126,3 +135,88 @@ def test_list_directory_absolute_path(tmp_path):
     assert not obs.is_error
     assert obs.total_count == 1
     assert obs.entries[0].name == "file.txt"
+
+
+@pytest.mark.parametrize(
+    "dir_path, recursive",
+    [
+        (".", False),
+        ("/some/absolute/path", False),
+        (".", True),
+        ("relative/path", True),
+    ],
+    ids=[
+        "default-non-recursive",
+        "absolute-path-non-recursive",
+        "default-recursive",
+        "relative-path-recursive",
+    ],
+)
+def test_list_directory_declared_resources(tmp_path, dir_path, recursive):
+    """Test that ListDirectoryTool declares parallel-safe resources."""
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+    tool = ListDirectoryTool(
+        action_type=ListDirectoryAction,
+        observation_type=ListDirectoryObservation,
+        description="test",
+        executor=executor,
+    )
+
+    action = ListDirectoryAction(dir_path=dir_path, recursive=recursive)
+    resources = tool.declared_resources(action)
+
+    assert isinstance(resources, DeclaredResources)
+    assert resources.declared is True
+    assert resources.keys == ()
+
+
+def test_list_directory_executor_concurrent(tmp_path):
+    """Test that concurrent list_directory calls return correct results.
+
+    Each call uses independent read-only filesystem operations, so
+    concurrent calls are inherently thread-safe.
+    """
+    dir_a = tmp_path / "dir_a"
+    dir_a.mkdir()
+    for i in range(5):
+        (dir_a / f"alpha_{i}.txt").write_text(f"content {i}")
+
+    dir_b = tmp_path / "dir_b"
+    dir_b.mkdir()
+    for i in range(3):
+        (dir_b / f"beta_{i}.py").write_text(f"code {i}")
+
+    executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
+
+    results: list[tuple[str, int]] = []
+    results_lock = threading.Lock()
+    errors: list[Exception] = []
+
+    def list_dir(name: str, path: str):
+        try:
+            action = ListDirectoryAction(dir_path=path)
+            obs = executor(action)
+            with results_lock:
+                results.append((name, obs.total_count))
+        except Exception as e:
+            errors.append(e)
+
+    threads = []
+    for _ in range(4):
+        t_a = threading.Thread(target=list_dir, args=("a", str(dir_a)))
+        t_b = threading.Thread(target=list_dir, args=("b", str(dir_b)))
+        threads.extend([t_a, t_b])
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Concurrent list_directory calls raised errors: {errors}"
+    assert len(results) == 8, f"Expected 8 results, got {len(results)}"
+    results_a = [count for name, count in results if name == "a"]
+    results_b = [count for name, count in results if name == "b"]
+    assert len(results_a) == 4
+    assert len(results_b) == 4
+    assert all(count == 5 for count in results_a)
+    assert all(count == 3 for count in results_b)

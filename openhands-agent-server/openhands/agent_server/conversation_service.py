@@ -94,6 +94,21 @@ def _compose_webhook_conversation_info(
     return _compose_acp_conversation_info(stored, state)
 
 
+def _update_state_tags_sync(
+    state: ConversationState, tags: dict[str, str]
+) -> ConversationState:
+    with state:
+        state.tags = tags
+    return state
+
+
+def _compose_webhook_conversation_info_sync(
+    stored: StoredConversation, state: ConversationState
+) -> ConversationInfo | ACPConversationInfo:
+    with state:
+        return _compose_webhook_conversation_info(stored, state)
+
+
 def _register_agent_definitions(
     agent_defs: list["AgentDefinition"],
     *,
@@ -563,26 +578,27 @@ class ConversationService:
         if event_service is None:
             return False
 
-        state: ConversationState | None = None
+        loop = asyncio.get_running_loop()
+        state = await event_service.get_state()
         if request.title is not None:
             event_service.stored.title = request.title.strip()
         if request.tags is not None:
             event_service.stored.tags = request.tags
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
-            state = await event_service.get_state()
-            with state:
-                state.tags = request.tags
+            state = await loop.run_in_executor(
+                None, _update_state_tags_sync, state, request.tags
+            )
         event_service.stored.updated_at = utc_now()
         # Save the updated metadata to disk
         await event_service.save_meta()
 
-        # Notify conversation webhooks about the updated conversation
-        state = state or await event_service.get_state()
-        with state:
-            conversation_info = _compose_webhook_conversation_info(
-                event_service.stored, state
-            )
+        # Notify conversation webhooks about the updated conversation. Compose the
+        # full-state snapshot under the state lock, but do the synchronous wait in a
+        # worker thread so metadata updates cannot block the FastAPI event loop.
+        conversation_info = await loop.run_in_executor(
+            None, _compose_webhook_conversation_info_sync, event_service.stored, state
+        )
         await self._notify_conversation_webhooks(conversation_info)
 
         updated_fields = []
