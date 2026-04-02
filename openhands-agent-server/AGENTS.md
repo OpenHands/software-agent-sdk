@@ -14,6 +14,14 @@ This package lives in the monorepo root. Typical commands (run from repo root):
 When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
 
 
+## Concurrency / async safety
+
+- `ConversationState` uses a synchronous `FIFOLock`. In async agent-server code, never do `with conversation._state` directly on the event loop when the conversation may be running.
+- WebSocket reconnects call `EventService.subscribe_to_events()` immediately; if initial state snapshot creation blocks on the state lock in async context, the whole FastAPI event loop can stop serving `/ready` and similar probes.
+- The same rule applies to metadata updates in `ConversationService.update_conversation()`: keep the locked mutation/snapshot semantics, but move the synchronous lock wait into a worker thread first.
+- In async routes/services, move state-lock acquisition into `run_in_executor(...)` (or another worker-thread boundary) before awaiting network I/O.
+
+
 ## REST API compatibility & deprecation policy
 
 The agent-server **REST API** (the FastAPI OpenAPI surface under `/api/**`) is a

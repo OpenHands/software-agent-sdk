@@ -191,6 +191,9 @@ def find_third_party_files(
     Searches for files like .cursorrules, AGENTS.md, CLAUDE.md, etc.
     with case-insensitive matching.
 
+    Resolves symlinks so that e.g. ``CLAUDE.md -> AGENTS.md`` is detected
+    as a duplicate and only the canonical (non-symlink) file is returned.
+
     Args:
         repo_root: Path to the repository root directory.
         third_party_skill_names: Mapping of lowercase filenames to skill names.
@@ -206,6 +209,7 @@ def find_third_party_files(
 
     files: list[Path] = []
     seen_names: set[str] = set()
+    seen_real_paths: set[Path] = set()
     for item in repo_root.iterdir():
         if item.is_file() and item.name.lower() in target_names:
             # Avoid duplicates (e.g., AGENTS.md and agents.md in same dir)
@@ -215,9 +219,20 @@ def find_third_party_files(
                     f"Duplicate third-party skill file ignored: {item} "
                     f"(already found a file with name '{name_lower}')"
                 )
-            else:
-                files.append(item)
-                seen_names.add(name_lower)
+                continue
+
+            # Resolve symlinks to detect e.g. CLAUDE.md -> AGENTS.md
+            real_path = item.resolve()
+            if real_path in seen_real_paths:
+                logger.debug(
+                    f"Symlinked third-party skill file ignored: {item} "
+                    f"(resolves to already-loaded {real_path})"
+                )
+                continue
+
+            files.append(item)
+            seen_names.add(name_lower)
+            seen_real_paths.add(real_path)
     return files
 
 

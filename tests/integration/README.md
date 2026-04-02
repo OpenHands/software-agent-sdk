@@ -72,7 +72,7 @@ Defined in `.github/workflows/integration-runner.yml`, this workflow runs integr
 2. **Manual Trigger**: Via workflow dispatch with a required reason
 3. **Scheduled Runs**: Daily at 10:30 PM UTC (cron: `30 22 * * *`)
 
-**Test Coverage:** Runs across 6 LLM models (Claude Sonnet 4.5, GPT-5.1 Codex Max, Deepseek, Kimi K2, Gemini 3 Pro, Devstral 2512)
+**Test Coverage:** Runs across 6 LLM models (Claude Sonnet 4.5, GPT-5.1 Codex Max, Deepseek, Kimi K2, Gemini 3.1 Pro, Devstral 2512)
 
 ### Condenser Tests Workflow
 

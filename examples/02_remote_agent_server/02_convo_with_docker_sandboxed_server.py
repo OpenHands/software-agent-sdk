@@ -53,7 +53,7 @@ def get_server_image():
 #    image or `DockerDevWorkspace` to automatically build the image on-demand.
 #    with DockerDevWorkspace(
 #        # dynamically build agent-server image
-#        base_image="nikolaik/python-nodejs:python3.13-nodejs22",
+#        base_image="nikolaik/python-nodejs:python3.13-nodejs22-slim",
 #        host_port=8010,
 #        platform=detect_platform(),
 #    ) as workspace:

@@ -23,6 +23,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -160,19 +161,61 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Config fields
     # =========================================================================
-    model: str = Field(default="claude-sonnet-4-20250514", description="Model name.")
-    api_key: str | SecretStr | None = Field(default=None, description="API key.")
-    base_url: str | None = Field(default=None, description="Custom base URL.")
+
+    model: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Model name.",
+        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+    )
+    api_key: str | SecretStr | None = Field(
+        default=None,
+        description="API key.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="API Key",
+        ),
+    )
+    base_url: str | None = Field(
+        default=None,
+        description="Custom base URL.",
+        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+    )
     api_version: str | None = Field(
-        default=None, description="API version (e.g., Azure)."
+        default=None,
+        description="API version (e.g., Azure).",
     )
 
-    aws_access_key_id: str | SecretStr | None = Field(default=None)
-    aws_secret_access_key: str | SecretStr | None = Field(default=None)
-    aws_region_name: str | None = Field(default=None)
+    aws_access_key_id: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_secret_access_key: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_session_token: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_region_name: str | None = Field(
+        default=None,
+    )
+    aws_profile_name: str | None = Field(
+        default=None,
+    )
+    aws_role_name: str | None = Field(
+        default=None,
+    )
+    aws_session_name: str | None = Field(
+        default=None,
+    )
+    aws_bedrock_runtime_endpoint: str | None = Field(
+        default=None,
+    )
 
-    openrouter_site_url: str = Field(default="https://docs.all-hands.dev/")
-    openrouter_app_name: str = Field(default="OpenHands")
+    openrouter_site_url: str = Field(
+        default="https://docs.all-hands.dev/",
+    )
+    openrouter_app_name: str = Field(
+        default="OpenHands",
+    )
 
     num_retries: int = Field(default=5, ge=0)
     retry_multiplier: float = Field(default=8.0, ge=0)
@@ -253,7 +296,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description="The cost per output token. This will available in logs for user.",
     )
-    ollama_base_url: str | None = Field(default=None)
+    ollama_base_url: str | None = Field(
+        default=None,
+    )
 
     stream: bool = Field(
         default=False,
@@ -275,11 +320,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "processing (useful for cost reduction).",
     )
     disable_stop_word: bool | None = Field(
-        default=False, description="Disable using of stop word."
+        default=False,
+        description="Disable using of stop word.",
     )
-    caching_prompt: bool = Field(default=True, description="Enable caching of prompts.")
+    caching_prompt: bool = Field(
+        default=True,
+        description="Enable caching of prompts.",
+    )
     log_completions: bool = Field(
-        default=False, description="Enable logging of completions."
+        default=False,
+        description="Enable logging of completions.",
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
@@ -287,7 +337,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "Required if log_completions is True.",
     )
     custom_tokenizer: str | None = Field(
-        default=None, description="A custom tokenizer to use for token counting."
+        default=None,
+        description="A custom tokenizer to use for token counting.",
     )
     native_tool_calling: bool = Field(
         default=True,
@@ -335,7 +386,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "supported by Anthropic models.",
     )
     seed: int | None = Field(
-        default=None, description="The seed to use for random number generation."
+        default=None,
+        description="The seed to use for random number generation.",
     )
     safety_settings: list[dict[str, str]] | None = Field(
         default=None,
@@ -419,7 +471,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         return v
 
-    @field_validator("api_key", "aws_access_key_id", "aws_secret_access_key")
+    @field_validator(
+        "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
+    )
     @classmethod
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
@@ -463,6 +517,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             os.environ["AWS_SECRET_ACCESS_KEY"] = (
                 self.aws_secret_access_key.get_secret_value()
             )
+        if self.aws_session_token:
+            assert isinstance(self.aws_session_token, SecretStr)
+            os.environ["AWS_SESSION_TOKEN"] = self.aws_session_token.get_secret_value()
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
 
@@ -493,6 +550,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         return self
 
+    def _aws_kwargs(self) -> dict[str, str]:
+        """Build kwargs dict for AWS params to pass to litellm calls."""
+        kw: dict[str, str] = {}
+        if self.aws_access_key_id:
+            assert isinstance(self.aws_access_key_id, SecretStr)
+            kw["aws_access_key_id"] = self.aws_access_key_id.get_secret_value()
+        if self.aws_secret_access_key:
+            assert isinstance(self.aws_secret_access_key, SecretStr)
+            kw["aws_secret_access_key"] = self.aws_secret_access_key.get_secret_value()
+        if self.aws_session_token:
+            assert isinstance(self.aws_session_token, SecretStr)
+            kw["aws_session_token"] = self.aws_session_token.get_secret_value()
+        if self.aws_region_name:
+            kw["aws_region_name"] = self.aws_region_name
+        if self.aws_profile_name:
+            kw["aws_profile_name"] = self.aws_profile_name
+        if self.aws_role_name:
+            kw["aws_role_name"] = self.aws_role_name
+        if self.aws_session_name:
+            kw["aws_session_name"] = self.aws_session_name
+        if self.aws_bedrock_runtime_endpoint:
+            kw["aws_bedrock_runtime_endpoint"] = self.aws_bedrock_runtime_endpoint
+        return kw
+
     def _retry_listener_fn(
         self, attempt_number: int, num_retries: int, _err: BaseException | None
     ) -> None:
@@ -508,7 +589,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Serializers
     # =========================================================================
     @field_serializer(
-        "api_key", "aws_access_key_id", "aws_secret_access_key", when_used="always"
+        "api_key",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        when_used="always",
     )
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
@@ -888,7 +973,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         timeout=self.timeout,
                         drop_params=self.drop_params,
                         seed=self.seed,
-                        **final_kwargs,
+                        **{**self._aws_kwargs(), **final_kwargs},
                     )
                     if isinstance(ret, ResponsesAPIResponse):
                         if user_enable_streaming:
@@ -1057,7 +1142,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     drop_params=self.drop_params,
                     seed=self.seed,
                     messages=messages,
-                    **kwargs,
+                    **{**self._aws_kwargs(), **kwargs},
                 )
                 if enable_streaming and on_token is not None:
                     assert isinstance(ret, CustomStreamWrapper)

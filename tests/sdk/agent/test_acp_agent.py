@@ -12,10 +12,13 @@ import pytest
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _build_session_meta,
+    _estimate_cost_from_tokens,
+    _extract_token_usage,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
     _resolve_bypass_mode,
     _select_auth_method,
+    _serialize_tool_content,
 )
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
@@ -80,10 +83,6 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         assert agent.acp_env == {}
 
-    def test_system_message_returns_acp_managed(self):
-        agent = _make_agent()
-        assert agent.system_message == "ACP-managed agent"
-
     def test_get_all_llms_yields_sentinel(self):
         agent = _make_agent()
         llms = list(agent.get_all_llms())
@@ -94,6 +93,26 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         with pytest.raises(Exception):
             agent.acp_command = ["other"]  # type: ignore[misc]
+
+    def test_acp_model_propagated_to_metrics(self):
+        """When acp_model is set, metrics.model_name should reflect the actual model."""
+        agent = _make_agent(acp_model="gemini-3-flash-preview")
+        assert agent.llm.metrics.model_name == "gemini-3-flash-preview"
+        assert agent.llm.metrics.accumulated_token_usage is not None
+        assert (
+            agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
+        )
+
+    def test_no_acp_model_keeps_sentinel(self):
+        """Without acp_model, metrics.model_name remains the sentinel value."""
+        agent = _make_agent()
+        assert agent.llm.metrics.model_name == "acp-managed"
+
+    def test_acp_model_used_in_cost_entries(self):
+        """Cost entries should use the actual model name, not the sentinel."""
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        agent.llm.metrics.add_cost(0.05)
+        assert agent.llm.metrics.costs[0].model == "claude-opus-4-6"
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +641,7 @@ class TestACPAgentTelemetry:
             mock_response.usage = mock_usage
         else:
             mock_response.usage = None
+            mock_response.field_meta = None
 
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
@@ -896,6 +916,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"path": "/tmp/test.py"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -907,6 +928,7 @@ class TestACPToolCallAccumulation:
         assert tc["status"] == "in_progress"
         assert tc["raw_input"] == {"path": "/tmp/test.py"}
         assert tc["raw_output"] is None
+        assert tc["content"] is None
 
     @pytest.mark.asyncio
     async def test_session_update_merges_tool_call_progress(self):
@@ -923,6 +945,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"command": "ls"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -934,6 +957,7 @@ class TestACPToolCallAccumulation:
         progress.status = "completed"
         progress.raw_input = None  # not updated
         progress.raw_output = "file1.py\nfile2.py"
+        progress.content = None
 
         await client.session_update("sess-1", progress)
 
@@ -959,6 +983,7 @@ class TestACPToolCallAccumulation:
             start.status = "completed"
             start.raw_input = None
             start.raw_output = None
+            start.content = None
             await client.session_update("sess-1", start)
 
         assert len(client.accumulated_tool_calls) == 3
@@ -1649,3 +1674,141 @@ class TestACPPromptRetry:
 
         assert call_count == 4
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+
+# ---------------------------------------------------------------------------
+# Gemini-specific tests
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiBypassMode:
+    def test_gemini_cli_uses_yolo(self):
+        assert _resolve_bypass_mode("gemini-cli") == "yolo"
+
+    def test_gemini_cli_with_version(self):
+        assert _resolve_bypass_mode("gemini-cli/0.35.3") == "yolo"
+
+
+class TestGeminiSessionModel:
+    @pytest.mark.asyncio
+    async def test_gemini_cli_uses_protocol_model_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(
+            conn, "gemini-cli", "session-1", "gemini-3-flash"
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gemini-3-flash",
+            session_id="session-1",
+        )
+
+
+# ---------------------------------------------------------------------------
+# _extract_token_usage
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTokenUsage:
+    def test_from_response_usage(self):
+        """claude-agent-acp, codex-acp: standard response.usage field."""
+        response = MagicMock()
+        response.usage.input_tokens = 100
+        response.usage.output_tokens = 50
+        response.usage.cached_read_tokens = 10
+        response.usage.cached_write_tokens = 5
+        response.usage.thought_tokens = 20
+        assert _extract_token_usage(response) == (100, 50, 10, 5, 20)
+
+    def test_from_field_meta_quota(self):
+        """gemini-cli: _meta.quota.token_count fallback."""
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {
+            "quota": {"token_count": {"input_tokens": 200, "output_tokens": 80}}
+        }
+        assert _extract_token_usage(response) == (200, 80, 0, 0, 0)
+
+    def test_none_response(self):
+        assert _extract_token_usage(None) == (0, 0, 0, 0, 0)
+
+    def test_no_usage_no_meta(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = None
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+    def test_empty_quota(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {"quota": {}}
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# _estimate_cost_from_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateCostFromTokens:
+    def test_unknown_model_returns_zero(self):
+        assert _estimate_cost_from_tokens("nonexistent-model-xyz", 100, 50) == 0.0
+
+    def test_zero_tokens_returns_zero(self):
+        assert _estimate_cost_from_tokens("gemini-3-flash-preview", 0, 0) == 0.0
+
+    def test_known_model_returns_positive(self):
+        mock_cost_map = {
+            "gemini-3-flash-preview": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            cost = _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500)
+            assert cost == pytest.approx(1000 * 5e-07 + 500 * 3e-06)
+
+    def test_import_failure_returns_zero(self):
+        with patch.dict("sys.modules", {"litellm": None}):
+            assert (
+                _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500) == 0.0
+            )
+
+
+# ---------------------------------------------------------------------------
+# _serialize_tool_content
+# ---------------------------------------------------------------------------
+
+
+class TestSerializeToolContent:
+    def test_none_returns_none(self):
+        assert _serialize_tool_content(None) is None
+
+    def test_empty_list_returns_none(self):
+        assert _serialize_tool_content([]) is None
+
+    def test_pydantic_model(self):
+        model = MagicMock()
+        model.model_dump.return_value = {
+            "type": "diff",
+            "path": "a.py",
+            "old_text": "x",
+            "new_text": "y",
+        }
+        result = _serialize_tool_content([model])
+        assert result == [
+            {"type": "diff", "path": "a.py", "old_text": "x", "new_text": "y"}
+        ]
+        model.model_dump.assert_called_once_with(mode="json")
+
+    def test_plain_dict_passthrough(self):
+        d = {"type": "content", "text": "hello"}
+        result = _serialize_tool_content([d])
+        assert result == [d]
+
+    def test_mixed_content(self):
+        model = MagicMock()
+        model.model_dump.return_value = {"type": "diff", "path": "b.py"}
+        d = {"type": "content", "text": "world"}
+        result = _serialize_tool_content([model, d])
+        assert result == [{"type": "diff", "path": "b.py"}, d]
