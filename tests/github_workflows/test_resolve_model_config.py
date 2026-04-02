@@ -558,3 +558,15 @@ def test_nemotron_3_super_120b_a12b_config():
         == "litellm_proxy/nvidia/nemotron-3-super-120b-a12b"
     )
     assert model["llm_config"]["temperature"] == 0.0
+
+
+def test_converse_nemotron_super_3_120b_config():
+    """Test that converse-nemotron-super-3-120b has correct configuration."""
+    model = MODELS["converse-nemotron-super-3-120b"]
+
+    assert model["id"] == "converse-nemotron-super-3-120b"
+    assert model["display_name"] == "NVIDIA Converse Nemotron Super 3 120B"
+    assert (
+        model["llm_config"]["model"] == "litellm_proxy/converse-nemotron-super-3-120b"
+    )
+    assert model["llm_config"]["temperature"] == 0.0
