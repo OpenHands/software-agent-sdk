@@ -569,11 +569,62 @@ def test_build_with_prebuilt_sdist_preserves_tags_and_docker_args(tmp_path: Path
     cmd, cwd = docker_calls[0]
     assert cwd == str(ctx)
     assert "--load" in cmd
+    assert "--platform" in cmd and "linux/amd64" in cmd
     assert "--target" in cmd and "source-minimal" in cmd
     assert "--build-arg" in cmd
     assert "BASE_IMAGE=python:3.12" in cmd
     for tag in opts.all_tags:
         assert tag in cmd
+
+
+def test_local_build_with_multiple_platforms_skips_platform_flag(tmp_path: Path):
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    docker_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        docker_calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        target="source-minimal",
+        platforms=["linux/amd64", "linux/arm64"],
+        push=False,
+        sdk_project_root=_default_sdk_project_root(),
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build._make_build_context", return_value=ctx
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build._active_buildx_driver",
+            return_value="docker-container",
+        ),
+        patch(
+            "openhands.agent_server.docker.build._default_local_cache_dir",
+            return_value=tmp_path / "cache",
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        build(opts)
+
+    cmd = docker_calls[0][0]
+    assert "--load" in cmd
+    assert "--platform" not in cmd
 
 
 def test_build_can_reuse_same_prebuilt_sdist_multiple_times(tmp_path: Path):

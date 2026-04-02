@@ -769,6 +769,8 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     if push:
         args += ["--platform", ",".join(opts.platforms), "--push"]
     else:
+        if len(opts.platforms) == 1:
+            args += ["--platform", opts.platforms[0]]
         args += ["--load"]
 
     for t in tags:
@@ -842,7 +844,7 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
     logger.info(
         f"[build] Building target='{opts.target}' image='{opts.image}' "
         f"custom_tags='{opts.custom_tags}' from base='{opts.base_image}' "
-        f"for platforms='{opts.platforms if push else 'local-arch'}'"
+        f"for platforms='{opts.platforms}'"
     )
     logger.info(
         f"[build] Git ref='{opts.git_ref}' sha='{opts.git_sha}' "
