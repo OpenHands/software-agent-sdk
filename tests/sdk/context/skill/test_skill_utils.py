@@ -1,5 +1,6 @@
 """Tests for the skill system."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from openhands.sdk.context import (
     load_project_skills,
     load_skills_from_dir,
 )
+from openhands.sdk.context.skills.utils import find_third_party_files
 
 
 CONTENT = "# dummy header\ndummy content\n## dummy subheader\ndummy subcontent\n"
@@ -169,8 +171,12 @@ Testing loading with trailing slashes.
     assert "trailing" in agent_t.trigger.keywords
 
 
-def test_invalid_skill_type(temp_skills_dir):
-    """Test loading a skill with invalid triggers field (not a list)."""
+def test_invalid_skill_type(temp_skills_dir, caplog):
+    """Test loading a skill with invalid triggers field (not a list).
+
+    Invalid skills should be skipped with a warning, not raise an exception.
+    This ensures resilient loading - one bad skill doesn't break all skills.
+    """
     # Create a skill with invalid triggers (should be a list, not a string)
     invalid_agent = """---
 name: invalid_triggers_agent
@@ -186,12 +192,19 @@ This skill has invalid triggers format.
     invalid_file = temp_skills_dir / "invalid_triggers.md"
     invalid_file.write_text(invalid_agent)
 
-    with pytest.raises(SkillValidationError) as excinfo:
-        load_skills_from_dir(temp_skills_dir)
+    # Should not raise - invalid skills are skipped with a warning
+    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(temp_skills_dir)
 
-    # Check that the error message contains helpful information
-    error_msg = str(excinfo.value)
-    assert "Triggers must be a list" in error_msg
+    # The invalid skill should NOT be loaded
+    all_skill_names = (
+        list(repo_skills.keys())
+        + list(knowledge_skills.keys())
+        + list(agent_skills.keys())
+    )
+    assert "invalid_triggers_agent" not in all_skill_names
+
+    # Check that a warning was logged
+    assert any("Triggers must be a list" in record.message for record in caplog.records)
 
 
 def test_cursorrules_file_load(tmp_path):
@@ -670,3 +683,102 @@ This is a repo skill with invalid MCP tools configuration.
     # Check that the error message contains helpful information
     error_msg = str(excinfo.value)
     assert "mcp_tools must be a dictionary or None" in error_msg
+
+
+def test_malformed_yaml_frontmatter_does_not_block_siblings(temp_skills_dir, caplog):
+    """A SKILL.md with invalid YAML frontmatter should be skipped, not abort
+    the entire directory scan.
+
+    Before the fix, `frontmatter.load()` raised `yaml.scanner.ScannerError`
+    which was not caught by the `(SkillError, OSError)` handler, causing all
+    remaining skills in the directory to be lost.
+    """
+    # Create an AgentSkills-format skill with broken YAML (unmatched quote)
+    bad_skill_dir = temp_skills_dir / "bad-yaml"
+    bad_skill_dir.mkdir()
+    (bad_skill_dir / "SKILL.md").write_text(
+        "---\nname: bad-yaml\ndescription: 'unclosed quote\n---\nBroken skill.\n"
+    )
+
+    # Create a valid AgentSkills-format skill
+    good_skill_dir = temp_skills_dir / "good-skill"
+    good_skill_dir.mkdir()
+    (good_skill_dir / "SKILL.md").write_text(
+        "---\nname: good-skill\ndescription: A valid skill\n---\nGood content.\n"
+    )
+
+    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(temp_skills_dir)
+
+    all_names = (
+        list(repo_skills.keys())
+        + list(knowledge_skills.keys())
+        + list(agent_skills.keys())
+    )
+
+    # The valid skill must still be loaded
+    assert "good-skill" in all_names
+    # The broken skill must be skipped
+    assert "bad-yaml" not in all_names
+    # A warning was logged for the bad skill
+    assert any("Failed to load skill" in r.message for r in caplog.records)
+
+
+def test_malformed_yaml_regular_md_does_not_block_siblings(temp_skills_dir, caplog):
+    """A regular .md file with invalid YAML frontmatter should be skipped
+    without aborting the scan for remaining .md files."""
+    # Write a regular .md with broken YAML frontmatter
+    (temp_skills_dir / "broken.md").write_text(
+        "---\nname: broken\ntriggers: [unclosed\n---\nBroken.\n"
+    )
+
+    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(temp_skills_dir)
+
+    all_names = (
+        list(repo_skills.keys())
+        + list(knowledge_skills.keys())
+        + list(agent_skills.keys())
+    )
+
+    # The pre-existing valid skills from `temp_skills_dir` fixture must survive
+    assert len(all_names) >= 2  # knowledge + repo from fixture
+    assert "broken" not in all_names
+
+
+def test_find_third_party_files_skips_symlink_duplicates(tmp_path):
+    """Symlinked CLAUDE.md → AGENTS.md should not produce two entries."""
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# My repo guide")
+    claude_md = tmp_path / "CLAUDE.md"
+    os.symlink(agents_md, claude_md)
+
+    files = find_third_party_files(tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME)
+
+    # Only one file should be returned since CLAUDE.md is a symlink to AGENTS.md
+    assert len(files) == 1
+
+
+def test_load_project_skills_symlinked_claude_to_agents(tmp_path):
+    """When CLAUDE.md is a symlink to AGENTS.md, only one skill is loaded."""
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# My repo guide\nShared instructions.")
+    claude_md = tmp_path / "CLAUDE.md"
+    os.symlink(agents_md, claude_md)
+
+    skills = load_project_skills(tmp_path)
+
+    # Should load exactly one skill, not two
+    assert len(skills) == 1
+    # The content should appear only once
+    loaded_skill = skills[0]
+    assert "Shared instructions" in loaded_skill.content
+
+
+def test_find_third_party_files_keeps_distinct_files(tmp_path):
+    """Non-symlinked CLAUDE.md and AGENTS.md with different content are both kept."""
+    (tmp_path / "AGENTS.md").write_text("# Agents instructions")
+    (tmp_path / "CLAUDE.md").write_text("# Claude instructions")
+
+    files = find_third_party_files(tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME)
+
+    # Both files should be returned since they are distinct
+    assert len(files) == 2

@@ -1,15 +1,22 @@
-import json
+from __future__ import annotations
 
-from pydantic import ValidationError, model_validator
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from pydantic import PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
     prepare_llm_messages,
+    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -21,6 +28,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Event,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -56,6 +64,10 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
@@ -71,6 +83,134 @@ maybe_init_laminar()
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
+@dataclass(frozen=True, slots=True)
+class _ActionBatch:
+    """Immutable result of preparing a batch of actions for execution.
+
+    Owns the full lifecycle of a tool-call batch: preparation (truncation,
+    blocked-action partitioning, execution), event emission, and post-batch
+    state transitions. Agent-specific logic (iterative refinement, state
+    mutation) is injected via callables so the batch stays decoupled from
+    the Agent class.
+    """
+
+    action_events: list[ActionEvent]
+    has_finish: bool
+    blocked_reasons: dict[str, str] = field(default_factory=dict)
+    results_by_id: dict[str, list[Event]] = field(default_factory=dict)
+
+    @staticmethod
+    def _truncate_at_finish(
+        action_events: list[ActionEvent],
+    ) -> tuple[list[ActionEvent], bool]:
+        """
+        Return (events[:finish+1], True) or (events, False).
+        Discards and logs any calls after FinishTool.
+        """
+        finish_idx = next(
+            (
+                i
+                for i, ae in enumerate(action_events)
+                if ae.tool_name == FinishTool.name
+            ),
+            None,
+        )
+        if finish_idx is None:
+            return action_events, False
+
+        discarded = action_events[finish_idx + 1 :]
+        if discarded:
+            names = [ae.tool_name for ae in discarded]
+            logger.warning(
+                f"Discarding {len(discarded)} tool call(s) "
+                f"after FinishTool: {', '.join(names)}"
+            )
+        return action_events[: finish_idx + 1], True
+
+    @classmethod
+    def prepare(
+        cls,
+        action_events: list[ActionEvent],
+        state: ConversationState,
+        executor: ParallelToolExecutor,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tools: dict[str, ToolDefinition] | None = None,
+    ) -> _ActionBatch:
+        """Truncate, partition blocked actions, execute the rest, return the batch."""
+        action_events, has_finish = cls._truncate_at_finish(action_events)
+
+        blocked_reasons: dict[str, str] = {}
+        executable: list[ActionEvent] = []
+        for ae in action_events:
+            reason = state.pop_blocked_action(ae.id)
+            if reason is not None:
+                blocked_reasons[ae.id] = reason
+            else:
+                executable.append(ae)
+
+        executed_results = executor.execute_batch(executable, tool_runner, tools)
+        results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+
+        return cls(
+            action_events=action_events,
+            has_finish=has_finish,
+            blocked_reasons=blocked_reasons,
+            results_by_id=results_by_id,
+        )
+
+    def emit(self, on_event: ConversationCallbackType) -> None:
+        """Emit all events in original action order."""
+        for ae in self.action_events:
+            reason = self.blocked_reasons.get(ae.id)
+            if reason is not None:
+                logger.info(f"Action '{ae.tool_name}' blocked by hook: {reason}")
+                on_event(
+                    UserRejectObservation(
+                        action_id=ae.id,
+                        tool_name=ae.tool_name,
+                        tool_call_id=ae.tool_call_id,
+                        rejection_reason=reason,
+                        rejection_source="hook",
+                    )
+                )
+            else:
+                for event in self.results_by_id[ae.id]:
+                    on_event(event)
+
+    def finalize(
+        self,
+        on_event: ConversationCallbackType,
+        check_iterative_refinement: Callable[[ActionEvent], tuple[bool, str | None]],
+        mark_finished: Callable[[], None],
+    ) -> None:
+        """Transition state after FinishTool, or inject iterative-refinement followup.
+
+        Args:
+            on_event: Callback for emitting events.
+            check_iterative_refinement: Returns (should_continue, followup)
+                for a FinishTool action event.
+            mark_finished: Called to set the conversation execution status
+                to FINISHED when the agent is done.
+        """
+        # Nothing to finalise: no FinishTool, or it was blocked by a hook.
+        if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+            return
+
+        should_continue, followup = check_iterative_refinement(self.action_events[-1])
+        if should_continue and followup:
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[TextContent(text=followup)],
+                    ),
+                )
+            )
+        else:
+            mark_finished()
+
+
 class Agent(CriticMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
@@ -79,12 +219,32 @@ class Agent(CriticMixin, AgentBase):
     AgentBase and implements the agent execution logic. Critic-related functionality
     is provided by CriticMixin.
 
+    Attributes:
+        llm: The language model instance used for reasoning.
+        tools: List of tools available to the agent.
+        name: Optional agent identifier.
+        system_prompt: Custom system prompt (uses default if not provided).
+
     Example:
-        >>> from openhands.sdk import LLM, Agent, Tool
-        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
-        >>> agent = Agent(llm=llm, tools=tools)
+        ```python
+        from openhands.sdk import LLM, Agent, Tool
+        from pydantic import SecretStr
+
+        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = Agent(llm=llm, tools=tools)
+        ```
     """
+
+    _parallel_executor: ParallelToolExecutor = PrivateAttr(
+        default_factory=ParallelToolExecutor
+    )
+
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        self._parallel_executor = ParallelToolExecutor(
+            max_workers=self.tool_concurrency_limit
+        )
 
     @model_validator(mode="before")
     @classmethod
@@ -188,7 +348,11 @@ class Agent(CriticMixin, AgentBase):
         # The dynamic_context is included as a second content block in the
         # system message (without a cache marker) to enable cross-conversation
         # prompt caching of the static system prompt.
-        dynamic_context = self.dynamic_context
+        #
+        # Agent pulls secrets from conversation's secret_registry to include
+        # them in the dynamic context. This ensures secret names and descriptions
+        # appear in the system prompt.
+        dynamic_context = self.get_dynamic_context(state)
         event = SystemPromptEvent(
             source="agent",
             system_prompt=TextContent(text=self.static_system_message),
@@ -202,14 +366,69 @@ class Agent(CriticMixin, AgentBase):
         )
         on_event(event)
 
+    def get_dynamic_context(self, state: ConversationState) -> str | None:
+        """Get dynamic context for the system prompt, including secrets from state.
+
+        This method pulls secrets from the conversation's secret_registry and
+        merges them with agent_context to build the dynamic portion of the
+        system prompt.
+
+        Args:
+            state: The conversation state containing the secret_registry.
+
+        Returns:
+            The dynamic context string, or None if no context is configured.
+        """
+        # Get secret infos from conversation's secret_registry
+        secret_infos = state.secret_registry.get_secret_infos()
+
+        if not self.agent_context:
+            # No agent_context but we might have secrets from registry
+            if secret_infos:
+                from openhands.sdk.context.agent_context import AgentContext
+
+                # Create a minimal context just for secrets
+                temp_context = AgentContext()
+                return temp_context.get_system_message_suffix(
+                    llm_model=self.llm.model,
+                    llm_model_canonical=self.llm.model_canonical_name,
+                    additional_secret_infos=secret_infos,
+                )
+            return None
+
+        return self.agent_context.get_system_message_suffix(
+            llm_model=self.llm.model,
+            llm_model_canonical=self.llm.model_canonical_name,
+            additional_secret_infos=secret_infos,
+        )
+
     def _execute_actions(
         self,
         conversation: LocalConversation,
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
-    ):
-        for action_event in action_events:
-            self._execute_action_event(conversation, action_event, on_event=on_event)
+    ) -> None:
+        """Prepare a batch, emit results, and handle finish."""
+        state = conversation.state
+        batch = _ActionBatch.prepare(
+            action_events,
+            state=state,
+            executor=self._parallel_executor,
+            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
+        )
+        batch.emit(on_event)
+        batch.finalize(
+            on_event=on_event,
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
+            ),
+            mark_finished=lambda: setattr(
+                state,
+                "execution_status",
+                ConversationExecutionStatus.FINISHED,
+            ),
+        )
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -232,14 +451,17 @@ class Agent(CriticMixin, AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        for event in reversed(list(state.events)):
-            if isinstance(event, MessageEvent) and event.source == "user":
-                reason = state.pop_blocked_message(event.id)
-                if reason is not None:
-                    logger.info(f"User message blocked by hook: {reason}")
-                    state.execution_status = ConversationExecutionStatus.FINISHED
-                    return
-                break  # Only check the most recent user message
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
@@ -378,6 +600,33 @@ class Agent(CriticMixin, AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
+        # When the LLM produced no tool call and no user-facing content,
+        # inject corrective feedback so the model knows it must act.
+        # This prevents the monologue stuck-detector from firing when the
+        # model simply forgot to emit a function call (common with Qwen,
+        # which sometimes places tool-call XML inside reasoning_content).
+        if not has_content:
+            logger.warning(
+                "LLM response contained no tool call and no content"
+                " - sending corrective feedback"
+            )
+            nudge = MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[
+                        TextContent(
+                            text=(
+                                "Your last response did not include a "
+                                "function call or a message. Please "
+                                "use a tool to proceed with the task."
+                            )
+                        )
+                    ],
+                ),
+            )
+            on_event(nudge)
+
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> bool:
@@ -444,7 +693,13 @@ class Agent(CriticMixin, AgentBase):
                 f"Failed to provide security_risk field in tool '{tool_name}'"
             )
 
-        # When using weaker models without security analyzer
+        # When no security analyzer is configured, ignore any security_risk field
+        # from LLM and return UNKNOWN. This ensures that security_risk is only
+        # evaluated when a security analyzer is explicitly set.
+        if security_analyzer is None:
+            return risk.SecurityRisk.UNKNOWN
+
+        # When using non-LLM security analyzer without security risk field
         # safely ignore missing security risk fields
         if not requires_sr and raw is None:
             return risk.SecurityRisk.UNKNOWN
@@ -525,7 +780,17 @@ class Agent(CriticMixin, AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            arguments = json.loads(tool_call.arguments)
+            # Try parsing arguments as-is first.  Raw newlines / tabs are
+            # legal JSON whitespace and many models emit them between tokens
+            # (e.g. Qwen: "view_range": \n[1, 100]\n).  sanitize_json_
+            # control_chars would escape those to \\n, which breaks parsing.
+            # Fall back to sanitization only when the raw string is invalid
+            # (handles models that emit raw control chars *inside* strings).
+            try:
+                arguments = json.loads(tool_call.arguments)
+            except json.JSONDecodeError:
+                sanitized_args = sanitize_json_control_chars(tool_call.arguments)
+                arguments = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
@@ -596,38 +861,26 @@ class Agent(CriticMixin, AgentBase):
         on_event(action_event)
         return action_event
 
-    @observe(ignore_inputs=["state", "on_event"])
+    @observe()
     def _execute_action_event(
         self,
         conversation: LocalConversation,
         action_event: ActionEvent,
-        on_event: ConversationCallbackType,
-    ):
-        """Execute an action event and update the conversation state.
+    ) -> list[Event]:
+        """Execute a single tool and return the resulting events.
 
-        It will call the tool's executor and update the state & call callback fn
-        with the observation.
+        Called from parallel threads by _execute_actions. This method must
+        not mutate shared conversation state (blocked_actions,
+        execution_status) — those transitions are handled by the caller
+        on the main thread.
 
-        If the action was blocked by a PreToolUse hook (recorded in
-        state.blocked_actions), a UserRejectObservation is emitted instead
-        of executing the action.
+        Note: the tool itself receives ``conversation`` and may mutate it
+        (e.g. filesystem, working directory). Thread safety of individual
+        tools is the tool's responsibility.
+
+        Returns a list of events (observation or error). Events are NOT
+        emitted here — the caller is responsible for emitting them in order.
         """
-        state = conversation.state
-
-        # Check if this action was blocked by a PreToolUse hook
-        reason = state.pop_blocked_action(action_event.id)
-        if reason is not None:
-            logger.info(f"Action '{action_event.tool_name}' blocked by hook: {reason}")
-            rejection = UserRejectObservation(
-                action_id=action_event.id,
-                tool_name=action_event.tool_name,
-                tool_call_id=action_event.tool_call_id,
-                rejection_reason=reason,
-                rejection_source="hook",
-            )
-            on_event(rejection)
-            return rejection
-
         tool = self.tools_map.get(action_event.tool_name, None)
         if tool is None:
             raise RuntimeError(
@@ -657,8 +910,7 @@ class Agent(CriticMixin, AgentBase):
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
             )
-            on_event(error_event)
-            return error_event
+            return [error_event]
 
         obs_event = ObservationEvent(
             observation=observation,
@@ -666,27 +918,7 @@ class Agent(CriticMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
-        on_event(obs_event)
-
-        # Set conversation state
-        if tool.name == FinishTool.name:
-            # Check if iterative refinement should continue
-            should_continue, followup = self._check_iterative_refinement(
-                conversation, action_event
-            )
-            if should_continue and followup:
-                # Send follow-up message and continue agent loop
-                followup_msg = MessageEvent(
-                    source="user",
-                    llm_message=Message(
-                        role="user", content=[TextContent(text=followup)]
-                    ),
-                )
-                on_event(followup_msg)
-                # Don't set FINISHED - let the agent continue
-            else:
-                state.execution_status = ConversationExecutionStatus.FINISHED
-        return obs_event
+        return [obs_event]
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType
@@ -706,42 +938,15 @@ class Agent(CriticMixin, AgentBase):
     def _log_context_window_exceeded_warning(self) -> None:
         """Log a helpful warning when context window is exceeded without a condenser."""
         if self.condenser is None:
-            logger.warning(
-                "\n"
-                "=" * 80 + "\n"
-                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
-                "=" * 80 + "\n"
-                "\n"
+            situation = (
                 "The LLM's context window has been exceeded, but no condenser is "
-                "configured.\n"
-                "\n"
-                "Current configuration:\n"
-                f"  • Condenser: None\n"
-                f"  • LLM Model: {self.llm.model}\n"
-                "\n"
+                "configured."
+            )
+            config = f"  • Condenser: None\n  • LLM Model: {self.llm.model}"
+            advice = (
                 "To prevent this error, configure a condenser to automatically "
                 "summarize\n"
-                "conversation history when it gets too long.\n"
-                "\n"
-                "Example configuration:\n"
-                "\n"
-                "  from openhands.sdk import Agent, LLM\n"
-                "  from openhands.sdk.context.condenser import "
-                "LLMSummarizingCondenser\n"
-                "\n"
-                "  agent = Agent(\n"
-                "      llm=LLM(model='your-model'),\n"
-                "      condenser=LLMSummarizingCondenser(\n"
-                "          llm=LLM(model='your-model'),  # Can use same or "
-                "cheaper model\n"
-                "          max_size=120,  # Maximum events before condensation\n"
-                "          keep_first=4   # Number of initial events to preserve\n"
-                "      )\n"
-                "  )\n"
-                "\n"
-                "For more information, see: "
-                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
-                "=" * 80
+                "conversation history when it gets too long."
             )
         else:
             condenser_type = type(self.condenser).__name__
@@ -754,21 +959,15 @@ class Agent(CriticMixin, AgentBase):
                 condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
             )
 
-            logger.warning(
-                "\n"
-                "=" * 80 + "\n"
-                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
-                "=" * 80 + "\n"
-                "\n"
-                "The LLM's context window has been exceeded.\n"
-                "\n"
-                "Current configuration:\n"
+            situation = "The LLM's context window has been exceeded."
+            config = (
                 f"  • Condenser Type: {condenser_type}\n"
                 f"  • Handles Condensation Requests: {handles_requests}\n"
                 f"  • Condenser LLM: {condenser_llm}\n"
                 f"  • Agent LLM Model: {self.llm.model}\n"
-                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}\n"
-                "\n"
+                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}"
+            )
+            advice = (
                 "Your condenser is configured but does not handle condensation "
                 "requests\n"
                 "(handles_condensation_requests() returned False).\n"
@@ -777,23 +976,38 @@ class Agent(CriticMixin, AgentBase):
                 "  1. Use LLMSummarizingCondenser which handles condensation "
                 "requests, OR\n"
                 "  2. Implement handles_condensation_requests() in your custom "
-                "condenser\n"
-                "\n"
-                "Example with LLMSummarizingCondenser:\n"
-                "\n"
-                "  from openhands.sdk.context.condenser import "
-                "LLMSummarizingCondenser\n"
-                "\n"
-                "  agent = Agent(\n"
-                "      llm=LLM(model='your-model'),\n"
-                "      condenser=LLMSummarizingCondenser(\n"
-                "          llm=LLM(model='your-model'),\n"
-                "          max_size=120,\n"
-                "          keep_first=4\n"
-                "      )\n"
-                "  )\n"
-                "\n"
-                "For more information, see: "
-                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
-                "=" * 80
+                "condenser"
             )
+
+        logger.warning(
+            "\n"
+            "=" * 80 + "\n"
+            "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
+            "=" * 80 + "\n"
+            "\n"
+            f"{situation}\n"
+            "\n"
+            "Current configuration:\n"
+            f"{config}\n"
+            "\n"
+            f"{advice}\n"
+            "\n"
+            "Example configuration:\n"
+            "\n"
+            "  from openhands.sdk import Agent, LLM\n"
+            "  from openhands.sdk.context.condenser import "
+            "LLMSummarizingCondenser\n"
+            "\n"
+            "  agent = Agent(\n"
+            "      llm=LLM(model='your-model'),\n"
+            "      condenser=LLMSummarizingCondenser(\n"
+            "          llm=LLM(model='your-model'),\n"
+            "          max_size=240,\n"
+            "          keep_first=2\n"
+            "      )\n"
+            "  )\n"
+            "\n"
+            "For more information, see: "
+            "https://docs.openhands.dev/sdk/guides/context-condenser\n"
+            "=" * 80
+        )

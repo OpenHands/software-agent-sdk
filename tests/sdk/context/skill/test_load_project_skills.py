@@ -244,6 +244,87 @@ def test_load_project_skills_handles_errors_gracefully(tmp_path):
     assert skills == []
 
 
+def test_load_project_skills_one_bad_skill_does_not_break_others(tmp_path):
+    """Test that one invalid skill doesn't prevent other valid skills from loading.
+
+    This is a regression test for the bug where a single skill validation error
+    would cause ALL skills in the directory to fail loading.
+    """
+    # Create .openhands/skills directory
+    skills_dir = tmp_path / ".openhands" / "skills"
+    skills_dir.mkdir(parents=True)
+
+    # Create a valid skill
+    valid_skill = skills_dir / "valid-skill.md"
+    valid_skill.write_text(
+        "---\nname: valid-skill\ntriggers:\n  - valid\n---\nThis is a valid skill."
+    )
+
+    # Create an invalid skill (name doesn't match filename)
+    invalid_skill_dir = skills_dir / "bad-skill"
+    invalid_skill_dir.mkdir()
+    (invalid_skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: wrong_name\n"  # Name has underscore, doesn't match dir
+        "---\n"
+        "This skill has a mismatched name."
+    )
+
+    # Create another valid skill
+    another_valid = skills_dir / "another-valid.md"
+    another_valid.write_text(
+        "---\nname: another-valid\ntriggers:\n  - another\n---\nAnother valid skill."
+    )
+
+    # Should load valid skills despite the invalid one
+    skills = load_project_skills(tmp_path)
+
+    # Both valid skills should be loaded
+    skill_names = {s.name for s in skills}
+    assert "valid-skill" in skill_names
+    assert "another-valid" in skill_names
+    # Invalid skill should NOT be loaded
+    assert "wrong_name" not in skill_names
+    assert "bad-skill" not in skill_names
+
+
+def test_long_description_skill_does_not_break_other_skills(tmp_path):
+    """Regression test: a skill with a very long description should not
+    prevent other valid skills in the same directory from loading.
+
+    The description should be silently truncated (via maybe_truncate)
+    rather than raising an error.
+    """
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+
+    # Create a valid skill
+    (skills_dir / "good-skill.md").write_text(
+        "---\nname: good-skill\ntriggers:\n  - good\n---\nGood skill content."
+    )
+
+    # Create a skill with a description exceeding 1024 chars
+    long_desc = "A" * 2000
+    bad_skill_dir = skills_dir / "bad-skill"
+    bad_skill_dir.mkdir()
+    (bad_skill_dir / "SKILL.md").write_text(
+        f"---\nname: bad-skill\ndescription: {long_desc}\n---\n"
+        "# Bad Skill\nContent here."
+    )
+
+    skills = load_project_skills(tmp_path)
+    skill_names = {s.name for s in skills}
+
+    # The good skill must load regardless
+    assert "good-skill" in skill_names
+
+    # The bad skill should also load (description truncated, not rejected)
+    assert "bad-skill" in skill_names
+    bad = next(s for s in skills if s.name == "bad-skill")
+    assert bad.description is not None
+    assert len(bad.description) <= 1024
+
+
 def test_load_project_skills_with_string_path(tmp_path):
     """Test that load_project_skills accepts string paths."""
     # Create .openhands/skills directory
@@ -258,3 +339,49 @@ def test_load_project_skills_with_string_path(tmp_path):
     skills = load_project_skills(str(tmp_path))
     assert len(skills) == 1
     assert skills[0].name == "test_skill"
+
+
+def test_load_project_skills_loads_from_git_root_when_called_from_subdir(tmp_path):
+    """Running from a subdir should still load repo-level skills (git root)."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "AGENTS.md").write_text("# Project Guidelines\n\nFrom root")
+
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+
+    skills = load_project_skills(subdir)
+    assert any(s.name == "agents" and "From root" in s.content for s in skills)
+
+
+def test_load_project_skills_workdir_takes_precedence_over_git_root(tmp_path):
+    """More local (work dir) skills should override repo root skills."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "AGENTS.md").write_text("# Project Guidelines\n\nFrom root")
+
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    (subdir / "AGENTS.md").write_text("# Project Guidelines\n\nFrom subdir")
+
+    skills = load_project_skills(subdir)
+    agents = [s for s in skills if s.name == "agents"]
+    assert len(agents) == 1
+    assert agents[0].content.strip() == "# Project Guidelines\n\nFrom subdir"
+
+
+def test_load_project_skills_loads_skills_directories_from_git_root(tmp_path):
+    """Skills directories (.agents/skills etc.) should be loaded from git root."""
+    (tmp_path / ".git").mkdir()
+
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "root_skill.md").write_text(
+        "---\nname: root_skill\ntriggers:\n  - root\n---\nLoaded from root"
+    )
+
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+
+    skills = load_project_skills(subdir)
+    assert any(
+        s.name == "root_skill" and "Loaded from root" in s.content for s in skills
+    )

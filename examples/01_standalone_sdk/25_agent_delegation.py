@@ -9,8 +9,6 @@ which then merges both analyses into a single consolidated report.
 
 import os
 
-from pydantic import SecretStr
-
 from openhands.sdk import (
     LLM,
     Agent,
@@ -20,77 +18,24 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.context import Skill
+from openhands.sdk.subagent import register_agent
 from openhands.sdk.tool import register_tool
+from openhands.tools import register_builtins_agents
 from openhands.tools.delegate import (
     DelegateTool,
     DelegationVisualizer,
-    register_agent,
 )
-from openhands.tools.preset.default import get_default_tools
 
-
-ONLY_RUN_SIMPLE_DELEGATION = False
 
 logger = get_logger(__name__)
 
 # Configure LLM and agent
-# You can get an API key from https://app.all-hands.dev/settings/api-keys
-api_key = os.getenv("LLM_API_KEY")
-assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 llm = LLM(
-    model=model,
-    api_key=SecretStr(api_key),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    api_key=os.getenv("LLM_API_KEY"),
     base_url=os.environ.get("LLM_BASE_URL", None),
     usage_id="agent",
 )
-
-cwd = os.getcwd()
-
-register_tool("DelegateTool", DelegateTool)
-tools = get_default_tools(enable_browser=False)
-tools.append(Tool(name="DelegateTool"))
-
-main_agent = Agent(
-    llm=llm,
-    tools=tools,
-)
-conversation = Conversation(
-    agent=main_agent,
-    workspace=cwd,
-    visualizer=DelegationVisualizer(name="Delegator"),
-)
-
-task_message = (
-    "Forget about coding. Let's switch to travel planning. "
-    "Let's plan a trip to London. I have two issues I need to solve: "
-    "Lodging: what are the best areas to stay at while keeping budget in mind? "
-    "Activities: what are the top 5 must-see attractions and hidden gems? "
-    "Please use the delegation tools to handle these two tasks in parallel. "
-    "Make sure the sub-agents use their own knowledge "
-    "and dont rely on internet access. "
-    "They should keep it short. After getting the results, merge both analyses "
-    "into a single consolidated report.\n\n"
-)
-conversation.send_message(task_message)
-conversation.run()
-
-conversation.send_message(
-    "Ask the lodging sub-agent what it thinks about Covent Garden."
-)
-conversation.run()
-
-# Report cost for simple delegation example
-cost_1 = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (simple delegation): {cost_1}")
-
-print("Simple delegation example done!", "\n" * 20)
-
-
-# -------- Agent Delegation Second Part: User-Defined Agent Types --------
-
-if ONLY_RUN_SIMPLE_DELEGATION:
-    exit(0)
 
 
 def create_lodging_planner(llm: LLM) -> Agent:
@@ -152,6 +97,7 @@ register_agent(
     factory_func=create_activities_planner,
     description="Creates time-efficient London activity itineraries.",
 )
+register_builtins_agents()
 
 # Make the delegation tool available to the main agent
 register_tool("DelegateTool", DelegateTool)
@@ -162,26 +108,26 @@ main_agent = Agent(
 )
 conversation = Conversation(
     agent=main_agent,
-    workspace=cwd,
+    workspace=os.getcwd(),
     visualizer=DelegationVisualizer(name="Delegator"),
-)
-
-task_message = (
-    "Plan a 3-day London trip. "
-    "1) Spawn two sub-agents: lodging_planner (hotel options) and "
-    "activities_planner (itinerary). "
-    "2) Ask lodging_planner for 3-4 central London hotel recommendations with "
-    "neighborhoods, quick pros/cons, and transit notes by budget. "
-    "3) Ask activities_planner for a concise 3-day itinerary with nearby stops, "
-    "   food/coffee suggestions, and any ticket/reservation notes. "
-    "4) Share both sub-agent results and propose a combined plan."
 )
 
 print("=" * 100)
 print("Demonstrating London trip delegation (lodging + activities)...")
 print("=" * 100)
 
-conversation.send_message(task_message)
+conversation.send_message("""
+Let's plan a trip to London. I have two specific areas to address:
+
+Lodging: What are the best areas to stay in while keeping a budget in mind?
+Activities: What are the top five must-see attractions and hidden gems?
+
+Please use delegation tools to handle these two tasks in parallel.
+Ensure the sub-agents use their own internal knowledge and do not
+rely on internet access. Keep the responses concise.
+Once you have the results, use the bash sub-agent to write a file
+named london_trip_report.txt containing the findings in the working directory.
+""")
 conversation.run()
 
 conversation.send_message(
@@ -190,10 +136,9 @@ conversation.send_message(
 conversation.run()
 
 # Report cost for user-defined agent types example
-cost_2 = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (user-defined agents): {cost_2}")
+cost_user_defined = (
+    conversation.conversation_stats.get_combined_metrics().accumulated_cost
+)
+print(f"EXAMPLE_COST: {cost_user_defined}")
 
 print("All done!")
-
-# Full example cost report for CI workflow
-print(f"EXAMPLE_COST: {cost_1 + cost_2}")

@@ -2,7 +2,6 @@ import os
 from unittest.mock import patch
 
 import pytest
-from deprecation import DeprecatedWarning
 from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.llm import LLM
@@ -21,8 +20,8 @@ def test_llm_config_defaults():
     assert config.retry_max_wait == 64
     assert config.timeout == 300  # Default timeout is 5 minutes
     assert config.max_message_chars == 30_000
-    assert config.temperature == 0.0
-    assert config.top_p == 1.0
+    assert config.temperature is None  # None to use provider defaults
+    assert config.top_p is None  # None to use provider defaults
     assert config.top_k is None
     assert config.max_input_tokens == 128000  # Auto-populated from model info
     assert config.max_output_tokens == 16384  # Auto-populated from model info
@@ -39,56 +38,41 @@ def test_llm_config_defaults():
     assert config.native_tool_calling is True
     assert config.reasoning_effort == "high"
     assert config.seed is None
-    assert config.safety_settings is None
 
 
 def test_llm_config_custom_values():
     """Test LLM with custom values."""
-    # safety_settings is deprecated starting in 1.10.0
-    # Mock the version to simulate being on 1.10.0+ to trigger the warning
-    with (
-        patch(
-            "openhands.sdk.utils.deprecation._current_version", return_value="1.10.0"
-        ),
-        pytest.warns(DeprecatedWarning, match="LLM.safety_settings"),
-    ):
-        config = LLM(
-            usage_id="test-llm",
-            model="gpt-4o-mini",
-            api_key=SecretStr("test-key"),
-            base_url="https://api.example.com",
-            api_version="v1",
-            num_retries=3,
-            retry_multiplier=2,
-            retry_min_wait=1,
-            retry_max_wait=10,
-            timeout=30,
-            max_message_chars=10000,
-            temperature=0.5,
-            top_p=0.9,
-            top_k=50,
-            max_input_tokens=20000,
-            max_output_tokens=1000,
-            input_cost_per_token=0.001,
-            output_cost_per_token=0.002,
-            ollama_base_url="http://localhost:11434",
-            drop_params=False,
-            modify_params=False,
-            disable_vision=True,
-            disable_stop_word=True,
-            caching_prompt=False,
-            log_completions=True,
-            custom_tokenizer=None,  # Avoid HF API call
-            native_tool_calling=True,
-            reasoning_effort="high",
-            seed=42,
-            safety_settings=[
-                {
-                    "category": "HARM_CATEGORY_HARASSMENT",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                }
-            ],
-        )
+    config = LLM(
+        usage_id="test-llm",
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.example.com",
+        api_version="v1",
+        num_retries=3,
+        retry_multiplier=2,
+        retry_min_wait=1,
+        retry_max_wait=10,
+        timeout=30,
+        max_message_chars=10000,
+        temperature=0.5,
+        top_p=0.9,
+        top_k=50,
+        max_input_tokens=20000,
+        max_output_tokens=1000,
+        input_cost_per_token=0.001,
+        output_cost_per_token=0.002,
+        ollama_base_url="http://localhost:11434",
+        drop_params=False,
+        modify_params=False,
+        disable_vision=True,
+        disable_stop_word=True,
+        caching_prompt=False,
+        log_completions=True,
+        custom_tokenizer=None,  # Avoid HF API call
+        native_tool_calling=True,
+        reasoning_effort="high",
+        seed=42,
+    )
 
     assert config.model == "gpt-4o-mini"
     assert config.api_key is not None
@@ -120,9 +104,6 @@ def test_llm_config_custom_values():
     assert config.native_tool_calling is True
     assert config.reasoning_effort == "high"
     assert config.seed == 42
-    assert config.safety_settings == [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"}
-    ]
 
 
 def test_llm_config_secret_str():
@@ -348,7 +329,6 @@ def test_llm_config_optional_fields():
         custom_tokenizer=None,
         reasoning_effort=None,
         seed=None,
-        safety_settings=None,
         usage_id="test-llm",
     )
 
@@ -374,4 +354,3 @@ def test_llm_config_optional_fields():
     assert config.custom_tokenizer is None
     assert config.reasoning_effort is None  # Explicitly set to None overrides default
     assert config.seed is None
-    assert config.safety_settings is None

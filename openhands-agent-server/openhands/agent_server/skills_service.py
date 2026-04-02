@@ -4,7 +4,7 @@ This module contains the business logic for skill loading and management,
 keeping the router clean and focused on HTTP concerns.
 
 Skill Sources:
-- Public skills: GitHub OpenHands/skills repository
+- Public skills: GitHub OpenHands/extensions repository
 - User skills: ~/.openhands/skills/ and ~/.openhands/microagents/
 - Project skills: {workspace}/.openhands/skills/, .cursorrules, agents.md
 - Organization skills: {org}/.openhands or {org}/openhands-config
@@ -22,11 +22,10 @@ from pathlib import Path
 
 from openhands.sdk.context.skills import (
     Skill,
-    load_project_skills,
-    load_public_skills,
-    load_user_skills,
+    load_available_skills,
 )
 from openhands.sdk.context.skills.skill import (
+    DEFAULT_MARKETPLACE_PATH,
     PUBLIC_SKILLS_BRANCH,
     PUBLIC_SKILLS_REPO,
     load_skills_from_dir,
@@ -286,19 +285,20 @@ def load_all_skills(
     org_repo_url: str | None = None,
     org_name: str | None = None,
     sandbox_exposed_urls: list[ExposedUrlData] | None = None,
+    marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
 ) -> SkillLoadResult:
     """Load and merge skills from all configured sources.
 
     Skills are loaded from multiple sources and merged with the following
     precedence (later overrides earlier for duplicate names):
     1. Sandbox skills (lowest) - Exposed URLs from sandbox
-    2. Public skills - From GitHub OpenHands/skills repository
+    2. Public skills - From GitHub OpenHands/extensions repository
     3. User skills - From ~/.openhands/skills/
     4. Organization skills - From {org}/.openhands or equivalent
     5. Project skills (highest) - From {workspace}/.openhands/skills/
 
     Args:
-        load_public: Whether to load public skills from OpenHands/skills repo.
+        load_public: Whether to load public skills from OpenHands/extensions repo.
         load_user: Whether to load user skills from ~/.openhands/skills/.
         load_project: Whether to load project skills from workspace.
         load_org: Whether to load organization-level skills.
@@ -306,6 +306,8 @@ def load_all_skills(
         org_repo_url: Pre-authenticated Git URL for org skills.
         org_name: Organization name for org skills.
         sandbox_exposed_urls: List of exposed URLs from sandbox.
+        marketplace_path: Relative marketplace JSON path for public skills.
+            Pass None to load all public skills without marketplace filtering.
 
     Returns:
         SkillLoadResult containing merged skills and source counts.
@@ -322,27 +324,16 @@ def load_all_skills(
     sources["sandbox"] = len(sandbox_skills)
     skill_lists.append(sandbox_skills)
 
-    # 2. Load public skills
-    public_skills: list[Skill] = []
-    if load_public:
-        try:
-            public_skills = load_public_skills()
-            logger.info(f"Loaded {len(public_skills)} public skills")
-        except Exception as e:
-            logger.warning(f"Failed to load public skills: {e}")
-    sources["public"] = len(public_skills)
-    skill_lists.append(public_skills)
-
-    # 3. Load user skills
-    user_skills: list[Skill] = []
-    if load_user:
-        try:
-            user_skills = load_user_skills()
-            logger.info(f"Loaded {len(user_skills)} user skills")
-        except Exception as e:
-            logger.warning(f"Failed to load user skills: {e}")
-    sources["user"] = len(user_skills)
-    skill_lists.append(user_skills)
+    # 2-3. Load public + user skills via helper (no project yet — org sits between)
+    sdk_base = load_available_skills(
+        work_dir=None,
+        include_user=load_user,
+        include_project=False,
+        include_public=load_public,
+        marketplace_path=marketplace_path,
+    )
+    sources["sdk_base"] = len(sdk_base)
+    skill_lists.append(list(sdk_base.values()))
 
     # 4. Load organization skills
     org_skills: list[Skill] = []
@@ -359,15 +350,14 @@ def load_all_skills(
     skill_lists.append(org_skills)
 
     # 5. Load project skills (highest precedence)
-    project_skills: list[Skill] = []
-    if load_project and project_dir:
-        try:
-            project_skills = load_project_skills(project_dir)
-            logger.info(f"Loaded {len(project_skills)} project skills")
-        except Exception as e:
-            logger.warning(f"Failed to load project skills: {e}")
+    project_skills = load_available_skills(
+        work_dir=project_dir if load_project else None,
+        include_user=False,
+        include_project=load_project,
+        include_public=False,
+    )
     sources["project"] = len(project_skills)
-    skill_lists.append(project_skills)
+    skill_lists.append(list(project_skills.values()))
 
     # Merge all skills with precedence
     all_skills = merge_skills(skill_lists)
@@ -383,7 +373,7 @@ def sync_public_skills() -> tuple[bool, str]:
     """Force refresh of public skills from GitHub repository.
 
     This triggers a git pull on the cached skills repository to get
-    the latest skills from the OpenHands/skills repository.
+    the latest skills from the OpenHands/extensions repository.
 
     Returns:
         Tuple of (success: bool, message: str).

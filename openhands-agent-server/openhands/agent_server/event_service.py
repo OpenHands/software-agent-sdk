@@ -11,8 +11,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
-from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
+from openhands.sdk import LLM, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -62,7 +61,6 @@ class EventService:
         )
 
     async def save_meta(self):
-        self.stored.updated_at = utc_now()
         meta_file = self.conversation_dir / "meta.json"
         meta_file.write_text(
             self.stored.model_dump_json(
@@ -78,13 +76,17 @@ class EventService:
         return self._conversation
 
     def _get_event_sync(self, event_id: str) -> Event | None:
-        """Private sync function to get event with state lock."""
+        """Private sync function to get a single event.
+
+        Reads directly from the EventLog without acquiring the state lock.
+        EventLog reads are safe without the FIFOLock because events are
+        append-only and immutable once written.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
-        with self._conversation._state as state:
-            index = state.events.get_index(event_id)
-            event = state.events[index]
-            return event
+        events = self._conversation._state.events
+        index = events.get_index(event_id)
+        return events[index]
 
     async def get_event(self, event_id: str) -> Event | None:
         if not self._conversation:
@@ -103,7 +105,12 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> EventPage:
-        """Private sync function to search events with state lock."""
+        """Private sync function to search events.
+
+        Reads directly from the EventLog without acquiring the state lock.
+        EventLog reads are safe without the FIFOLock because events are
+        append-only and immutable once written.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -113,35 +120,30 @@ class EventService:
 
         # Collect all events
         all_events = []
-        with self._conversation._state as state:
-            for event in state.events:
-                # Apply kind filter if provided
-                if (
-                    kind is not None
-                    and f"{event.__class__.__module__}.{event.__class__.__name__}"
-                    != kind
-                ):
+        for event in self._conversation._state.events:
+            # Apply kind filter if provided
+            if (
+                kind is not None
+                and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+            ):
+                continue
+
+            # Apply source filter if provided
+            if source is not None and event.source != source:
+                continue
+
+            # Apply body filter if provided (case-insensitive substring match)
+            if body is not None:
+                if not self._event_matches_body(event, body):
                     continue
 
-                # Apply source filter if provided
-                if source is not None and event.source != source:
-                    continue
+            # Apply timestamp filters if provided (ISO string comparison)
+            if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
+                continue
+            if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                continue
 
-                # Apply body filter if provided (case-insensitive substring match)
-                if body is not None:
-                    if not self._event_matches_body(event, body):
-                        continue
-
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
-
-                all_events.append(event)
+            all_events.append(event)
 
         # Sort events based on sort_order
         if sort_order == EventSortOrder.TIMESTAMP:
@@ -207,7 +209,12 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> int:
-        """Private sync function to count events with state lock."""
+        """Private sync function to count events.
+
+        Reads directly from the EventLog without acquiring the state lock.
+        EventLog reads are safe without the FIFOLock because events are
+        append-only and immutable once written.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -216,35 +223,30 @@ class EventService:
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
-        with self._conversation._state as state:
-            for event in state.events:
-                # Apply kind filter if provided
-                if (
-                    kind is not None
-                    and f"{event.__class__.__module__}.{event.__class__.__name__}"
-                    != kind
-                ):
+        for event in self._conversation._state.events:
+            # Apply kind filter if provided
+            if (
+                kind is not None
+                and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+            ):
+                continue
+
+            # Apply source filter if provided
+            if source is not None and event.source != source:
+                continue
+
+            # Apply body filter if provided (case-insensitive substring match)
+            if body is not None:
+                if not self._event_matches_body(event, body):
                     continue
 
-                # Apply source filter if provided
-                if source is not None and event.source != source:
-                    continue
+            # Apply timestamp filters if provided (ISO string comparison)
+            if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
+                continue
+            if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                continue
 
-                # Apply body filter if provided (case-insensitive substring match)
-                if body is not None:
-                    if not self._event_matches_body(event, body):
-                        continue
-
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
-
-                count += 1
+            count += 1
 
         return count
 
@@ -269,6 +271,27 @@ class EventService:
             timestamp__gte,
             timestamp__lt,
         )
+
+    def _get_execution_status_sync(self) -> ConversationExecutionStatus:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        with self._conversation._state as state:
+            return state.execution_status
+
+    async def _get_execution_status(self) -> ConversationExecutionStatus:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_execution_status_sync)
+
+    def _create_state_update_event_sync(self) -> ConversationStateUpdateEvent:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        state = self._conversation._state
+        with state:
+            return ConversationStateUpdateEvent.from_conversation_state(state)
+
+    async def _create_state_update_event(self) -> ConversationStateUpdateEvent:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._create_state_update_event_sync)
 
     def _event_matches_body(self, event: Event, body: str) -> bool:
         """Check if event's message content matches body filter (case-insensitive)."""
@@ -309,8 +332,10 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
-            with self._conversation.state as state:
-                run = state.execution_status != ConversationExecutionStatus.RUNNING
+            run = (
+                await self._get_execution_status()
+                != ConversationExecutionStatus.RUNNING
+            )
         if run:
             conversation = self._conversation
 
@@ -331,20 +356,12 @@ class EventService:
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
 
-        # Send current state to the new subscriber immediately
+        # Send current state to the new subscriber immediately.
+        # The snapshot is created in a worker thread so waiting on the
+        # conversation's synchronous FIFOLock cannot block the server event loop.
         if self._conversation:
-            state = self._conversation._state
-            # Create state snapshot while holding the lock to ensure consistency.
-            # ConversationStateUpdateEvent inherits from Event which has frozen=True
-            # in its model_config, making the snapshot immutable after creation.
-            with state:
-                state_update_event = (
-                    ConversationStateUpdateEvent.from_conversation_state(state)
-                )
+            state_update_event = await self._create_state_update_event()
 
-            # Send state update outside the lock - the event is frozen (immutable),
-            # so we don't need to hold the lock during the async send operation.
-            # This prevents potential deadlocks between the sync FIFOLock and async I/O.
             try:
                 await subscriber(state_update_event)
             except Exception as e:
@@ -427,7 +444,8 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent = Agent.model_validate(
+        agent_cls = type(self.stored.agent)
+        agent = agent_cls.model_validate(
             self.stored.agent.model_dump(context={"expose_secrets": True}),
         )
 
@@ -507,10 +525,11 @@ class EventService:
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
-            # Check if already running
-            with self._conversation._state as state:
-                if state.execution_status == ConversationExecutionStatus.RUNNING:
-                    raise ValueError("conversation_already_running")
+            if (
+                await self._get_execution_status()
+                == ConversationExecutionStatus.RUNNING
+            ):
+                raise ValueError("conversation_already_running")
 
             # Check if there's already a running task
             if self._run_task is not None and not self._run_task.done():
@@ -667,15 +686,7 @@ class EventService:
         if not self._conversation:
             return
 
-        state = self._conversation._state
-        # Create state snapshot while holding the lock to ensure consistency.
-        # ConversationStateUpdateEvent inherits from Event which has frozen=True
-        # in its model_config, making the snapshot immutable after creation.
-        with state:
-            state_update_event = ConversationStateUpdateEvent.from_conversation_state(
-                state
-            )
-        # Publish outside the lock - the event is frozen (immutable).
+        state_update_event = await self._create_state_update_event()
         # Note: _pub_sub iterates through subscribers sequentially. If any subscriber
         # is slow, it will delay subsequent subscribers. For high-throughput scenarios,
         # consider using asyncio.gather() for concurrent notification in the future.

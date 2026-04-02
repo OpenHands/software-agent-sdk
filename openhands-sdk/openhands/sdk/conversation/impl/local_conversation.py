@@ -6,6 +6,7 @@ from pathlib import Path
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -25,14 +26,18 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
+    ActionEvent,
     CondensationRequest,
     MessageEvent,
+    ObservationEvent,
     PauseEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
+from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -45,6 +50,11 @@ from openhands.sdk.plugin import (
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
+)
+from openhands.sdk.subagent import (
+    AgentDefinition,
+    register_file_agents,
+    register_plugin_agents,
 )
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -94,6 +104,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -133,6 +144,8 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -171,11 +184,21 @@ class LocalConversation(BaseConversation):
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
+            tags=tags,
         )
 
         # Default callback: persist every event to state
         def _default_callback(e):
+            # This callback runs while holding the conversation state's lock
+            # (see BaseConversation.compose_callbacks usage inside `with self._state:`
+            # regions), so updating state here is thread-safe.
             self._state.events.append(e)
+            # Track user MessageEvent IDs here so hook callbacks (which may
+            # synthesize or alter user messages) are captured in one place.
+            if isinstance(e, MessageEvent) and e.source == "user":
+                # Track the latest real user message ID for hook-blocked checks.
+                # Stop-hook feedback is emitted with source="environment".
+                self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
         composed_list = callback_list + [_default_callback]
@@ -236,6 +259,7 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
+        self._profile_store = LLMProfileStore()
 
         # Initialize secrets if provided
         if secrets:
@@ -301,6 +325,7 @@ class LocalConversation(BaseConversation):
             return
 
         all_plugin_hooks: list[HookConfig] = []
+        all_plugin_agents: list[AgentDefinition] = []
 
         # Load plugins if specified
         if self._plugin_specs:
@@ -338,6 +363,10 @@ class LocalConversation(BaseConversation):
                 if plugin.hooks and not plugin.hooks.is_empty():
                     all_plugin_hooks.append(plugin.hooks)
 
+                # Collect agent definitions
+                if plugin.agents:
+                    all_plugin_agents.extend(plugin.agents)
+
             # Update agent with merged content
             self.agent = self.agent.model_copy(
                 update={
@@ -351,6 +380,13 @@ class LocalConversation(BaseConversation):
                 self._state.agent = self.agent
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Register file-based agents defined in plugins
+        if all_plugin_agents:
+            register_plugin_agents(
+                agents=all_plugin_agents,
+                work_dir=self.workspace.working_dir,
+            )
 
         # Combine explicit hook_config with plugin hooks
         # Explicit hooks run first (before plugin hooks)
@@ -367,6 +403,9 @@ class LocalConversation(BaseConversation):
 
         # Set up hook processor with the combined config
         if final_hook_config is not None:
+            # Store final hook_config in state for observability
+            self._state.hook_config = final_hook_config
+
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
@@ -378,21 +417,41 @@ class LocalConversation(BaseConversation):
 
         self._plugins_loaded = True
 
+    def _register_file_based_agents(self) -> None:
+        """Discover and register file-based agents into the agent registry.
+
+        Agents are loaded from Markdown definition files and registered via
+        `register_agent_if_absent`, so they never overwrite agents that were
+        already registered programmatically or by plugins.
+
+        Registration order (highest to lowest priority):
+          1. Programmatic `register_agent()` calls (already in the registry)
+          2. Plugin agents (registered during plugin loading, i.e.,
+                in _ensure_plugins_loaded())
+          3. Project-level file agents (`{project}/.agents/agents/*.md`,
+                then `{project}/.openhands/agents/*.md`)
+          4. User-level file agents (`~/.agents/agents/*.md`,
+                then `~/.openhands/agents/*.md`)
+        """
+        # register project-level and then user-level file-based agents
+        register_file_agents(self.workspace.working_dir)
+
     def _ensure_agent_ready(self) -> None:
-        """Ensure agent is fully initialized with plugins loaded.
+        """Ensure the agent is fully initialized with plugins and agents loaded.
 
-        This method combines plugin loading and agent initialization to ensure
-        the agent is initialized exactly once with complete configuration.
+        Performs one-time lazy initialization on the first `send_message()`
+        or `run()` call.  The steps executed (in order) are:
 
-        Called lazily on first send_message() or run() to:
-        1. Load plugins (if specified)
-        2. Initialize agent with complete plugin config and hooks
-        3. Register LLMs in the registry
+        1. Load plugins (merges skills, MCP config, and hooks).
+        2. Register file-based agents into the agent registry.
+        3. Initialize the agent with complete plugin config and hooks.
+        4. Register LLMs in the LLM registry.
 
         This preserves the design principle that constructors should not perform
         I/O or error-prone operations, while eliminating double initialization.
 
-        Thread-safe: Uses state lock to prevent concurrent initialization.
+        Thread-safe: uses a double-checked lock on the conversation state to
+        prevent concurrent initialization.
         """
         # Fast path: if already initialized, skip lock acquisition entirely.
         # This is crucial for concurrent send_message() calls during run(),
@@ -410,15 +469,44 @@ class LocalConversation(BaseConversation):
             # Load plugins first (merges skills, MCP config, hooks)
             self._ensure_plugins_loaded()
 
+            # register file-based agents
+            self._register_file_based_agents()
+
             # Initialize agent with complete configuration
             self.agent.init_state(self._state, on_event=self._on_event)
 
             # Register LLMs in the registry (still holding lock)
             self.llm_registry.subscribe(self._state.stats.register_llm)
+            registered = set(self.llm_registry.list_usage_ids())
             for llm in list(self.agent.get_all_llms()):
-                self.llm_registry.add(llm)
+                if llm.usage_id not in registered:
+                    self.llm_registry.add(llm)
 
             self._agent_ready = True
+
+    def switch_profile(self, profile_name: str) -> None:
+        """Switch the agent's LLM to a named profile.
+
+        Loads the profile from the LLMProfileStore (cached in the registry
+        after the first load) and updates the agent and conversation state.
+
+        Args:
+            profile_name: Name of a profile previously saved via LLMProfileStore.
+
+        Raises:
+            FileNotFoundError: If the profile does not exist.
+            ValueError: If the profile is corrupted or invalid.
+        """
+        usage_id = f"profile:{profile_name}"
+        try:
+            new_llm = self.llm_registry.get(usage_id)
+        except KeyError:
+            new_llm = self._profile_store.load(profile_name)
+            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
+            self.llm_registry.add(new_llm)
+        with self._state:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            self._state.agent = self.agent
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
@@ -435,7 +523,6 @@ class LocalConversation(BaseConversation):
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
 
-        # Convert string to Message if needed
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
 
@@ -443,10 +530,13 @@ class LocalConversation(BaseConversation):
             "Only user messages are allowed to be sent to the agent."
         )
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
+            if self._state.execution_status in (
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.STUCK,
+            ):
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
-                )  # now we have a new message
+                )  # new message resets terminal states
 
             # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
@@ -501,6 +591,7 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
                 ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
@@ -532,7 +623,7 @@ class LocalConversation(BaseConversation):
                                 if feedback:
                                     prefixed = f"[Stop hook feedback] {feedback}"
                                     feedback_msg = MessageEvent(
-                                        source="user",
+                                        source="environment",
                                         llm_message=Message(
                                             role="user",
                                             content=[TextContent(text=prefixed)],
@@ -680,14 +771,20 @@ class LocalConversation(BaseConversation):
                 logger.info("Agent execution pause requested")
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
-        """Add secrets to the conversation.
+        """Add secrets to the conversation's secret registry.
+
+        Secrets are stored in the conversation's secret_registry which:
+        1. Provides environment variable injection during command execution
+        2. Is read by the agent when building its system prompt (dynamic_context)
+
+        The agent pulls secrets from the registry via get_dynamic_context() during
+        init_state(), ensuring secret names and descriptions appear in the prompt.
 
         Args:
             secrets: Dictionary mapping secret keys to values or no-arg callables.
                      SecretValue = str | Callable[[], str]. Callables are invoked lazily
                      when a command references the secret key.
         """
-
         secret_registry = self._state.secret_registry
         secret_registry.update_secrets(secrets)
         logger.info(f"Added {len(secrets)} secrets to conversation")
@@ -712,6 +809,11 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
+        # Clean up agent resources (e.g., ACPAgent subprocess)
+        try:
+            self.agent.close()
+        except Exception as e:
+            logger.warning(f"Error closing agent: {e}")
         if self.delete_on_close:
             try:
                 tools_map = self.agent.tools_map
@@ -747,6 +849,11 @@ class LocalConversation(BaseConversation):
         """
         # Ensure agent is initialized (needs tools_map)
         self._ensure_agent_ready()
+
+        # Try agent-specific override first (e.g. ACPAgent uses fork_session)
+        agent_response = self.agent.ask_agent(question)
+        if agent_response is not None:
+            return agent_response
 
         # Import here to avoid circular imports
         from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
@@ -815,6 +922,11 @@ class LocalConversation(BaseConversation):
         # Use provided LLM or fall back to agent's LLM
         llm_to_use = llm or self.agent.llm
 
+        # Skip LLM-based title generation for ACP agents with sentinel LLM
+        # The sentinel model "acp-managed" cannot make LLM calls directly
+        if llm_to_use.model == "acp-managed":
+            llm_to_use = None
+
         return generate_conversation_title(
             events=self._state.events, llm=llm_to_use, max_length=max_length
         )
@@ -867,6 +979,111 @@ class LocalConversation(BaseConversation):
             self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
 
         logger.info("Condensation request processed")
+
+    def rerun_actions(
+        self,
+        rerun_log_path: str | Path | None = None,
+    ) -> bool:
+        """Re-execute all actions from the conversation's event history.
+
+        This method iterates through all ActionEvents in the conversation and
+        re-executes them using their original action parameters. Execution
+        stops immediately if any tool call fails.
+
+        WARNING: This is an advanced feature intended for specific use cases
+        such as reproducing environment state from a saved conversation. Many
+        tool operations are NOT idempotent:
+
+        - File operations may fail if files already exist or were deleted
+        - Terminal commands may have different effects on changed state
+        - API calls may have side effects or return different results
+        - Browser state may differ from the original session
+
+        Use this method only when you understand that:
+        1. Results may differ from the original conversation
+        2. Some actions may fail due to changed environment state
+        3. The workspace should typically be reset before rerunning
+
+        Args:
+            rerun_log_path: Optional directory path to save a rerun event log.
+                If provided, events will be written incrementally to disk using
+                EventLog, avoiding memory buildup for large conversations.
+
+        Returns:
+            True if all actions executed successfully, False if any action failed.
+
+        Raises:
+            KeyError: If a tool from the original conversation is not available.
+                This is a configuration error (different from execution failure).
+        """
+        # Ensure agent is initialized (loads plugins and initializes tools)
+        self._ensure_agent_ready()
+
+        # Set up rerun log if path provided
+        rerun_log: EventLog | None = None
+        if rerun_log_path is not None:
+            log_dir = Path(rerun_log_path)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_store = LocalFileStore(str(log_dir))
+            rerun_log = EventLog(file_store, dir_path="events")
+
+        action_count = 0
+
+        for event in self._state.events:
+            if not isinstance(event, ActionEvent):
+                continue
+            if event.action is None:
+                # Skip actions that failed validation during original run
+                continue
+
+            action_count += 1
+            tool_name = event.tool_name
+
+            # Get the tool from the agent's tools_map
+            tool = self.agent.tools_map.get(tool_name)
+            if tool is None:
+                available_tools = list(self.agent.tools_map.keys())
+                raise KeyError(
+                    f"Tool '{tool_name}' not found during rerun. "
+                    f"Available tools: {available_tools}. "
+                    f"Ensure the agent is configured with the same tools as the "
+                    f"original conversation."
+                )
+
+            if not tool.executor:
+                logger.warning(
+                    f"Skipping action {action_count}: "
+                    f"tool '{tool_name}' has no executor"
+                )
+                continue
+
+            # Execute the tool with the original action
+            try:
+                logger.info(f"Rerunning action {action_count}: {tool_name}")
+                observation = tool(event.action, self)
+
+                # Log the action and observation incrementally
+                if rerun_log is not None:
+                    # Append action event (copy from original)
+                    rerun_log.append(event)
+                    # Append observation event
+                    obs_event = ObservationEvent(
+                        source="environment",
+                        tool_name=tool_name,
+                        tool_call_id=event.tool_call_id,
+                        observation=observation,
+                        action_id=event.id,
+                    )
+                    rerun_log.append(obs_event)
+            except Exception as e:
+                logger.error(
+                    f"Action {action_count} ({tool_name}) failed during rerun: {e}"
+                )
+                # Log is already written incrementally, just return failure
+                return False
+
+        logger.info(f"Rerun complete: {action_count} actions processed successfully")
+        return True
 
     def execute_tool(self, tool_name: str, action: Action) -> Observation:
         """Execute a tool directly without going through the agent loop.

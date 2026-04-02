@@ -4,6 +4,7 @@ from openhands.sdk.agent import (
     Agent,
     AgentBase,
 )
+from openhands.sdk.banner import _print_banner
 from openhands.sdk.context import (
     AgentContext,
     load_project_skills,
@@ -22,11 +23,12 @@ from openhands.sdk.conversation import (
     RemoteConversation,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.event import Event, LLMConvertibleEvent
+from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    FallbackStrategy,
     ImageContent,
     LLMProfileStore,
     LLMRegistry,
@@ -37,6 +39,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
     TokenCallbackType,
+    TokenUsage,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import (
@@ -46,6 +49,29 @@ from openhands.sdk.mcp import (
     create_mcp_tools,
 )
 from openhands.sdk.plugin import Plugin
+from openhands.sdk.settings import (
+    AgentSettings,
+    CondenserSettings,
+    SettingsChoice,
+    SettingsFieldSchema,
+    SettingsSchema,
+    SettingsSectionSchema,
+    VerificationSettings,
+    export_settings_schema,
+)
+from openhands.sdk.settings.metadata import (
+    SettingProminence,
+    SettingsFieldMetadata,
+    SettingsSectionMetadata,
+    field_meta,
+)
+from openhands.sdk.subagent import (
+    agent_definition_to_factory,
+    load_agents_from_dir,
+    load_project_agents,
+    load_user_agents,
+    register_agent,
+)
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -55,7 +81,9 @@ from openhands.sdk.tool import (
     register_tool,
     resolve_tool,
 )
+from openhands.sdk.utils import page_iterator
 from openhands.sdk.workspace import (
+    AsyncRemoteWorkspace,
     LocalWorkspace,
     RemoteWorkspace,
     Workspace,
@@ -67,12 +95,17 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0"  # fallback for editable/unbuilt environments
 
+# Print startup banner
+_print_banner(__version__)
+
 __all__ = [
     "LLM",
     "LLMRegistry",
     "LLMProfileStore",
     "LLMStreamChunk",
+    "FallbackStrategy",
     "TokenCallbackType",
+    "TokenUsage",
     "ConversationStats",
     "RegistryEvent",
     "Message",
@@ -90,6 +123,7 @@ __all__ = [
     "MCPToolDefinition",
     "MCPToolObservation",
     "MessageEvent",
+    "HookExecutionEvent",
     "create_mcp_tools",
     "get_logger",
     "Conversation",
@@ -102,6 +136,18 @@ __all__ = [
     "LLMConvertibleEvent",
     "AgentContext",
     "LLMSummarizingCondenser",
+    "CondenserSettings",
+    "VerificationSettings",
+    "AgentSettings",
+    "SettingsChoice",
+    "SettingProminence",
+    "SettingsFieldMetadata",
+    "SettingsFieldSchema",
+    "SettingsSchema",
+    "SettingsSectionMetadata",
+    "SettingsSectionSchema",
+    "export_settings_schema",
+    "field_meta",
     "FileStore",
     "LocalFileStore",
     "Plugin",
@@ -111,8 +157,15 @@ __all__ = [
     "Workspace",
     "LocalWorkspace",
     "RemoteWorkspace",
+    "AsyncRemoteWorkspace",
+    "register_agent",
+    "load_project_agents",
+    "load_user_agents",
+    "load_agents_from_dir",
+    "agent_definition_to_factory",
     "load_project_skills",
     "load_skills_from_dir",
     "load_user_skills",
+    "page_iterator",
     "__version__",
 ]

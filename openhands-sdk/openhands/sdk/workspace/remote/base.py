@@ -74,6 +74,21 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         except StopIteration as e:
             return e.value
 
+    def get_server_info(self) -> dict[str, Any]:
+        """Return server metadata from the agent-server.
+
+        This is useful for debugging version mismatches between the local SDK and
+        the remote agent-server image.
+
+        Returns:
+            A JSON-serializable dict returned by GET /server_info.
+        """
+        response = self.client.get("/server_info")
+        response.raise_for_status()
+        data = response.json()
+        assert isinstance(data, dict)
+        return data
+
     def execute_command(
         self,
         command: str,
