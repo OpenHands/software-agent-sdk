@@ -123,6 +123,13 @@ consult each relevant package-level AGENTS.md.
 - Agent server: [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md)
 - Eval config: [.github/run-eval/AGENTS.md](.github/run-eval/AGENTS.md)
 
+For deeper design invariants and package/component boundaries that would make
+AGENTS.md too heavy, also read the architecture docs in `docs/architecture/`:
+
+- Docs taxonomy and AGENTS map: [docs/architecture/README.md](docs/architecture/README.md)
+- Core SDK constraints: [docs/architecture/sdk.md](docs/architecture/sdk.md)
+- Runtime package constraints: [docs/architecture/runtime.md](docs/architecture/runtime.md)
+
 ## API compatibility pointers
 
 - For SDK Python API deprecation/removal policy, read
