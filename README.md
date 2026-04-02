@@ -132,11 +132,17 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
       url={https://arxiv.org/abs/2511.03690}, 
 }
 ```
+<hr>
+
+### Thank You to Our Contributors
+
+[![Contributors](https://assets.openhands.dev/readme/openhands-software-agent-sdk-contributors.svg)](https://github.com/OpenHands/software-agent-sdk/graphs/contributors)
 
 <hr>
 
+### Trusted by Engineers at
+
 <div align="center">
-<strong>Trusted by engineers at</strong>
 <br/><br/>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/tiktok.svg">
@@ -188,8 +194,3 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
 </picture>
 </div>
 
-## Contributors
-
-Many thanks to all of our contributors!
-
-[![Contributors](https://assets.openhands.dev/readme/openhands-software-agent-sdk-contributors.svg)](https://github.com/OpenHands/software-agent-sdk/graphs/contributors)
