@@ -1,7 +1,8 @@
 import json
 import re
+import shlex
 import types
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import (
     Annotated,
     Any,
@@ -147,8 +148,117 @@ def fix_malformed_tool_arguments(
                 # If parsing fails, leave the original value
                 # Pydantic will raise validation error if needed
                 pass
-
     return fixed_arguments
+
+
+TOOL_NAME_ALIASES: dict[str, str] = {
+    "bash": "terminal",
+    "command": "terminal",
+    "execute": "terminal",
+    "execute_bash": "terminal",
+    "str_replace": "file_editor",
+    "str_replace_editor": "file_editor",
+}
+
+_SHELL_TOOL_FALLBACK_PREFIXES = frozenset(
+    {"awk", "cat", "find", "grep", "head", "ls", "pwd", "sed", "tail", "wc"}
+)
+
+
+def parse_tool_call_arguments(raw_arguments: str) -> dict[str, Any]:
+    """Parse tool call arguments, sanitizing raw control chars only on fallback."""
+    try:
+        parsed = json.loads(raw_arguments)
+    except json.JSONDecodeError:
+        sanitized_args = sanitize_json_control_chars(raw_arguments)
+        parsed = json.loads(sanitized_args)
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _infer_file_editor_command(arguments: dict[str, Any]) -> str | None:
+    if "command" in arguments:
+        return None
+    if "old_str" in arguments:
+        return "str_replace"
+    if "insert_line" in arguments:
+        return "insert"
+    if "file_text" in arguments:
+        return "create"
+    if "path" in arguments:
+        return "view"
+    return None
+
+
+def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
+    pattern = arguments.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return None
+
+    command_parts = ["grep", "-RIn"]
+    include = arguments.get("include")
+    if isinstance(include, str) and include:
+        command_parts.extend(["--include", include])
+
+    command_parts.extend(["--", pattern])
+
+    path = arguments.get("path")
+    command_parts.append(path if isinstance(path, str) and path else ".")
+    return shlex.join(command_parts)
+
+
+def _maybe_rewrite_as_terminal_command(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str | None:
+    if tool_name == "grep":
+        return _build_grep_terminal_command(arguments)
+
+    if arguments:
+        return None
+
+    first_token = tool_name.split(maxsplit=1)[0]
+    if first_token in _SHELL_TOOL_FALLBACK_PREFIXES:
+        return tool_name
+    return None
+
+
+def normalize_tool_call(
+    tool_name: str,
+    arguments: dict[str, Any],
+    available_tools: Collection[str],
+) -> tuple[str, dict[str, Any]]:
+    """Normalize legacy tool names and Anthropic-style argument shapes."""
+    normalized_tool_name = tool_name
+    normalized_arguments = arguments.copy()
+
+    alias_target = TOOL_NAME_ALIASES.get(tool_name)
+    if alias_target and alias_target in available_tools:
+        normalized_tool_name = alias_target
+    elif tool_name not in available_tools and "terminal" in available_tools:
+        terminal_command = _maybe_rewrite_as_terminal_command(
+            tool_name,
+            normalized_arguments,
+        )
+        if terminal_command is not None:
+            normalized_tool_name = "terminal"
+            passthrough_arguments = {
+                key: value
+                for key, value in normalized_arguments.items()
+                if key in {"security_risk", "summary"}
+            }
+            passthrough_arguments["command"] = terminal_command
+            normalized_arguments = passthrough_arguments
+
+    if normalized_tool_name == "file_editor":
+        inferred_command = _infer_file_editor_command(normalized_arguments)
+        if inferred_command is not None:
+            normalized_arguments = {
+                "command": inferred_command,
+                **normalized_arguments,
+            }
+
+    return normalized_tool_name, normalized_arguments
 
 
 @overload

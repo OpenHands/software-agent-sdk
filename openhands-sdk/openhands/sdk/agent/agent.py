@@ -15,8 +15,9 @@ from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
+    normalize_tool_call,
+    parse_tool_call_arguments,
     prepare_llm_messages,
-    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -748,52 +749,52 @@ class Agent(CriticMixin, AgentBase):
 
         NOTE: state will be mutated in-place.
         """
-        tool_name = tool_call.name
-        tool = self.tools_map.get(tool_name, None)
-        # Handle non-existing tools
-        if tool is None:
-            available = list(self.tools_map.keys())
-            err = f"Tool '{tool_name}' not found. Available: {available}"
-            logger.error(err)
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
-                error=err,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
-            )
-            on_event(event)
-            return
+        requested_tool_name = tool_call.name
+        tool: ToolDefinition | None = None
+        normalized_tool_call = tool_call
 
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            # Try parsing arguments as-is first.  Raw newlines / tabs are
-            # legal JSON whitespace and many models emit them between tokens
-            # (e.g. Qwen: "view_range": \n[1, 100]\n).  sanitize_json_
-            # control_chars would escape those to \\n, which breaks parsing.
-            # Fall back to sanitization only when the raw string is invalid
-            # (handles models that emit raw control chars *inside* strings).
-            try:
-                arguments = json.loads(tool_call.arguments)
-            except json.JSONDecodeError:
-                sanitized_args = sanitize_json_control_chars(tool_call.arguments)
-                arguments = json.loads(sanitized_args)
+            arguments = parse_tool_call_arguments(tool_call.arguments)
+            tool_name, arguments = normalize_tool_call(
+                requested_tool_name,
+                arguments,
+                self.tools_map.keys(),
+            )
+            tool = self.tools_map.get(tool_name, None)
+            if tool is None:
+                available = list(self.tools_map.keys())
+                err = f"Tool '{requested_tool_name}' not found. Available: {available}"
+                logger.error(err)
+                tc_event = ActionEvent(
+                    source="agent",
+                    thought=thought or [],
+                    reasoning_content=reasoning_content,
+                    thinking_blocks=thinking_blocks or [],
+                    responses_reasoning_item=responses_reasoning_item,
+                    tool_call=tool_call,
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.id,
+                    llm_response_id=llm_response_id,
+                    action=None,
+                )
+                on_event(tc_event)
+                event = AgentErrorEvent(
+                    error=err,
+                    tool_name=requested_tool_name,
+                    tool_call_id=tool_call.id,
+                )
+                on_event(event)
+                return
 
-            # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
+            normalized_tool_call = tool_call.model_copy(
+                update={
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments),
+                }
+            )
             security_risk = self._extract_security_risk(
                 arguments,
                 tool.name,
@@ -808,9 +809,10 @@ class Agent(CriticMixin, AgentBase):
 
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
+            display_tool_name = tool.name if tool is not None else requested_tool_name
             err = (
                 f"Error validating args {tool_call.arguments} for tool "
-                f"'{tool.name}': {e}"
+                f"'{display_tool_name}': {e}"
             )
             # Persist assistant function_call so next turn has matching call_id
             tc_event = ActionEvent(
@@ -819,8 +821,8 @@ class Agent(CriticMixin, AgentBase):
                 reasoning_content=reasoning_content,
                 thinking_blocks=thinking_blocks or [],
                 responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
+                tool_call=normalized_tool_call,
+                tool_name=normalized_tool_call.name,
                 tool_call_id=tool_call.id,
                 llm_response_id=llm_response_id,
                 action=None,
@@ -828,7 +830,7 @@ class Agent(CriticMixin, AgentBase):
             on_event(tc_event)
             event = AgentErrorEvent(
                 error=err,
-                tool_name=tool_name,
+                tool_name=display_tool_name,
                 tool_call_id=tool_call.id,
             )
             on_event(event)
@@ -842,8 +844,8 @@ class Agent(CriticMixin, AgentBase):
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
             tool_name=tool.name,
-            tool_call_id=tool_call.id,
-            tool_call=tool_call,
+            tool_call_id=normalized_tool_call.id,
+            tool_call=normalized_tool_call,
             llm_response_id=llm_response_id,
             security_risk=security_risk,
             summary=summary,
