@@ -110,7 +110,7 @@ export class OpenRouterLLM implements ILLM {
     this.client = new OpenRouter({
       apiKey: options.apiKey,
       httpReferer: options.siteUrl,
-      xTitle: options.siteTitle,
+      appTitle: options.siteTitle,
     });
 
     this.defaultModel = options.defaultModel || 'anthropic/claude-3.5-sonnet';

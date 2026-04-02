@@ -37,7 +37,7 @@
   "author": "OpenHands Team",
   "license": "MIT",
   "dependencies": {
-    "@openrouter/sdk": "^0.8.0",
+    "@openrouter/sdk": "^0.10.2",
     "ws": "^8.20.0"
   },
   "devDependencies": {
