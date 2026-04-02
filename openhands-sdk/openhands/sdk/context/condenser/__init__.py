@@ -3,6 +3,9 @@ from openhands.sdk.context.condenser.base import (
     NoCondensationAvailableException,
     RollingCondenser,
 )
+from openhands.sdk.context.condenser.large_file_surgical_condenser import (
+    LargeFileSurgicalCondenser,
+)
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
 )
@@ -17,4 +20,5 @@ __all__ = [
     "PipelineCondenser",
     "LLMSummarizingCondenser",
     "NoCondensationAvailableException",
+    "LargeFileSurgicalCondenser",
 ]
