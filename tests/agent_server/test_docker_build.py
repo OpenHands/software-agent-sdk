@@ -891,6 +891,9 @@ def dockerfile_text() -> str:
 
 def test_builder_bundles_python_runtime(dockerfile_text: str):
     """The builder stage must copy the interpreter into .python/."""
+    assert "FROM --platform=$TARGETPLATFORM python:3.13-bookworm AS builder" in (
+        dockerfile_text
+    ), "Builder must run on the target platform so bundled Python matches the image"
     assert ".python/bin" in dockerfile_text, (
         "Builder must copy the Python binary into .python/bin"
     )

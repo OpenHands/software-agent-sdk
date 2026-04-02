@@ -27,7 +27,7 @@ ARG PORT=8000
 # (e.g. eval images) can COPY it onto any base image without needing a
 # compatible system Python.
 ####################################################################################
-FROM python:3.13-bookworm AS builder
+FROM --platform=$TARGETPLATFORM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 
