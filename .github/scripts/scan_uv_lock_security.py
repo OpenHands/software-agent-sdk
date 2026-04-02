@@ -31,6 +31,7 @@ TEXT_FILE_SUFFIXES = {
     ".js",
     ".json",
     ".ps1",
+    ".pth",
     ".py",
     ".sh",
     ".toml",
@@ -84,6 +85,8 @@ class InspectionResult:
     filename: str
     native_members: list[str] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
+    startup_hooks: list[str] = field(default_factory=list)
+    metadata_dependencies: list[str] = field(default_factory=list)
     build_backend: str | None = None
     has_setup_py: bool = False
     suspicious_hits: dict[str, list[str]] = field(default_factory=dict)
@@ -95,9 +98,19 @@ class PackageReport:
     version: str
     reason: str
     artifacts: list[Artifact]
+    lockfile_dependencies: list[str] = field(default_factory=list)
+    new_dependencies: list[str] = field(default_factory=list)
+    removed_dependencies: list[str] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     inspections: list[InspectionResult] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class SelectedPackage:
+    package: dict[str, Any]
+    baseline: dict[str, Any] | None
+    reason: str
 
 
 class ScanError(RuntimeError):
@@ -176,10 +189,35 @@ def get_min_age(args: argparse.Namespace) -> timedelta | None:
     return parse_age_window(options.get("exclude-newer-span"))
 
 
+def normalize_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def dependency_names(package: dict[str, Any]) -> list[str]:
+    return sorted(
+        {
+            normalize_name(dependency["name"])
+            for dependency in package.get("dependencies", [])
+        }
+    )
+
+
+def parse_requires_dist_lines(text: str) -> list[str]:
+    dependencies: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("Requires-Dist:"):
+            continue
+        match = re.match(r"Requires-Dist:\s*([A-Za-z0-9][A-Za-z0-9_.-]*)", line)
+        if match is not None:
+            dependencies.add(normalize_name(match.group(1)))
+    return sorted(dependencies)
+
+
 def normalize_package(package: dict[str, Any]) -> dict[str, Any]:
     return {
         "version": package.get("version"),
         "source": package.get("source"),
+        "dependencies": dependency_names(package),
         "sdist": package.get("sdist"),
         "wheels": package.get("wheels", []),
     }
@@ -295,6 +333,14 @@ def should_scan_text_member(member_name: str) -> bool:
     return parts.isdisjoint(IGNORED_PATH_PARTS)
 
 
+def is_python_startup_hook(member_name: str) -> bool:
+    member_path = Path(member_name)
+    return member_path.suffix.lower() == ".pth" or member_path.name in {
+        "sitecustomize.py",
+        "usercustomize.py",
+    }
+
+
 def inspect_wheel(
     path: Path, *, max_text_bytes: int, max_hits_per_pattern: int
 ) -> InspectionResult:
@@ -312,6 +358,12 @@ def inspect_wheel(
                     for line in read_member_text(archive.read(member)).splitlines()
                     if line.strip() and not line.startswith("[")
                 )
+            if member_name.endswith(".dist-info/METADATA"):
+                result.metadata_dependencies = parse_requires_dist_lines(
+                    read_member_text(archive.read(member))
+                )
+            if is_python_startup_hook(member_name):
+                result.startup_hooks.append(member_name)
 
             if (
                 suffix in TEXT_FILE_SUFFIXES
@@ -350,6 +402,14 @@ def inspect_sdist(
                     result.build_backend = pyproject.get("build-system", {}).get(
                         "build-backend"
                     )
+            if member_name.endswith("PKG-INFO"):
+                extracted = archive.extractfile(member)
+                if extracted is not None:
+                    result.metadata_dependencies = parse_requires_dist_lines(
+                        read_member_text(extracted.read())
+                    )
+            if is_python_startup_hook(member_name):
+                result.startup_hooks.append(member_name)
 
             if (
                 suffix in TEXT_FILE_SUFFIXES
@@ -401,7 +461,7 @@ def select_packages(
     current_lock: dict[str, Any],
     base_lock: dict[str, Any] | None,
     min_age: timedelta | None,
-) -> list[tuple[dict[str, Any], str]]:
+) -> list[SelectedPackage]:
     current_packages = {
         package["name"]: package for package in current_lock.get("package", [])
     }
@@ -409,22 +469,36 @@ def select_packages(
         base_packages = {
             package["name"]: package for package in base_lock.get("package", [])
         }
-        changed: list[tuple[dict[str, Any], str]] = []
+        changed: list[SelectedPackage] = []
         for name, package in sorted(current_packages.items()):
             baseline = base_packages.get(name)
             if baseline is None:
-                changed.append((package, "new package in lockfile"))
+                changed.append(
+                    SelectedPackage(
+                        package=package, baseline=None, reason="new package in lockfile"
+                    )
+                )
             elif normalize_package(baseline) != normalize_package(package):
-                changed.append((package, "changed package in lockfile"))
+                changed.append(
+                    SelectedPackage(
+                        package=package,
+                        baseline=baseline,
+                        reason="changed package in lockfile",
+                    )
+                )
         return changed
 
-    selected: list[tuple[dict[str, Any], str]] = []
+    selected: list[SelectedPackage] = []
     now = datetime.now(UTC)
     for package in sorted(current_packages.values(), key=lambda entry: entry["name"]):
         artifacts = package_artifacts(package)
         source = package.get("source", {})
         if any(key in source for key in ("git", "path", "url")):
-            selected.append((package, "non-registry source"))
+            selected.append(
+                SelectedPackage(
+                    package=package, baseline=None, reason="non-registry source"
+                )
+            )
             continue
         if min_age is None:
             continue
@@ -432,7 +506,13 @@ def select_packages(
         if newest is None:
             continue
         if now - newest < min_age:
-            selected.append((package, "package newer than minimum age policy"))
+            selected.append(
+                SelectedPackage(
+                    package=package,
+                    baseline=None,
+                    reason="package newer than minimum age policy",
+                )
+            )
     return selected
 
 
@@ -481,6 +561,22 @@ def render_report(
                 f"({age_days:.2f} days old)"
             )
 
+        if report.lockfile_dependencies:
+            dependencies = ", ".join(
+                f"`{dependency}`" for dependency in report.lockfile_dependencies
+            )
+            lines.append(f"- Lockfile runtime dependencies: {dependencies}")
+        if report.new_dependencies:
+            new_dependencies = ", ".join(
+                f"`{dependency}`" for dependency in report.new_dependencies
+            )
+            lines.append(f"- New dependencies vs base: {new_dependencies}")
+        if report.removed_dependencies:
+            removed_dependencies = ", ".join(
+                f"`{dependency}`" for dependency in report.removed_dependencies
+            )
+            lines.append(f"- Removed dependencies vs base: {removed_dependencies}")
+
         if report.violations:
             lines.append("- Policy violations:")
             lines.extend(f"  - {violation}" for violation in report.violations)
@@ -497,6 +593,16 @@ def render_report(
                 lines.append(f"  - build backend: `{inspection.build_backend}`")
             if inspection.has_setup_py:
                 lines.append("  - contains `setup.py`")
+            if inspection.startup_hooks:
+                startup_hooks = ", ".join(
+                    f"`{startup_hook}`" for startup_hook in inspection.startup_hooks
+                )
+                lines.append(f"  - startup hooks: {startup_hooks}")
+            if inspection.metadata_dependencies:
+                metadata_dependencies = ", ".join(
+                    f"`{dependency}`" for dependency in inspection.metadata_dependencies
+                )
+                lines.append(f"  - metadata Requires-Dist: {metadata_dependencies}")
             if inspection.entry_points:
                 entry_points = ", ".join(
                     f"`{entry}`" for entry in inspection.entry_points
@@ -527,7 +633,7 @@ def main() -> int:
     )
     min_age = get_min_age(args)
     selected = select_packages(current_lock, base_lock, min_age)
-    packages_only = [package for package, _ in selected]
+    packages_only = [item.package for item in selected]
 
     if args.write_requirements is not None:
         write_requirements(args.write_requirements, packages_only)
@@ -535,12 +641,25 @@ def main() -> int:
     reports: list[PackageReport] = []
     now = datetime.now(UTC)
 
-    for package, reason in selected:
+    for item in selected:
+        package = item.package
+        baseline = item.baseline
+        lockfile_dependencies = dependency_names(package)
+        baseline_dependencies = (
+            dependency_names(baseline) if baseline is not None else []
+        )
         report = PackageReport(
             name=package["name"],
             version=package["version"],
-            reason=reason,
+            reason=item.reason,
             artifacts=package_artifacts(package),
+            lockfile_dependencies=lockfile_dependencies,
+            new_dependencies=sorted(
+                set(lockfile_dependencies) - set(baseline_dependencies)
+            ),
+            removed_dependencies=sorted(
+                set(baseline_dependencies) - set(lockfile_dependencies)
+            ),
         )
 
         source = package.get("source", {})
@@ -600,6 +719,27 @@ def main() -> int:
                     f"artifact `{inspection.filename}` contains native files "
                     "that merit platform-specific review"
                 )
+            if inspection.startup_hooks:
+                report.notes.append(
+                    f"artifact `{inspection.filename}` contains Python startup hooks "
+                    "that can run at interpreter startup"
+                )
+
+        metadata_dependencies = sorted(
+            {
+                dependency
+                for inspection in report.inspections
+                for dependency in inspection.metadata_dependencies
+            }
+        )
+        extra_metadata_dependencies = sorted(
+            set(metadata_dependencies) - set(report.lockfile_dependencies)
+        )
+        if extra_metadata_dependencies:
+            report.notes.append(
+                "artifact metadata declares additional Requires-Dist names not "
+                f"present in the lock entry: {', '.join(extra_metadata_dependencies)}"
+            )
 
         reports.append(report)
 
