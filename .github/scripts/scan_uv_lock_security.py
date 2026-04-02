@@ -7,6 +7,7 @@ import re
 import sys
 import tarfile
 import tomllib
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
@@ -55,6 +56,13 @@ IGNORED_PATH_PARTS = {
 
 NATIVE_SUFFIXES = {".dll", ".dylib", ".node", ".pyd", ".so"}
 MAX_ARTIFACT_DELTA_MEMBERS = 10
+ARTIFACT_PROCESSING_ERRORS = (
+    OSError,
+    tarfile.ReadError,
+    tomllib.TOMLDecodeError,
+    urllib.error.URLError,
+    zipfile.BadZipFile,
+)
 
 SUSPICIOUS_PATTERNS = {
     "subprocess": re.compile(
@@ -869,13 +877,20 @@ def main() -> int:
                 )
 
         for artifact in current_selected_artifacts.values():
-            downloaded = download_artifact(artifact, args.download_dir)
-            inspection = inspect_artifact(
-                downloaded,
-                artifact,
-                max_text_bytes=args.max_text_bytes,
-                max_hits_per_pattern=args.max_hits_per_pattern,
-            )
+            try:
+                downloaded = download_artifact(artifact, args.download_dir)
+                inspection = inspect_artifact(
+                    downloaded,
+                    artifact,
+                    max_text_bytes=args.max_text_bytes,
+                    max_hits_per_pattern=args.max_hits_per_pattern,
+                )
+            except ScanError:
+                raise
+            except ARTIFACT_PROCESSING_ERRORS as exc:
+                raise ScanError(
+                    f"failed to inspect {artifact.filename}: {exc}"
+                ) from exc
             report.inspections.append(inspection)
 
             if (
@@ -901,16 +916,24 @@ def main() -> int:
             baseline_artifact = baseline_selected_artifacts.get(kind)
             if baseline_artifact is None:
                 continue
-            baseline_downloaded = download_artifact(
-                baseline_artifact, args.download_dir
-            )
-            current_downloaded = download_artifact(artifact, args.download_dir)
-            artifact_delta = diff_artifacts(
-                baseline_downloaded,
-                baseline_artifact,
-                current_downloaded,
-                artifact,
-            )
+            try:
+                baseline_downloaded = download_artifact(
+                    baseline_artifact, args.download_dir
+                )
+                current_downloaded = download_artifact(artifact, args.download_dir)
+                artifact_delta = diff_artifacts(
+                    baseline_downloaded,
+                    baseline_artifact,
+                    current_downloaded,
+                    artifact,
+                )
+            except ScanError:
+                raise
+            except ARTIFACT_PROCESSING_ERRORS as exc:
+                raise ScanError(
+                    f"failed to diff {baseline_artifact.filename} -> "
+                    f"{artifact.filename}: {exc}"
+                ) from exc
             if has_artifact_delta(artifact_delta):
                 report.artifact_deltas.append(artifact_delta)
 
