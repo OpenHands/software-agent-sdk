@@ -34,7 +34,7 @@ jobs:
             # Use PAT so the push triggers CI workflows that will complete and
             # satisfy branch protection. We can't use [skip ci] because the Vercel
             # GitHub App creates stuck checks that block merging.
-            - uses: actions/checkout@v5
+            - uses: actions/checkout@v6
               if: steps.check-fork.outputs.is_fork == 'false'
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
@@ -96,7 +96,7 @@ jobs:
             contents: read
             pull-requests: write
         steps:
-            - uses: actions/checkout@v5
+            - uses: actions/checkout@v6
 
             - name: Check for .pr/ directory
               id: check
