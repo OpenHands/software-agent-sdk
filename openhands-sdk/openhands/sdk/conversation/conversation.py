@@ -166,6 +166,8 @@ class Conversation:
             if tags:
                 effective_tags.update(tags)
 
+            logger.info(f"Effective tag: {effective_tags}")
+
             return RemoteConversation(
                 agent=agent,
                 plugins=plugins,
@@ -183,6 +185,7 @@ class Conversation:
                 tags=effective_tags if effective_tags else None,
             )
 
+        logger.info("creating local convo")
         return LocalConversation(
             agent=agent,
             plugins=plugins,
