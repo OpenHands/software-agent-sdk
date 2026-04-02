@@ -192,4 +192,4 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
 
 Many thanks to all of our contributors!
 
-[![Contributors](https://assets.openhands.dev/readme/20260401-openhands-software-agent-sdk-contributors.svg)](https://github.com/OpenHands/software-agent-sdk/graphs/contributors)
+[![Contributors](https://assets.openhands.dev/readme/openhands-software-agent-sdk-contributors.svg)](https://github.com/OpenHands/software-agent-sdk/graphs/contributors)
