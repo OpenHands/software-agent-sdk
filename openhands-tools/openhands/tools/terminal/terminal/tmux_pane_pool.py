@@ -13,6 +13,7 @@ import uuid
 from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Final
 
 import libtmux
 
@@ -24,7 +25,7 @@ from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 logger = get_logger(__name__)
 
-DEFAULT_MAX_PANES = 4
+DEFAULT_MAX_PANES: Final[int] = 4
 
 
 class TmuxPanePool:
