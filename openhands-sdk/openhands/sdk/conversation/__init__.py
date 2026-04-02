@@ -9,7 +9,10 @@ from openhands.sdk.conversation.resource_lock_manager import (
     ResourceLockManager,
     ResourceLockTimeout,
 )
-from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.response_utils import (
+    get_agent_final_response,
+    get_structured_response,
+)
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -46,5 +49,6 @@ __all__ = [
     "RemoteConversation",
     "EventsListBase",
     "get_agent_final_response",
+    "get_structured_response",
     "WebSocketConnectionError",
 ]

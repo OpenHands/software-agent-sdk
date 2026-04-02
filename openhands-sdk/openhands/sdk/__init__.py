@@ -21,6 +21,7 @@ from openhands.sdk.conversation import (
     ConversationExecutionStatus,
     LocalConversation,
     RemoteConversation,
+    get_structured_response,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
@@ -167,5 +168,6 @@ __all__ = [
     "load_skills_from_dir",
     "load_user_skills",
     "page_iterator",
+    "get_structured_response",
     "__version__",
 ]

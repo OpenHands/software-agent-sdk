@@ -1,7 +1,8 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import Field
+from pydantic import BaseModel, Field, create_model
+from pydantic.json_schema import SkipJsonSchema
 from rich.text import Text
 
 from openhands.sdk.tool.tool import (
@@ -57,44 +58,119 @@ The message should include:
 """
 
 
+def create_structured_finish_action(response_schema: type[BaseModel]) -> type[Action]:
+    """Create a FinishAction subclass with fields from the response schema.
+
+    This dynamically creates an Action class that includes all fields from
+    the provided Pydantic model, allowing the LLM to return structured output.
+
+    Args:
+        response_schema: A Pydantic model class defining the expected structure.
+
+    Returns:
+        A new Action subclass with fields from the response schema.
+    """
+    fields: dict[str, Any] = {}
+    for field_name, field_info in response_schema.model_fields.items():
+        annotation = response_schema.__annotations__.get(field_name)
+        fields[field_name] = (annotation, field_info)
+
+    structured_action: type[Action] = create_model(
+        f"Structured{response_schema.__name__}FinishAction",
+        __base__=Action,
+        **fields,
+    )
+    return structured_action
+
+
 class FinishExecutor(ToolExecutor):
     def __call__(
         self,
         action: FinishAction,
         conversation: "BaseConversation | None" = None,  # noqa: ARG002
     ) -> FinishObservation:
-        return FinishObservation.from_text(text=action.message)
+        # For structured actions, extract text from any 'message' or 'summary' field
+        # or use a JSON representation
+        if hasattr(action, "message"):
+            return FinishObservation.from_text(text=action.message)
+        else:
+            # For structured actions without a message field,
+            # return the action data as JSON
+            import json
+
+            return FinishObservation.from_text(
+                text=json.dumps(action.model_dump(exclude={"kind"}), indent=2)
+            )
 
 
 class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
     """Tool for signaling the completion of a task or conversation."""
 
+    # Store response_schema for later retrieval (excluded from serialization)
+    response_schema: SkipJsonSchema[type[BaseModel] | None] = Field(
+        default=None, repr=False, exclude=True
+    )
+
     @classmethod
     def create(
         cls,
         conv_state: "ConversationState | None" = None,  # noqa: ARG003
+        response_schema: type[BaseModel] | None = None,
         **params,
     ) -> Sequence[Self]:
-        """Create FinishTool instance.
+        """Create FinishTool instance with optional structured output.
 
         Args:
             conv_state: Optional conversation state (not used by FinishTool).
+            response_schema: Optional Pydantic model class defining the expected
+                structure of the final response. When provided, the agent must
+                return data matching this schema instead of a simple message.
             **params: Additional parameters (none supported).
 
         Returns:
             A sequence containing a single FinishTool instance.
 
         Raises:
-            ValueError: If any parameters are provided.
+            ValueError: If any unsupported parameters are provided.
+
+        Example:
+            ```python
+            from pydantic import BaseModel, Field
+
+            class TaskResult(BaseModel):
+                success: bool = Field(description="Whether the task succeeded")
+                summary: str = Field(description="Summary of what was done")
+                files_changed: list[str] = Field(description="Files modified")
+
+            tools = [
+                Tool(name="FinishTool", params={"response_schema": TaskResult})
+            ]
+            ```
         """
         if params:
-            raise ValueError("FinishTool doesn't accept parameters")
+            raise ValueError(
+                f"FinishTool only accepts 'response_schema' parameter, got: {params}"
+            )
+
+        if response_schema is not None:
+            action_type = create_structured_finish_action(response_schema)
+            schema_json = response_schema.model_json_schema()
+            description = (
+                f"{TOOL_DESCRIPTION}\n\n"
+                f"You MUST provide output matching the following schema:\n"
+                f"{schema_json}"
+            )
+        else:
+            action_type = FinishAction
+            description = TOOL_DESCRIPTION
+
         return [
             cls(
-                action_type=FinishAction,
+                action_type=action_type,
                 observation_type=FinishObservation,
-                description=TOOL_DESCRIPTION,
+                description=description,
                 executor=FinishExecutor(),
+                response_schema=response_schema,
                 annotations=ToolAnnotations(
                     title="finish",
                     readOnlyHint=True,
