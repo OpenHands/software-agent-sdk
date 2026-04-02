@@ -99,10 +99,17 @@ RUN set -eux; \
 ENV ACP_NODE_DIR=/opt/acp-node
 RUN set -eux; \
     ARCH=$(dpkg --print-architecture); \
-    case "$ARCH" in amd64) NARCH=x64;; arm64) NARCH=arm64;; *) NARCH=$ARCH;; esac; \
+    case "$ARCH" in \
+      amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
+      arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
+      *) echo "Unsupported architecture for ACP Node install: $ARCH" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
     mkdir -p "$ACP_NODE_DIR"; \
-    curl -fsSL "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" \
-      | tar -xJ --strip-components=1 -C "$ACP_NODE_DIR"; \
+    curl -fsSL "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
+    rm -f "$NODE_TARBALL"; \
     PATH="$ACP_NODE_DIR/bin:$PATH"; \
     node --version; \
     npm install -g \

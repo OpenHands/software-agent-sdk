@@ -3,6 +3,7 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -492,8 +493,7 @@ class LocalConversation(BaseConversation):
         subprocess. Deferring that work to run() keeps send_message() fast and
         avoids HTTP client read timeouts on the remote conversation endpoint.
         """
-        agent_kind = getattr(self.agent, "kind", self.agent.__class__.__name__)
-        return agent_kind != "ACPAgent"
+        return not isinstance(self.agent, ACPAgent)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a named profile.
