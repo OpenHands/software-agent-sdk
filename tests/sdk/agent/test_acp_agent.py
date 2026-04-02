@@ -98,7 +98,10 @@ class TestACPAgentInstantiation:
         """When acp_model is set, metrics.model_name should reflect the actual model."""
         agent = _make_agent(acp_model="gemini-3-flash-preview")
         assert agent.llm.metrics.model_name == "gemini-3-flash-preview"
-        assert agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
+        assert agent.llm.metrics.accumulated_token_usage is not None
+        assert (
+            agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
+        )
 
     def test_no_acp_model_keeps_sentinel(self):
         """Without acp_model, metrics.model_name remains the sentinel value."""
