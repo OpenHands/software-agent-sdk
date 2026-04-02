@@ -187,3 +187,9 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
   <img src="https://assets.openhands.dev/logos/external/black/google.svg" alt="Google" height="17" hspace="5">
 </picture>
 </div>
+
+## Contributors
+
+Many thanks to all of our contributors!
+
+[![Contributors](https://assets.openhands.dev/readme/20260401-openhands-software-agent-sdk-contributors.svg)](https://github.com/OpenHands/software-agent-sdk/graphs/contributors)
