@@ -155,11 +155,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         this property extracts automation metadata from environment variables and
         returns them as tags that can be attached to conversations.
 
-        The tags include:
-          - trigger: The trigger type (e.g., 'cron', 'webhook', 'manual')
-          - automation_id: The automation's unique identifier
-          - automation_name: Human-readable automation name
-          - run_id: The specific run identifier
+        The tags include (keys are lowercase alphanumeric per API requirements):
+          - automationtrigger: The trigger type (e.g., 'cron', 'webhook', 'manual')
+          - automationid: The automation's unique identifier
+          - automationname: Human-readable automation name
+          - automationrunid: The specific run identifier
 
         Note: Skills/plugins are NOT included here - they are passed when creating
         the RemoteConversation and merged at that level.
@@ -174,19 +174,20 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if payload_str:
             try:
                 payload = json.loads(payload_str)
-                if payload.get("trigger"):
-                    tags["automation_trigger"] = str(payload["trigger"])
-                if payload.get("automation_id"):
-                    tags["automation_id"] = str(payload["automation_id"])
-                if payload.get("automation_name"):
-                    tags["automation_name"] = str(payload["automation_name"])
+                if isinstance(payload, dict):
+                    if payload.get("trigger"):
+                        tags["automationtrigger"] = str(payload["trigger"])
+                    if payload.get("automation_id"):
+                        tags["automationid"] = str(payload["automation_id"])
+                    if payload.get("automation_name"):
+                        tags["automationname"] = str(payload["automation_name"])
             except (json.JSONDecodeError, TypeError):
                 logger.info("Failed to parse AUTOMATION_EVENT_PAYLOAD")
 
         # Add run_id from env var or private attr
         run_id = os.environ.get("AUTOMATION_RUN_ID") or self._automation_run_id
         if run_id:
-            tags["automation_run_id"] = run_id
+            tags["automationrunid"] = run_id
 
         logger.info(f"Workspace tags found: {tags}")
         return tags

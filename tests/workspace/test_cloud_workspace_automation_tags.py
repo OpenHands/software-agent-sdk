@@ -40,39 +40,39 @@ class TestDefaultConversationTags:
             assert tags == {}
 
     def test_parses_trigger_from_payload(self, workspace):
-        """Should extract trigger from AUTOMATION_EVENT_PAYLOAD."""
+        """Should extract automationtrigger from AUTOMATION_EVENT_PAYLOAD."""
         payload = {"trigger": "cron"}
         with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
             tags = workspace.default_conversation_tags
-            assert tags["trigger"] == "cron"
+            assert tags["automationtrigger"] == "cron"
 
     def test_parses_automation_id_from_payload(self, workspace):
-        """Should extract automation_id from AUTOMATION_EVENT_PAYLOAD."""
+        """Should extract automationid from AUTOMATION_EVENT_PAYLOAD."""
         payload = {"automation_id": "auto-123"}
         with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
             tags = workspace.default_conversation_tags
-            assert tags["automation_id"] == "auto-123"
+            assert tags["automationid"] == "auto-123"
 
     def test_parses_automation_name_from_payload(self, workspace):
-        """Should extract automation_name from AUTOMATION_EVENT_PAYLOAD."""
+        """Should extract automationname from AUTOMATION_EVENT_PAYLOAD."""
         payload = {"automation_name": "Daily Report"}
         with patch.dict(os.environ, {"AUTOMATION_EVENT_PAYLOAD": json.dumps(payload)}):
             tags = workspace.default_conversation_tags
-            assert tags["automation_name"] == "Daily Report"
+            assert tags["automationname"] == "Daily Report"
 
     def test_parses_run_id_from_env_var(self, workspace):
-        """Should extract run_id from AUTOMATION_RUN_ID env var."""
+        """Should extract runid from AUTOMATION_RUN_ID env var."""
         with patch.dict(os.environ, {"AUTOMATION_RUN_ID": "run-456"}):
             workspace._automation_run_id = None
             tags = workspace.default_conversation_tags
-            assert tags["run_id"] == "run-456"
+            assert tags["automationrunid"] == "run-456"
 
     def test_prefers_env_var_run_id_over_private_attr(self, workspace):
         """Should prefer AUTOMATION_RUN_ID env var over _automation_run_id."""
         with patch.dict(os.environ, {"AUTOMATION_RUN_ID": "env-run-id"}):
             workspace._automation_run_id = "attr-run-id"
             tags = workspace.default_conversation_tags
-            assert tags["run_id"] == "env-run-id"
+            assert tags["automationrunid"] == "env-run-id"
 
     def test_uses_private_attr_run_id_when_no_env_var(self, workspace):
         """Should use _automation_run_id when env var not set."""
@@ -80,7 +80,7 @@ class TestDefaultConversationTags:
             os.environ.pop("AUTOMATION_RUN_ID", None)
             workspace._automation_run_id = "attr-run-id"
             tags = workspace.default_conversation_tags
-            assert tags["run_id"] == "attr-run-id"
+            assert tags["automationrunid"] == "attr-run-id"
 
     def test_handles_invalid_json_payload(self, workspace):
         """Should handle invalid JSON in AUTOMATION_EVENT_PAYLOAD gracefully."""
@@ -112,10 +112,10 @@ class TestDefaultConversationTags:
             },
         ):
             tags = workspace.default_conversation_tags
-            assert tags["trigger"] == "webhook"
-            assert tags["automation_id"] == "auto-abc"
-            assert tags["automation_name"] == "PR Review Bot"
-            assert tags["run_id"] == "run-xyz"
+            assert tags["automationtrigger"] == "webhook"
+            assert tags["automationid"] == "auto-abc"
+            assert tags["automationname"] == "PR Review Bot"
+            assert tags["automationrunid"] == "run-xyz"
             # Skills are NOT included in workspace tags
             assert "skills" not in tags
 
@@ -133,18 +133,18 @@ class TestConversationTagMerging:
         # Create a mock workspace with default_conversation_tags
         mock_workspace = MagicMock(spec=RemoteWorkspace)
         mock_workspace.default_conversation_tags = {
-            "trigger": "cron",
-            "automation_id": "auto-123",
+            "automationtrigger": "cron",
+            "automationid": "auto-123",
         }
 
-        # Mock RemoteConversation to capture the tags
+        # Mock RemoteConversation at the impl module level (where it's imported from)
         with patch(
-            "openhands.sdk.conversation.conversation.RemoteConversation"
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
         ) as mock_convo_class:
             mock_convo_class.return_value = MagicMock()
 
             # Create with user tags that override some defaults
-            user_tags = {"trigger": "manual", "custom": "value"}
+            user_tags = {"automationtrigger": "manual", "custom": "value"}
 
             Conversation(
                 agent=MagicMock(),
@@ -157,9 +157,9 @@ class TestConversationTagMerging:
             effective_tags = call_kwargs["tags"]
 
             # User's "trigger" should override workspace's "trigger"
-            assert effective_tags["trigger"] == "manual"
-            # Workspace's automation_id should be preserved
-            assert effective_tags["automation_id"] == "auto-123"
+            assert effective_tags["automationtrigger"] == "manual"
+            # Workspace's automationid should be preserved
+            assert effective_tags["automationid"] == "auto-123"
             # User's custom tag should be included
             assert effective_tags["custom"] == "value"
 
@@ -172,12 +172,12 @@ class TestConversationTagMerging:
 
         mock_workspace = MagicMock(spec=RemoteWorkspace)
         mock_workspace.default_conversation_tags = {
-            "trigger": "cron",
-            "automation_id": "auto-123",
+            "automationtrigger": "cron",
+            "automationid": "auto-123",
         }
 
         with patch(
-            "openhands.sdk.conversation.conversation.RemoteConversation"
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
         ) as mock_convo_class:
             mock_convo_class.return_value = MagicMock()
 
@@ -190,8 +190,8 @@ class TestConversationTagMerging:
             call_kwargs = mock_convo_class.call_args.kwargs
             effective_tags = call_kwargs["tags"]
 
-            assert effective_tags["trigger"] == "cron"
-            assert effective_tags["automation_id"] == "auto-123"
+            assert effective_tags["automationtrigger"] == "cron"
+            assert effective_tags["automationid"] == "auto-123"
 
     def test_no_merge_when_workspace_returns_none_for_default_tags(self):
         """Should not merge when workspace returns None for default tags."""
@@ -205,7 +205,7 @@ class TestConversationTagMerging:
         mock_workspace.default_conversation_tags = None
 
         with patch(
-            "openhands.sdk.conversation.conversation.RemoteConversation"
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
         ) as mock_convo_class:
             mock_convo_class.return_value = MagicMock()
 
@@ -233,7 +233,7 @@ class TestConversationTagMerging:
         mock_workspace.default_conversation_tags = {}
 
         with patch(
-            "openhands.sdk.conversation.conversation.RemoteConversation"
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
         ) as mock_convo_class:
             mock_convo_class.return_value = MagicMock()
 
@@ -390,7 +390,7 @@ class TestPluginsTagInConversation:
         ]
 
         with patch(
-            "openhands.sdk.conversation.conversation.RemoteConversation"
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
         ) as mock_convo_class:
             mock_convo_class.return_value = MagicMock()
 
@@ -428,7 +428,7 @@ class TestPluginsTagInConversation:
         ]
 
         with patch(
-            "openhands.sdk.conversation.conversation.RemoteConversation"
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
         ) as mock_convo_class:
             mock_convo_class.return_value = MagicMock()
 
@@ -454,14 +454,14 @@ class TestPluginsTagInConversation:
 
         mock_workspace = MagicMock(spec=RemoteWorkspace)
         mock_workspace.default_conversation_tags = {
-            "trigger": "webhook",
-            "automation_id": "auto-123",
+            "automationtrigger": "webhook",
+            "automationid": "auto-123",
         }
 
         plugins = [PluginSource(source="github:OpenHands/skill")]
 
         with patch(
-            "openhands.sdk.conversation.conversation.RemoteConversation"
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
         ) as mock_convo_class:
             mock_convo_class.return_value = MagicMock()
 
@@ -476,7 +476,7 @@ class TestPluginsTagInConversation:
             effective_tags = call_kwargs["tags"]
 
             # All tags should be present
-            assert effective_tags["trigger"] == "webhook"
-            assert effective_tags["automation_id"] == "auto-123"
+            assert effective_tags["automationtrigger"] == "webhook"
+            assert effective_tags["automationid"] == "auto-123"
             assert effective_tags["plugins"] == "https://github.com/OpenHands/skill"
             assert effective_tags["custom"] == "value"
