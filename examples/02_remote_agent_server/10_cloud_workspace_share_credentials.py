@@ -21,8 +21,6 @@ Requirements:
 Optional:
   - OPENHANDS_CLOUD_API_URL: Override the Cloud API URL (default: https://app.all-hands.dev)
   - LLM_MODEL: Override the model from your SaaS settings
-  - LLM_API_KEY: Override the API key from your SaaS settings
-  - LLM_BASE_URL: Override the base URL from your SaaS settings
 """
 
 import os
@@ -57,14 +55,7 @@ with OpenHandsCloudWorkspace(
     # (dual auth: Bearer + session key) and returns a
     # fully configured LLM instance.
     # Override any parameter: workspace.get_llm(model="gpt-4o")
-    llm_overrides: dict = {}
-    if os.getenv("LLM_MODEL"):
-        llm_overrides["model"] = os.getenv("LLM_MODEL")
-    if os.getenv("LLM_API_KEY"):
-        llm_overrides["api_key"] = os.getenv("LLM_API_KEY")
-    if os.getenv("LLM_BASE_URL"):
-        llm_overrides["base_url"] = os.getenv("LLM_BASE_URL")
-    llm = workspace.get_llm(**llm_overrides)
+    llm = workspace.get_llm()
     logger.info(f"LLM configured: model={llm.model}")
 
     # --- Secrets from SaaS account ---
