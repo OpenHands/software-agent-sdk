@@ -54,6 +54,7 @@ IGNORED_PATH_PARTS = {
 }
 
 NATIVE_SUFFIXES = {".dll", ".dylib", ".node", ".pyd", ".so"}
+MAX_ARTIFACT_DELTA_MEMBERS = 10
 
 SUSPICIOUS_PATTERNS = {
     "subprocess": re.compile(
@@ -93,6 +94,27 @@ class InspectionResult:
 
 
 @dataclass(slots=True)
+class ArtifactSnapshot:
+    member_names: set[str] = field(default_factory=set)
+    native_members: set[str] = field(default_factory=set)
+    entry_points: set[str] = field(default_factory=set)
+    startup_hooks: set[str] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class ArtifactDelta:
+    current_filename: str
+    previous_filename: str
+    added_member_count: int = 0
+    removed_member_count: int = 0
+    added_members: list[str] = field(default_factory=list)
+    removed_members: list[str] = field(default_factory=list)
+    added_startup_hooks: list[str] = field(default_factory=list)
+    added_entry_points: list[str] = field(default_factory=list)
+    added_native_members: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PackageReport:
     name: str
     version: str
@@ -104,6 +126,7 @@ class PackageReport:
     violations: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     inspections: list[InspectionResult] = field(default_factory=list)
+    artifact_deltas: list[ArtifactDelta] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -277,6 +300,10 @@ def choose_artifacts(artifacts: list[Artifact]) -> list[Artifact]:
     return deduped
 
 
+def selected_artifacts_by_kind(artifacts: list[Artifact]) -> dict[str, Artifact]:
+    return {artifact.kind: artifact for artifact in choose_artifacts(artifacts)}
+
+
 def sha256_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -339,6 +366,105 @@ def is_python_startup_hook(member_name: str) -> bool:
         "sitecustomize.py",
         "usercustomize.py",
     }
+
+
+def parse_entry_points(text: str) -> list[str]:
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.startswith("[")
+    ]
+
+
+def snapshot_wheel(path: Path) -> ArtifactSnapshot:
+    snapshot = ArtifactSnapshot()
+    with zipfile.ZipFile(path) as archive:
+        for member in archive.infolist():
+            member_name = member.filename
+            snapshot.member_names.add(member_name)
+            suffix = Path(member_name).suffix.lower()
+            if suffix in NATIVE_SUFFIXES:
+                snapshot.native_members.add(member_name)
+            if member_name.endswith("entry_points.txt"):
+                snapshot.entry_points.update(
+                    parse_entry_points(read_member_text(archive.read(member)))
+                )
+            if is_python_startup_hook(member_name):
+                snapshot.startup_hooks.add(member_name)
+    return snapshot
+
+
+def snapshot_sdist(path: Path) -> ArtifactSnapshot:
+    snapshot = ArtifactSnapshot()
+    with tarfile.open(path, "r:gz") as archive:
+        for member in archive.getmembers():
+            if not member.isfile():
+                continue
+            member_name = member.name
+            snapshot.member_names.add(member_name)
+            suffix = Path(member_name).suffix.lower()
+            if suffix in NATIVE_SUFFIXES:
+                snapshot.native_members.add(member_name)
+            if member_name.endswith("entry_points.txt"):
+                extracted = archive.extractfile(member)
+                if extracted is not None:
+                    snapshot.entry_points.update(
+                        parse_entry_points(read_member_text(extracted.read()))
+                    )
+            if is_python_startup_hook(member_name):
+                snapshot.startup_hooks.add(member_name)
+    return snapshot
+
+
+def snapshot_artifact(path: Path, artifact: Artifact) -> ArtifactSnapshot:
+    if artifact.kind == "wheel":
+        return snapshot_wheel(path)
+    return snapshot_sdist(path)
+
+
+def sample_members(member_names: set[str]) -> list[str]:
+    return sorted(member_names)[:MAX_ARTIFACT_DELTA_MEMBERS]
+
+
+def diff_artifacts(
+    previous_path: Path,
+    previous_artifact: Artifact,
+    current_path: Path,
+    current_artifact: Artifact,
+) -> ArtifactDelta:
+    previous_snapshot = snapshot_artifact(previous_path, previous_artifact)
+    current_snapshot = snapshot_artifact(current_path, current_artifact)
+    added_members = current_snapshot.member_names - previous_snapshot.member_names
+    removed_members = previous_snapshot.member_names - current_snapshot.member_names
+    return ArtifactDelta(
+        current_filename=current_artifact.filename,
+        previous_filename=previous_artifact.filename,
+        added_member_count=len(added_members),
+        removed_member_count=len(removed_members),
+        added_members=sample_members(added_members),
+        removed_members=sample_members(removed_members),
+        added_startup_hooks=sorted(
+            current_snapshot.startup_hooks - previous_snapshot.startup_hooks
+        ),
+        added_entry_points=sorted(
+            current_snapshot.entry_points - previous_snapshot.entry_points
+        ),
+        added_native_members=sample_members(
+            current_snapshot.native_members - previous_snapshot.native_members
+        ),
+    )
+
+
+def has_artifact_delta(delta: ArtifactDelta) -> bool:
+    return any(
+        (
+            delta.added_member_count,
+            delta.removed_member_count,
+            delta.added_startup_hooks,
+            delta.added_entry_points,
+            delta.added_native_members,
+        )
+    )
 
 
 def inspect_wheel(
@@ -587,6 +713,46 @@ def render_report(
             lines.append("- Notes:")
             lines.extend(f"  - {note}" for note in report.notes)
 
+        for artifact_delta in report.artifact_deltas:
+            lines.append(
+                "- Artifact delta: "
+                f"`{artifact_delta.previous_filename}` -> "
+                f"`{artifact_delta.current_filename}`"
+            )
+            lines.append(
+                "  - members added/removed: "
+                f"+{artifact_delta.added_member_count} / "
+                f"-{artifact_delta.removed_member_count}"
+            )
+            if artifact_delta.added_members:
+                lines.append("  - added members sample:")
+                lines.extend(
+                    f"    - `{member}`" for member in artifact_delta.added_members
+                )
+            if artifact_delta.removed_members:
+                lines.append("  - removed members sample:")
+                lines.extend(
+                    f"    - `{member}`" for member in artifact_delta.removed_members
+                )
+            if artifact_delta.added_startup_hooks:
+                startup_hooks = ", ".join(
+                    f"`{startup_hook}`"
+                    for startup_hook in artifact_delta.added_startup_hooks
+                )
+                lines.append(f"  - new startup hooks: {startup_hooks}")
+            if artifact_delta.added_entry_points:
+                entry_points = ", ".join(
+                    f"`{entry_point}`"
+                    for entry_point in artifact_delta.added_entry_points
+                )
+                lines.append(f"  - new entry points: {entry_points}")
+            if artifact_delta.added_native_members:
+                lines.append("  - new native files sample:")
+                lines.extend(
+                    f"    - `{member}`"
+                    for member in artifact_delta.added_native_members
+                )
+
         for inspection in report.inspections:
             lines.append(f"- Inspected artifact: `{inspection.filename}`")
             if inspection.build_backend:
@@ -661,6 +827,12 @@ def main() -> int:
                 set(baseline_dependencies) - set(lockfile_dependencies)
             ),
         )
+        current_selected_artifacts = selected_artifacts_by_kind(report.artifacts)
+        baseline_selected_artifacts = (
+            selected_artifacts_by_kind(package_artifacts(baseline))
+            if baseline is not None
+            else {}
+        )
 
         source = package.get("source", {})
         registry = source.get("registry")
@@ -696,7 +868,7 @@ def main() -> int:
                     f"{artifact.filename} is missing upload-time metadata"
                 )
 
-        for artifact in choose_artifacts(report.artifacts):
+        for artifact in current_selected_artifacts.values():
             downloaded = download_artifact(artifact, args.download_dir)
             inspection = inspect_artifact(
                 downloaded,
@@ -724,6 +896,23 @@ def main() -> int:
                     f"artifact `{inspection.filename}` contains Python startup hooks "
                     "that can run at interpreter startup"
                 )
+
+        for kind, artifact in current_selected_artifacts.items():
+            baseline_artifact = baseline_selected_artifacts.get(kind)
+            if baseline_artifact is None:
+                continue
+            baseline_downloaded = download_artifact(
+                baseline_artifact, args.download_dir
+            )
+            current_downloaded = download_artifact(artifact, args.download_dir)
+            artifact_delta = diff_artifacts(
+                baseline_downloaded,
+                baseline_artifact,
+                current_downloaded,
+                artifact,
+            )
+            if has_artifact_delta(artifact_delta):
+                report.artifact_deltas.append(artifact_delta)
 
         metadata_dependencies = sorted(
             {
