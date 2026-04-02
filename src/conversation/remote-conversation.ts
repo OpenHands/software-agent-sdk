@@ -5,7 +5,6 @@
  * agent server. It mirrors the Python SDK's RemoteConversation class.
  */
 
-// import { v4 as uuidv4 } from 'uuid'; // Unused for now
 import { HttpClient } from '../client/http-client';
 import { WebSocketCallbackClient } from '../events/websocket-client';
 import { RemoteState } from './remote-state';

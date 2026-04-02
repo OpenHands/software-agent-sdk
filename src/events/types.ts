@@ -421,7 +421,7 @@ export function isHookExecutionEvent(event: BaseEvent): event is HookExecutionEv
  * Generate a unique event ID
  */
 export function generateEventId(): EventID {
-  return `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  return `evt_${Date.now()}_${crypto.randomUUID().substring(0, 8)}`;
 }
 
 /**
