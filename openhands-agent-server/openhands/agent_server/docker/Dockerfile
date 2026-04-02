@@ -334,6 +334,22 @@ ENV LD_LIBRARY_PATH=/agent-server/.python/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PAT
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 ############################
+# Target A.1: portability-test
+# Verifies that /agent-server stays runnable when copied onto a base image
+# with no Python installed, matching the benchmarks repo assembly pattern.
+############################
+FROM debian:bookworm-slim AS portability-test
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /agent-server /agent-server
+ENV LD_LIBRARY_PATH=/agent-server/.python/lib
+RUN set -eux; \
+    test -x /agent-server/.python/bin/python3; \
+    test -f /agent-server/.venv/pyvenv.cfg; \
+    /agent-server/.venv/bin/python -c "import sys; print('OK:', sys.executable, sys.version)"; \
+    /agent-server/.venv/bin/python -c "import openhands.agent_server; print('agent_server importable')"
+
+############################
 # Target B: binary-runtime
 # Production mode: build the binary inside Docker and copy it in.
 # NOTE: no support for external artifact contexts anymore.

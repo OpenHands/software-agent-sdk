@@ -1,6 +1,7 @@
 """Tests for agent_server docker build module."""
 
 import os
+import re
 import subprocess
 import tarfile
 from pathlib import Path
@@ -885,7 +886,7 @@ _DOCKERFILE_PATH = (
 
 @pytest.fixture()
 def dockerfile_text() -> str:
-    return _DOCKERFILE_PATH.read_text()
+    return _DOCKERFILE_PATH.read_text(encoding="utf-8")
 
 
 def test_builder_bundles_python_runtime(dockerfile_text: str):
@@ -900,29 +901,30 @@ def test_builder_bundles_python_runtime(dockerfile_text: str):
 
 def test_source_targets_set_ld_library_path(dockerfile_text: str):
     """source and source-minimal targets need LD_LIBRARY_PATH for libpython."""
-    # Find all lines between "AS source" and next "FROM" or EOF
     lines = dockerfile_text.splitlines()
-    in_source_target = False
-    found_ld_path = False
-    for line in lines:
-        if "AS source-minimal" in line or "AS source" in line:
-            in_source_target = True
-            continue
-        if in_source_target and line.startswith("FROM "):
-            in_source_target = False
-        if in_source_target and "LD_LIBRARY_PATH" in line:
-            assert "/agent-server/.python/lib" in line
-            found_ld_path = True
-    assert found_ld_path, (
-        "source / source-minimal targets must set "
-        "LD_LIBRARY_PATH=/agent-server/.python/lib"
-    )
+    for target_name in ["source", "source-minimal"]:
+        pattern = rf"FROM .* AS {re.escape(target_name)}\b"
+        in_target = False
+        found_ld_path = False
+        for line in lines:
+            if re.search(pattern, line):
+                in_target = True
+                continue
+            if in_target and line.startswith("FROM "):
+                break
+            if in_target and "LD_LIBRARY_PATH" in line:
+                assert "/agent-server/.python/lib" in line
+                found_ld_path = True
+                break
+
+        assert found_ld_path, (
+            f"{target_name} target must set "
+            "LD_LIBRARY_PATH=/agent-server/.python/lib"
+        )
 
 
-def test_portability_test_dockerfile_exists():
-    """A portability-test Dockerfile must exist for CI validation."""
-    portability_df = _DOCKERFILE_PATH.parent / "Dockerfile.portability-test"
-    assert portability_df.exists(), (
-        "Dockerfile.portability-test should exist alongside the main "
-        "Dockerfile for CI-based portability validation"
-    )
+def test_portability_test_target_validates_builder_artifacts(dockerfile_text: str):
+    """The main Dockerfile should include a runnable portability-test stage."""
+    assert "FROM debian:bookworm-slim AS portability-test" in dockerfile_text
+    assert "COPY --from=builder /agent-server /agent-server" in dockerfile_text
+    assert "agent_server importable" in dockerfile_text
