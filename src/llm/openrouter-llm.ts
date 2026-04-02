@@ -167,18 +167,19 @@ export class OpenRouterLLM implements ILLM {
     }));
   }
 
-  async chatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResponse> {
-    const model = options.model || this.defaultModel;
-    const messages = this.convertMessages(options.messages);
-
-    // Build the request - using 'any' to handle SDK type complexity
+  /**
+   * Build the common request parameters shared by chatCompletion and chatCompletionStream.
+   */
+  private buildRequestParams(
+    options: ChatCompletionOptions | Omit<ChatCompletionOptions, 'stream'>,
+    stream: boolean
+  ): Record<string, unknown> {
     const requestParams: Record<string, unknown> = {
-      model,
-      messages,
-      stream: false,
+      model: options.model || this.defaultModel,
+      messages: this.convertMessages(options.messages),
+      stream,
     };
 
-    // Add optional parameters
     if (options.temperature !== undefined) {
       requestParams.temperature = options.temperature;
     } else if (this.defaultTemperature !== undefined) {
@@ -202,6 +203,13 @@ export class OpenRouterLLM implements ILLM {
     if (options.stop) {
       requestParams.stop = options.stop;
     }
+
+    return requestParams;
+  }
+
+  async chatCompletion(options: ChatCompletionOptions): Promise<ChatCompletionResponse> {
+    const model = options.model || this.defaultModel;
+    const requestParams = this.buildRequestParams(options, false);
 
     // Cast to expected type - SDK handles validation
     const response = (await this.client.chat.send(
@@ -239,41 +247,8 @@ export class OpenRouterLLM implements ILLM {
     options: Omit<ChatCompletionOptions, 'stream'>
   ): AsyncIterable<ChatCompletionChunk> {
     const model = options.model || this.defaultModel;
-    const messages = this.convertMessages(options.messages);
+    const requestParams = this.buildRequestParams(options, true);
 
-    // Build the request - using 'any' to handle SDK type complexity
-    const requestParams: Record<string, unknown> = {
-      model,
-      messages,
-      stream: true,
-    };
-
-    // Add optional parameters
-    if (options.temperature !== undefined) {
-      requestParams.temperature = options.temperature;
-    } else if (this.defaultTemperature !== undefined) {
-      requestParams.temperature = this.defaultTemperature;
-    }
-
-    if (options.maxTokens !== undefined) {
-      requestParams.maxTokens = options.maxTokens;
-    } else if (this.defaultMaxTokens !== undefined) {
-      requestParams.maxTokens = this.defaultMaxTokens;
-    }
-
-    if (options.tools && options.tools.length > 0) {
-      requestParams.tools = this.convertTools(options.tools);
-    }
-
-    if (options.toolChoice) {
-      requestParams.toolChoice = options.toolChoice;
-    }
-
-    if (options.stop) {
-      requestParams.stop = options.stop;
-    }
-
-    // Cast to expected type - SDK handles validation
     const stream = await this.client.chat.send(
       requestParams as Parameters<typeof this.client.chat.send>[0]
     );
