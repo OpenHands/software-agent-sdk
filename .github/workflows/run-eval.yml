@@ -24,7 +24,8 @@ on:
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: v1.16.0
+                default: v1.16.1
+
 
 
 
@@ -185,7 +186,7 @@ jobs:
 
         steps:
             - name: Checkout sdk code (base for validation)
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
               with:
                   ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk_ref || (github.event_name == 'pull_request_target' && 
                       github.event.pull_request.base.ref || github.ref) }}
