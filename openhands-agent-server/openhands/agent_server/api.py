@@ -27,6 +27,8 @@ from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.llm_router import llm_router
+from openhands.agent_server.mcp_router import mcp_router
+from openhands.agent_server.mcp_service import get_mcp_service
 from openhands.agent_server.middleware import LocalhostCORSMiddleware
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -51,6 +53,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
     tool_preload_service = get_tool_preload_service()
+    mcp_service = get_mcp_service()
 
     # Define async functions for starting each service
     async def start_vscode_service():
@@ -87,11 +90,16 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         else:
             logger.info("Tool preload service is disabled")
 
+    async def start_mcp_service():
+        await mcp_service.start()
+        logger.info("MCP service started successfully")
+
     # Start all services concurrently
     results = await asyncio.gather(
         start_vscode_service(),
         start_desktop_service(),
         start_tool_preload_service(),
+        start_mcp_service(),
         return_exceptions=True,
     )
 
@@ -114,8 +122,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     logger.info("Server initialization complete - ready to serve requests")
 
     async with service:
-        # Store the initialized service in app state for dependency injection
+        # Store the initialized services in app state for dependency injection
         api.state.conversation_service = service
+        api.state.mcp_service = mcp_service
         try:
             yield
         finally:
@@ -132,11 +141,15 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 if tool_preload_service is not None:
                     await tool_preload_service.stop()
 
+            async def stop_mcp_service():
+                await mcp_service.stop()
+
             # Stop all services concurrently
             await asyncio.gather(
                 stop_vscode_service(),
                 stop_desktop_service(),
                 stop_tool_preload_service(),
+                stop_mcp_service(),
                 return_exceptions=True,
             )
 
@@ -210,6 +223,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(skills_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(mcp_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 

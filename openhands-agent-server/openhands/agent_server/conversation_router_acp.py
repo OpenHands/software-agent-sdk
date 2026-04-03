@@ -118,7 +118,10 @@ async def batch_get_acp_conversations(
     return await conversation_service.batch_get_acp_conversations(ids)
 
 
-@conversation_router_acp.post("")
+@conversation_router_acp.post(
+    "",
+    responses={422: {"description": "Invalid MCP server reference"}},
+)
 async def start_acp_conversation(
     request: Annotated[
         StartACPConversationRequest,
@@ -128,6 +131,14 @@ async def start_acp_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ACPConversationInfo:
     """Start a conversation using the ACP-capable contract."""
-    info, is_new = await conversation_service.start_acp_conversation(request)
+    try:
+        info, is_new = await conversation_service.start_acp_conversation(request)
+    except ValueError as e:
+        if "mcp_server_ids" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(e),
+            ) from e
+        raise
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info
