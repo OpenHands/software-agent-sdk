@@ -121,6 +121,10 @@ class DockerWorkspace(RemoteWorkspace):
         default=None,
         description="Connect a container to the specified Docker network.",
     )
+    health_check_timeout: float = Field(
+        default=120.0,
+        description=("Timeout in seconds to wait for container health check to pass."),
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
     _image_name: str | None = PrivateAttr(default=None)
@@ -276,7 +280,7 @@ class DockerWorkspace(RemoteWorkspace):
         object.__setattr__(self, "api_key", None)
 
         # Wait for container to be healthy
-        self._wait_for_health()
+        self._wait_for_health(timeout=self.health_check_timeout)
         logger.info(f"Docker workspace is ready at {self.host}")
 
         # Now initialize the parent RemoteWorkspace with the container URL
@@ -418,5 +422,5 @@ class DockerWorkspace(RemoteWorkspace):
             raise RuntimeError(f"Failed to resume container: {result.stderr}")
 
         # Wait for health after resuming (use same timeout as initial startup)
-        self._wait_for_health(timeout=120.0)
+        self._wait_for_health(timeout=self.health_check_timeout)
         logger.info(f"Container resumed: {self._container_id}")

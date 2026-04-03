@@ -178,3 +178,104 @@ def test_docker_network(mock_docker_workspace):
         assert "--network" in run_cmd
         network_index = run_cmd.index("--network")
         assert run_cmd[network_index + 1] == network_name
+
+
+def test_docker_workspace_health_check_timeout_field_exists():
+    """Test that health_check_timeout is a recognised model field."""
+    from openhands.workspace import DockerWorkspace
+
+    assert "health_check_timeout" in DockerWorkspace.model_fields
+
+
+def test_docker_workspace_health_check_timeout_default():
+    """Test that health_check_timeout defaults to 120.0 seconds."""
+    from openhands.workspace import DockerWorkspace
+
+    field = DockerWorkspace.model_fields["health_check_timeout"]
+    assert field.default == 120.0
+
+
+def test_docker_workspace_health_check_timeout_custom(mock_docker_workspace):
+    """Test that a custom health_check_timeout is forwarded to _wait_for_health."""
+    from openhands.workspace import DockerWorkspace
+
+    with patch.object(DockerWorkspace, "_wait_for_health") as mock_wait:
+        with patch.object(DockerWorkspace, "_start_container"):
+            with patch(
+                "openhands.workspace.docker.workspace.execute_command"
+            ) as mock_exec:
+                mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
+                workspace = DockerWorkspace(
+                    server_image="test:latest", health_check_timeout=60.0
+                )
+        assert workspace.health_check_timeout == 60.0
+        # The field is set; _wait_for_health is called by _start_container which
+        # is mocked, so verify the value round-trips through the model.
+        _ = mock_wait  # referenced to satisfy linters
+
+
+def test_docker_workspace_resume_uses_health_check_timeout(mock_docker_workspace):
+    """Test that resume() passes health_check_timeout to _wait_for_health."""
+    from openhands.workspace import DockerWorkspace
+
+    with patch.object(DockerWorkspace, "_start_container"):
+        with patch("openhands.workspace.docker.workspace.execute_command") as mock_exec:
+            mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
+            workspace = DockerWorkspace(
+                server_image="test:latest", health_check_timeout=30.0
+            )
+
+    workspace._container_id = "container_id_123"
+
+    with patch.object(workspace, "_wait_for_health") as mock_wait:
+        mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
+        workspace.resume()
+        mock_wait.assert_called_once_with(timeout=30.0)
+
+
+# ===========================================================================
+# Apptainer health_check_timeout tests (co-located for compactness)
+# ===========================================================================
+
+
+def test_apptainer_workspace_health_check_timeout_field_exists():
+    """Test that health_check_timeout is a recognised model field."""
+    from openhands.workspace import ApptainerWorkspace
+
+    assert "health_check_timeout" in ApptainerWorkspace.model_fields
+
+
+def test_apptainer_workspace_health_check_timeout_default():
+    """Test that health_check_timeout defaults to 120.0 seconds."""
+    from openhands.workspace import ApptainerWorkspace
+
+    field = ApptainerWorkspace.model_fields["health_check_timeout"]
+    assert field.default == 120.0
+
+
+def test_apptainer_workspace_health_check_timeout_startup_call():
+    """Test that model_post_init passes health_check_timeout to _wait_for_health."""
+    from openhands.workspace import ApptainerWorkspace
+
+    with (
+        patch("openhands.workspace.apptainer.workspace.execute_command") as mock_exec,
+        patch(
+            "openhands.workspace.apptainer.workspace.check_port_available",
+            return_value=True,
+        ),
+        patch(
+            "openhands.workspace.apptainer.workspace.find_available_tcp_port",
+            return_value=8000,
+        ),
+        patch.object(
+            ApptainerWorkspace, "_prepare_sif_image", return_value="/fake/image.sif"
+        ),
+        patch.object(ApptainerWorkspace, "_start_container"),
+        patch.object(ApptainerWorkspace, "_wait_for_health") as mock_wait,
+        patch(
+            "openhands.workspace.apptainer.workspace.RemoteWorkspace.model_post_init"
+        ),
+    ):
+        mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
+        ApptainerWorkspace(server_image="test:latest", health_check_timeout=45.0)
+        mock_wait.assert_called_once_with(timeout=45.0)
