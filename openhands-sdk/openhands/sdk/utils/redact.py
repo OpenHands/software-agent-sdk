@@ -272,4 +272,49 @@ def redact_text_secrets(text: str) -> str:
         text,
     )
 
+    # Bare API key literals (common provider formats)
+    text = redact_api_key_literals(text)
+
     return text
+
+
+# Compiled pattern for bare API key literals from common providers.
+# Each branch matches a known prefix followed by the key body.
+# Word boundaries (\b) prevent matching partial tokens.
+_API_KEY_LITERAL_RE = re.compile(
+    r"\b("
+    # OpenRouter / OpenAI / Anthropic
+    r"sk-(?:or-v1|proj|ant-(?:api|oat)\d{2})-[A-Za-z0-9_-]{20,}"
+    r"|gsk_[A-Za-z0-9]{20,}"  # GROQ
+    r"|hf_[A-Za-z0-9]{20,}"  # HuggingFace
+    r"|tgp_v1_[A-Za-z0-9_-]{20,}"  # Together AI
+    r"|ghp_[A-Za-z0-9]{20,}"  # GitHub PAT (classic)
+    r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub PAT (fine-grained)
+    r"|sk-oh-[A-Za-z0-9]{20,}"  # OpenHands session tokens
+    r"|ctx7sk-[A-Za-z0-9_-]{10,}"  # Context7 MCP keys
+    r"|cla_[A-Za-z0-9_-]{20,}"  # Claude.ai MCP tokens
+    r"|sntryu_[A-Za-z0-9]{10,}"  # Sentry tokens
+    r"|lin_api_[A-Za-z0-9]{10,}"  # Linear API tokens
+    r"|tvly-[A-Za-z0-9_-]{10,}"  # Tavily keys
+    r"|ATATT3x[A-Za-z0-9_-]{10,}"  # Jira/Atlassian tokens
+    r"|xoxb-[A-Za-z0-9_-]{20,}"  # Slack bot tokens
+    r"|xoxp-[A-Za-z0-9_-]{20,}"  # Slack user tokens
+    r"|Bearer\s+[A-Za-z0-9_.-]{20,}"  # Bearer tokens
+    r")"
+)
+
+
+def redact_api_key_literals(text: str) -> str:
+    """Replace bare API key literals from common providers with ``<redacted>``.
+
+    Matches known key prefixes (OpenAI, Anthropic, OpenRouter, GROQ,
+    HuggingFace, Together AI, GitHub, Sentry, Linear, Tavily, Slack,
+    OpenHands session tokens, etc.) anywhere in the text.
+
+    Args:
+        text: The string to scan.
+
+    Returns:
+        The string with matching key literals replaced.
+    """
+    return _API_KEY_LITERAL_RE.sub("<redacted>", text)
