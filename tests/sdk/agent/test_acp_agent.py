@@ -282,6 +282,198 @@ class TestOpenHandsACPClient:
 
 
 # ---------------------------------------------------------------------------
+# Activity heartbeat
+# ---------------------------------------------------------------------------
+
+
+class TestACPActivityHeartbeat:
+    """Tests for the on_activity heartbeat in _OpenHandsACPBridge."""
+
+    def test_reset_clears_on_activity(self):
+        client = _OpenHandsACPBridge()
+        client.on_activity = lambda: None
+        client.reset()
+        assert client.on_activity is None
+
+    def test_reset_preserves_last_activity_signal(self):
+        """_last_activity_signal persists across resets (like telemetry state)."""
+        client = _OpenHandsACPBridge()
+        client._last_activity_signal = 999.0
+        client.reset()
+        assert client._last_activity_signal == 999.0
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_signals_activity(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read file"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_signals_activity(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        # Need a ToolCallStart first
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Reset throttle so ToolCallProgress can fire
+        client._last_activity_signal = 0.0
+        signals.clear()
+
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "ok"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_message_chunk_signals_activity(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "hello"
+
+        await client.session_update("sess-1", chunk)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_activity_signal_is_throttled(self):
+        """Signals should be throttled to at most one per interval."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        for i in range(5):
+            start = MagicMock(spec=ToolCallStart)
+            start.tool_call_id = f"tc-{i}"
+            start.title = f"Tool {i}"
+            start.kind = "read"
+            start.status = "completed"
+            start.raw_input = None
+            start.raw_output = None
+            start.content = None
+            await client.session_update("sess-1", start)
+
+        # All happened within the same throttle window → only 1 signal
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_signal_without_callback(self):
+        """No error when on_activity is None."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        assert client.on_activity is None
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_activity_callback_error_is_swallowed(self):
+        """Errors in on_activity must not break session_update."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.on_activity = MagicMock(side_effect=RuntimeError("boom"))
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+        client.on_activity.assert_called_once()
+
+    def test_step_wires_on_activity(self, tmp_path):
+        """step() should set on_activity on the bridge from _on_activity."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        # Wire up a user message
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="sys"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="test")]),
+            ),
+        )
+
+        activity_fn = MagicMock()
+        agent._on_activity = activity_fn
+
+        # Mock the internals so step() doesn't actually call the ACP server
+        agent._client = _OpenHandsACPBridge()
+        agent._executor = MagicMock()
+        agent._executor.run_async = MagicMock(return_value=MagicMock(usage=None))
+        agent._session_id = "sess-1"
+        agent._initialized = True
+
+        conversation = MagicMock()
+        conversation.state = state
+        events: list = []
+
+        agent.step(conversation, on_event=events.append)
+
+        # Verify on_activity was wired to the bridge
+        assert agent._client.on_activity is activity_fn
+
+
+# ---------------------------------------------------------------------------
 # step
 # ---------------------------------------------------------------------------
 

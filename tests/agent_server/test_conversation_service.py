@@ -1734,3 +1734,34 @@ class TestAutoTitle:
         # Title remains unset; save_meta was never called
         assert service.stored.title is None
         service.save_meta.assert_not_called()
+
+
+class TestACPActivityHeartbeatWiring:
+    """Tests for _setup_acp_activity_heartbeat in EventService."""
+
+    def test_acp_agent_gets_on_activity_wired(self):
+        """_setup_acp_activity_heartbeat should set _on_activity on ACPAgent."""
+        from openhands.agent_server.event_service import EventService
+        from openhands.agent_server.server_details_router import (
+            update_last_execution_time,
+        )
+
+        service = AsyncMock(spec=EventService)
+        # Call the real method
+        agent = ACPAgent(acp_command=["echo", "test"])
+        assert agent._on_activity is None
+
+        EventService._setup_acp_activity_heartbeat(service, agent)
+
+        assert agent._on_activity is update_last_execution_time
+
+    def test_non_acp_agent_unchanged(self):
+        """_setup_acp_activity_heartbeat is a no-op for non-ACP agents."""
+        from openhands.agent_server.event_service import EventService
+
+        service = AsyncMock(spec=EventService)
+        agent = Agent(llm=LLM(model="test-model"))
+
+        # Should not raise and should not set any attribute
+        EventService._setup_acp_activity_heartbeat(service, agent)
+        assert not hasattr(agent, "_on_activity")

@@ -96,6 +96,11 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # for large tool output.
 _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 
+# Minimum interval between on_activity heartbeat signals (seconds).
+# Throttled to avoid excessive calls while still keeping the idle timer
+# well below the ~20 min runtime-api kill threshold.
+_ACTIVITY_SIGNAL_INTERVAL: float = 30.0
+
 
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
@@ -280,6 +285,11 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
+        # Activity heartbeat — called (throttled) during session_update to
+        # signal that the ACP subprocess is still actively working.  Set by
+        # ACPAgent.step() to keep the agent-server's idle timer alive.
+        self.on_activity: Any = None  # Callable[[], None] | None
+        self._last_activity_signal: float = 0.0
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._last_cost_by_session: dict[str, float] = {}
@@ -299,10 +309,11 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
         self.on_token = None
+        self.on_activity = None
         self._turn_usage_updates.clear()
         self._usage_received.clear()
-        # Note: telemetry state (_last_cost, _context_window, etc.)
-        # is intentionally NOT cleared — it accumulates across turns.
+        # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
+        # etc.) is intentionally NOT cleared — it accumulates across turns.
 
     def prepare_usage_sync(self, session_id: str) -> asyncio.Event:
         """Prepare per-turn UsageUpdate synchronization for a session."""
@@ -346,6 +357,7 @@ class _OpenHandsACPBridge:
                         self.on_token(text)
                     except Exception:
                         logger.debug("on_token callback failed", exc_info=True)
+            self._maybe_signal_activity()
         elif isinstance(update, AgentThoughtChunk):
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(update.content.text)
@@ -370,6 +382,7 @@ class _OpenHandsACPBridge:
                 }
             )
             logger.debug("ACP tool call start: %s", update.tool_call_id)
+            self._maybe_signal_activity()
         elif isinstance(update, ToolCallProgress):
             # Find the existing tool call entry and merge updates
             for tc in self.accumulated_tool_calls:
@@ -388,8 +401,30 @@ class _OpenHandsACPBridge:
                         tc["content"] = _serialize_tool_content(update.content)
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
+            self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def _maybe_signal_activity(self) -> None:
+        """Signal activity to the agent-server's idle tracker (throttled).
+
+        During conn.prompt(), ACP tool calls run inside the subprocess and
+        never hit the agent-server's HTTP endpoints.  Without this heartbeat
+        the server's idle_time grows unboundedly and the runtime-api kills
+        the pod (default idle threshold ~20 min).
+
+        Throttled to at most once per _ACTIVITY_SIGNAL_INTERVAL seconds to
+        avoid excessive overhead on chatty ACP servers.
+        """
+        if self.on_activity is None:
+            return
+        now = time.monotonic()
+        if now - self._last_activity_signal >= _ACTIVITY_SIGNAL_INTERVAL:
+            self._last_activity_signal = now
+            try:
+                self.on_activity()
+            except Exception:
+                logger.debug("on_activity callback failed", exc_info=True)
 
     async def request_permission(
         self,
@@ -555,6 +590,9 @@ class ACPAgent(AgentBase):
     _agent_version: str = PrivateAttr(
         default=""
     )  # ACP server version from InitializeResponse
+    # Callback to signal that the ACP subprocess is actively working.
+    # Injected by the agent-server to call update_last_execution_time().
+    _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
 
     # -- Helpers -----------------------------------------------------------
 
@@ -867,6 +905,7 @@ class ACPAgent(AgentBase):
         # Reset client accumulators
         self._client.reset()
         self._client.on_token = on_token
+        self._client.on_activity = self._on_activity
 
         t0 = time.monotonic()
         try:
