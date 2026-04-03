@@ -12,18 +12,11 @@ ARG PORT=8000
 ####################################################################################
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
-#
-# NOTE: We use the base image's system Python (--python-preference only-system)
-# instead of uv-managed python-build-standalone. The python-build-standalone
-# builds ship libpython with an executable stack (PT_GNU_STACK PF_X).
-# Docker containers running under seccomp restrictions (e.g. GitHub Actions
-# Docker-in-Docker) reject dlopen() on such libraries with:
-#   "cannot enable executable stack as shared object requires: Invalid argument"
-# Debian's CPython packages do not have this issue.
 ####################################################################################
 FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
+ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
@@ -38,7 +31,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv venv --python-preference only-system .venv && uv sync --frozen --no-editable --extra boto3
+    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -271,11 +264,13 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 ############################
 FROM base-image AS source
 ARG USERNAME
+ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 FROM base-image-minimal AS source-minimal
 ARG USERNAME
+ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
