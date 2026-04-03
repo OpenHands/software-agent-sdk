@@ -160,9 +160,9 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "str_replace_editor": "file_editor",
 }
 
-_SHELL_TOOL_FALLBACK_PREFIXES = frozenset(
-    {"awk", "cat", "find", "grep", "head", "ls", "pwd", "sed", "tail", "wc"}
-)
+# This fallback is intentionally tiny: it only accepts exact, bare command names
+# that are useful as read-only defaults when some models emit them as tool names.
+_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
 
 
 def parse_tool_call_arguments(raw_arguments: str) -> dict[str, Any]:
@@ -191,19 +191,24 @@ def _infer_file_editor_command(arguments: dict[str, Any]) -> str | None:
 
 
 def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
+    """Return a safe terminal command for structured grep fallbacks.
+
+    Returning ``None`` keeps malformed grep payloads on the normal "tool not
+    found" path instead of broadening terminal execution.
+    """
     pattern = arguments.get("pattern")
-    if not isinstance(pattern, str) or not pattern:
+    if not isinstance(pattern, str) or not pattern.strip():
         return None
 
     command_parts = ["grep", "-RIn"]
     include = arguments.get("include")
-    if isinstance(include, str) and include:
+    if isinstance(include, str) and include.strip():
         command_parts.extend(["--include", include])
 
     command_parts.extend(["--", pattern])
 
     path = arguments.get("path")
-    command_parts.append(path if isinstance(path, str) and path else ".")
+    command_parts.append(path if isinstance(path, str) and path.strip() else ".")
     return shlex.join(command_parts)
 
 
@@ -211,16 +216,20 @@ def _maybe_rewrite_as_terminal_command(
     tool_name: str,
     arguments: dict[str, Any],
 ) -> str | None:
+    """Return a narrow terminal fallback for shell-style tool names.
+
+    Aliases are handled before this helper, so Anthropic-style names like
+    ``str_replace`` normalize to canonical SDK tools instead of being treated as
+    shell commands. This helper only runs for otherwise-unknown names when the
+    agent already exposes ``terminal``.
+    """
     if tool_name == "grep":
         return _build_grep_terminal_command(arguments)
 
-    if arguments:
+    if arguments or tool_name not in _SHELL_TOOL_FALLBACK_COMMANDS:
         return None
 
-    first_token = tool_name.split(maxsplit=1)[0]
-    if first_token in _SHELL_TOOL_FALLBACK_PREFIXES:
-        return tool_name
-    return None
+    return tool_name
 
 
 def normalize_tool_call(
@@ -228,7 +237,12 @@ def normalize_tool_call(
     arguments: dict[str, Any],
     available_tools: Collection[str],
 ) -> tuple[str, dict[str, Any]]:
-    """Normalize legacy tool names and Anthropic-style argument shapes."""
+    """Normalize legacy tool names and Anthropic-style argument shapes.
+
+    Precedence is intentional: legacy aliases resolve first, terminal fallback
+    only applies to still-unknown names, and file_editor command inference runs
+    after the canonical tool name is known.
+    """
     normalized_tool_name = tool_name
     normalized_arguments = arguments.copy()
 

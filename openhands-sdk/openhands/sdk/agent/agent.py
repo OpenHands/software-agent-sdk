@@ -733,6 +733,40 @@ class Agent(CriticMixin, AgentBase):
         args_str = json.dumps(arguments)
         return f"{tool_name}: {args_str}"
 
+    def _emit_tool_error(
+        self,
+        *,
+        error: str,
+        tool_name: str,
+        tool_call: MessageToolCall,
+        llm_response_id: str,
+        on_event: ConversationCallbackType,
+        thought: list[TextContent] | None = None,
+        reasoning_content: str | None = None,
+        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
+        responses_reasoning_item: ReasoningItemModel | None = None,
+    ) -> None:
+        tc_event = ActionEvent(
+            source="agent",
+            thought=thought or [],
+            reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks or [],
+            responses_reasoning_item=responses_reasoning_item,
+            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
+            llm_response_id=llm_response_id,
+            action=None,
+        )
+        on_event(tc_event)
+        on_event(
+            AgentErrorEvent(
+                error=error,
+                tool_name=tool_name,
+                tool_call_id=tool_call.id,
+            )
+        )
+
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
@@ -767,25 +801,17 @@ class Agent(CriticMixin, AgentBase):
                 available = list(self.tools_map.keys())
                 err = f"Tool '{requested_tool_name}' not found. Available: {available}"
                 logger.error(err)
-                tc_event = ActionEvent(
-                    source="agent",
-                    thought=thought or [],
-                    reasoning_content=reasoning_content,
-                    thinking_blocks=thinking_blocks or [],
-                    responses_reasoning_item=responses_reasoning_item,
-                    tool_call=tool_call,
-                    tool_name=tool_call.name,
-                    tool_call_id=tool_call.id,
-                    llm_response_id=llm_response_id,
-                    action=None,
-                )
-                on_event(tc_event)
-                event = AgentErrorEvent(
+                self._emit_tool_error(
                     error=err,
                     tool_name=requested_tool_name,
-                    tool_call_id=tool_call.id,
+                    tool_call=tool_call,
+                    llm_response_id=llm_response_id,
+                    on_event=on_event,
+                    thought=thought,
+                    reasoning_content=reasoning_content,
+                    thinking_blocks=thinking_blocks,
+                    responses_reasoning_item=responses_reasoning_item,
                 )
-                on_event(event)
                 return
 
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
@@ -814,26 +840,17 @@ class Agent(CriticMixin, AgentBase):
                 f"Error validating args {tool_call.arguments} for tool "
                 f"'{display_tool_name}': {e}"
             )
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=normalized_tool_call,
-                tool_name=normalized_tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
+            self._emit_tool_error(
                 error=err,
                 tool_name=display_tool_name,
-                tool_call_id=tool_call.id,
+                tool_call=normalized_tool_call,
+                llm_response_id=llm_response_id,
+                on_event=on_event,
+                thought=thought,
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks,
+                responses_reasoning_item=responses_reasoning_item,
             )
-            on_event(event)
             return
 
         # Create initial action event

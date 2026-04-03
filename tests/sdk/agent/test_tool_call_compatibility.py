@@ -3,6 +3,7 @@
 import json
 from unittest.mock import patch
 
+import pytest
 from litellm import ChatCompletionMessageToolCall
 from litellm.types.utils import (
     Choices,
@@ -142,6 +143,64 @@ def test_shell_tool_name_falls_back_to_terminal(tmp_path):
     assert action_event.tool_name == TerminalTool.name
     assert action_event.action is not None
     assert getattr(action_event.action, "command") == "ls"
+
+
+@pytest.mark.parametrize("tool_name", ["cat /etc/passwd", "ls; echo pwned"])
+def test_shell_tool_name_requires_exact_command_name(tmp_path, tool_name):
+    events = _run_tool_call(
+        tmp_path,
+        tool_name=tool_name,
+        arguments={},
+        tool_names=(TerminalTool.name,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+    observations = [e for e in events if isinstance(e, ObservationEvent)]
+
+    assert not observations
+    assert action_event.tool_name == tool_name
+    assert action_event.action is None
+    assert errors
+    assert errors[0].tool_name == tool_name
+
+
+def test_grep_without_pattern_does_not_fall_back_to_terminal(tmp_path):
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="grep",
+        arguments={"path": str(tmp_path)},
+        tool_names=(TerminalTool.name,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+    observations = [e for e in events if isinstance(e, ObservationEvent)]
+
+    assert not observations
+    assert action_event.tool_name == "grep"
+    assert action_event.action is None
+    assert errors
+    assert errors[0].tool_name == "grep"
+
+
+def test_shell_tool_name_does_not_fall_back_without_terminal(tmp_path):
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="ls",
+        arguments={},
+        tool_names=(FileEditorTool.name,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+    observations = [e for e in events if isinstance(e, ObservationEvent)]
+
+    assert not observations
+    assert action_event.tool_name == "ls"
+    assert action_event.action is None
+    assert errors
+    assert errors[0].tool_name == "ls"
 
 
 def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
