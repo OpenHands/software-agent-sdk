@@ -4,6 +4,10 @@ This module provides a centralized, unified set of patterns and functions for
 detecting and redacting secret-bearing keys in structured data (JSON objects,
 headers, URLs, etc.). It's the single source of truth for secret key detection
 across the SDK.
+
+Copies / consumers of this module (keep in sync when changing):
+  - OpenHands/runtime-api  →  utils/redact.py  (partial copy: sanitize_dict, is_secret_key)
+  - All-Hands-AI/OpenHands →  openhands/utils/log_utils.py  (imports sanitize_dict, adds URL redaction)
 """
 
 from collections.abc import Mapping
