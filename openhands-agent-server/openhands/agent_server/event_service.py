@@ -472,6 +472,7 @@ class EventService:
             secrets=self.stored.secrets,
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
+            tags=self.stored.tags,
         )
 
         # Set confirmation mode if enabled
