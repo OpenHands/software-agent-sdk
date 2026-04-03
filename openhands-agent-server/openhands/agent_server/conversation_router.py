@@ -115,10 +115,10 @@ async def get_conversation(
 
 
 @conversation_router.get(
-    "/{conversation_id}/response",
+    "/{conversation_id}/agent_final_response",
     responses={404: {"description": "Conversation not found"}},
 )
-async def get_conversation_response(
+async def get_conversation_agent_final_response(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> AgentResponseResult:

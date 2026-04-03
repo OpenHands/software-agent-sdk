@@ -1,4 +1,4 @@
-"""Tests for the GET /conversations/{id}/response endpoint."""
+"""Tests for the GET /conversations/{id}/agent_final_response endpoint."""
 
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -54,7 +54,9 @@ def test_get_response_with_finish_action(
     )
 
     try:
-        response = client.get(f"/api/conversations/{sample_conversation_id}/response")
+        response = client.get(
+            f"/api/conversations/{sample_conversation_id}/agent_final_response"
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -79,7 +81,9 @@ def test_get_response_empty_when_no_agent_events(
     )
 
     try:
-        response = client.get(f"/api/conversations/{sample_conversation_id}/response")
+        response = client.get(
+            f"/api/conversations/{sample_conversation_id}/agent_final_response"
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -99,7 +103,9 @@ def test_get_response_conversation_not_found(
     )
 
     try:
-        response = client.get(f"/api/conversations/{sample_conversation_id}/response")
+        response = client.get(
+            f"/api/conversations/{sample_conversation_id}/agent_final_response"
+        )
         assert response.status_code == 404
     finally:
         client.app.dependency_overrides.clear()
