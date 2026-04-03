@@ -24,6 +24,7 @@ from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
 from acp.client.connection import ClientSideConnection
+from acp.exceptions import RequestError as ACPRequestError
 from acp.helpers import text_block
 from acp.schema import (
     AgentMessageChunk,
@@ -84,6 +85,13 @@ _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 
 # Exception types that indicate transient connection issues worth retrying
 _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
+
+# JSON-RPC error codes from the ACP server that are transient and worth
+# retrying.  These map to server-side failures (HTTP 500 equivalents) where
+# the session state is still valid but the request failed.
+# -32603 = "Internal error" (JSON-RPC spec) — covers ACP server crashes,
+#          upstream model 500s, and transient infrastructure errors.
+_RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
@@ -921,6 +929,28 @@ class ACPAgent(AgentBase):
                             attempt + 1,
                             max_retries + 1,
                             delay,
+                            e,
+                        )
+                        time.sleep(delay)
+                        self._client.reset()
+                        self._client.on_token = on_token
+                    else:
+                        raise
+                except ACPRequestError as e:
+                    # Retry transient server errors (e.g. "Internal Server
+                    # Error" from Gemini).  These are JSON-RPC -32603 errors
+                    # that indicate a server-side failure, not a client bug.
+                    if e.code in _RETRIABLE_SERVER_ERROR_CODES and attempt < max_retries:
+                        delay = _ACP_PROMPT_RETRY_DELAYS[
+                            min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
+                        ]
+                        logger.warning(
+                            "ACP prompt failed with server error (attempt %d/%d), "
+                            "retrying in %.0fs: [%d] %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            delay,
+                            e.code,
                             e,
                         )
                         time.sleep(delay)

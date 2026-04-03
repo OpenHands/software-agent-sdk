@@ -1675,6 +1675,104 @@ class TestACPPromptRetry:
         assert call_count == 4
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
+    def test_retry_on_acp_server_error_then_success(self, tmp_path):
+        """Retry succeeds after transient ACP server error (JSON-RPC -32603)."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ACPRequestError(-32603, "Internal Server Error")
+            mock_client.accumulated_text.append("Success after server error retry")
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert "Success after server error retry" in events[0].llm_message.content[0].text
+
+    def test_no_retry_on_non_retriable_acp_error(self, tmp_path):
+        """ACP errors with non-retriable codes (e.g. -32600 Invalid request) fail immediately."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32600, "Invalid request")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(ACPRequestError, match="Invalid request"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 1  # No retry for non-retriable error codes
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_max_retries_exceeded_acp_server_error(self, tmp_path):
+        """ACP server error raised after max retries exhausted."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32603, "Internal Server Error")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            with pytest.raises(ACPRequestError, match="Internal Server Error"):
+                agent.step(conversation, on_event=events.append)
+
+        # Default max retries is 3, so 4 total attempts
+        assert call_count == 4
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
 
 # ---------------------------------------------------------------------------
 # Gemini-specific tests
