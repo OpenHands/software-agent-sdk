@@ -537,7 +537,7 @@ class ACPAgent(AgentBase):
         ...,
         description=(
             "Command to start the ACP server, e.g."
-            " ['npx', '-y', '@zed-industries/claude-agent-acp']"
+            " ['npx', '-y', '@agentclientprotocol/claude-agent-acp']"
         ),
     )
     acp_args: list[str] = Field(

@@ -1577,7 +1577,7 @@ class TestResolveBypassMode:
 
     def test_claude_agent_with_scope(self):
         assert (
-            _resolve_bypass_mode("@zed-industries/claude-agent-acp")
+            _resolve_bypass_mode("@agentclientprotocol/claude-agent-acp")
             == "bypassPermissions"
         )
 
