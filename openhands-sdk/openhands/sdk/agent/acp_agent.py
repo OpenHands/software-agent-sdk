@@ -111,6 +111,7 @@ def _make_dummy_llm() -> LLM:
 _BYPASS_MODE_MAP: dict[str, str] = {
     "claude-agent": "bypassPermissions",
     "codex-acp": "full-access",
+    "gemini-cli": "yolo",
 }
 _DEFAULT_BYPASS_MODE = "full-access"
 
@@ -122,6 +123,7 @@ _DEFAULT_BYPASS_MODE = "full-access"
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "codex-api-key": "CODEX_API_KEY",
     "openai-api-key": "OPENAI_API_KEY",
+    "gemini-api-key": "GEMINI_API_KEY",
 }
 
 
@@ -147,6 +149,7 @@ def _resolve_bypass_mode(agent_name: str) -> str:
     Different ACP servers use different mode IDs for the same concept:
     - claude-agent-acp → ``bypassPermissions``
     - codex-acp        → ``full-access``
+    - gemini-cli       → ``yolo``
 
     Falls back to ``full-access`` for unknown servers.
     """
@@ -160,8 +163,10 @@ def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any
     """Build ACP session metadata for server-specific model selection."""
     if not acp_model:
         return {}
+    # claude-agent-acp: model selection via session _meta (claudeCode.options.model)
     if "claude" in agent_name.lower():
         return {"claudeCode": {"options": {"model": acp_model}}}
+    # codex-acp, gemini-cli: use protocol-level set_session_model instead (see below)
     return {}
 
 
@@ -174,8 +179,65 @@ async def _maybe_set_session_model(
     """Apply a protocol-level session model override when the server supports it."""
     if not acp_model:
         return
-    if "codex-acp" in agent_name.lower():
+    # codex-acp, gemini-cli: model selection via set_session_model protocol method
+    # claude-agent-acp: uses session _meta instead (see _build_session_meta)
+    if "codex-acp" in agent_name.lower() or "gemini-cli" in agent_name.lower():
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
+
+
+def _extract_token_usage(
+    response: Any,
+) -> tuple[int, int, int, int, int]:
+    """Extract token usage from an ACP PromptResponse.
+
+    Returns (input_tokens, output_tokens, cache_read, cache_write, reasoning).
+
+    Checks two locations:
+    - claude-agent-acp, codex-acp: ``response.usage`` (standard ACP field)
+    - gemini-cli: ``response._meta.quota.token_count`` (non-standard)
+    """
+    if response is not None and response.usage is not None:
+        u = response.usage
+        return (
+            u.input_tokens,
+            u.output_tokens,
+            u.cached_read_tokens or 0,
+            u.cached_write_tokens or 0,
+            u.thought_tokens or 0,
+        )
+    if response is not None and response.field_meta is not None:
+        quota = response.field_meta.get("quota", {})
+        tc = quota.get("token_count", {})
+        return (tc.get("input_tokens", 0), tc.get("output_tokens", 0), 0, 0, 0)
+    return (0, 0, 0, 0, 0)
+
+
+def _estimate_cost_from_tokens(
+    model: str, input_tokens: int, output_tokens: int
+) -> float:
+    """Estimate cost from token counts using LiteLLM's pricing database.
+
+    Returns 0.0 if pricing is unavailable for the model.
+    """
+    try:
+        import litellm
+
+        cost_map = litellm.model_cost
+        info = cost_map.get(model, {})
+        input_cost = info.get("input_cost_per_token", 0) or 0
+        output_cost = info.get("output_cost_per_token", 0) or 0
+        return input_tokens * input_cost + output_tokens * output_cost
+    except Exception:
+        return 0.0
+
+
+def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] | None:
+    """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
+    if not content:
+        return None
+    return [
+        c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in content
+    ]
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -304,6 +366,7 @@ class _OpenHandsACPBridge:
                     "status": update.status,
                     "raw_input": update.raw_input,
                     "raw_output": update.raw_output,
+                    "content": _serialize_tool_content(update.content),
                 }
             )
             logger.debug("ACP tool call start: %s", update.tool_call_id)
@@ -321,6 +384,8 @@ class _OpenHandsACPBridge:
                         tc["raw_input"] = update.raw_input
                     if update.raw_output is not None:
                         tc["raw_output"] = update.raw_output
+                    if update.content is not None:
+                        tc["content"] = _serialize_tool_content(update.content)
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
         else:
@@ -465,6 +530,16 @@ class ACPAgent(AgentBase):
         ),
     )
 
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        # Propagate the actual model name to metrics so that cost/token
+        # entries are attributed to the real model, not the sentinel
+        # "acp-managed" placeholder.
+        if self.acp_model:
+            self.llm.metrics.model_name = self.acp_model
+            if self.llm.metrics.accumulated_token_usage is not None:
+                self.llm.metrics.accumulated_token_usage.model = self.acp_model
+
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
     _conn: Any = PrivateAttr(default=None)  # ClientSideConnection
@@ -498,26 +573,54 @@ class ACPAgent(AgentBase):
             elapsed: Wall-clock seconds for this prompt round-trip (optional).
             usage_update: The synchronized ACP UsageUpdate for this turn, if any.
         """
+        # -- Cost recording ---------------------------------------------------
+        # claude-agent-acp, codex-acp: report cost via UsageUpdate notification
+        # gemini-cli: does not send UsageUpdate (cost derived from tokens below)
+        cost_recorded = False
         if usage_update is not None and usage_update.cost is not None:
             last_cost = self._client._last_cost_by_session.get(session_id, 0.0)
             delta = usage_update.cost.amount - last_cost
             if delta > 0:
                 self.llm.metrics.add_cost(delta)
+                cost_recorded = True
             self._client._last_cost_by_session[session_id] = usage_update.cost.amount
             self._client._last_cost = usage_update.cost.amount
 
-        if response is not None and response.usage is not None:
-            usage = response.usage
+        # -- Token usage recording --------------------------------------------
+        input_tokens, output_tokens, cache_read, cache_write, reasoning = (
+            _extract_token_usage(response)
+        )
+        if input_tokens or output_tokens:
             self.llm.metrics.add_token_usage(
-                prompt_tokens=usage.input_tokens,
-                completion_tokens=usage.output_tokens,
-                cache_read_tokens=usage.cached_read_tokens or 0,
-                cache_write_tokens=usage.cached_write_tokens or 0,
-                reasoning_tokens=usage.thought_tokens or 0,
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                reasoning_tokens=reasoning,
                 context_window=self._client._context_window_by_session.get(
                     session_id, self._client._context_window
                 ),
                 response_id=session_id,
+            )
+
+        # -- Cost derivation from tokens --------------------------------------
+        # gemini-cli: no UsageUpdate cost, so derive from token counts using
+        # LiteLLM's model pricing database (same source the proxy uses).
+        # claude-agent-acp, codex-acp: skipped since cost_recorded is True.
+        if not cost_recorded and (input_tokens or output_tokens) and self.acp_model:
+            cost = _estimate_cost_from_tokens(
+                self.acp_model, input_tokens, output_tokens
+            )
+            if cost > 0:
+                self.llm.metrics.add_cost(cost)
+
+        if not cost_recorded and not input_tokens and not output_tokens:
+            # gemini-cli currently returns response.usage=None and
+            # response.field_meta=None (ACP SDK strips _meta during
+            # serialization). Tracked in google-gemini/gemini-cli#24280.
+            logger.debug(
+                "No usage data from ACP server %s — token/cost tracking unavailable",
+                self._agent_name or "unknown",
             )
 
         if elapsed is not None:
@@ -603,6 +706,14 @@ class ACPAgent(AgentBase):
 
         self._initialized = True
 
+        # Store agent info in agent_state so it's accessible from remote
+        # conversations (PrivateAttrs aren't serialized in state updates).
+        state.agent_state = {
+            **state.agent_state,
+            "acp_agent_name": self._agent_name,
+            "acp_agent_version": self._agent_version,
+        }
+
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
@@ -672,7 +783,15 @@ class ACPAgent(AgentBase):
                 method_id = _select_auth_method(auth_methods, env)
                 if method_id is not None:
                     logger.info("Authenticating with ACP method: %s", method_id)
-                    await conn.authenticate(method_id=method_id)
+                    auth_kwargs: dict[str, Any] = {}
+                    # gemini-cli: pass gateway baseUrl to route API calls
+                    # through LiteLLM proxy. claude-agent-acp and codex-acp
+                    # read their provider base URL from env vars directly.
+                    if method_id == "gemini-api-key":
+                        gemini_base_url = env.get("GEMINI_BASE_URL")
+                        if gemini_base_url:
+                            auth_kwargs["gateway"] = {"baseUrl": gemini_base_url}
+                    await conn.authenticate(method_id=method_id, **auth_kwargs)
                 else:
                     logger.warning(
                         "ACP server offers auth methods %s but no matching "
@@ -831,6 +950,7 @@ class ACPAgent(AgentBase):
                     tool_kind=tc.get("tool_kind"),
                     raw_input=tc.get("raw_input"),
                     raw_output=tc.get("raw_output"),
+                    content=tc.get("content"),
                     is_error=tc.get("status") == "failed",
                 )
                 on_event(tc_event)
