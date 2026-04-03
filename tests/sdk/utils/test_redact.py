@@ -1,10 +1,7 @@
 """Tests for redact utility functions."""
 
-import pytest
-
 from openhands.sdk.utils.redact import (
     SENSITIVE_URL_PARAMS,
-    is_secret_key,
     redact_url_params,
 )
 
