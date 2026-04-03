@@ -5,11 +5,13 @@ detecting and redacting secret-bearing keys in structured data (JSON objects,
 headers, URLs, etc.). It's the single source of truth for secret key detection
 across the SDK.
 
-Copies / consumers of this module (keep in sync when changing):
-  - OpenHands/runtime-api  →  utils/redact.py  (partial copy: sanitize_dict, is_secret_key)
-  - All-Hands-AI/OpenHands →  openhands/utils/log_utils.py  (imports sanitize_dict, adds URL redaction)
+Copies / consumers (keep in sync when changing):
+  - OpenHands/runtime-api  →  utils/redact.py  (partial copy)
+  - All-Hands-AI/OpenHands →  imports directly
 """
 
+import copy
+import re
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -180,3 +182,94 @@ def redact_url_params(url: str) -> str:
     # doseq=True tells urlencode to unpack the value lists correctly.
     redacted_query = urlencode(redacted_params, doseq=True)
     return urlunparse(parsed._replace(query=redacted_query))
+
+
+def _walk_redact_urls(obj: Any) -> Any:
+    """Recursively walk a nested dict/list, applying URL param redaction to strings."""
+    if isinstance(obj, dict):
+        return {k: _walk_redact_urls(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_walk_redact_urls(item) for item in obj]
+    if isinstance(obj, str) and "?" in obj:
+        return redact_url_params(obj)
+    return obj
+
+
+def sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Deep-copy a config dict, redact secret keys, and redact URL query params.
+
+    Combines ``sanitize_dict`` (key-based redaction for headers, env, api_key,
+    token, etc.) with ``redact_url_params`` (URL query-param redaction for
+    string values like ``https://api.example.com?apiKey=secret``).
+
+    Args:
+        config: A configuration dict (e.g. MCP server config).
+
+    Returns:
+        A sanitized deep copy safe for logging.
+    """
+    config = copy.deepcopy(config)
+    config = sanitize_dict(config)
+    config = _walk_redact_urls(config)
+    return config
+
+
+def redact_text_secrets(text: str) -> str:
+    """Redact secrets from a string representation of a config object.
+
+    Useful when you have a pydantic model or other object whose ``str()``
+    output contains credentials but cannot be converted to a dict for
+    ``sanitize_dict``.
+
+    Redacts:
+    - ``api_key='...'`` patterns
+    - Dict entries whose keys contain KEY, SECRET, TOKEN, or PASSWORD
+    - URL query params matching common secret names
+    - Authorization and X-Session-API-Key header values
+
+    Args:
+        text: The string to redact.
+
+    Returns:
+        The string with secrets replaced by ``<redacted>``.
+    """
+    # api_key='...' patterns (single or double quotes)
+    text = re.sub(r"api_key='[^']*'", "api_key='<redacted>'", text)
+    text = re.sub(r'api_key="[^"]*"', 'api_key="<redacted>"', text)
+
+    # Dict entries with sensitive key names
+    text = re.sub(
+        r"('[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*':\s*')[^']*(')",
+        r"\g<1><redacted>\2",
+        text,
+    )
+    text = re.sub(
+        r'("[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*":\s*")[^"]*(")',
+        r"\g<1><redacted>\2",
+        text,
+    )
+
+    # URL query params
+    text = re.sub(
+        r"((?:tavilyApiKey|apiKey|api_key|token|access_token|secret|key)=)"
+        r"[^&\s'\")\]]+",
+        r"\g<1><redacted>",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Authorization header values
+    text = re.sub(
+        r"('Authorization':\s*')[^']*(')",
+        r"\g<1><redacted>\2",
+        text,
+    )
+
+    # X-Session-API-Key header values
+    text = re.sub(
+        r"('X-Session-API-Key':\s*')[^']*(')",
+        r"\g<1><redacted>\2",
+        text,
+    )
+
+    return text
