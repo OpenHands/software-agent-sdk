@@ -1,0 +1,67 @@
+# Secret patterns for scanning Datadog logs and GCS artifacts.
+# Each non-comment, non-empty line is a regex pattern.
+# Lines starting with # are comments.
+
+# OpenAI API keys
+sk-proj-[A-Za-z0-9_-]{20,}
+sk-[A-Za-z0-9]{48,}
+
+# Anthropic API keys
+sk-ant-[A-Za-z0-9_-]{20,}
+
+# OpenHands session tokens
+sk-oh-[A-Za-z0-9_-]{10,}
+
+# Tavily API keys
+tvly-[A-Za-z0-9]{20,}
+
+# OpenRouter API keys
+sk-or-v1-[A-Za-z0-9]{40,}
+
+# GROQ API keys
+gsk_[A-Za-z0-9]{20,}
+
+# HuggingFace tokens
+hf_[A-Za-z0-9]{20,}
+
+# Together AI keys
+tgp_v1_[A-Za-z0-9]{20,}
+
+# GitHub PATs
+ghp_[A-Za-z0-9]{36}
+github_pat_[A-Za-z0-9_]{40,}
+
+# DeepSeek API keys
+sk-[a-f0-9]{32,}
+
+# Sentry DSN (contains secret key in URL)
+https://[a-f0-9]{32}@[a-z0-9]+\.ingest\.sentry\.io/[0-9]+
+
+# Weights & Biases API keys
+wandb-[A-Za-z0-9]{40,}
+
+# Linear API keys
+lin_api_[A-Za-z0-9]{40,}
+
+# Cloudflare bearer tokens
+Bearer\s+[A-Za-z0-9_-]{40,}
+
+# Generic patterns for credentials in logs
+ANTHROPIC_API_KEY=[^\s&"']+
+OPENAI_API_KEY=[^\s&"']+
+GEMINI_API_KEY=[^\s&"']+
+LMNR_PROJECT_API_KEY=[^\s&"']+
+API_KEY=[^\s&"']{20,}
+api_key["']?\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}
+password["']?\s*[:=]\s*["']?[^\s"']{8,}
+secret["']?\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}
+token["']?\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}
+
+# Base64-encoded credentials in authorization headers
+Authorization:\s*Basic\s+[A-Za-z0-9+/=]{20,}
+
+# Private keys
+-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----
+
+# AWS keys
+AKIA[0-9A-Z]{16}
