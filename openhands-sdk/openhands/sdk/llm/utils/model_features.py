@@ -68,7 +68,7 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
     if normalized.startswith(LITELLM_PROXY_PREFIX):
         normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
 
-    # Strip common deployment path prefixes (e.g., "prod/claude-opus-4-5" → "claude-opus-4-5")
+    # Strip deployment prefixes (e.g., "prod/", "dev/", "staging/", "test/")
     for prefix in DEPLOYMENT_PREFIXES:
         if normalized.startswith(prefix):
             normalized = normalized.removeprefix(prefix)
