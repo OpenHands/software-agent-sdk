@@ -190,6 +190,13 @@ class LocalConversation(BaseConversation):
 
         # Default callback: persist every event to state
         def _default_callback(e):
+            # Events forwarded from sub-agents carry a subagent_id tag.
+            # They should be published to external callbacks (e.g. PubSub)
+            # but must NOT be persisted in the parent conversation's event
+            # log — sub-agents maintain their own trajectory.
+            if e.subagent_id is not None:
+                return
+
             # This callback runs while holding the conversation state's lock
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
