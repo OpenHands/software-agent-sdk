@@ -1,6 +1,6 @@
 from abc import ABC
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
@@ -52,7 +52,7 @@ ACPEnabledAgent = Annotated[
 ]
 
 
-class ConversationSortOrder(str, Enum):
+class ConversationSortOrder(StrEnum):
     """Enum for conversation sorting options."""
 
     CREATED_AT = "CREATED_AT"
@@ -61,7 +61,7 @@ class ConversationSortOrder(str, Enum):
     UPDATED_AT_DESC = "UPDATED_AT_DESC"
 
 
-class EventSortOrder(str, Enum):
+class EventSortOrder(StrEnum):
     """Enum for event sorting options."""
 
     TIMESTAMP = "TIMESTAMP"

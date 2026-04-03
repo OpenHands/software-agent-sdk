@@ -90,7 +90,7 @@ def observe[**P, R](
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     preserve_global_context: bool = False,
-    **kwargs: dict[str, Any],
+    rollout_entrypoint: bool = False,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         return laminar_observe(
@@ -106,7 +106,7 @@ def observe[**P, R](
             metadata=metadata,
             tags=tags,
             preserve_global_context=preserve_global_context,
-            **kwargs,
+            rollout_entrypoint=rollout_entrypoint,
         )(func)
 
     return decorator

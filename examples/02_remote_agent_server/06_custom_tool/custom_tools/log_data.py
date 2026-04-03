@@ -8,7 +8,7 @@ verified after the agent completes.
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ from openhands.sdk.tool import ToolExecutor, register_tool
 # --- Enums and Models ---
 
 
-class LogLevel(str, Enum):
+class LogLevel(StrEnum):
     """Log level for entries."""
 
     DEBUG = "debug"

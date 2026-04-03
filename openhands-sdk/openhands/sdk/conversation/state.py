@@ -1,7 +1,7 @@
 # state.py
 import json
 from collections.abc import Sequence
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
@@ -42,7 +42,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 logger = get_logger(__name__)
 
 
-class ConversationExecutionStatus(str, Enum):
+class ConversationExecutionStatus(StrEnum):
     """Enum representing the current execution state of the conversation."""
 
     IDLE = "idle"  # Conversation is ready to receive tasks

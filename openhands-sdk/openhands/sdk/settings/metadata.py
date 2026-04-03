@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel
 from pydantic.config import JsonDict
@@ -10,7 +10,7 @@ SETTINGS_METADATA_KEY = "openhands_settings"
 SETTINGS_SECTION_METADATA_KEY = "openhands_settings_section"
 
 
-class SettingProminence(str, Enum):
+class SettingProminence(StrEnum):
     CRITICAL = "critical"
     MAJOR = "major"
     MINOR = "minor"
