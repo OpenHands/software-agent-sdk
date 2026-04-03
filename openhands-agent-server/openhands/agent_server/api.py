@@ -1,7 +1,8 @@
 import asyncio
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
@@ -254,7 +255,7 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
             return RedirectResponse(url="/static/", status_code=302)
 
 
-def _sanitize_validation_errors(errors: list[dict]) -> list[dict]:
+def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
     """Sanitize validation error details to remove sensitive input values.
 
     FastAPI's default 422 response includes the raw request ``input`` in each

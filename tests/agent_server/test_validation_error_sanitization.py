@@ -14,9 +14,7 @@ from pydantic import BaseModel
 from openhands.agent_server.api import (
     _add_exception_handlers,
     _sanitize_validation_errors,
-    create_app,
 )
-from openhands.agent_server.config import Config
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +135,9 @@ class TestSanitizeValidationErrors:
         original_api_key = original_errors[0]["input"]["agent"]["llm"]["api_key"]
         _sanitize_validation_errors(original_errors)
         # Original should be untouched
-        assert original_errors[0]["input"]["agent"]["llm"]["api_key"] == original_api_key
+        assert (
+            original_errors[0]["input"]["agent"]["llm"]["api_key"] == original_api_key
+        )
 
     def test_redacts_multiple_secret_patterns(self):
         """Various secret key patterns should all be redacted."""
