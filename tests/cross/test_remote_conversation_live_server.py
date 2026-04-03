@@ -24,12 +24,14 @@ from openhands.sdk.event import (
     CondensationSummaryEvent,
     ConversationStateUpdateEvent,
     Event,
+    HookExecutionEvent,
     LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -114,7 +116,6 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     thread.start()
 
     # Wait for the server to be ready with health check
-    import httpx
 
     base_url = f"http://127.0.0.1:{port}"
     server_ready = False
@@ -133,7 +134,11 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
         raise RuntimeError("Server failed to start within timeout")
 
     try:
-        yield {"host": f"http://127.0.0.1:{port}"}
+        yield {
+            "app": app,
+            "conversation_service": app.state.conversation_service,
+            "host": f"http://127.0.0.1:{port}",
+        }
     finally:
         # uvicorn.Server lacks a robust shutdown API here; rely on daemon thread exit.
         server.should_exit = True
@@ -192,6 +197,111 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+
+def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
+    """A blocked websocket snapshot must not stall the live server event loop.
+
+    This exercises the production-shaped failure mode end-to-end: hold a real
+    conversation's synchronous state lock, start a second RemoteConversation that
+    attaches to the same server-side conversation, and verify `/ready` still
+    responds while the websocket subscription is waiting for its initial locked
+    state snapshot.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    conversation_id = conv.id
+
+    event_service = server_env["conversation_service"]._event_services[conversation_id]
+    assert event_service is not None
+    assert event_service._conversation is not None
+
+    attach_error: list[BaseException] = []
+    attach_result: dict[str, RemoteConversation] = {}
+    attach_thread = None
+    lock_thread = None
+    lock_acquired = threading.Event()
+    release_state_lock = threading.Event()
+    snapshot_started = threading.Event()
+    original_snapshot = event_service._create_state_update_event_sync
+
+    def traced_snapshot() -> ConversationStateUpdateEvent:
+        snapshot_started.set()
+        return original_snapshot()
+
+    def hold_state_lock() -> None:
+        assert event_service._conversation is not None
+        with event_service._conversation._state:
+            lock_acquired.set()
+            release_state_lock.wait(timeout=5.0)
+
+    def attach_conversation() -> None:
+        attach_workspace = RemoteWorkspace(
+            host=server_env["host"], working_dir="/tmp/workspace/project"
+        )
+        try:
+            attach_result["conversation"] = Conversation(
+                agent=agent,
+                workspace=attach_workspace,
+                conversation_id=conversation_id,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced by assertions
+            attach_error.append(exc)
+
+    event_service._create_state_update_event_sync = traced_snapshot
+
+    try:
+        lock_thread = threading.Thread(target=hold_state_lock, daemon=True)
+        lock_thread.start()
+        assert lock_acquired.wait(timeout=2.0), (
+            "Failed to acquire the conversation state lock for the live-server "
+            "reproduction"
+        )
+
+        attach_thread = threading.Thread(target=attach_conversation, daemon=True)
+        attach_thread.start()
+        assert snapshot_started.wait(timeout=5.0), (
+            "The websocket attach never reached the initial state snapshot"
+        )
+        assert attach_thread.is_alive(), (
+            "Expected websocket attach to still be waiting on the state lock"
+        )
+
+        ready_started = time.monotonic()
+        with httpx.Client() as client:
+            ready_response = client.get(f"{server_env['host']}/ready", timeout=1.0)
+        ready_elapsed = time.monotonic() - ready_started
+
+        assert ready_response.status_code == 200
+        assert ready_response.json() == {"status": "ready"}
+        assert ready_elapsed < 0.5, (
+            f"/ready took {ready_elapsed:.3f}s while websocket attach was waiting "
+            "for the conversation state lock"
+        )
+    finally:
+        event_service._create_state_update_event_sync = original_snapshot
+        release_state_lock.set()
+        if lock_thread is not None:
+            lock_thread.join(timeout=2.0)
+        if attach_thread is not None:
+            attach_thread.join(timeout=10.0)
+        attached_conv = attach_result.get("conversation")
+        if attached_conv is not None:
+            attached_conv.close()
+        conv.close()
+
+    assert not attach_error, (
+        f"Attaching to the existing conversation failed: {attach_error[0]}"
+    )
+    assert attach_thread is not None
+    assert not attach_thread.is_alive(), "Websocket attach never finished"
+    attached_conv = attach_result.get("conversation")
+    assert attached_conv is not None
+    assert attached_conv.id == conversation_id
 
 
 def test_remote_conversation_over_real_server(server_env, patched_llm):
@@ -366,16 +476,12 @@ def test_bash_command_endpoint_with_live_server(server_env):
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     """Integration test for file upload through live server.
 
-    This test validates that the /api/file/upload/{path} endpoint works
+    This test validates that the /api/file/upload endpoint works
     correctly end-to-end by:
     1. Starting a real FastAPI server with file upload endpoints
     2. Creating a RemoteWorkspace pointing to that server
     3. Creating a test file and uploading it
     4. Verifying the file was uploaded to the correct location with correct content
-
-    This is a regression test for the file upload issue where the client was
-    calling /api/file/upload (without the path parameter) instead of
-    /api/file/upload/{path} as the server expects.
     """
     # Create a RemoteWorkspace pointing to the live server
     workspace = RemoteWorkspace(
@@ -587,7 +693,6 @@ def test_events_not_lost_during_client_disconnection(
 
     See PR #1791 review for details: https://github.com/OpenHands/software-agent-sdk/pull/1791#pullrequestreview-3694259068
     """
-    import httpx
 
     def fake_completion_with_finish_tool(
         self,
@@ -748,8 +853,6 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     This test is intentionally conservative: it doesn't change production logic
     except for injecting a delay into the client-side callback.
     """
-
-    import httpx
 
     ws_delay_s = 0.75
 
@@ -1018,6 +1121,182 @@ def test_security_risk_field_with_live_server(
     # The test validates that:
     # 1. Actions can be executed without security_risk (defaults to UNKNOWN)
     # 2. ActionEvent always has a security_risk attribute
+
+
+def test_hook_config_sent_to_server(
+    server_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Test that hook_config is properly sent to the server and hooks are executed.
+
+    This validates the fix for the bug where hook_config was accepted by
+    RemoteConversation but never sent to the server, meaning server-side hooks
+    (PreToolUse, PostToolUse, UserPromptSubmit, Stop) were never executed.
+
+    The test:
+    1. Configures both post_tool_use and stop hooks
+    2. Uses a patched LLM that returns a finish tool call
+    3. Verifies HookExecutionEvent events are received for both hook types
+    """
+    # Create hook scripts that output JSON to indicate successful execution
+    post_tool_hook = tmp_path / "post_tool_hook.sh"
+    post_tool_hook.write_text('#!/bin/bash\necho \'{"decision": "allow"}\'\nexit 0\n')
+    post_tool_hook.chmod(0o755)
+
+    stop_hook = tmp_path / "stop_hook.sh"
+    stop_hook.write_text('#!/bin/bash\necho \'{"decision": "allow"}\'\nexit 0\n')
+    stop_hook.chmod(0o755)
+
+    hook_config = HookConfig(
+        post_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=str(post_tool_hook),
+                        timeout=5,
+                    )
+                ],
+            )
+        ],
+        stop=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=str(stop_hook),
+                        timeout=5,
+                    )
+                ],
+            )
+        ],
+    )
+
+    # Create a patched LLM that returns a finish tool call to trigger hooks
+    call_count = {"count": 0}
+
+    def fake_completion_with_finish(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+
+        # First call: return finish tool call (triggers PostToolUse and Stop hooks)
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": '{"message": "Task complete"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            # Subsequent calls: simple message
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
+
+    # Create an Agent
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+
+    # Create conversation via factory with hook_config
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        hook_config=hook_config,
+    )
+
+    # Verify the conversation was created successfully
+    assert conv._id is not None
+
+    # Send a message and run - this triggers the finish tool call
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # Wait for events to be received and check for HookExecutionEvents
+    found_post_tool_use_hook = False
+    found_stop_hook = False
+    events: list[Event] = []
+
+    for attempt in range(50):  # up to ~5s
+        events = list(conv.state.events)
+        for e in events:
+            if isinstance(e, HookExecutionEvent):
+                if e.hook_event_type == "PostToolUse":
+                    found_post_tool_use_hook = True
+                    # Verify hook executed successfully
+                    assert e.success is True
+                    assert e.blocked is False
+                    assert e.exit_code == 0
+                    assert str(post_tool_hook) in e.hook_command
+                elif e.hook_event_type == "Stop":
+                    found_stop_hook = True
+                    # Verify hook executed successfully
+                    assert e.success is True
+                    assert e.blocked is False
+                    assert e.exit_code == 0
+                    assert str(stop_hook) in e.hook_command
+
+        if found_post_tool_use_hook and found_stop_hook:
+            break
+        time.sleep(0.1)
+
+    # Assert both hooks were executed and their events were received
+    assert found_post_tool_use_hook, (
+        "Expected HookExecutionEvent for PostToolUse hook. "
+        f"Events received: {[type(e).__name__ for e in events]}"
+    )
+    assert found_stop_hook, (
+        "Expected HookExecutionEvent for Stop hook. "
+        f"Events received: {[type(e).__name__ for e in events]}"
+    )
+
+    # Verify state transitions occurred (proves the conversation ran successfully)
+    state = conv.state
+    assert state.execution_status.value in {"finished", "idle", "running"}
+
+    conv.close()
 
 
 def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):

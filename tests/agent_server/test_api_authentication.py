@@ -121,19 +121,19 @@ def test_api_server_details_no_auth_required(client_with_auth):
 def test_api_protected_endpoints_require_auth(client_with_auth):
     """Test that API endpoints under /api prefix require authentication."""
     protected_endpoints = [
-        "/api/conversations",
-        "/api/tools/",
-        "/api/file/download/test.txt",
+        ("/api/conversations", None),
+        ("/api/tools/", None),
+        ("/api/file/download", {"path": "/test.txt"}),
     ]
 
-    for endpoint in protected_endpoints:
+    for endpoint, params in protected_endpoints:
         # Without auth header
-        response = client_with_auth.get(endpoint)
+        response = client_with_auth.get(endpoint, params=params)
         assert response.status_code == 401, f"Endpoint {endpoint} should require auth"
 
         # With valid auth header
         response = client_with_auth.get(
-            endpoint, headers={"X-Session-API-Key": "test-key-123"}
+            endpoint, params=params, headers={"X-Session-API-Key": "test-key-123"}
         )
         assert response.status_code != 401, (
             f"Endpoint {endpoint} should accept valid auth"

@@ -27,7 +27,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
@@ -245,10 +245,18 @@ def agent_definition_to_factory(
                 )
             tools.append(Tool(name=tool_name))
 
+        # Build MCP config if servers are defined.
+        # Key is "mcpServers" (camelCase) to match the MCPConfig schema
+        # (see sdk/plugin/types.py McpServersDict alias and Agent.mcp_config examples).
+        mcp_config: dict[str, Any] = {}
+        if agent_def.mcp_servers:
+            mcp_config = {"mcpServers": agent_def.mcp_servers}
+
         return Agent(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
+            mcp_config=mcp_config,
         )
 
     return _factory
@@ -377,11 +385,14 @@ def get_factory_info() -> str:
     if not user_factories:
         return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
-    info_lines = []
-    for name, factory in sorted(user_factories.items()):
-        info_lines.append(f"- **{name}**: {factory.definition.description}")
+    def get_agent_info(name, factory):
+        defn = factory.definition
+        tools = f" (tools: {', '.join(defn.tools)})" if defn.tools else ""
+        return f"- **{name}**: {defn.description}{tools}"
 
-    return "\n".join(info_lines)
+    return "\n".join(
+        get_agent_info(name, f) for name, f in sorted(user_factories.items())
+    )
 
 
 def get_registered_agent_definitions() -> list[AgentDefinition]:

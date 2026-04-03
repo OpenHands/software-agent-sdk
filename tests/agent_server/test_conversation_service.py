@@ -1,8 +1,10 @@
 import asyncio
 import tempfile
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -10,10 +12,13 @@ from pydantic import SecretStr
 
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
+    ConversationContractMismatchError,
     ConversationService,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ACPConversationInfo,
+    ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
     StartConversationRequest,
@@ -22,6 +27,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, Message
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -488,6 +494,46 @@ class TestConversationServiceCountConversations:
         )
         assert result == 0
 
+    @pytest.mark.asyncio
+    async def test_count_acp_conversations_includes_legacy_and_acp(
+        self, conversation_service
+    ):
+        legacy_conversation = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        acp_conversation = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 13, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 13, 30, 0, tzinfo=UTC),
+        )
+
+        for stored_conv in (legacy_conversation, acp_conversation):
+            mock_service = AsyncMock(spec=EventService)
+            mock_service.stored = stored_conv
+            mock_service.get_state.return_value = ConversationState(
+                id=stored_conv.id,
+                agent=stored_conv.agent,
+                workspace=stored_conv.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored_conv.confirmation_policy,
+            )
+            conversation_service._event_services[stored_conv.id] = mock_service
+
+        assert await conversation_service.count_conversations() == 1
+        assert await conversation_service.count_acp_conversations() == 2
+
 
 class TestConversationServiceStartConversation:
     """Test cases for ConversationService.start_conversation method."""
@@ -672,6 +718,16 @@ class TestConversationServiceStartConversation:
         # Create a mock event service that exists but is not open
         mock_event_service = AsyncMock(spec=EventService)
         mock_event_service.is_open.return_value = False
+        mock_event_service.stored = StoredConversation(
+            id=custom_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
         conversation_service._event_services[custom_id] = mock_event_service
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -759,6 +815,45 @@ class TestConversationServiceStartConversation:
                 # Should reuse existing conversation since it's open
                 assert result.id == custom_id
                 assert not is_new
+                mock_start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_rejects_existing_acp_conversation_id(
+        self, conversation_service
+    ):
+        custom_id = uuid4()
+
+        mock_event_service = AsyncMock(spec=EventService)
+        mock_event_service.is_open.return_value = True
+        mock_event_service.stored = StoredConversation(
+            id=custom_id,
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        conversation_service._event_services[custom_id] = mock_event_service
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            with patch.object(
+                conversation_service, "_start_event_service"
+            ) as mock_start:
+                with pytest.raises(
+                    ConversationContractMismatchError,
+                    match="only available through the ACP conversation contract",
+                ):
+                    await conversation_service.start_conversation(request)
+
                 mock_start.assert_not_called()
 
     @pytest.mark.asyncio
@@ -902,6 +997,106 @@ class TestConversationServiceUpdateConversation:
         mock_service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_update_conversation_tags_uses_state_lock(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Test that tag updates hold the ConversationState lock."""
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        acquire_spy = MagicMock(wraps=mock_state._lock.acquire)
+        release_spy = MagicMock(wraps=mock_state._lock.release)
+        mock_state._lock.acquire = acquire_spy
+        mock_state._lock.release = release_spy
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        request = UpdateConversationRequest(tags={"env": "prod"})
+        result = await conversation_service.update_conversation(
+            conversation_id, request
+        )
+
+        assert result is True
+        assert mock_service.stored.tags == {"env": "prod"}
+        assert mock_state.tags == {"env": "prod"}
+        assert acquire_spy.call_count >= 2
+        assert release_spy.call_count == acquire_spy.call_count
+
+    @pytest.mark.asyncio
+    async def test_update_conversation_tags_wait_does_not_block_event_loop(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Waiting on the state lock must not stall unrelated async work."""
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        lock_acquired = threading.Event()
+        release_lock = threading.Event()
+        timings: dict[str, float] = {}
+
+        def hold_state_lock() -> None:
+            with state:
+                timings["lock_start"] = time.monotonic()
+                lock_acquired.set()
+                release_lock.wait(timeout=1.0)
+                timings["lock_end"] = time.monotonic()
+
+        holder = threading.Thread(target=hold_state_lock, daemon=True)
+        holder.start()
+        assert lock_acquired.wait(timeout=1.0)
+
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.05)
+            timings["heartbeat"] = time.monotonic()
+
+        async def release_after_delay() -> None:
+            await asyncio.sleep(0.2)
+            release_lock.set()
+
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ):
+            await asyncio.wait_for(
+                asyncio.gather(
+                    conversation_service.update_conversation(
+                        conversation_id,
+                        UpdateConversationRequest(tags={"env": "prod"}),
+                    ),
+                    heartbeat(),
+                    release_after_delay(),
+                ),
+                timeout=1.0,
+            )
+
+        holder.join(timeout=1.0)
+        assert not holder.is_alive()
+        assert mock_service.stored.tags == {"env": "prod"}
+        assert state.tags == {"env": "prod"}
+        assert timings["heartbeat"] < timings["lock_end"], (
+            "update_conversation blocked the async loop while waiting for the "
+            "state lock"
+        )
+
+    @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):
         """Test updating a non-existent conversation returns False."""
         non_existent_id = uuid4()
@@ -958,6 +1153,48 @@ class TestConversationServiceUpdateConversation:
             call_args = mock_notify.call_args[0]
             conversation_info = call_args[0]
             assert conversation_info.title == new_title
+            assert isinstance(conversation_info, ConversationInfo)
+
+    @pytest.mark.asyncio
+    async def test_update_acp_conversation_notifies_webhooks_with_acp_shape(
+        self, conversation_service
+    ):
+        stored_conversation = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = stored_conversation
+        mock_state = ConversationState(
+            id=stored_conversation.id,
+            agent=stored_conversation.agent,
+            workspace=stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ) as mock_notify:
+            result = await conversation_service.update_conversation(
+                conversation_id, UpdateConversationRequest(title="ACP Title")
+            )
+
+            assert result is True
+            mock_notify.assert_called_once()
+            conversation_info = mock_notify.call_args[0][0]
+            assert isinstance(conversation_info, ACPConversationInfo)
+            assert conversation_info.agent.kind == "ACPAgent"
 
     @pytest.mark.asyncio
     async def test_update_conversation_persists_changes(
@@ -1188,6 +1425,7 @@ class TestConversationServiceDeleteConversation:
                     conversation_info.execution_status
                     == ConversationExecutionStatus.DELETING
                 )
+                assert isinstance(conversation_info, ConversationInfo)
 
                 # Verify event service was closed
                 mock_service.close.assert_called_once()
@@ -1496,3 +1734,34 @@ class TestAutoTitle:
         # Title remains unset; save_meta was never called
         assert service.stored.title is None
         service.save_meta.assert_not_called()
+
+
+class TestACPActivityHeartbeatWiring:
+    """Tests for _setup_acp_activity_heartbeat in EventService."""
+
+    def test_acp_agent_gets_on_activity_wired(self):
+        """_setup_acp_activity_heartbeat should set _on_activity on ACPAgent."""
+        from openhands.agent_server.event_service import EventService
+        from openhands.agent_server.server_details_router import (
+            update_last_execution_time,
+        )
+
+        service = AsyncMock(spec=EventService)
+        # Call the real method
+        agent = ACPAgent(acp_command=["echo", "test"])
+        assert agent._on_activity is None
+
+        EventService._setup_acp_activity_heartbeat(service, agent)
+
+        assert agent._on_activity is update_last_execution_time
+
+    def test_non_acp_agent_unchanged(self):
+        """_setup_acp_activity_heartbeat is a no-op for non-ACP agents."""
+        from openhands.agent_server.event_service import EventService
+
+        service = AsyncMock(spec=EventService)
+        agent = Agent(llm=LLM(model="test-model"))
+
+        # Should not raise and should not set any attribute
+        EventService._setup_acp_activity_heartbeat(service, agent)
+        assert not hasattr(agent, "_on_activity")

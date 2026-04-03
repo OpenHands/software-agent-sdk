@@ -6,6 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -380,6 +381,44 @@ def test_factory_info() -> None:
     assert info.index("alpha-agent") < info.index("beta-agent")
 
 
+def test_factory_info_mixed_tools_and_no_tools() -> None:
+    """get_factory_info correctly shows tools only for agents that have them."""
+
+    def dummy(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    agent_with = AgentDefinition(
+        name="with-tools",
+        description="Has tools",
+        tools=["TerminalTool"],
+    )
+    agent_without = AgentDefinition(
+        name="without-tools",
+        description="No tools",
+        tools=[],
+    )
+    register_agent(name="with-tools", factory_func=dummy, description=agent_with)
+    register_agent(name="without-tools", factory_func=dummy, description=agent_without)
+
+    info = get_factory_info()
+    assert info == (
+        "- **with-tools**: Has tools (tools: TerminalTool)\n"
+        "- **without-tools**: No tools"
+    )
+
+
+def test_factory_info_single_agent() -> None:
+    """get_factory_info works correctly with a single registered agent."""
+
+    def dummy(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    register_agent(name="solo-agent", factory_func=dummy, description="Only agent")
+
+    info = get_factory_info()
+    assert info == "- **solo-agent**: Only agent"
+
+
 @pytest.mark.parametrize("name", [None, "", "default", "alpha"])
 def test_error_default_factory_empty(name: str | None) -> None:
     """Ensure default agent factory is used when no type is provided."""
@@ -559,7 +598,6 @@ def test_agent_definition_to_factory_profile_store_dir(tmp_path: Path) -> None:
         usage_id="dir-llm",
     )
     store.save("my-profile", profile_llm, include_secrets=True)
-
     agent_def = AgentDefinition(
         name="dir-agent",
         description="Uses profile_store_dir",
@@ -626,6 +664,109 @@ def test_agent_definition_to_factory_profile_store_dir_none_uses_default(
     assert agent.llm.model == "claude-sonnet-4-20250514"
 
 
+def test_register_agent_with_hook_config() -> None:
+    """register_agent stores hook_config in the AgentFactory via AgentDefinition."""
+    hook_config = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="terminal",
+                hooks=[HookDefinition(command="./validate.sh")],
+            )
+        ]
+    )
+
+    def dummy_factory(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    agent_def = AgentDefinition(
+        name="hooked-agent",
+        description="Agent with hooks",
+        hooks=hook_config,
+    )
+
+    register_agent(
+        name="hooked-agent",
+        factory_func=dummy_factory,
+        description=agent_def,
+    )
+
+    factory = get_agent_factory("hooked-agent")
+    assert factory.definition.hooks is not None
+    assert len(factory.definition.hooks.pre_tool_use) == 1
+    assert factory.definition.hooks.pre_tool_use[0].matcher == "terminal"
+
+
+def test_register_agent_hook_config_defaults_to_none() -> None:
+    """AgentFactory.hook_config defaults to None when not provided."""
+
+    def dummy_factory(llm: LLM) -> Agent:  # type: ignore[unused-argument]
+        return cast(Agent, MagicMock())
+
+    register_agent(
+        name="no-hooks-agent",
+        factory_func=dummy_factory,
+        description="Agent without hooks",
+    )
+
+    factory = get_agent_factory("no-hooks-agent")
+    assert factory.definition.hooks is None
+
+
+def test_register_file_agents_with_hooks(tmp_path: Path) -> None:
+    """File-based agents with hooks have hook_config stored in the factory."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "hooked.md").write_text(
+        "---\n"
+        "name: hooked-file-agent\n"
+        "description: File agent with hooks\n"
+        "hooks:\n"
+        "  pre_tool_use:\n"
+        "    - matcher: '*'\n"
+        "      hooks:\n"
+        "        - command: ./log.sh\n"
+        "---\n\n"
+        "You are an agent with hooks.\n"
+    )
+
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert "hooked-file-agent" in registered
+    factory = get_agent_factory("hooked-file-agent")
+    assert factory.definition.hooks is not None
+    assert len(factory.definition.hooks.pre_tool_use) == 1
+
+
+def test_register_plugin_agents_with_hooks() -> None:
+    """Plugin agents with hooks have hook_config stored in the factory."""
+    hook_config = HookConfig(
+        stop=[
+            HookMatcher(
+                matcher="*",
+                hooks=[HookDefinition(command="./check_stop.sh")],
+            )
+        ]
+    )
+    plugin_agent = AgentDefinition(
+        name="plugin-hooked",
+        description="Plugin agent with hooks",
+        model="inherit",
+        tools=[],
+        system_prompt="Plugin prompt.",
+        hooks=hook_config,
+    )
+
+    registered = register_plugin_agents([plugin_agent])
+    assert "plugin-hooked" in registered
+
+    factory = get_agent_factory("plugin-hooked")
+    assert factory.definition.hooks is not None
+    assert len(factory.definition.hooks.stop) == 1
+
+
 def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     """End-to-end: .md file -> AgentDefinition.load() -> factory -> register -> get."""
     md_file = tmp_path / "test-agent.md"
@@ -667,3 +808,73 @@ def test_end_to_end_md_to_factory_to_registry(tmp_path: Path) -> None:
     )
     agent = retrieved.factory_func(test_llm)
     assert isinstance(agent, Agent)
+
+
+def test_agent_definition_to_factory_mcp_servers() -> None:
+    """Factory passes mcp_servers as mcp_config to the Agent."""
+    agent_def = AgentDefinition(
+        name="mcp-agent",
+        description="Agent with MCP servers",
+        model="inherit",
+        tools=[],
+        system_prompt="",
+        mcp_servers={
+            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
+        },
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.mcp_config == {
+        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    }
+
+
+def test_agent_definition_to_factory_no_mcp_servers() -> None:
+    """Factory without mcp_servers passes empty mcp_config."""
+    agent_def = AgentDefinition(
+        name="no-mcp-agent",
+        model="inherit",
+        tools=[],
+        system_prompt="",
+    )
+
+    factory = agent_definition_to_factory(agent_def)
+    llm = _make_test_llm()
+    agent = factory(llm)
+
+    assert agent.mcp_config == {}
+
+
+def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None:
+    """Integration: mcp_servers in markdown flows through registry to Agent."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "mcp-agent.md").write_text(
+        "---\n"
+        "name: mcp-agent\n"
+        "description: Agent with MCP servers\n"
+        "mcp_servers:\n"
+        "  fetch:\n"
+        "    command: uvx\n"
+        "    args: [mcp-server-fetch]\n"
+        "---\n\n"
+        "Agent with MCP.\n"
+    )
+
+    with patch(
+        "openhands.sdk.subagent.load.Path.home", return_value=tmp_path / "no_user"
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert "mcp-agent" in registered
+
+    factory = get_agent_factory("mcp-agent")
+    llm = _make_test_llm()
+    agent = factory.factory_func(llm)
+
+    assert agent.mcp_config == {
+        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    }

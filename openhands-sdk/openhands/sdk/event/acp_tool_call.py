@@ -31,6 +31,7 @@ class ACPToolCallEvent(Event):
     tool_kind: str | None = None
     raw_input: Any | None = None
     raw_output: Any | None = None
+    content: list[Any] | None = None
     is_error: bool = False
 
     @property

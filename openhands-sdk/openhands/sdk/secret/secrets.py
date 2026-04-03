@@ -8,6 +8,7 @@ from pydantic import Field, SecretStr, field_serializer, field_validator
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.redact import is_secret_key
 
 
 logger = get_logger(__name__)
@@ -52,7 +53,7 @@ class LookupSecret(SecretSource):
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
 
-    def get_value(self):
+    def get_value(self) -> str:
         response = httpx.get(self.url, headers=self.headers, timeout=30.0)
         response.raise_for_status()
         return response.text
@@ -62,7 +63,7 @@ class LookupSecret(SecretSource):
     def _validate_secrets(cls, headers: dict[str, str], info):
         result = {}
         for key, value in headers.items():
-            if _is_secret_header(key):
+            if is_secret_key(key):
                 secret_value = validate_secret(SecretStr(value), info)
                 # Skip headers with redacted/empty secret values
                 if secret_value is None:
@@ -79,7 +80,7 @@ class LookupSecret(SecretSource):
     def _serialize_secrets(self, headers: dict[str, str], info):
         result = {}
         for key, value in headers.items():
-            if _is_secret_header(key):
+            if is_secret_key(key):
                 secret_value = serialize_secret(SecretStr(value), info)
                 if secret_value is None:
                     logger.debug(
@@ -90,29 +91,6 @@ class LookupSecret(SecretSource):
             else:
                 result[key] = value
         return result
-
-
-# Patterns used for substring matching against header names (case-insensitive).
-# Headers containing any of these patterns will be redacted during serialization.
-# Examples: X-Access-Token, Cookie, Authorization, X-API-Key, X-API-Secret
-_SECRET_HEADERS = [
-    "AUTHORIZATION",
-    "COOKIE",
-    "CREDENTIAL",
-    "KEY",
-    "PASSWORD",
-    "SECRET",
-    "SESSION",
-    "TOKEN",
-]
-
-
-def _is_secret_header(key: str):
-    key = key.upper()
-    for secret in _SECRET_HEADERS:
-        if secret in key:
-            return True
-    return False
 
 
 # Type alias for secret values - can be a plain string or a SecretSource

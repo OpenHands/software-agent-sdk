@@ -24,10 +24,10 @@ jobs:
             (github.event.workflow_run.conclusion == 'success' &&
              github.event.workflow_run.event == 'release')
         env:
-            GH_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+            GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Get version from release or input
               id: get_version
@@ -101,11 +101,11 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-                  python-version: '3.13'
+                  python-version: '3.12'
 
             - name: Install Poetry
               run: |
-                  pipx install poetry
+                  pipx install poetry==2.2.1
 
             # OpenHands-CLI step runs first since it's simpler and less error-prone
             - name: Create PR for OpenHands-CLI repo
@@ -137,8 +137,10 @@ jobs:
                     git checkout -b "$BRANCH"
                   fi
 
-                  # Update versions using uv (--refresh to bypass cache and get fresh PyPI data)
-                  uv add --refresh "openhands-sdk==$VERSION" "openhands-tools==$VERSION"
+                  # OpenHands-CLI currently requires Python 3.12, so resolve with that interpreter.
+                  uv add --python 3.12 --refresh \
+                    "openhands-sdk==$VERSION" \
+                    "openhands-tools==$VERSION"
 
                   # Check if there are changes
                   if git diff --quiet; then
@@ -207,14 +209,6 @@ jobs:
                     git checkout -b "$BRANCH"
                   fi
 
-                  # Get the git hash from the release branch in software-agent-sdk
-                  SDK_COMMIT_HASH=$(git ls-remote https://github.com/OpenHands/software-agent-sdk.git "refs/tags/v$VERSION" | cut -c1-7)
-                  if [ -z "$SDK_COMMIT_HASH" ]; then
-                    echo "⚠️ Could not find commit hash for tag v$VERSION, using full version"
-                    SDK_COMMIT_HASH="$VERSION"
-                  fi
-                  echo "📦 SDK commit hash: $SDK_COMMIT_HASH"
-
                   # 1. Update versions in pyproject.toml and poetry.lock using poetry (root)
                   # The --lock flag updates both pyproject.toml AND poetry.lock
                   # Note: enterprise/pyproject.toml gets these dependencies transitively via openhands-ai
@@ -238,21 +232,45 @@ jobs:
                     echo "✅ enterprise/pyproject.toml does not have explicit SDK packages"
                   fi
 
-                  poetry add --lock "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION"
+                  # 1. Update versions in pyproject.toml using sed for exact pinning
+                  # Note: We use sed instead of `poetry add --lock` because Poetry normalizes
+                  # version constraints (e.g., "==1.13.1" becomes "1.13") which causes
+                  # inconsistencies between [tool.poetry.dependencies] and [project].dependencies
+                  echo "📝 Updating pyproject.toml with exact version pins..."
 
-                  # 2. Update the hash in sandbox_spec_service.py
-                  echo "🔧 Updating AGENT_SERVER_IMAGE hash..."
+                  # Update [tool.poetry.dependencies] section
+                  # Matches: openhands-sdk = "1.13" or openhands-sdk = "1.13.0"
+                  sed -i -E 's/^(openhands-sdk = )"[^"]*"/\1"'"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/^(openhands-tools = )"[^"]*"/\1"'"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/^(openhands-agent-server = )"[^"]*"/\1"'"$VERSION"'"/' pyproject.toml
+
+                  # Update [project].dependencies section (PEP 621 format)
+                  # Matches: "openhands-sdk==1.13.1", or "openhands-sdk==1.13",
+                  sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
+
+                  echo "✅ Updated pyproject.toml"
+
+                  # 2. Regenerate poetry.lock with the new versions
+                  # Note: In Poetry 2.x, the default behavior is to not update packages already
+                  # in the lock file (the --no-update flag was removed in Poetry 2.x)
+                  echo "📝 Regenerating poetry.lock..."
+                  poetry lock
+
+                  # 3. Update the version in sandbox_spec_service.py
+                  echo "🔧 Updating AGENT_SERVER_IMAGE..."
                   SANDBOX_SPEC_FILE="openhands/app_server/sandbox/sandbox_spec_service.py"
                   if [ -f "$SANDBOX_SPEC_FILE" ]; then
                     # Update the AGENT_SERVER_IMAGE line with the new hash
-                    sed -i "s|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:[^']*'|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:${SDK_COMMIT_HASH}-python'|" "$SANDBOX_SPEC_FILE"
-                    echo "✅ Updated AGENT_SERVER_IMAGE to: ghcr.io/openhands/agent-server:${SDK_COMMIT_HASH}-python"
+                    sed -i "s|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:[^']*'|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:${VERSION}-python'|" "$SANDBOX_SPEC_FILE"
+                    echo "✅ Updated AGENT_SERVER_IMAGE to: ghcr.io/openhands/agent-server:${VERSION}-python"
                   else
                     echo "❌ sandbox_spec_service.py not found at expected path"
                     exit 1
                   fi
 
-                  # 3. Run pre-commit to fix formatting (pyproject-fmt removes parentheses from version specs)
+                  # 4. Run pre-commit to fix formatting (pyproject-fmt removes parentheses from version specs)
                   echo "🔧 Running pre-commit to fix formatting..."
                   pip install pre-commit
                   pre-commit run --files pyproject.toml --config ./dev_config/python/.pre-commit-config.yaml || true
@@ -271,7 +289,7 @@ jobs:
                     -m "Changes:" \
                     -m "- Updated SDK packages to v$VERSION in pyproject.toml" \
                     -m "- Regenerated poetry.lock" \
-                    -m "- Updated AGENT_SERVER_IMAGE hash to ${SDK_COMMIT_HASH}" \
+                    -m "- Updated AGENT_SERVER_IMAGE to ${VERSION}" \
                     -m "" \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"
@@ -295,7 +313,7 @@ jobs:
                   ### Changes
                   - Updated SDK packages in \`pyproject.toml\`
                   - Regenerated \`poetry.lock\`
-                  - Updated \`AGENT_SERVER_IMAGE\` hash to \`${SDK_COMMIT_HASH}\` in \`sandbox_spec_service.py\`
+                  - Updated \`AGENT_SERVER_IMAGE\` to \`${VERSION}\` in \`sandbox_spec_service.py\`
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
 

@@ -13,19 +13,35 @@ if the task is resumed for further work later.
 import shutil
 import tempfile
 import uuid
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 
 
+if TYPE_CHECKING:
+    from openhands.sdk.event import ActionEvent
+
+ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
+
+
 logger = get_logger(__name__)
+
+_SUBAGENTS_DIR: Final[str] = "subagents"
 
 
 class TaskStatus(StrEnum):
@@ -75,17 +91,30 @@ class Task(BaseModel):
 class TaskManager:
     """Manage sub-agent tasks."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        confirmation_handler: ConfirmationHandler | None = None,
+    ):
         self._parent_conversation: LocalConversation | None = None
+        self._confirmation_handler = confirmation_handler
 
         self._tasks: dict[str, Task] = {}
 
-        # tmp directory to save task to eventually resume it later
-        self._tmp_dir = Path(tempfile.mkdtemp(prefix="openhands_tasks_"))
+        # Set once in _ensure_parent: uses the parent's subagents dir
+        # when the parent persists, otherwise a temporary directory.
+        self._persistence_dir: Path | None = None
 
     def _ensure_parent(self, conversation: LocalConversation) -> None:
         if self._parent_conversation is None:
             self._parent_conversation = conversation
+            parent_persistence_dir = conversation.state.persistence_dir
+            if parent_persistence_dir is not None:
+                self._persistence_dir = Path(parent_persistence_dir) / _SUBAGENTS_DIR
+                self._persistence_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                self._persistence_dir = Path(
+                    tempfile.mkdtemp(prefix="openhands_tasks_")
+                )
 
     @property
     def parent_conversation(self) -> LocalConversation:
@@ -115,7 +144,6 @@ class TaskManager:
         prompt: str,
         subagent_type: str = "default",
         resume: str | None = None,
-        max_turns: int | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
     ) -> Task:
@@ -126,7 +154,6 @@ class TaskManager:
             subagent_type: Type of agent to use.
             resume: Task ID to resume (continues existing conversation).
             description: Short label for the task.
-            max_turns: Maximum number of agent iterations.
             conversation: Parent conversation (set on first call).
 
         Returns:
@@ -144,7 +171,6 @@ class TaskManager:
             task = self._create_task(
                 subagent_type=subagent_type,
                 description=description,
-                max_turns=max_turns,
             )
 
         return self._run_task(
@@ -160,14 +186,21 @@ class TaskManager:
                 f"Available tasks: {', '.join(sorted(self._tasks))}"
             )
 
-        worker_agent = self._get_sub_agent(subagent_type)
+        factory = get_agent_factory(subagent_type)
+        worker_agent = self._get_sub_agent_from_factory(factory)
         conversation_id = self._tasks[resume].conversation_id
         conversation = LocalConversation(
             agent=worker_agent,
             workspace=self.parent_conversation.state.workspace.working_dir,
-            persistence_dir=self._tmp_dir,
+            persistence_dir=self._persistence_dir,
             conversation_id=conversation_id,
+            hook_config=factory.definition.hooks,
             delete_on_close=False,
+        )
+
+        self._set_confirmation_policy(
+            conversation,
+            factory.definition.get_confirmation_policy(),
         )
 
         self._tasks[resume] = self._tasks[resume].model_copy(
@@ -183,30 +216,23 @@ class TaskManager:
         self,
         subagent_type: str,
         description: str | None,
-        max_turns: int | None,
     ) -> Task:
         """Create a fresh task.
 
         The iteration limit is resolved with the following precedence:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
-        2. ``max_turns`` (explicit caller override)
-        3. Hard-coded default of 500
+        2. The parent conversation's ``max_iteration_per_run``
         """
         task_id, conversation_id = self._generate_ids()
 
         factory = get_agent_factory(subagent_type)
         worker_agent = self._get_sub_agent_from_factory(factory)
 
-        # Priority:
-        # 1. factory.definition.max_iteration_per_run (agent def)
-        # 2. max_turns (caller)
-        # 3. default to 500
-        if factory.definition.max_iteration_per_run:
-            effective_max_iter = factory.definition.max_iteration_per_run
-        elif max_turns:
-            effective_max_iter = max_turns
-        else:
-            effective_max_iter = 500
+        effective_max_iter = (
+            factory.definition.max_iteration_per_run
+            if factory.definition.max_iteration_per_run
+            else self.parent_conversation.max_iteration_per_run
+        )
 
         sub_conversation = self._get_conversation(
             description=description,
@@ -214,6 +240,12 @@ class TaskManager:
             task_id=task_id,
             worker_agent=worker_agent,
             conversation_id=conversation_id,
+            hook_config=factory.definition.hooks,
+        )
+
+        self._set_confirmation_policy(
+            sub_conversation,
+            factory.definition.get_confirmation_policy(),
         )
 
         self._tasks[task_id] = Task(
@@ -231,6 +263,7 @@ class TaskManager:
         task_id: str,
         conversation_id: uuid.UUID,
         worker_agent: Agent,
+        hook_config: HookConfig | None = None,
     ) -> LocalConversation:
         parent = self.parent_conversation
         parent_visualizer = parent._visualizer
@@ -244,9 +277,10 @@ class TaskManager:
             agent=worker_agent,
             workspace=parent.state.workspace.working_dir,
             visualizer=visualizer,
-            persistence_dir=self._tmp_dir,
+            persistence_dir=self._persistence_dir,
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
+            hook_config=hook_config,
             delete_on_close=False,
         )
 
@@ -290,7 +324,7 @@ class TaskManager:
 
         try:
             task.conversation.send_message(prompt, sender=parent_name)
-            task.conversation.run()
+            self._run_until_finished(task.id, task.conversation)
             result = get_agent_final_response(task.conversation.state.events)
             task.set_result(result)
             logger.info(f"Task '{task.id}' completed.")
@@ -303,6 +337,43 @@ class TaskManager:
 
         return task
 
+    def _run_until_finished(
+        self, task_id: str, conversation: LocalConversation
+    ) -> None:
+        """Run a sub-agent conversation to completion, handling confirmations."""
+        conversation.run()
+        while (
+            conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        ):
+            pending = ConversationState.get_unmatched_actions(conversation.state.events)
+            if not pending:
+                break
+
+            if self._confirmation_handler is None or self._confirmation_handler(
+                task_id, pending
+            ):
+                conversation.run()
+            else:
+                conversation.reject_pending_actions("User rejected the actions")
+                conversation.run()
+
+    def _set_confirmation_policy(
+        self,
+        conversation: LocalConversation,
+        confirmation_policy: ConfirmationPolicyBase | None,
+    ) -> None:
+        """
+        Apply permission_mode: explicit mode from definition
+        or inherit the parent's policy when None.
+        """
+        if confirmation_policy is None:
+            conversation.set_confirmation_policy(
+                self.parent_conversation.state.confirmation_policy
+            )
+        else:
+            conversation.set_confirmation_policy(confirmation_policy)
+
     def _update_parent_metrics(self, parent: LocalConversation, task: Task) -> None:
         """
         Sync sub-agent metrics into parent before eviction destroys the conversation.
@@ -314,8 +385,18 @@ class TaskManager:
             )
 
     def close(self) -> None:
-        """Clean up tmp directory and remove all created tasks."""
-        if self._tmp_dir.exists():
-            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+        """Clean up temporary directory (if used) and remove all created tasks."""
+        # Only clean up when using a temp dir (parent had no persistence).
+        # When the parent persists, subagent data lives under its directory.
+        parent_persists = (
+            self._parent_conversation is not None
+            and self._parent_conversation.state.persistence_dir is not None
+        )
+        if (
+            not parent_persists
+            and self._persistence_dir is not None
+            and self._persistence_dir.exists()
+        ):
+            shutil.rmtree(self._persistence_dir, ignore_errors=True)
 
         self._tasks.clear()
