@@ -940,7 +940,10 @@ class ACPAgent(AgentBase):
                     # Retry transient server errors (e.g. "Internal Server
                     # Error" from Gemini).  These are JSON-RPC -32603 errors
                     # that indicate a server-side failure, not a client bug.
-                    if e.code in _RETRIABLE_SERVER_ERROR_CODES and attempt < max_retries:
+                    if (
+                        e.code in _RETRIABLE_SERVER_ERROR_CODES
+                        and attempt < max_retries
+                    ):
                         delay = _ACP_PROMPT_RETRY_DELAYS[
                             min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
                         ]

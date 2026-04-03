@@ -1709,10 +1709,12 @@ class TestACPPromptRetry:
         assert (
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
-        assert "Success after server error retry" in events[0].llm_message.content[0].text
+        assert (
+            "Success after server error retry" in events[0].llm_message.content[0].text
+        )
 
     def test_no_retry_on_non_retriable_acp_error(self, tmp_path):
-        """ACP errors with non-retriable codes (e.g. -32600 Invalid request) fail immediately."""
+        """Non-retriable ACP error codes fail immediately."""
         from acp.exceptions import RequestError as ACPRequestError
 
         agent = _make_agent()
