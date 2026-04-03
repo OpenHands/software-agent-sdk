@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from enum import StrEnum
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ HOOK_EVENT_FIELDS: frozenset[str] = frozenset(
 )
 
 
-class HookType(StrEnum):
+class HookType(str, Enum):
     """Types of hooks that can be executed."""
 
     COMMAND = "command"  # Shell command executed via subprocess

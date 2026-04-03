@@ -1,12 +1,12 @@
 """Result types for API compliance tests."""
 
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class APIResponse(StrEnum):
+class APIResponse(str, Enum):
     """Possible API response types for malformed input."""
 
     ACCEPTED = "accepted"

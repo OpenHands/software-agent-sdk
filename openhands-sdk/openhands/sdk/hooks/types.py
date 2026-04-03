@@ -1,12 +1,12 @@
 """Hook event types and data structures."""
 
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class HookEventType(StrEnum):
+class HookEventType(str, Enum):
     """Types of hook events that can trigger hooks."""
 
     PRE_TOOL_USE = "PreToolUse"
@@ -32,7 +32,7 @@ class HookEvent(BaseModel):
     model_config = {"use_enum_values": True}
 
 
-class HookDecision(StrEnum):
+class HookDecision(str, Enum):
     """Decisions a hook can make about an operation."""
 
     ALLOW = "allow"

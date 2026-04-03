@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
 
 from rich.text import Text
 
 
-class SecurityRisk(StrEnum):
+class SecurityRisk(str, Enum):
     """Security risk levels for actions.
 
     Based on OpenHands security risk levels but adapted for agent-sdk.

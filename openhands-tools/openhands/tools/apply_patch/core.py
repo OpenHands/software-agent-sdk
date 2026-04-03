@@ -12,12 +12,12 @@ Minimal modifications were made to fit within the OpenHands SDK tool ecosystem:
 from __future__ import annotations
 
 from collections.abc import Callable
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
 
-class ActionType(StrEnum):
+class ActionType(str, Enum):
     ADD = "add"
     DELETE = "delete"
     UPDATE = "update"
