@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
 
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.logger import get_logger
@@ -44,28 +43,21 @@ RAIL_CATASTROPHIC_DELETE = "catastrophic-delete"
 # ---------------------------------------------------------------------------
 
 
-class RailOutcome(Enum):
-    """Internal policy recommendation from deterministic rail evaluation.
-
-    DENY and CONFIRM both map to SecurityRisk.HIGH at the SDK boundary.
-    The distinction is preserved internally for observability.
-    """
-
-    DENY = "DENY"
-    CONFIRM = "CONFIRM"
-    PASS = "PASS"
-
-
 @dataclass(frozen=True)
 class RailDecision:
-    """Result of a policy rail evaluation."""
+    """Result of a policy rail evaluation.
 
-    outcome: RailOutcome
+    ``outcome`` is a ``SecurityRisk`` level: ``HIGH`` when a rail fires,
+    ``LOW`` when all rails pass. ``reason`` preserves observability for
+    logging and debugging.
+    """
+
+    outcome: SecurityRisk
     rule_name: str = ""
     reason: str = ""
 
 
-_PASS = RailDecision(outcome=RailOutcome.PASS)
+_PASS = RailDecision(outcome=SecurityRisk.LOW)
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +96,7 @@ def _evaluate_rail_segments(segments: list[str]) -> RailDecision:
         # Rule 1: fetch-to-exec -- download piped to shell/interpreter
         if has_fetch and has_pipe_to_exec:
             return RailDecision(
-                RailOutcome.DENY,
+                SecurityRisk.HIGH,
                 RAIL_FETCH_TO_EXEC,
                 "Network fetch piped to shell/interpreter",
             )
@@ -112,11 +104,11 @@ def _evaluate_rail_segments(segments: list[str]) -> RailDecision:
         # Rule 2: raw-disk-op -- dd to device or mkfs
         if re.search(r"\bdd\b.{0,100}of=/dev/", seg, ci):
             return RailDecision(
-                RailOutcome.DENY, RAIL_RAW_DISK_OP, "Raw disk write via dd"
+                SecurityRisk.HIGH, RAIL_RAW_DISK_OP, "Raw disk write via dd"
             )
         if re.search(r"\bmkfs\.", seg, ci):
             return RailDecision(
-                RailOutcome.DENY, RAIL_RAW_DISK_OP, "Filesystem format via mkfs"
+                SecurityRisk.HIGH, RAIL_RAW_DISK_OP, "Filesystem format via mkfs"
             )
 
         # Rule 3: catastrophic-delete -- recursive force-delete of critical targets
@@ -130,7 +122,7 @@ def _evaluate_rail_segments(segments: list[str]) -> RailDecision:
             )
             if critical:
                 return RailDecision(
-                    RailOutcome.DENY,
+                    SecurityRisk.HIGH,
                     RAIL_CATASTROPHIC_DELETE,
                     "Recursive force-delete targeting critical path",
                 )
@@ -158,8 +150,13 @@ class PolicyRailSecurityAnalyzer(SecurityAnalyzerBase):
 
     Use this when you need to detect threats defined by *combinations*
     of tokens (e.g., ``curl`` piped to ``bash``) rather than individual
-    signatures. It evaluates normalized executable segments only --
-    reasoning text is never scanned.
+    signatures. While these rails *could* each be expressed as a single
+    regex, keeping them as named rules with per-segment evaluation makes
+    the threat model more interpretable, the rules easier to maintain,
+    and the audit trail clearer than a flat pattern list.
+
+    Evaluates normalized executable segments only -- reasoning text is
+    never scanned.
 
     Returns ``SecurityRisk.HIGH`` when a rail fires, ``LOW`` otherwise.
     Pair with ``ConfirmRisky`` and compose via ``EnsembleSecurityAnalyzer``.
@@ -178,7 +175,7 @@ class PolicyRailSecurityAnalyzer(SecurityAnalyzerBase):
         """Evaluate policy rails on normalized executable segments."""
         segments = [_normalize(s) for s in _extract_exec_segments(action)]
         rail = _evaluate_rail_segments(segments)
-        if rail.outcome != RailOutcome.PASS:
+        if rail.outcome != SecurityRisk.LOW:
             logger.debug(
                 "Policy rail fired: %s (%s) -> HIGH",
                 rail.rule_name,

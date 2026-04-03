@@ -17,7 +17,6 @@ from openhands.sdk.event import ActionEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.defense_in_depth import (
-    EnsembleSecurityAnalyzer,
     PatternSecurityAnalyzer,
     PolicyRailSecurityAnalyzer,
 )
@@ -48,6 +47,7 @@ from openhands.sdk.security.defense_in_depth.policy_rails import (
     RAIL_RAW_DISK_OP,
     _evaluate_rail,
 )
+from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 
 
@@ -163,6 +163,16 @@ class TestEnsembleSerializationRoundTrip:
         restored = EnsembleSecurityAnalyzer.model_validate_json(data)
         risk = restored.security_risk(make_action("rm -rf /"))
         assert risk == SecurityRisk.HIGH
+
+    def test_propagate_unknown_survives_roundtrip(self):
+        """propagate_unknown=True must survive serialization and change behavior."""
+        analyzer = EnsembleSecurityAnalyzer(
+            analyzers=[PatternSecurityAnalyzer()],
+            propagate_unknown=True,
+        )
+        data = analyzer.model_dump_json()
+        restored = EnsembleSecurityAnalyzer.model_validate_json(data)
+        assert restored.propagate_unknown is True
 
 
 # ---------------------------------------------------------------------------

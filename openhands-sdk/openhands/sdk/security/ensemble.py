@@ -27,11 +27,16 @@ class EnsembleSecurityAnalyzer(SecurityAnalyzerBase):
     returns the highest concrete risk. It does not perform any detection,
     extraction, or normalization of its own.
 
-    How UNKNOWN works: if *all* children return UNKNOWN, the ensemble
-    returns UNKNOWN (which ``ConfirmRisky`` confirms by default). If any
-    child returns a concrete level, UNKNOWN results are filtered out and
-    the highest concrete level wins. UNKNOWN is never passed to ``max()``
-    -- that would raise ``ValueError`` by design.
+    How UNKNOWN works (default, ``propagate_unknown=False``): if *all*
+    children return UNKNOWN, the ensemble returns UNKNOWN (which
+    ``ConfirmRisky`` confirms by default). If any child returns a
+    concrete level, UNKNOWN results are filtered out and the highest
+    concrete level wins.
+
+    With ``propagate_unknown=True``: if *any* child returns UNKNOWN, the
+    ensemble returns UNKNOWN regardless of other results. Use this in
+    stricter environments where incomplete assessment should trigger
+    confirmation.
 
     If a child analyzer raises an exception, it contributes HIGH
     (fail-closed, logged). This prevents a broken analyzer from silently
@@ -61,6 +66,14 @@ class EnsembleSecurityAnalyzer(SecurityAnalyzerBase):
         description="Analyzers whose assessments are combined via max-severity",
         min_length=1,
     )
+    propagate_unknown: bool = Field(
+        default=False,
+        description=(
+            "When True, any child returning UNKNOWN causes the ensemble "
+            "to return UNKNOWN. When False (default), UNKNOWN is filtered "
+            "out if any child returns a concrete level."
+        ),
+    )
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
         """Evaluate risk via max-severity fusion across child analyzers."""
@@ -72,7 +85,13 @@ class EnsembleSecurityAnalyzer(SecurityAnalyzerBase):
                 logger.exception("Analyzer %s raised -- fail-closed to HIGH", analyzer)
                 results.append(SecurityRisk.HIGH)
 
-        # Partition: concrete risks vs UNKNOWN
+        has_unknown = SecurityRisk.UNKNOWN in results
+
+        # Strict mode: any UNKNOWN propagates immediately.
+        if self.propagate_unknown and has_unknown:
+            return SecurityRisk.UNKNOWN
+
+        # Default mode: filter UNKNOWN, take max of concrete results.
         concrete = [r for r in results if r != SecurityRisk.UNKNOWN]
 
         if not concrete:
