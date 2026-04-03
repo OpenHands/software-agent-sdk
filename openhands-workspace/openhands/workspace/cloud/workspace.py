@@ -182,14 +182,13 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                     if payload.get("automation_name"):
                         tags["automationname"] = str(payload["automation_name"])
             except (json.JSONDecodeError, TypeError):
-                logger.info("Failed to parse AUTOMATION_EVENT_PAYLOAD")
+                logger.error("Failed to parse AUTOMATION_EVENT_PAYLOAD")
 
         # Add run_id from env var or private attr
         run_id = os.environ.get("AUTOMATION_RUN_ID") or self._automation_run_id
         if run_id:
             tags["automationrunid"] = run_id
 
-        logger.info(f"Workspace tags found: {tags}")
         return tags
 
     @property
