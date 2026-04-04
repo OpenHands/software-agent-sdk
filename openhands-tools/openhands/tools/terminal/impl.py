@@ -10,6 +10,7 @@ from openhands.sdk.tool import ToolExecutor
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
+from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
 from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
@@ -24,9 +25,9 @@ from openhands.tools.terminal.terminal.terminal_session import (
 )
 from openhands.tools.terminal.terminal.tmux_pane_pool import (
     DEFAULT_MAX_PANES,
+    PooledTmuxTerminal,
     TmuxPanePool,
 )
-from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
 logger = get_logger(__name__)
@@ -100,23 +101,30 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 f"{terminal_type or self.session.__class__.__name__}"
             )
 
+    @property
+    def is_pooled(self) -> bool:
+        """Whether this executor is using the tmux pane pool for concurrency."""
+        return self._pool is not None
+
     # ------------------------------------------------------------------
     # Pool helpers
     # ------------------------------------------------------------------
 
-    def _wrap_session(self, terminal: TmuxTerminal) -> TerminalSession:
-        """Get or create a TerminalSession for a pooled TmuxTerminal."""
+    def _wrap_session(self, terminal: PooledTmuxTerminal) -> TerminalSession:
+        """Get or create a TerminalSession for a pooled PooledTmuxTerminal."""
         pane_id = id(terminal)
         with self._sessions_lock:
             if pane_id not in self._sessions:
-                session = TerminalSession(terminal, self._no_change_timeout_seconds)
-                # The pool already initialized the terminal — skip
-                # session.initialize() which would create a new tmux session.
-                session._initialized = True
+                # The pool already initialized the terminal — use
+                # attach_to_existing to skip session.initialize() which
+                # would create a duplicate tmux session.
+                session = TerminalSession.attach_to_existing(
+                    terminal, self._no_change_timeout_seconds
+                )
                 self._sessions[pane_id] = session
             return self._sessions[pane_id]
 
-    def _discard_session(self, terminal: TmuxTerminal) -> None:
+    def _discard_session(self, terminal: PooledTmuxTerminal) -> None:
         """Remove cached TerminalSession for a terminal being replaced.
 
         We mark the session (and its underlying terminal) as closed
@@ -127,10 +135,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """
         with self._sessions_lock:
             session = self._sessions.pop(id(terminal), None)
-        if session is not None:
-            session._closed = True
-            # Also mark the terminal so the pooled close() is a no-op
-            terminal._closed = True
+            if session is not None:
+                session._closed = True
+                # Also mark the terminal so the pooled close() is a no-op
+                terminal._closed = True
 
     @staticmethod
     def _prepare_pooled_session(session: TerminalSession) -> None:
@@ -146,9 +154,18 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             TerminalCommandStatus.HARD_TIMEOUT,
             TerminalCommandStatus.CONTINUE,
         ):
-            # Previous command didn't finish — interrupt and clear.
+            # Previous command didn't finish — interrupt and poll until
+            # the prompt reappears instead of sleeping a fixed duration.
             session.terminal.interrupt()
-            time.sleep(0.2)
+            _max_wait = 2.0
+            _poll = 0.05
+            _waited = 0.0
+            while _waited < _max_wait:
+                time.sleep(_poll)
+                _waited += _poll
+                screen = session.terminal.read_screen()
+                if screen.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
+                    break
             session.terminal.clear_screen()
         session.prev_status = None
         session.prev_output = ""

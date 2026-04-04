@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import threading
 import time
-import types
 import uuid
 from collections import deque
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from typing import Final
 
 import libtmux
@@ -28,6 +28,25 @@ logger = get_logger(__name__)
 DEFAULT_MAX_PANES: Final[int] = 4
 
 
+class PooledTmuxTerminal(TmuxTerminal):
+    """A TmuxTerminal variant used inside a pane pool.
+
+    Overrides ``close()`` to only kill this terminal's window instead of
+    the entire shared tmux session.  This is critical because
+    ``TerminalSessionBase.__del__`` calls ``close()``, and GC of a cached
+    ``TerminalSession`` wrapper would otherwise destroy the session that
+    all other pool panes depend on.
+    """
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        with suppress(Exception):
+            self.window.kill()
+        self._closed = True
+
+
+@dataclass
 class TmuxPanePool:
     """Thread-safe pool of tmux panes for parallel terminal execution.
 
@@ -47,35 +66,34 @@ class TmuxPanePool:
         pool.close()
     """
 
-    def __init__(
-        self,
-        work_dir: str,
-        username: str | None = None,
-        max_panes: int = DEFAULT_MAX_PANES,
-    ) -> None:
-        if max_panes < 1:
+    work_dir: str
+    username: str | None = None
+    max_panes: int = DEFAULT_MAX_PANES
+
+    # tmux handles
+    _server: libtmux.Server | None = field(default=None, init=False, repr=False)
+    _session: libtmux.Session | None = field(default=None, init=False, repr=False)
+
+    # Pool state — guarded by _lock
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
+    _available: deque[PooledTmuxTerminal] = field(
+        default_factory=deque, init=False, repr=False
+    )
+    _all_panes: list[PooledTmuxTerminal] = field(
+        default_factory=list, init=False, repr=False
+    )
+    _semaphore: threading.Semaphore = field(init=False, repr=False)
+
+    _initialized: bool = field(default=False, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
+    _initial_window: libtmux.Window | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.max_panes < 1:
             raise ValueError("max_panes must be >= 1")
-
-        self.work_dir = work_dir
-        self.username = username
-        self.max_panes = max_panes
-
-        self._server: libtmux.Server | None = None
-        self._session: libtmux.Session | None = None
-
-        # Pool state — guarded by _lock
-        self._lock = threading.Lock()
-        self._available: deque[TmuxTerminal] = deque()
-        self._all_panes: list[TmuxTerminal] = []
-        self._semaphore = threading.Semaphore(max_panes)
-
-        self._initialized = False
-        self._closed = False
-        self._initial_window: libtmux.Window | None = None
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+        self._semaphore = threading.Semaphore(self.max_panes)
 
     def initialize(self) -> None:
         """Create the tmux session (panes are lazily added on checkout)."""
@@ -132,8 +150,8 @@ class TmuxPanePool:
     # Checkout / Checkin
     # ------------------------------------------------------------------
 
-    def _create_pane(self) -> TmuxTerminal:
-        """Create a new TmuxTerminal within the shared session."""
+    def _create_pane(self) -> PooledTmuxTerminal:
+        """Create a new PooledTmuxTerminal within the shared session."""
         assert self._session is not None
 
         shell_command = "/bin/bash"
@@ -150,36 +168,17 @@ class TmuxPanePool:
 
         # Kill the default window now that a real window exists.
         if self._initial_window is not None:
-            try:
+            with suppress(Exception):
                 self._initial_window.kill()
-            except Exception:
-                pass
             self._initial_window = None
 
-        # Use __init__ to properly initialise base-class attributes,
-        # then attach to the pool's existing tmux session/window/pane
-        # instead of letting initialize() create its own session.
-        terminal = TmuxTerminal(work_dir=self.work_dir, username=self.username)
+        # Use PooledTmuxTerminal which overrides close() to only kill
+        # this terminal's window instead of the entire shared tmux session.
+        terminal = PooledTmuxTerminal(work_dir=self.work_dir, username=self.username)
         terminal.server = self._server  # type: ignore[assignment]
         terminal.session = self._session
         terminal.window = window
         terminal.pane = active_pane
-
-        # Override close() so it only kills this terminal's window
-        # instead of the entire shared tmux session.  This is critical
-        # because TerminalSessionBase.__del__ calls close(), and GC of
-        # a cached TerminalSession wrapper would otherwise destroy the
-        # session that all other pool panes depend on.
-        def _pooled_close(self: TmuxTerminal) -> None:  # type: ignore[misc]
-            if self._closed:
-                return
-            try:
-                self.window.kill()
-            except Exception:
-                pass
-            self._closed = True
-
-        terminal.close = types.MethodType(_pooled_close, terminal)
 
         # Configure PS1 (same as TmuxTerminal.initialize)
         ps1 = terminal.PS1
@@ -193,14 +192,14 @@ class TmuxPanePool:
         logger.debug(f"Created pooled pane #{len(self._all_panes)}: {active_pane}")
         return terminal
 
-    def checkout(self, timeout: float | None = None) -> TmuxTerminal:
+    def checkout(self, timeout: float | None = None) -> PooledTmuxTerminal:
         """Check out a pane from the pool, blocking if all are busy.
 
         Args:
             timeout: Max seconds to wait. None means wait forever.
 
         Returns:
-            A TmuxTerminal ready for use.
+            A PooledTmuxTerminal ready for use.
 
         Raises:
             RuntimeError: If the pool is closed or not initialized.
@@ -228,7 +227,7 @@ class TmuxPanePool:
             logger.debug(f"Checked out new pane: {terminal.pane}")
             return terminal
 
-    def checkin(self, terminal: TmuxTerminal) -> None:
+    def checkin(self, terminal: PooledTmuxTerminal) -> None:
         """Return a pane to the pool."""
         with self._lock:
             if terminal not in self._all_panes:
@@ -240,7 +239,7 @@ class TmuxPanePool:
         self._semaphore.release()
         logger.debug(f"Checked in pane: {terminal.pane}")
 
-    def replace(self, old_terminal: TmuxTerminal) -> TmuxTerminal:
+    def replace(self, old_terminal: PooledTmuxTerminal) -> PooledTmuxTerminal:
         """Replace a checked-out pane with a fresh one.
 
         The caller must currently hold *old_terminal* (i.e. it was
@@ -276,7 +275,7 @@ class TmuxPanePool:
         return new_terminal
 
     @contextmanager
-    def pane(self, timeout: float | None = None) -> Generator[TmuxTerminal]:
+    def pane(self, timeout: float | None = None) -> Generator[PooledTmuxTerminal]:
         """Context manager for checkout/checkin.
 
         Usage::
@@ -290,19 +289,3 @@ class TmuxPanePool:
             yield terminal
         finally:
             self.checkin(terminal)
-
-    # ------------------------------------------------------------------
-    # Introspection
-    # ------------------------------------------------------------------
-
-    @property
-    def size(self) -> int:
-        """Number of panes currently created (may be < max_panes)."""
-        with self._lock:
-            return len(self._all_panes)
-
-    @property
-    def available_count(self) -> int:
-        """Number of panes currently idle in the pool."""
-        with self._lock:
-            return len(self._available)

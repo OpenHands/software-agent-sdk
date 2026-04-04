@@ -244,10 +244,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
         # When using the subprocess backend there is only a single
         # session, so we declare a resource key to serialize terminal
         # calls against each other without blocking unrelated tools.
-        if (
-            isinstance(self.executor, TerminalExecutor)
-            and self.executor._pool is not None
-        ):
+        if isinstance(self.executor, TerminalExecutor) and self.executor.is_pooled:
             return DeclaredResources(keys=(), declared=True)
         return DeclaredResources(keys=("terminal:session",), declared=True)
 

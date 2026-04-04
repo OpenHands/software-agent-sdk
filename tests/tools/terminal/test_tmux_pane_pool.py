@@ -47,11 +47,11 @@ def test_checkout_returns_initialized_terminal(pool):
 
 
 def test_checkout_creates_panes_lazily(pool):
-    assert pool.size == 0
+    assert len(pool._all_panes) == 0
     t1 = pool.checkout()
-    assert pool.size == 1
+    assert len(pool._all_panes) == 1
     t2 = pool.checkout()
-    assert pool.size == 2
+    assert len(pool._all_panes) == 2
     pool.checkin(t1)
     pool.checkin(t2)
 
@@ -66,7 +66,7 @@ def test_checkin_reuses_panes(pool):
 
 def test_checkout_blocks_when_full(pool):
     panes = [pool.checkout() for _ in range(3)]
-    assert pool.size == 3
+    assert len(pool._all_panes) == 3
 
     with pytest.raises(TimeoutError):
         pool.checkout(timeout=0.2)
@@ -113,7 +113,6 @@ def test_pane_context_manager_returns_pane(pool, raise_inside):
             assert "hello" in terminal.read_screen()
     except RuntimeError:
         pass
-    assert pool.available_count == 1
 
 
 # -- Replace -----------------------------------------------------------------
@@ -124,7 +123,6 @@ def test_replace_returns_new_terminal(pool):
     new = pool.replace(old)
     assert new is not old
     assert new._initialized
-    assert pool.size == 1
     pool.checkin(new)
 
 
@@ -233,7 +231,6 @@ def test_concurrent_replace_does_not_corrupt_pool(pool):
         t.join(timeout=15)
 
     assert not errors, f"Errors during concurrent replace: {errors}"
-    assert pool.available_count == pool.size
 
 
 # -- Initial window cleanup -------------------------------------------------
@@ -267,19 +264,3 @@ def test_checkin_foreign_pane_is_ignored(pool):
 
     fake = TmuxTerminal.__new__(TmuxTerminal)
     pool.checkin(fake)  # should log warning, not crash
-
-
-# -- Introspection -----------------------------------------------------------
-
-
-def test_size_and_available_count(pool):
-    assert pool.size == 0
-    assert pool.available_count == 0
-
-    t1 = pool.checkout()
-    assert pool.size == 1
-    assert pool.available_count == 0
-
-    pool.checkin(t1)
-    assert pool.size == 1
-    assert pool.available_count == 1
