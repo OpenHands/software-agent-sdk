@@ -2,7 +2,7 @@
 
 .. deprecated:: 1.16.0
     DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
-    sub-agent delegation. DelegateTool will be removed in version 2.0.0.
+    sub-agent delegation. DelegateTool will be removed in version 1.23.0.
 """
 
 import pathlib
@@ -71,7 +71,7 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
 
     .. deprecated:: 1.16.0
         DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
-        sub-agent delegation. DelegateTool will be removed in version 2.0.0.
+        sub-agent delegation. DelegateTool will be removed in version 1.23.0.
     """
 
     @classmethod
@@ -84,7 +84,7 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         """Initialize DelegateTool with a DelegateExecutor.
 
         .. deprecated:: 1.16.0
-            Use TaskToolSet instead. DelegateTool will be removed in version 2.0.0.
+            Use TaskToolSet instead. DelegateTool will be removed in version 1.23.0.
 
         Args:
             conv_state: Conversation state (used to get workspace location)
