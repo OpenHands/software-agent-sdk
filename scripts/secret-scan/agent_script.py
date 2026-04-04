@@ -4,9 +4,11 @@ Secret Scan Orchestrator Agent
 
 Orchestrator that scans Datadog logs and GCS buckets for leaked secrets,
 reports findings on a GitHub tracking issue, and delegates fix PRs to
-sub-agents (one PR per sub-agent).
+sub-agents via TaskToolSet (one PR per sub-agent).
 
-Uses the OpenHands SDK with DelegateTool for sub-agent orchestration.
+Uses the OpenHands SDK with TaskToolSet for sub-agent orchestration.
+Sub-agents run with terminal + file_editor tools and can execute in
+parallel when the orchestrator issues multiple task calls at once.
 
 Environment Variables:
     LLM_API_KEY:      API key for the LLM (required)
@@ -36,9 +38,9 @@ from openhands.sdk import (
 )
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.subagent import AgentDefinition
-from openhands.sdk.tool import register_tool
-from openhands.tools.delegate import DelegateTool, DelegationVisualizer
+from openhands.tools.delegate import DelegationVisualizer
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.task import TaskToolSet
 from openhands.tools.terminal import TerminalTool
 
 from prompt import (
@@ -85,6 +87,10 @@ def main():
     llm = LLM(**llm_kwargs)
 
     # --- Register the secret-fixer sub-agent ---
+    # Uses AgentDefinition for a clean declarative definition.
+    # Each task delegated to "secret-fixer" gets its own conversation
+    # with terminal + file_editor access to clone repos, fix code, and
+    # create PRs.
     secret_fixer = AgentDefinition(
         name="secret-fixer",
         description=(
@@ -103,19 +109,23 @@ def main():
         description=secret_fixer,
     )
 
-    # --- Register DelegateTool ---
-    register_tool("DelegateTool", DelegateTool)
-
     # --- Build orchestrator agent ---
-    # The orchestrator has: terminal (for running scan scripts + gh CLI),
-    # file_editor (for reading scan results), and DelegateTool (for sub-agents).
+    # The orchestrator has:
+    #   - terminal: for running scan scripts (dd-log-search.sh, gcs-scan.sh)
+    #     and gh CLI commands (posting comments)
+    #   - file_editor: for reading/writing scan result files
+    #   - TaskToolSet: for delegating fix PRs to secret-fixer sub-agents
+    #
+    # tool_concurrency_limit=4 allows the orchestrator to delegate multiple
+    # fix tasks in parallel (one task tool call per leak, all in one response).
     orchestrator = Agent(
         llm=llm,
         tools=[
             Tool(name=TerminalTool.name),
             Tool(name=FileEditorTool.name),
-            Tool(name="DelegateTool"),
+            Tool(name=TaskToolSet.name),
         ],
+        tool_concurrency_limit=4,
         condenser=LLMSummarizingCondenser(
             llm=llm.model_copy(update={"usage_id": "condenser"}),
             max_size=80,

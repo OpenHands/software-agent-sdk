@@ -45,7 +45,7 @@ case "$SUBCMD" in
       exit 1
     fi
 
-    gh issue comment "$ISSUE" --repo "$REPO" --body "$BODY"
+    gh issue comment "$ISSUE" --repo "$REPO" --body-file <(printf '%s' "$BODY")
     echo "Comment posted on ${REPO}#${ISSUE}" >&2
     ;;
 
@@ -59,7 +59,7 @@ case "$SUBCMD" in
       exit 1
     fi
 
-    RESULT=$(gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY" --label "security")
+    RESULT=$(gh issue create --repo "$REPO" --title "$TITLE" --body-file <(printf '%s' "$BODY") --label "security")
     echo "$RESULT"
     echo "Issue created in ${REPO}" >&2
     ;;
@@ -88,7 +88,7 @@ case "$SUBCMD" in
       exit 1
     fi
 
-    RESULT=$(gh pr create --repo "$REPO" --title "$TITLE" --body "$BODY" --head "$HEAD" --base "$BASE")
+    RESULT=$(gh pr create --repo "$REPO" --title "$TITLE" --body-file <(printf '%s' "$BODY") --head "$HEAD" --base "$BASE")
     echo "$RESULT"
     echo "PR created in ${REPO}" >&2
     ;;

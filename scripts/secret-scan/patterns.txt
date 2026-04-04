@@ -46,16 +46,12 @@ lin_api_[A-Za-z0-9]{40,}
 # Cloudflare bearer tokens
 Bearer\s+[A-Za-z0-9_-]{40,}
 
-# Generic patterns for credentials in logs
+# Named environment variable assignments with actual values
+# (only match known variable names to avoid false positives)
 ANTHROPIC_API_KEY=[^\s&"']+
 OPENAI_API_KEY=[^\s&"']+
 GEMINI_API_KEY=[^\s&"']+
 LMNR_PROJECT_API_KEY=[^\s&"']+
-API_KEY=[^\s&"']{20,}
-api_key["']?\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}
-password["']?\s*[:=]\s*["']?[^\s"']{8,}
-secret["']?\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}
-token["']?\s*[:=]\s*["']?[A-Za-z0-9_-]{20,}
 
 # Base64-encoded credentials in authorization headers
 Authorization:\s*Basic\s+[A-Za-z0-9+/=]{20,}

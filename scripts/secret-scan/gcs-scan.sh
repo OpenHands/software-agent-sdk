@@ -15,7 +15,7 @@ set -euo pipefail
 #   GCS_BUCKETS - Comma-separated list of GCS bucket names to scan
 #                 (default: openhands-evaluation-logs,openhands-artifacts)
 #   GCS_MAX_OBJECTS - Max objects to scan per bucket (default: 500)
-#   GCS_MAX_FILE_SIZE - Max file size in bytes to download for scanning (default: 10485760 = 10MB)
+#   GCS_MAX_FILE_SIZE - Max file size in bytes to download for scanning (default: 1048576 = 1MB)
 #
 # Output: JSON array of findings to stdout.
 
@@ -24,7 +24,7 @@ TO_TS="${2:?Usage: gcs-scan.sh FROM_TIMESTAMP TO_TIMESTAMP}"
 
 GCS_BUCKETS="${GCS_BUCKETS:-openhands-evaluation-logs,openhands-artifacts}"
 GCS_MAX_OBJECTS="${GCS_MAX_OBJECTS:-500}"
-GCS_MAX_FILE_SIZE="${GCS_MAX_FILE_SIZE:-10485760}"
+GCS_MAX_FILE_SIZE="${GCS_MAX_FILE_SIZE:-1048576}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATTERNS_FILE="$SCRIPT_DIR/patterns.txt"
@@ -38,9 +38,9 @@ grep -v '^\s*#' "$PATTERNS_FILE" | grep -v '^\s*$' > "$GREP_PATTERNS"
 echo "Scanning GCS buckets: $GCS_BUCKETS" >&2
 echo "Time range: $FROM_TS -> $TO_TS" >&2
 
-# Convert ISO timestamps to epoch for comparison
-FROM_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$FROM_TS" "+%s" 2>/dev/null || date -u -d "$FROM_TS" "+%s")
-TO_EPOCH=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$TO_TS" "+%s" 2>/dev/null || date -u -d "$TO_TS" "+%s")
+# Convert ISO timestamps to epoch (GNU date compatible - runs on ubuntu runners)
+FROM_EPOCH=$(date -u -d "$FROM_TS" "+%s")
+TO_EPOCH=$(date -u -d "$TO_TS" "+%s")
 
 ALL_FINDINGS="[]"
 
@@ -97,9 +97,10 @@ for BUCKET in "${BUCKETS[@]}"; do
     # Scan for secret patterns
     MATCHES=$(grep -n -f "$GREP_PATTERNS" "$OBJ_FILE" 2>/dev/null || true)
     if [[ -n "$MATCHES" ]]; then
-      # Truncate each match line to 200 chars to avoid leaking full secrets in output
+      # Truncate and redact known secret patterns before including in output
       TRUNCATED_MATCHES=$(echo "$MATCHES" | head -20 | while IFS= read -r line; do
-        echo "${line:0:200}"
+        echo "${line:0:200}" | sed -E \
+          's/(sk-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+/\1[REDACTED]/g; s/(sk-ant-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+/\1[REDACTED]/g; s/(sk-proj-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+/\1[REDACTED]/g; s/(sk-oh-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+/\1[REDACTED]/g; s/(sk-or-v1-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+/\1[REDACTED]/g; s/(ghp_[a-zA-Z0-9]{4})[a-zA-Z0-9]+/\1[REDACTED]/g; s/(github_pat_[a-zA-Z0-9_]{4})[a-zA-Z0-9_]+/\1[REDACTED]/g; s/(AKIA[0-9A-Z]{4})[0-9A-Z]+/\1[REDACTED]/g; s/(tvly-[a-zA-Z0-9]{4})[a-zA-Z0-9]+/\1[REDACTED]/g; s/(gsk_[a-zA-Z0-9]{4})[a-zA-Z0-9]+/\1[REDACTED]/g; s/(hf_[a-zA-Z0-9]{4})[a-zA-Z0-9]+/\1[REDACTED]/g; s/(tgp_v1_[a-zA-Z0-9]{4})[a-zA-Z0-9]+/\1[REDACTED]/g; s/(=['\''"]?[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]{16,}/\1[REDACTED]/g'
       done)
 
       MATCH_COUNT=$(echo "$MATCHES" | wc -l | xargs)

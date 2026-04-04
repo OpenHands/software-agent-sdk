@@ -130,13 +130,25 @@ ENDJSON
     exit 1
   fi
 
-  # Extract log entries
+  # Extract log entries with secret redaction applied to messages
   ENTRIES=$(echo "$RESPONSE" | jq -c '[.data[]? | {
     id: .id,
     timestamp: .attributes.timestamp,
     service: .attributes.service,
     host: .attributes.host,
-    message: (.attributes.message // .attributes.attributes.message // "")[0:500],
+    message: ((.attributes.message // .attributes.attributes.message // "")[0:500]
+      | gsub("(?i)sk-proj-[A-Za-z0-9_-]{4}[A-Za-z0-9_-]+"; "sk-proj-****[REDACTED]")
+      | gsub("(?i)sk-ant-[A-Za-z0-9_-]{4}[A-Za-z0-9_-]+"; "sk-ant-****[REDACTED]")
+      | gsub("(?i)sk-oh-[A-Za-z0-9_-]{4}[A-Za-z0-9_-]+"; "sk-oh-****[REDACTED]")
+      | gsub("(?i)sk-or-v1-[A-Za-z0-9_-]{4}[A-Za-z0-9_-]+"; "sk-or-v1-****[REDACTED]")
+      | gsub("(?i)ghp_[A-Za-z0-9]{4}[A-Za-z0-9]+"; "ghp_****[REDACTED]")
+      | gsub("(?i)github_pat_[A-Za-z0-9_]{4}[A-Za-z0-9_]+"; "github_pat_****[REDACTED]")
+      | gsub("AKIA[0-9A-Z]{4}[0-9A-Z]+"; "AKIA****[REDACTED]")
+      | gsub("(?i)tvly-[A-Za-z0-9]{4}[A-Za-z0-9]+"; "tvly-****[REDACTED]")
+      | gsub("(?i)gsk_[A-Za-z0-9]{4}[A-Za-z0-9]+"; "gsk_****[REDACTED]")
+      | gsub("(?i)hf_[A-Za-z0-9]{4}[A-Za-z0-9]+"; "hf_****[REDACTED]")
+      | gsub("(?i)tgp_v1_[A-Za-z0-9]{4}[A-Za-z0-9]+"; "tgp_v1_****[REDACTED]")
+    ),
     tags: .attributes.tags
   }]')
 
