@@ -63,13 +63,15 @@ For each finding from both scans, determine:
 
 ## Step 4: Report Findings on Tracking Issue
 
-Post a comment on {tracking_repo}#{tracking_issue} using `gh` CLI. Use \
-`--body-file` with process substitution or a temp file to avoid shell \
-injection issues with the comment body:
+Post a comment on {tracking_repo}#{tracking_issue} using the `gh-comment.sh` \
+wrapper script (it validates inputs and uses `--body-file` to prevent shell \
+injection):
 
 ```bash
-echo 'COMMENT_BODY' > /tmp/comment.md
-gh issue comment {tracking_issue} --repo {tracking_repo} --body-file /tmp/comment.md
+cat > /tmp/comment.md << 'COMMENT_EOF'
+[your comment content here]
+COMMENT_EOF
+./scripts/secret-scan/gh-comment.sh comment {tracking_repo} {tracking_issue} "$(cat /tmp/comment.md)"
 ```
 
 ### Comment format when leaks are found:
@@ -127,31 +129,45 @@ already redact secrets, so use the redacted samples from the scan output.**
 ## Step 5: Delegate Fixes to Sub-Agents
 
 For each fixable leak where you can identify the source repository and code \
-path, use the **task tool** to delegate to a `secret-fixer` sub-agent. Each \
-sub-agent creates exactly ONE PR.
+path, delegate to a `secret-fixer` sub-agent. Each sub-agent creates exactly \
+ONE PR.
 
-To delegate, call the task tool with:
-- `subagent_type`: `"secret-fixer"`
-- `prompt`: A detailed description of what to fix (see below)
-- `description`: A short 3-5 word summary like "Fix Tavily key logging"
+Call the `task` tool with these parameters:
+- `subagent_type`: `"secret-fixer"` (the registered sub-agent name)
+- `prompt`: Detailed fix instructions (see template below)
+- `description`: Short 3-5 word summary, e.g. "Fix Tavily key in logger.py"
 
-If you have MULTIPLE leaks to fix, delegate ALL of them IN PARALLEL by \
-making multiple task tool calls in a single response. Do NOT wait for one \
-sub-agent to finish before starting the next.
+To fix MULTIPLE leaks in parallel, make multiple `task` tool calls in a \
+SINGLE response. Do NOT wait for one sub-agent to complete before delegating \
+the next.
 
-Each sub-agent prompt must include:
-- The repository to fix (owner/repo)
-- The file and code path that causes the leak
-- What the fix should do (redact, remove log statement, lower log level, etc.)
-- The scan window timestamps for the commit message
-- The GITHUB_TOKEN is available as an env var for `gh` CLI operations
+### Sub-agent prompt template
 
-After ALL sub-agents complete, post a follow-up comment on the tracking \
-issue listing the PRs that were created:
+Each sub-agent prompt MUST include all of this information:
+```
+Fix a secret leak in repository <owner/repo>.
+
+File: <path/to/file.py>
+Line(s): <line numbers>
+Leak: <what is being leaked, e.g. "ANTHROPIC_API_KEY logged in debug output">
+Fix: <what to do, e.g. "Remove the debug log statement on line 42" or
+     "Redact the value before passing to logger.info()">
+
+Scan window: {from_ts} -- {to_ts} (use in commit message)
+
+The GITHUB_TOKEN env var is available for gh CLI operations.
+Clone with: git clone https://github.com/<owner/repo>.git /tmp/<repo>
+```
+
+### After sub-agents complete
+
+Post a follow-up comment on the tracking issue listing the PRs:
 
 ```bash
-echo 'FOLLOW_UP_BODY' > /tmp/followup.md
-gh issue comment {tracking_issue} --repo {tracking_repo} --body-file /tmp/followup.md
+cat > /tmp/followup.md << 'FOLLOWUP_EOF'
+[your follow-up content here]
+FOLLOWUP_EOF
+./scripts/secret-scan/gh-comment.sh comment {tracking_repo} {tracking_issue} "$(cat /tmp/followup.md)"
 ```
 
 ## Guidelines
