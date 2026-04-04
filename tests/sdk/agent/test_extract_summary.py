@@ -43,3 +43,51 @@ def test_extract_summary(agent, summary_value, expected_result):
     result = agent._extract_summary("test_tool", arguments)
     assert result == expected_result
     assert "summary" not in arguments
+
+
+@pytest.mark.parametrize(
+    "tool_name,arguments",
+    [
+        ("think", {"thought": "analyzing the problem"}),
+        ("file_editor", {"command": "view", "path": "/workspace/file.py"}),
+    ],
+)
+def test_extract_summary_returns_empty_for_frontend_handled_tools(
+    agent, tool_name, arguments
+):
+    """Test that tools with frontend translations return empty summary.
+
+    Frontend displays translated titles like "Thinking" and "Reading <path>"
+    for these tools, which is better than raw JSON.
+    See: https://github.com/OpenHands/OpenHands/issues/13690
+    """
+    original_args = arguments.copy()
+
+    result = agent._extract_summary(tool_name, arguments)
+
+    assert result == ""
+    assert "summary" not in arguments
+    assert arguments == original_args
+
+
+@pytest.mark.parametrize(
+    "tool_name,arguments,summary",
+    [
+        ("think", {"thought": "analyzing the problem"}, "Planning approach"),
+        (
+            "file_editor",
+            {"command": "view", "path": "/workspace/file.py"},
+            "Read config",
+        ),
+    ],
+)
+def test_extract_summary_uses_llm_provided_for_frontend_handled_tools(
+    agent, tool_name, arguments, summary
+):
+    """Test that LLM-provided summaries are still used for frontend-handled tools."""
+    arguments["summary"] = summary
+
+    result = agent._extract_summary(tool_name, arguments)
+
+    assert result == summary
+    assert "summary" not in arguments
