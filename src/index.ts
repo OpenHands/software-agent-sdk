@@ -153,6 +153,7 @@ export type {
   TextContent,
   ImageContent,
   AgentBase,
+  AgentContext,
   LLM as LLMConfig,
   ServerInfo,
   Success,

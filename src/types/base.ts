@@ -71,9 +71,17 @@ export interface ImageContent extends MessageContent {
   image_urls: string[];
 }
 
+export interface AgentContext {
+  skills?: any[];
+  system_message_suffix?: string | null;
+  user_message_suffix?: string | null;
+  [key: string]: any;
+}
+
 export interface AgentBase {
   kind: string;
   llm: LLM;
+  agent_context?: AgentContext | null;
   // Keep name for backward compatibility
   name?: string;
   [key: string]: any;
