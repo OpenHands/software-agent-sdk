@@ -13,10 +13,11 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
 from pydantic import Field
+from pydantic.json_schema import SkipJsonSchema
 from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
-from openhands.sdk.subagent import get_factory_info
+from openhands.sdk.subagent import get_factory_info, get_registered_agent_definitions
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -29,6 +30,7 @@ from openhands.sdk.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.task.impl import TaskExecutor
+    from openhands.tools.task.manager import ConfirmationHandler
 
 
 class TaskAction(Action):
@@ -49,9 +51,12 @@ class TaskAction(Action):
         default=None,
         description="Task ID of the task to resume from.",
     )
-    max_turns: int | None = Field(
+    max_turns: SkipJsonSchema[int | None] = Field(
         default=None,
-        description="Maximum number of agentic turns before stopping.",
+        description="Deprecated: This field is ignored and will be removed "
+        "in version 2. Maximum iterations are now determined by "
+        "the agent definition or parent conversation.",
+        deprecated=True,
         ge=1,
     )
 
@@ -103,35 +108,61 @@ class TaskObservation(Observation):
 
 TASK_TOOL_DESCRIPTION: Final[
     str
-] = """Launch a new agent to handle complex, multi-step tasks autonomously.
+] = """Launch a subagent to handle complex, multi-step tasks autonomously.
 
-The task tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.
+Subagents are autonomous agents that work independently and return results to you. They are your primary tool for understanding codebases and running
+tests, but each delegation has overhead — use them when the task genuinely benefits from a separate agent, not for simple lookups.
 
 Available agent types and the tools they have access to:
 {agent_types_info}
 
-When using the task tool, you must specify a subagent_type parameter to select which agent type to use.
-
 When NOT to use the task tool:
-- If you want to read a specific file path, use the terminal tool instead of the task tool, to find the match more quickly
-- If you are searching for a specific class definition like "class Foo", use the terminal tool instead, to find the match more quickly
-- If you are searching for code within a specific file or set of 2-3 files, use the terminal tool instead of the task tool, to find the match more quickly
-- Other tasks that are not related to the agent descriptions above
+- A single grep, find, or cat command would answer your question — just run it yourself
+- You are making a file edit (use file_editor directly)
+- You already have the context needed
 
-Usage notes:
-- Always include a short description (3-5 words) summarizing what the agent will do
-- When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you
-should send a text message back to the user with a concise summary of the result.
-- Agents can be resumed using the resume parameter by passing the task ID from a previous invocation. When resumed, the agent continues with its full previous
-context preserved. When NOT resuming, each invocation starts fresh and you should provide a detailed task description with all necessary context.
-- When you launch an agent with a task using the Task tool, a task ID will be returned to you. You can use this ID to resume the agent later if needed for follow-up work.
-- Provide clear, detailed prompts so the agent can work autonomously and return exactly the information you need.
-- The agent's outputs should generally be trusted
-- Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's
-intent
-- If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your
-judgement.
+When using the task tool:
+- Write a detailed prompt describing exactly what you need
+- Include specific file paths, class names, or error messages from the issue
+- Tell the agent what to report back (file paths, line numbers, code snippets)
+- The agent's results are authoritative — verify subagent results only when the task involves judgment or
+  interpretation.
+  
+{task_tool_examples}
 """  # noqa: E501
+
+TASK_TOOL_EXAMPLES: Final[dict[str, str]] = {
+    "code-explorer": """
+Example — Multi-step exploration (good use of code-explorer):
+    subagent_type="code-explorer"
+    prompt="Trace how the DateFormat.y() method is called through Django's
+    template system. Find: (1) the method definition, (2) where it's
+    registered as a format character, (3) all test cases. Include code
+    snippets and file paths."
+""",
+    "bash-runner": """
+Example — Running tests (good use of bash-runner):
+    subagent_type="bash-runner"
+    prompt="Run: cd /workspace/django && python tests/runtests.py
+    utils_tests.test_dateformat -v 2. Provide a summary including
+    the total tests run, the final status, and a list of any
+    failing test names. For each failure, include the specific
+    cause or assertion error, but do not include the full stack
+    trace or the verbose setup/teardown output."
+""",
+    "web researcher": """
+Example — Research information on a website (good use of web researcher):
+    subagent_type="web researcher"
+    prompt="Navigate to the Stripe API docs and find the parameters for the PaymentIntent create endpoint."
+""",  # noqa: E501
+    "general purpose": """
+Example — Perform a multi-step task involving code editing and shell commands:
+    subagent_type="general purpose"
+    prompt="Read the database module in src/db.py, extract the connection
+    pooling logic into a separate file, update all imports, and run the
+    test suite to verify nothing breaks."
+""",
+}
 
 
 class TaskTool(ToolDefinition[TaskAction, TaskObservation]):
@@ -182,11 +213,16 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
     def create(
         cls,
         conv_state: "ConversationState",  # noqa: ARG003
+        confirmation_handler: "ConfirmationHandler | None" = None,
     ) -> list[ToolDefinition]:
         """Create the task tool.
 
         Args:
             conv_state: Conversation state for workspace info.
+            confirmation_handler: Optional callback invoked when a sub-agent's
+                confirmation policy requires user approval.  Receives
+                `(task_id, pending_actions)` and must return `True` to
+                approve or `False` to reject.
 
         Returns:
             List containing a single TaskTool.
@@ -195,11 +231,17 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
 
         agent_types_info = get_factory_info()
 
-        task_description = TASK_TOOL_DESCRIPTION.format(
-            agent_types_info=agent_types_info
+        registered = {d.name for d in get_registered_agent_definitions()}
+        task_tool_examples = "\n".join(
+            ex for name, ex in TASK_TOOL_EXAMPLES.items() if name in registered
         )
 
-        manager = TaskManager()
+        task_description = TASK_TOOL_DESCRIPTION.format(
+            agent_types_info=agent_types_info,
+            task_tool_examples=task_tool_examples,
+        )
+
+        manager = TaskManager(confirmation_handler=confirmation_handler)
         task_executor = TaskExecutor(manager=manager)
 
         tools: list[ToolDefinition] = []

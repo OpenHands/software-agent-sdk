@@ -1,6 +1,7 @@
 """Apptainer-based remote workspace implementation."""
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -87,6 +88,10 @@ class ApptainerWorkspace(RemoteWorkspace):
     extra_ports: bool = Field(
         default=False,
         description="Whether to expose additional ports (VSCode, VNC).",
+    )
+    enable_gpu: bool = Field(
+        default=False,
+        description="Whether to enable GPU support with --nv.",
     )
     cache_dir: str | None = Field(
         default=None,
@@ -259,6 +264,8 @@ class ApptainerWorkspace(RemoteWorkspace):
             container_opts.append("--fakeroot")
         if self.enable_docker_compat:
             container_opts.append("--compat")
+        if self.enable_gpu:
+            container_opts.append("--nv")
         if self.disable_mount_locations:
             for loc in self.disable_mount_locations:
                 container_opts += [
@@ -282,12 +289,13 @@ class ApptainerWorkspace(RemoteWorkspace):
             str(self.host_port),
         ]
 
-        # Start the server process in the background
+        # Start the server process in the background in separate process group
         self._process = subprocess.Popen(
             server_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
 
         # Optionally stream logs in background
@@ -364,12 +372,15 @@ class ApptainerWorkspace(RemoteWorkspace):
             if self._process:
                 try:
                     logger.info("Terminating Apptainer process...")
-                    self._process.terminate()
+                    pgid = os.getpgid(self._process.pid)
+                    os.killpg(pgid, signal.SIGTERM)
                     self._process.wait(timeout=5)
                 except Exception as e:
                     logger.warning("Error terminating process: %s", e)
                     try:
-                        self._process.kill()
+                        pgid = os.getpgid(self._process.pid)
+                        os.killpg(pgid, signal.SIGKILL)
+                        self._process.wait(timeout=2)
                     except Exception:
                         pass
 

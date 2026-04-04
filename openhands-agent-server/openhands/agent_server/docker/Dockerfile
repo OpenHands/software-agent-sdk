@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-# NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
-# with Python 3.13. See issue #1886 for details.
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.12-nodejs22
+# NOTE: LC_ALL/LANG must be set to C.UTF-8 for libtmux to work correctly with
+# PyInstaller builds. Without proper locale, tmux converts UTF-8 separator
+# characters to underscores, breaking libtmux's format parsing.
+ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
@@ -11,11 +12,18 @@ ARG PORT=8000
 ####################################################################################
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
+#
+# NOTE: We use the base image's system Python (--python-preference only-system)
+# instead of uv-managed python-build-standalone. The python-build-standalone
+# builds ship libpython with an executable stack (PT_GNU_STACK PF_X).
+# Docker containers running under seccomp restrictions (e.g. GitHub Actions
+# Docker-in-Docker) reject dlopen() on such libraries with:
+#   "cannot enable executable stack as shared object requires: Invalid argument"
+# Debian's CPython packages do not have this issue.
 ####################################################################################
-FROM python:3.12-bullseye AS builder
+FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
@@ -30,7 +38,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.12 && uv venv --python 3.12 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
+    uv venv --python-preference only-system .venv && uv sync --frozen --no-editable --extra boto3
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -84,12 +92,56 @@ RUN set -eux; \
     chown -R ${USERNAME}:${USERNAME} /workspace; \
     rm -rf /var/lib/apt/lists/*
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here, 
+# Pre-install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI)
+# Install Node.js 22 to a dedicated prefix so ACP packages get a modern runtime
+# WITHOUT overwriting the repo-specific Node.js that test suites depend on.
+# SWE-bench images ship NVM/apt-managed Node 8-14 which cannot run ACP packages.
+ENV ACP_NODE_DIR=/opt/acp-node
+RUN set -eux; \
+    ARCH=$(dpkg --print-architecture); \
+    case "$ARCH" in \
+      amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
+      arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
+      *) echo "Unsupported architecture for ACP Node install: $ARCH" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
+    mkdir -p "$ACP_NODE_DIR"; \
+    curl -fsSL "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
+    rm -f "$NODE_TARBALL"; \
+    PATH="$ACP_NODE_DIR/bin:$PATH"; \
+    node --version; \
+    npm install -g \
+      @zed-industries/claude-agent-acp \
+      @zed-industries/codex-acp \
+      @google/gemini-cli; \
+    # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
+    # This ensures the ACP binary's #!/usr/bin/env node shebang resolves to
+    # Node 22, while the repo's own node (NVM/system) stays untouched for tests.
+    for bin in claude-agent-acp codex-acp gemini; do \
+      if [ -e "$ACP_NODE_DIR/bin/$bin" ]; then \
+        printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
+          "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
+          > /usr/local/bin/"$bin"; \
+        chmod +x /usr/local/bin/"$bin"; \
+      fi; \
+    done
+
+# Configure Claude Code managed settings for headless operation:
+# Allow all tool permissions (no human in the loop to approve).
+RUN mkdir -p /etc/claude-code && \
+    echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
+
+# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
 USER ${USERNAME}
 WORKDIR /
+# Locale settings required for libtmux to work with PyInstaller builds
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
 ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
 EXPOSE ${PORT}
@@ -219,13 +271,11 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 ############################
 FROM base-image AS source
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 FROM base-image-minimal AS source-minimal
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 

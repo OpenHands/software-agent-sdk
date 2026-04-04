@@ -32,6 +32,7 @@ import ast
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.request
@@ -40,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from packaging import version as pkg_version
+from packaging.requirements import Requirement
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,11 @@ PACKAGES: tuple[PackageConfig, ...] = (
     ),
 )
 
+ACP_DEPENDENCY = "agent-client-protocol"
+ACP_SKIP_ENV = "ACP_VERSION_CHECK_SKIP"
+ACP_SKIP_TOKEN = "skip-acp-check"
+ACP_BASE_REF_ENV = "ACP_VERSION_CHECK_BASE_REF"
+
 
 def read_version_from_pyproject(path: str) -> str:
     """Read the version string from a pyproject.toml file."""
@@ -91,6 +98,140 @@ def read_version_from_pyproject(path: str) -> str:
     if not v:
         raise SystemExit(f"Could not read version from {path}")
     return str(v)
+
+
+def _read_pyproject(path: str) -> dict:
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _bool_env(name: str) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _get_dependency_spec(project_data: dict, dependency: str) -> str | None:
+    deps = project_data.get("project", {}).get("dependencies", [])
+    for dep in deps:
+        if dep.startswith(dependency):
+            return dep
+    return None
+
+
+def _min_version_from_requirement(req_str: str) -> pkg_version.Version | None:
+    try:
+        req = Requirement(req_str)
+    except Exception as exc:
+        print(
+            f"::warning title=ACP version::Unable to parse requirement "
+            f"'{req_str}': {exc}"
+        )
+        return None
+
+    lower_bounds: list[pkg_version.Version] = []
+    for spec in req.specifier:
+        if spec.operator in {">=", ">", "==", "~="}:
+            try:
+                lower_bounds.append(_parse_version(spec.version))
+            except Exception as exc:
+                print(
+                    f"::warning title=ACP version::Unable to parse version "
+                    f"'{spec.version}' from '{req_str}': {exc}"
+                )
+
+    if not lower_bounds:
+        return None
+
+    return max(lower_bounds)
+
+
+def _git_show_file(ref: str, rel_path: str) -> str | None:
+    for candidate in (f"origin/{ref}", ref):
+        result = subprocess.run(
+            ["git", "show", f"{candidate}:{rel_path}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    return None
+
+
+def _load_base_pyproject(base_ref: str) -> dict | None:
+    rel_path = "openhands-sdk/pyproject.toml"
+    content = _git_show_file(base_ref, rel_path)
+    if content is None:
+        print(
+            f"::warning title=ACP version::Unable to read {rel_path} from "
+            f"{base_ref}; skipping ACP version check"
+        )
+        return None
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError as exc:
+        print(
+            f"::warning title=ACP version::Failed to parse {rel_path} from "
+            f"{base_ref}: {exc}"
+        )
+        return None
+
+
+def _check_acp_version_bump(repo_root: str) -> int:
+    if _bool_env(ACP_SKIP_ENV):
+        print(
+            f"::notice title=ACP version::Skipping ACP version check because "
+            f"{ACP_SKIP_ENV} is set (token: [{ACP_SKIP_TOKEN}])."
+        )
+        return 0
+
+    base_ref = os.environ.get(ACP_BASE_REF_ENV) or os.environ.get("GITHUB_BASE_REF")
+    if not base_ref:
+        print(
+            "::warning title=ACP version::No base ref found; skipping ACP version check"
+        )
+        return 0
+
+    base_data = _load_base_pyproject(base_ref)
+    if base_data is None:
+        return 0
+
+    current_data = _read_pyproject(
+        os.path.join(repo_root, "openhands-sdk", "pyproject.toml")
+    )
+    old_req = _get_dependency_spec(base_data, ACP_DEPENDENCY)
+    new_req = _get_dependency_spec(current_data, ACP_DEPENDENCY)
+
+    if not old_req or not new_req:
+        print(
+            f"::warning title=ACP version::Unable to locate {ACP_DEPENDENCY} "
+            "dependency in pyproject.toml; skipping ACP version check"
+        )
+        return 0
+
+    old_min = _min_version_from_requirement(old_req)
+    new_min = _min_version_from_requirement(new_req)
+
+    if old_min is None or new_min is None:
+        print(
+            f"::warning title=ACP version::Unable to parse {ACP_DEPENDENCY} "
+            "minimum version; skipping ACP version check"
+        )
+        return 0
+
+    if new_min <= old_min:
+        return 0
+
+    if new_min.major != old_min.major or new_min.minor != old_min.minor:
+        print(
+            "::error title=ACP version::Detected "
+            f"{ACP_DEPENDENCY} minor/major version bump "
+            f"({old_req} -> {new_req}). If intentional, add "
+            f"[{ACP_SKIP_TOKEN}] to the PR description to bypass."
+        )
+        return 1
+
+    return 0
 
 
 def _parse_version(v: str) -> pkg_version.Version:
@@ -157,12 +298,79 @@ def ensure_griffe() -> None:
         raise SystemExit(1)
 
 
+def _strip_balanced_param(text: str, param: str) -> str:
+    """Remove a keyword parameter whose value may contain nested delimiters.
+
+    Handles values like ``json_schema_extra={'key': {'nested': True}}`` where a
+    simple regex cannot reliably match the balanced braces/parens/brackets.
+
+    Returns *text* with the ``param=<value>`` fragment (and any surrounding
+    comma) removed.
+    """
+    pattern = re.compile(rf",?\s*{re.escape(param)}\s*=\s*")
+    match = pattern.search(text)
+    if not match:
+        return text
+
+    start = match.start()
+    pos = match.end()
+    if pos >= len(text):
+        return text
+
+    # Track balanced delimiters to find where the value ends.
+    openers = {"(": ")", "[": "]", "{": "}"}
+    closers = {")", "]", "}"}
+    stack: list[str] = []
+    in_string: str | None = None
+
+    while pos < len(text):
+        ch = text[pos]
+
+        # Handle string literals (skip their contents).
+        if in_string:
+            if ch == "\\" and pos + 1 < len(text):
+                pos += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            pos += 1
+            continue
+
+        if ch in ("'", '"'):
+            in_string = ch
+            pos += 1
+            continue
+
+        if ch in openers:
+            stack.append(openers[ch])
+            pos += 1
+            continue
+
+        if ch in closers:
+            if stack:
+                stack.pop()
+                pos += 1
+                if not stack:
+                    break
+                continue
+            # Unmatched closer — end of value.
+            break
+
+        # At depth 0, a comma or closing paren ends the value.
+        if not stack and ch in (",", ")"):
+            break
+
+        pos += 1
+
+    return text[:start] + text[pos:]
+
+
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     """Check if the change is only in Field metadata (description, title, etc.).
 
-    Field metadata parameters like ``description``, ``title``, and ``examples``
-    don't affect runtime behavior - they're documentation-only. Changes to these
-    should not be considered breaking API changes.
+    Field metadata parameters like ``description``, ``title``, ``examples``,
+    ``json_schema_extra``, and ``deprecated`` don't affect runtime behavior.
+    Changes to these should not be considered breaking API changes.
 
     Returns:
         True if both values are Field() calls and only metadata parameters differ.
@@ -173,20 +381,63 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     if not (old_str.startswith("Field(") and new_str.startswith("Field(")):
         return False
 
-    # Metadata parameters that don't affect runtime behavior
+    # Simple metadata parameters whose values are always plain quoted strings
+    # or simple literals.
     # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
-    metadata_params = ["description", "title", "examples", "json_schema_extra"]
+    simple_metadata_patterns = {
+        "description": r'([\'"])([^\'"]*?)\1',
+        "title": r'([\'"])([^\'"]*?)\1',
+        "examples": r'([\'"])([^\'"]*?)\1',
+        "deprecated": r"(?:True|False|None|'[^']*'|\"[^\"]*\")",
+    }
 
-    old_normalized = old_str
-    new_normalized = new_str
+    # Parameters whose values can be complex nested structures (dicts, function
+    # calls, etc.) and need balanced-delimiter parsing instead of a regex.
+    balanced_params = ("json_schema_extra",)
 
-    for param in metadata_params:
-        # Pattern to match param='...' or param="..." with simple string values
-        pattern = rf'{param}\s*=\s*([\'"])([^\'"]*?)\1'
-        old_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", old_normalized)
-        new_normalized = re.sub(pattern, f"{param}=PLACEHOLDER", new_normalized)
+    def _normalize(value: str) -> str:
+        normalized = value
 
-    return old_normalized == new_normalized
+        for param, value_pattern in simple_metadata_patterns.items():
+            pattern = rf",?\s*{param}\s*=\s*{value_pattern}"
+            normalized = re.sub(pattern, "", normalized)
+
+        for param in balanced_params:
+            normalized = _strip_balanced_param(normalized, param)
+
+        normalized = re.sub(r"\(\s*,", "(", normalized)
+        normalized = re.sub(r",\s*\)", ")", normalized)
+        normalized = re.sub(r",\s*,", ", ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
+    return _normalize(old_str) == _normalize(new_str)
+
+
+def _was_deprecated(
+    cls_obj: object,
+    member_name: str,
+    deprecated: DeprecatedSymbols,
+) -> bool:
+    """Check if a class member was deprecated, including in parent classes.
+
+    When a member like ``system_message`` is deprecated on a base class
+    (``AgentBase``) but removed from a subclass (``Agent``), griffe reports
+    the removal against the subclass name.  This helper walks the MRO so
+    that ``Agent.system_message`` is correctly recognised as deprecated if
+    ``AgentBase.system_message`` carried the ``@deprecated`` marker.
+    """
+    cls_name = getattr(cls_obj, "name", "")
+    feature = f"{cls_name}.{member_name}"
+    if feature in deprecated.qualified or cls_name in deprecated.top_level:
+        return True
+
+    # Walk griffe-style resolved bases (if available)
+    for base in getattr(cls_obj, "resolved_bases", []):
+        base_name = getattr(base, "name", None)
+        if base_name and f"{base_name}.{member_name}" in deprecated.qualified:
+            return True
+    return False
 
 
 def _collect_breakages_pairs(
@@ -239,17 +490,16 @@ def _collect_breakages_pairs(
                     continue
 
                 feature = f"{parent.name}.{obj.name}"
-                if (
-                    feature not in deprecated.qualified
-                    and parent.name not in deprecated.top_level
-                ):
-                    print(
-                        f"::error title={title}::Removed '{feature}' without prior "
-                        "deprecation. Mark it with @deprecated(...) or "
-                        f"warn_deprecated('{feature}', ...) for at least one release "
-                        "before removing."
-                    )
-                    undeprecated_removals += 1
+                if _was_deprecated(parent, obj.name, deprecated):
+                    continue
+
+                print(
+                    f"::error title={title}::Removed '{feature}' without prior "
+                    "deprecation. Mark it with @deprecated(...) or "
+                    f"warn_deprecated('{feature}', ...) for at least one release "
+                    "before removing."
+                )
+                undeprecated_removals += 1
         except AliasResolutionError as e:
             if isinstance(old, Alias) or isinstance(new, Alias):
                 old_target = old.target_path if isinstance(old, Alias) else None
@@ -657,11 +907,12 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
 
 def main() -> int:
     """Main entry point for API breakage detection."""
+    repo_root = os.getcwd()
+    rc = _check_acp_version_bump(repo_root)
+
     ensure_griffe()
     import griffe
 
-    repo_root = os.getcwd()
-    rc = 0
     for cfg in PACKAGES:
         print(f"\n{'=' * 60}")
         print(f"Checking {cfg.distribution} ({cfg.package})")

@@ -7,7 +7,7 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task import TaskToolSet
-from openhands.tools.task.definition import TaskObservation
+from openhands.tools.task.definition import TASK_TOOL_EXAMPLES, TaskObservation
 from openhands.tools.task.manager import TaskStatus
 
 
@@ -17,7 +17,6 @@ def _task_tool_call(
     subagent_type: str = "test_agent",
     description: str | None = None,
     resume: str | None = None,
-    max_turns: int | None = None,
 ) -> Message:
     """Build a Message whose only tool call is the task tool."""
     args: dict = {
@@ -28,8 +27,6 @@ def _task_tool_call(
         args["description"] = description
     if resume is not None:
         args["resume"] = resume
-    if max_turns is not None:
-        args["max_turns"] = max_turns
 
     return Message(
         role="assistant",
@@ -339,3 +336,75 @@ class TestTaskToolSetIntegration:
         observations = _get_task_observations(conversation)
         assert len(observations) == 1
         assert observations[0].is_error is True
+
+
+class TestTaskToolExamples:
+    """Tests that TASK_TOOL_EXAMPLES are included in the tool description
+    only when the corresponding agents are registered."""
+
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
+    def test_matching_agent_example_included(self, tmp_path):
+        """When a registered agent name matches a TASK_TOOL_EXAMPLES key,
+        its example appears in the tool description."""
+        # Pick one key from the examples dict
+        example_name = next(iter(TASK_TOOL_EXAMPLES))
+        example_text = TASK_TOOL_EXAMPLES[example_name]
+
+        # Register an agent whose name matches the example key
+        register_agent(
+            name=example_name,
+            factory_func=lambda llm: Agent(llm=llm, tools=[]),
+            description=f"Test agent: {example_name}",
+        )
+
+        tools = TaskToolSet.create(
+            conv_state=None,  # type: ignore[arg-type]
+        )
+        assert len(tools) == 1
+        description = tools[0].description
+        assert example_text.strip() in description
+
+    def test_no_matching_agent_example_excluded(self, tmp_path):
+        """When no registered agent name matches any TASK_TOOL_EXAMPLES key,
+        no example text appears in the tool description."""
+        # Register an agent whose name does NOT match any example key
+        register_agent(
+            name="unrelated_agent",
+            factory_func=lambda llm: Agent(llm=llm, tools=[]),
+            description="Test agent: unrelated",
+        )
+
+        tools = TaskToolSet.create(
+            conv_state=None,  # type: ignore[arg-type]
+        )
+        assert len(tools) == 1
+        description = tools[0].description
+        for name, example_text in TASK_TOOL_EXAMPLES.items():
+            assert example_text.strip() not in description
+
+    def test_only_registered_examples_included(self, tmp_path):
+        """Only examples for registered agents appear; others are excluded."""
+        keys = list(TASK_TOOL_EXAMPLES.keys())
+        if len(keys) < 2:
+            return  # Need at least 2 examples for this test
+
+        included_name = keys[0]
+        excluded_name = keys[1]
+
+        register_agent(
+            name=included_name,
+            factory_func=lambda llm: Agent(llm=llm, tools=[]),
+            description=f"Test agent: {included_name}",
+        )
+
+        tools = TaskToolSet.create(
+            conv_state=None,  # type: ignore[arg-type]
+        )
+        description = tools[0].description
+        assert TASK_TOOL_EXAMPLES[included_name].strip() in description
+        assert TASK_TOOL_EXAMPLES[excluded_name].strip() not in description

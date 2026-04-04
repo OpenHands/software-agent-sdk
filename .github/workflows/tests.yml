@@ -16,7 +16,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect sdk changes
@@ -75,7 +75,7 @@ jobs:
 
             - name: Upload sdk coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: coverage-sdk
                   path: coverage-sdk.dat
@@ -86,7 +86,7 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect tools changes
@@ -133,7 +133,7 @@ jobs:
 
             - name: Upload tools coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: coverage-tools
                   path: coverage-tools.dat
@@ -143,7 +143,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect Agent Server changes
@@ -190,7 +190,7 @@ jobs:
 
             - name: Upload Agent Server coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: coverage-agent-server
                   path: coverage-agent-server.dat
@@ -200,7 +200,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect cross changes
@@ -247,7 +247,7 @@ jobs:
 
             - name: Upload cross coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: coverage-cross
                   path: coverage-cross.dat
@@ -259,7 +259,7 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -271,7 +271,7 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Download coverage artifacts
-              uses: actions/download-artifact@v6
+              uses: actions/download-artifact@v8
               with:
                   path: ./cov
               continue-on-error: true

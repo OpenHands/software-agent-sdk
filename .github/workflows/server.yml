@@ -34,7 +34,7 @@ jobs:
             matrix:
                 os: [ubuntu-latest, macos-latest]
         steps:
-            - uses: actions/checkout@v5
+            - uses: actions/checkout@v6
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -107,7 +107,7 @@ jobs:
                   echo "✓ Binary test completed successfully"
 
             - name: Upload binary artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: openhands-server-${{ matrix.os }}
                   path: |
@@ -120,7 +120,7 @@ jobs:
 
         steps:
             - name: Checkout PR branch
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 0
 
@@ -162,17 +162,15 @@ jobs:
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
-                    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility
-                    # issue with Python 3.13. See issue #1886 for details.
                     - variant: python
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
@@ -219,7 +217,7 @@ jobs:
 
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -228,10 +226,10 @@ jobs:
                   python-version: '3.13'
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
+              uses: docker/setup-buildx-action@v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@v3
+              uses: docker/login-action@v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
@@ -273,7 +271,7 @@ jobs:
 
             - name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})
               id: build
-              uses: docker/build-push-action@v6
+              uses: docker/build-push-action@v7
               with:
                   context: ${{ steps.prep.outputs.build_context }}
                   file: ${{ steps.prep.outputs.dockerfile }}
@@ -321,7 +319,7 @@ jobs:
                   EOF
 
             - name: Upload build info artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: build-info-${{ matrix.variant }}-${{ matrix.arch }}
                   path: build-info/${{ matrix.variant }}-${{ matrix.arch }}.json
@@ -343,7 +341,7 @@ jobs:
 
         steps:
             - name: Download build info to extract SHORT_SHA
-              uses: actions/download-artifact@v6
+              uses: actions/download-artifact@v8
               with:
                   pattern: build-info-${{ matrix.variant }}-*
                   merge-multiple: true
@@ -358,10 +356,10 @@ jobs:
                   echo "Using SHORT_SHA: $SHORT_SHA"
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
+              uses: docker/setup-buildx-action@v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@v3
+              uses: docker/login-action@v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
@@ -437,7 +435,7 @@ jobs:
                   EOF
 
             - name: Upload manifest info artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: manifest-info-${{ matrix.variant }}
                   path: manifest-info/${{ matrix.variant }}.json
@@ -454,14 +452,14 @@ jobs:
             build_summary: ${{ steps.consolidate.outputs.build_summary }}
         steps:
             - name: Download build info artifacts
-              uses: actions/download-artifact@v6
+              uses: actions/download-artifact@v8
               with:
                   pattern: build-info-*
                   merge-multiple: true
                   path: build-info
 
             - name: Download manifest info artifacts
-              uses: actions/download-artifact@v6
+              uses: actions/download-artifact@v8
               with:
                   pattern: manifest-info-*
                   merge-multiple: true
