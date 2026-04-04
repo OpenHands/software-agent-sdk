@@ -101,7 +101,7 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         warn_deprecated(
             "DelegateTool",
             deprecated_in="1.16.0",
-            removed_in="2.0.0",
+            removed_in="1.23.0",
             details="Use TaskToolSet instead for sub-agent delegation.",
         )
 
