@@ -95,10 +95,19 @@ class TestExtraction:
         assert "not valid json {{" in content
 
     def test_hard_cap_truncation(self):
+        """Per-corpus hard cap enforced; combined content fits in 2x + spaces.
+
+        Each corpus (_extract_exec_segments, _extract_text_segments) caps
+        its own total at _EXTRACT_HARD_CAP internally. The composed
+        _extract_content concatenates both corpora and does not apply
+        another outer slice (doing so would drop the text corpus when
+        exec fills the budget, defeating summary-first ordering).
+        """
         long_command = "x" * (_EXTRACT_HARD_CAP + 5000)
         action = make_action(long_command)
         content = _extract_content(action)
-        assert len(content) <= _EXTRACT_HARD_CAP
+        # Two corpora, each ≤ _EXTRACT_HARD_CAP, plus one separator space.
+        assert len(content) <= 2 * _EXTRACT_HARD_CAP + 1
 
     def test_empty_content(self):
         action = make_action("")
