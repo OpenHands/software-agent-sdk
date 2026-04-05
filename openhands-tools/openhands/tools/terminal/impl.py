@@ -34,7 +34,6 @@ logger = get_logger(__name__)
 
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
-    session: TerminalSession
     shell_path: str | None
 
     def __init__(
@@ -71,6 +70,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
         # Pool mode: use TmuxPanePool for parallel execution
         self._pool: TmuxPanePool | None = None
+        self._session: TerminalSession | None = None
         self._sessions: dict[int, TerminalSession] = {}
         self._sessions_lock = threading.Lock()
 
@@ -85,26 +85,42 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 f"max_panes: {max_panes}"
             )
         else:
-            self.session = create_terminal_session(
+            self._session = create_terminal_session(
                 work_dir=working_dir,
                 username=username,
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
                 shell_path=shell_path,
             )
-            self.session.initialize()
+            self._session.initialize()
             logger.info(
                 f"TerminalExecutor initialized with "
                 f"working_dir: {working_dir}, "
                 f"username: {username}, "
                 f"terminal_type: "
-                f"{terminal_type or self.session.__class__.__name__}"
+                f"{terminal_type or self._session.__class__.__name__}"
             )
 
     @property
     def is_pooled(self) -> bool:
         """Whether this executor is using the tmux pane pool for concurrency."""
         return self._pool is not None
+
+    @property
+    def session(self) -> TerminalSession:
+        """Access the single-session terminal.
+
+        Raises:
+            AttributeError: If the executor is in pool mode.
+        """
+        if self._pool is not None:
+            raise AttributeError(
+                "TerminalExecutor.session is not available in pool mode. "
+                "Use the is_pooled property to check mode, or set "
+                "terminal_type='subprocess' to disable pool mode."
+            )
+        assert self._session is not None
+        return self._session
 
     # ------------------------------------------------------------------
     # Pool helpers
@@ -257,19 +273,20 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
     def _reset_single_session(self) -> TerminalObservation:
         """Reset the single-session terminal."""
-        original_work_dir = self.session.work_dir
-        original_username = self.session.username
-        original_no_change_timeout = self.session.no_change_timeout_seconds
+        assert self._session is not None
+        original_work_dir = self._session.work_dir
+        original_username = self._session.username
+        original_no_change_timeout = self._session.no_change_timeout_seconds
 
-        self.session.close()
-        self.session = create_terminal_session(
+        self._session.close()
+        self._session = create_terminal_session(
             work_dir=original_work_dir,
             username=original_username,
             no_change_timeout_seconds=original_no_change_timeout,
             terminal_type=None,
             shell_path=self.shell_path,
         )
-        self.session.initialize()
+        self._session.initialize()
 
         logger.info(
             f"Terminal session reset successfully with working_dir: {self._working_dir}"
@@ -409,5 +426,5 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             self._pool.close()
             with self._sessions_lock:
                 self._sessions.clear()
-        elif hasattr(self, "session"):
-            self.session.close()
+        elif self._session is not None:
+            self._session.close()
