@@ -61,7 +61,12 @@ def mock_llm() -> LLM:
     mock_llm.openrouter_app_name = "OpenHands"
     mock_llm.aws_access_key_id = None
     mock_llm.aws_secret_access_key = None
+    mock_llm.aws_session_token = None
     mock_llm.aws_region_name = None
+    mock_llm.aws_profile_name = None
+    mock_llm.aws_role_name = None
+    mock_llm.aws_session_name = None
+    mock_llm.aws_bedrock_runtime_endpoint = None
     mock_llm.metrics = None
     mock_llm.model = "test-model"
     mock_llm.log_completions = False

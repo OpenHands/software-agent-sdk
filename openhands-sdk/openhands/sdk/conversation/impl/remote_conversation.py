@@ -51,6 +51,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -94,11 +95,7 @@ def _send_request(
         response.raise_for_status()
         return response
     except httpx.HTTPStatusError as e:
-        content = None
-        try:
-            content = e.response.json()
-        except Exception:
-            content = e.response.text
+        content = http_error_log_content(e.response)
         logger.error(
             "HTTP request failed (%d %s): %s",
             e.response.status_code,
