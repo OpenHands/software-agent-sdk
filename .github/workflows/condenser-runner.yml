@@ -69,7 +69,7 @@ jobs:
                           model: litellm_proxy/gpt-5.1-codex-max
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   # For pull_request_target: checkout fork PR code (requires explicit repository)
                   # For other events: fallback to current repository and ref
@@ -169,7 +169,7 @@ jobs:
             pull-requests: write
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   # When using pull_request_target, explicitly checkout the PR branch
                   # This ensures we use the scripts from the actual PR code

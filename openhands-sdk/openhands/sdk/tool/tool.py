@@ -528,8 +528,16 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
         if action_type_with_risk:
             return action_type_with_risk
 
+        # Re-use a WithRisk class that already exists in the hierarchy
+        # but whose cache entry was lost (fixes #2642).
+        target_name = f"{action_type.__name__}WithRisk"
+        for sub in action_type.__subclasses__():
+            if sub.__name__ == target_name:
+                _action_types_with_risk[action_type] = sub
+                return sub
+
         action_type_with_risk = type(
-            f"{action_type.__name__}WithRisk",
+            target_name,
             (action_type,),
             {
                 "security_risk": Field(
@@ -571,8 +579,16 @@ def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
         if action_type_with_summary:
             return action_type_with_summary
 
+        # Re-use a WithSummary class that already exists in the hierarchy
+        # but whose cache entry was lost (fixes #2642).
+        target_name = f"{action_type.__name__}WithSummary"
+        for sub in action_type.__subclasses__():
+            if sub.__name__ == target_name:
+                _action_types_with_summary[action_type] = sub
+                return sub
+
         action_type_with_summary = type(
-            f"{action_type.__name__}WithSummary",
+            target_name,
             (action_type,),
             {
                 "summary": Field(
