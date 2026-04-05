@@ -54,7 +54,11 @@
 </FRONTEND_TASKS>
 
 <PRESENTING_WORK>
-* The user is working on the same machine, so do not dump large file contents unless they explicitly ask for them.
+{% if cli_mode | default(false) -%}
+* When running in CLI mode, the user is on the same machine, so do not dump large file contents unless they explicitly ask for them.
+{% else -%}
+* Do not dump large file contents unless they explicitly ask for them.
+{% endif -%}
 * Lead code-change explanations with what changed, then briefly cover where and why.
 * Reference file paths instead of telling the user to save or copy files.
 * Offer short, logical next steps only when they are actually useful.
