@@ -166,6 +166,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 screen = session.terminal.read_screen()
                 if screen.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip()):
                     break
+            else:
+                logger.debug(
+                    "Prompt did not reappear within %.1fs after interrupt; "
+                    "proceeding anyway",
+                    _max_wait,
+                )
             session.terminal.clear_screen()
         session.prev_status = None
         session.prev_output = ""

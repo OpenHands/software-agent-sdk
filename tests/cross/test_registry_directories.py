@@ -84,7 +84,7 @@ def test_resolve_tool_with_conversation_directories(test_agent):
         bash_tools = resolve_tool(bash_tool, conv_state=conversation._state)
         assert len(bash_tools) == 1
         # Type ignore needed for test-specific executor access
-        work_dir = bash_tools[0].executor.session.work_dir  # type: ignore[attr-defined]
+        work_dir = bash_tools[0].executor._working_dir  # type: ignore[attr-defined]
         assert work_dir == working_dir
 
         # Test FileEditorTool
