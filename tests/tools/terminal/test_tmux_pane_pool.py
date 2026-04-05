@@ -94,27 +94,6 @@ def test_checkout_unblocks_after_checkin(pool):
         pool.checkin(p)
 
 
-# -- Context manager ---------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "raise_inside",
-    [False, True],
-    ids=["normal_exit", "exception_exit"],
-)
-def test_pane_context_manager_returns_pane(pool, raise_inside):
-    """Pane is returned to the pool whether the block succeeds or raises."""
-    try:
-        with pool.pane() as terminal:
-            terminal.send_keys("echo hello")
-            time.sleep(0.3)
-            if raise_inside:
-                raise RuntimeError("test error")
-            assert "hello" in terminal.read_screen()
-    except RuntimeError:
-        pass
-
-
 # -- Replace -----------------------------------------------------------------
 
 
@@ -190,11 +169,14 @@ def test_parallel_commands(pool, labels_and_cmds):
     barrier = threading.Barrier(len(labels_and_cmds))
 
     def run_cmd(label, cmd):
-        with pool.pane() as terminal:
+        terminal = pool.checkout()
+        try:
             barrier.wait(timeout=5)
             terminal.send_keys(cmd)
             time.sleep(0.5)
             results[label] = terminal.read_screen()
+        finally:
+            pool.checkin(terminal)
 
     threads = [
         threading.Thread(target=run_cmd, args=(label, cmd))

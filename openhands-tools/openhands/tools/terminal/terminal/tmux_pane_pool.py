@@ -10,8 +10,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Generator
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -19,7 +18,11 @@ import libtmux
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
-from openhands.tools.terminal.constants import HISTORY_LIMIT
+from openhands.tools.terminal.constants import (
+    HISTORY_LIMIT,
+    TMUX_SESSION_HEIGHT,
+    TMUX_SESSION_WIDTH,
+)
 from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
@@ -39,14 +42,13 @@ class PooledTmuxTerminal(TmuxTerminal):
     """
 
     def close(self) -> None:
-        if self._closed:
-            return
-        with suppress(Exception):
-            self.window.kill()
-        self._closed = True
+        if not self._closed:
+            with suppress(Exception):
+                self.window.kill()
+            self._closed = True
 
 
-@dataclass
+@dataclass(slots=True)
 class TmuxPanePool:
     """Thread-safe pool of tmux panes for parallel terminal execution.
 
@@ -54,14 +56,15 @@ class TmuxPanePool:
     session.  Callers check out a pane, run commands, and check it back
     in.  A semaphore limits concurrency to ``max_panes``.
 
-    Usage::
+    Usage:
 
         pool = TmuxPanePool("/workspace", max_panes=4)
         pool.initialize()
 
-        with pool.pane() as terminal:
-            terminal.send_keys("echo hello")
-            output = terminal.read_screen()
+        terminal = pool.checkout()
+        terminal.send_keys("echo hello")
+        output = terminal.read_screen()
+        pool.checkin(terminal)
 
         pool.close()
     """
@@ -92,7 +95,7 @@ class TmuxPanePool:
 
     def __post_init__(self) -> None:
         if self.max_panes < 1:
-            raise ValueError("max_panes must be >= 1")
+            raise ValueError(f"max_panes must be >= 1, but got {self.max_panes}.")
         self._semaphore = threading.Semaphore(self.max_panes)
 
     def initialize(self) -> None:
@@ -107,8 +110,8 @@ class TmuxPanePool:
             session_name=session_name,
             start_directory=self.work_dir,
             kill_session=True,
-            x=1000,
-            y=1000,
+            x=TMUX_SESSION_WIDTH,
+            y=TMUX_SESSION_HEIGHT,
         )
         for k, v in env.items():
             self._session.set_environment(k, v)
@@ -144,11 +147,7 @@ class TmuxPanePool:
             if self._session is not None:
                 self._session.kill()
         except Exception as e:
-            logger.debug(f"Error killing pool session: {e}")
-
-    # ------------------------------------------------------------------
-    # Checkout / Checkin
-    # ------------------------------------------------------------------
+            logger.warning(f"Error killing pool session: {e}")
 
     def _create_pane(self) -> PooledTmuxTerminal:
         """Create a new PooledTmuxTerminal within the shared session."""
@@ -273,19 +272,3 @@ class TmuxPanePool:
 
         logger.debug(f"Replaced pane {old_pane_id} -> {new_pane_id}")
         return new_terminal
-
-    @contextmanager
-    def pane(self, timeout: float | None = None) -> Generator[PooledTmuxTerminal]:
-        """Context manager for checkout/checkin.
-
-        Usage::
-
-            with pool.pane() as terminal:
-                terminal.send_keys("ls")
-                print(terminal.read_screen())
-        """
-        terminal = self.checkout(timeout=timeout)
-        try:
-            yield terminal
-        finally:
-            self.checkin(terminal)
