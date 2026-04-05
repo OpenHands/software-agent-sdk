@@ -25,6 +25,15 @@ def test_system_prompt_includes_openai_gpt_5_codex_model_specific_section() -> N
     ) in message
 
 
+def test_system_prompt_includes_openai_gpt_5_4_codex_model_specific_section() -> None:
+    agent = _make_agent("gpt-5.4-codex")
+    message = agent.static_system_message
+    assert (
+        "Stream your thinking and responses while staying concise; surface key"
+        " assumptions and environment prerequisites explicitly."
+    ) in message
+
+
 def test_system_prompt_uses_canonical_name_for_detection() -> None:
     agent = _make_agent("proxy/custom", model_canonical_name="gpt-5-mini")
     message = agent.static_system_message

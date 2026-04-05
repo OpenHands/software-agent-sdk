@@ -62,11 +62,12 @@ def get_gpt5_condenser(llm: LLM) -> CondenserBase:
 
 
 def get_gpt5_agent(llm: LLM, cli_mode: bool = False) -> Agent:
-    """Get an agent with ApplyPatchTool for unified-diff style file editing."""
+    """Get an agent with the GPT-5 preset prompt and ApplyPatchTool editing."""
     tools = get_gpt5_tools(enable_browser=not cli_mode)
     agent = Agent(
         llm=llm,
         tools=tools,
+        system_prompt_filename="system_prompt_gpt_5_4.j2",
         system_prompt_kwargs={"cli_mode": cli_mode},
         condenser=get_gpt5_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})
