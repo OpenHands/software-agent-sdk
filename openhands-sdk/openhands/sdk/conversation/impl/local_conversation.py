@@ -1261,23 +1261,14 @@ class LocalConversation(BaseConversation):
         )
 
         # Update agent and state atomically
-        # Create new agent first, then update both references together.
-        # If the conversation is already initialized, rebuild the copied
-        # agent's runtime tool state so newly added MCP tools become available.
-        was_agent_ready = self._agent_ready
+        # Create new agent first, then update both references together
         new_agent = self.agent.model_copy(
             update={
                 "agent_context": merged_context,
                 "mcp_config": merged_mcp,
             }
         )
-        if was_agent_ready:
-            new_agent._initialized = False
-            new_agent._tools = {}
-
         with self._state:
-            if was_agent_ready:
-                new_agent.init_state(self._state, on_event=self._on_event)
             self.agent = new_agent
             self._state.agent = new_agent
 
