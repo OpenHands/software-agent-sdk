@@ -8,7 +8,7 @@ The effective GPT-5 preset system prompt is the composition of:
 2. `openhands-sdk/openhands/sdk/agent/prompts/model_specific/openai_gpt/gpt-5.j2`
 3. `openhands-sdk/openhands/sdk/agent/prompts/system_prompt_gpt_5_4.j2`
 
-So the relevant question is not whether `system_prompt_gpt_5_4.j2` repeats the Codex prompt, but whether the **combined rendered prompt** repeats ideas already present in the base OpenHands prompt and the GPT-5 model-specific snippet.
+I then moved the communication-style guidance out of `system_prompt_gpt_5_4.j2` and into the GPT-5-specific snippet, so the relevant question is whether the **combined rendered prompt** still repeats ideas already present in the base OpenHands prompt and the GPT-5 model-specific snippet.
 
 ## Redundancy findings
 
@@ -35,27 +35,20 @@ This is real overlap, but mostly **emphasis overlap**, not contradiction. The ov
 
 Probably not in this PR. If we delete too much from the overlay, we lose the very GPT-5.x behavior tuning this PR is trying to add.
 
-## 2. Concision and response-shape guidance overlaps with the GPT-5 model-specific prompt
+## 2. Concision and response-shape guidance is now consolidated in the GPT-5 model-specific prompt
 
-**Where it overlaps**
+**What changed**
 
-- `model_specific/openai_gpt/gpt-5.j2` says to stay concise and send brief tool-call preambles.
-- `system_prompt_gpt_5_4.j2` adds `<OUTPUT_VERBOSITY_SPEC>` and `<PRESENTING_WORK>`.
-
-**What repeats**
-
-- be concise
-- keep updates brief
-- surface assumptions and prerequisites
-- explain changes directly
+- `model_specific/openai_gpt/gpt-5.j2` now carries the compact-answer and presentation rules.
+- `system_prompt_gpt_5_4.j2` no longer has separate `<OUTPUT_VERBOSITY_SPEC>` or `<PRESENTING_WORK>` blocks.
 
 **Assessment**
 
-This is the most obvious prompt-budget redundancy. The model-specific file and the overlay both tune communication style. They are compatible, but not fully orthogonal.
+This removes the most obvious style redundancy I found in the first pass. The communication-style rules now live beside the existing GPT-5-specific preamble guidance, which is a cleaner factoring.
 
-**Best cleanup direction later**
+**Residual overlap**
 
-Factor shared GPT-5 communication rules into one reusable partial, then keep only the truly new rules in the overlay.
+There is still some thematic overlap with the base prompt's general advice on concise, useful answers, but it is now much smaller and localized to one GPT-5-specific snippet.
 
 ## 3. Editing guidance overlaps with existing OpenHands repository guidance
 

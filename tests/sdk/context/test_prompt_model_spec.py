@@ -14,6 +14,14 @@ def test_system_prompt_includes_openai_gpt_5_model_specific_section() -> None:
         "Stream your thinking and responses while staying concise; surface key"
         " assumptions and environment prerequisites explicitly."
     ) in message
+    assert "Default to 3-6 sentences or up to 6 bullets" in message
+
+
+def test_system_prompt_includes_gpt_5_cli_style_guidance() -> None:
+    llm = LLM(model="gpt-5", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[], system_prompt_kwargs={"cli_mode": True})
+    message = agent.static_system_message
+    assert "When running in CLI mode, the user is on the same machine" in message
 
 
 def test_system_prompt_includes_openai_gpt_5_codex_model_specific_section() -> None:
