@@ -20,6 +20,18 @@ from openhands.sdk.observability.utils import get_env
 logger = get_logger(__name__)
 
 
+def _get_int_env(key: str) -> int | None:
+    """Read an environment variable as an optional int."""
+    val = get_env(key)
+    if val is not None and val != "":
+        try:
+            return int(val)
+        except ValueError:
+            logger.warning("%s must be an integer, got %r", key, val)
+            return None
+    return None
+
+
 def maybe_init_laminar():
     """Initialize Laminar if the environment variables are set.
 
@@ -36,10 +48,17 @@ def maybe_init_laminar():
     # or
     OTEL_EXPORTER=otlp_http # or otlp_grpc
     ```
+
+    For self-hosted Laminar, set the ports via environment variables:
+    LMNR_HTTP_PORT=8000
+    LMNR_GRPC_PORT=8001
     """
     if should_enable_observability():
         if _is_otel_backend_laminar():
-            Laminar.initialize()
+            Laminar.initialize(
+                http_port=_get_int_env("LMNR_HTTP_PORT"),
+                grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+            )
         else:
             # Do not enable browser session replays for non-laminar backends
             Laminar.initialize(

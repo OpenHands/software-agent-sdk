@@ -1,6 +1,7 @@
 from dataclasses import dataclass
+from functools import cache
 
-from litellm.utils import supports_reasoning
+from litellm import get_supported_openai_params
 
 
 def model_matches(model: str, patterns: list[str]) -> bool:
@@ -54,24 +55,26 @@ class ModelFeatures:
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
 
-def _supports_reasoning_effort(model: str | None) -> bool:
-    """Return True if the model supports reasoning_effort via LiteLLM.
-
-    We pass the full model string to LiteLLM so it can run its own provider
-    parsing logic (including nested provider paths like `openrouter/anthropic/...`
-    and other special cases).
-
-    We only strip our `litellm_proxy/` wrapper prefix, since it is not a real
-    LiteLLM provider.
-    """
+@cache
+def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
+    """Return LiteLLM-supported OpenAI params for a normalized model name."""
     if not model:
-        return False
+        return frozenset()
 
     normalized = model.strip().lower()
     if normalized.startswith(LITELLM_PROXY_PREFIX):
         normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
 
-    return bool(supports_reasoning(model=normalized, custom_llm_provider=None))
+    params = get_supported_openai_params(
+        model=normalized,
+        custom_llm_provider=None,
+    )
+    return frozenset(params or ())
+
+
+def _supports_reasoning_effort(model: str | None) -> bool:
+    """Return True if LiteLLM says the model accepts reasoning_effort."""
+    return "reasoning_effort" in _normalized_supported_openai_params(model)
 
 
 EXTENDED_THINKING_MODELS: list[str] = [

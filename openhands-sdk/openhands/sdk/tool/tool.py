@@ -2,6 +2,7 @@ import re
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -93,6 +94,39 @@ class ToolAnnotations(BaseModel):
         default=True,
         description="If true, this tool may interact with an 'open world' of external entities. If false, the tool's domain of interaction is closed. For example, the world of a web search tool is open, whereas that of a memory tool is not. Default: true",  # noqa: E501
     )
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredResources:
+    """Resources a tool accesses for a given action.
+
+    Used by ``ParallelToolExecutor`` to decide what locks (if any) to
+    acquire before running a tool.
+
+    Examples:
+
+        DeclaredResources(keys=(), declared=False)       # unknown → serialize
+        DeclaredResources(keys=(), declared=True)         # safe, no resources
+        DeclaredResources(keys=("file:/a.py",), declared=True)  # lock these
+
+    Note:
+        The distinction between `declared=True` with empty keys and
+        `declared=False` is subtle but important:
+
+        - `declared=True, keys=()`: the tool has explicitly analysed its
+          resource usage and determined it touches nothing shared.  The
+          executor trusts this and skips locking entirely.
+        - `declared=False`: the tool has *not* declared its resources
+          (the default).  The executor cannot assume safety, so it falls
+          back to a tool-wide mutex that serializes all calls to this tool.
+
+        In short: `declared=False` means "I haven't thought about it"
+        while `declared=True, keys=()` means "I have, and I'm safe."
+
+    """
+
+    keys: tuple[str, ...]
+    declared: bool
 
 
 class ToolExecutor[ActionT, ObservationT](ABC):
@@ -281,6 +315,16 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         if self.executor is None:
             raise NotImplementedError(f"Tool '{self.name}' has no executor")
         return self  # type: ignore[return-value]
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        """Declare the resources this tool accesses for a given action.
+
+        Override in subclasses to enable fine-grained parallel execution.
+
+        Keys should use the format ``"<type>:<identifier>"``, e.g.
+        ``"file:/absolute/path"`` or ``"terminal:session"``.
+        """
+        return DeclaredResources(keys=(), declared=False)
 
     def action_from_arguments(self, arguments: dict[str, Any]) -> Action:
         """Create an action from parsed arguments.
@@ -484,8 +528,16 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
         if action_type_with_risk:
             return action_type_with_risk
 
+        # Re-use a WithRisk class that already exists in the hierarchy
+        # but whose cache entry was lost (fixes #2642).
+        target_name = f"{action_type.__name__}WithRisk"
+        for sub in action_type.__subclasses__():
+            if sub.__name__ == target_name:
+                _action_types_with_risk[action_type] = sub
+                return sub
+
         action_type_with_risk = type(
-            f"{action_type.__name__}WithRisk",
+            target_name,
             (action_type,),
             {
                 "security_risk": Field(
@@ -517,8 +569,16 @@ def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
         if action_type_with_summary:
             return action_type_with_summary
 
+        # Re-use a WithSummary class that already exists in the hierarchy
+        # but whose cache entry was lost (fixes #2642).
+        target_name = f"{action_type.__name__}WithSummary"
+        for sub in action_type.__subclasses__():
+            if sub.__name__ == target_name:
+                _action_types_with_summary[action_type] = sub
+                return sub
+
         action_type_with_summary = type(
-            f"{action_type.__name__}WithSummary",
+            target_name,
             (action_type,),
             {
                 "summary": Field(

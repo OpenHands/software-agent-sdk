@@ -12,6 +12,7 @@ from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
+from openhands.sdk.context.skills.execute import render_content_with_commands
 from openhands.sdk.context.skills.trigger import (
     KeywordTrigger,
     TaskTrigger,
@@ -162,6 +163,7 @@ class Skill(BaseModel):
         ),
     )
 
+    # AgentSkills specification: description must be 1-1024 characters.
     MAX_DESCRIPTION_LENGTH: ClassVar[int] = 1024
 
     # AgentSkills standard fields (https://agentskills.io/specification)
@@ -625,6 +627,25 @@ class Skill(BaseModel):
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
         )
+
+    def render_content(
+        self,
+        working_dir: Path | None = None,
+    ) -> str:
+        """Render skill content, executing inline !`command` blocks.
+
+        Inline !`command` patterns in the content are executed and
+        replaced with their stdout output. Code blocks (fenced and
+        inline) are preserved. Unclosed fenced blocks are treated as
+        extending to EOF. Use \\!`cmd` to produce literal !`cmd` text.
+
+        Args:
+            working_dir: Directory to run commands in.
+
+        Returns:
+            Processed content with command outputs substituted.
+        """
+        return render_content_with_commands(self.content, working_dir)
 
 
 def load_skills_from_dir(
@@ -1142,7 +1163,7 @@ def load_available_skills(
     return available
 
 
-def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
+def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
     """Generate XML prompt block for available skills.
 
     Creates an `<available_skills>` XML block suitable for inclusion
@@ -1150,7 +1171,7 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
 
     Args:
         skills: List of skills to include in the prompt
-        max_description_length: Maximum length for descriptions (default 200)
+        max_description_length: Maximum length for descriptions (default 1024)
 
     Returns:
         XML string in AgentSkills format with name, description, and location

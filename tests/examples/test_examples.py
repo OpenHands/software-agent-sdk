@@ -38,7 +38,7 @@ _LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
         "LLM_MODEL": "openhands/gpt-5.1",
     },
     "examples/04_llm_specific_tools/02_gemini_file_tools.py": {
-        "LLM_MODEL": "openhands/gemini-3-pro-preview",
+        "LLM_MODEL": "openhands/gemini-3.1-pro-preview",
     },
 }
 

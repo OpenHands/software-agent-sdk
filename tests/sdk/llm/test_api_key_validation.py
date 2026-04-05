@@ -1,6 +1,10 @@
+import os
+from unittest.mock import patch
+
+from litellm.types.utils import ModelResponse
 from pydantic import SecretStr
 
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, Message, TextContent
 
 
 def test_empty_api_key_string_converted_to_none():
@@ -144,3 +148,156 @@ def test_plain_string_aws_credentials():
     assert isinstance(llm.aws_secret_access_key, SecretStr)
     assert llm.aws_secret_access_key.get_secret_value() == "plain-secret-key"
     assert llm.aws_region_name == "us-west-2"
+
+
+def test_aws_session_token_handling():
+    """Test that aws_session_token is validated as a secret."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_access_key_id="access-key",
+        aws_secret_access_key="secret-key",
+        aws_session_token="session-token-value",
+        aws_region_name="us-west-2",
+    )
+    assert isinstance(llm.aws_session_token, SecretStr)
+    assert llm.aws_session_token.get_secret_value() == "session-token-value"
+
+
+def test_aws_profile_name_handling():
+    """Test that aws_profile_name is stored as a plain string."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_profile_name="dev-profile",
+        aws_region_name="us-west-2",
+    )
+    assert llm.aws_profile_name == "dev-profile"
+
+
+def test_aws_role_based_auth_fields():
+    """Test that STS role-based auth fields are accepted."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_role_name="arn:aws:iam::123456789012:role/MyRole",
+        aws_session_name="my-session",
+        aws_region_name="us-west-2",
+    )
+    assert llm.aws_role_name == "arn:aws:iam::123456789012:role/MyRole"
+    assert llm.aws_session_name == "my-session"
+
+
+def test_aws_bedrock_runtime_endpoint():
+    """Test that custom Bedrock endpoint is accepted."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_bedrock_runtime_endpoint="https://my-proxy.example.com",
+        aws_region_name="us-west-2",
+    )
+    assert llm.aws_bedrock_runtime_endpoint == "https://my-proxy.example.com"
+
+
+def test_aws_bedrock_params_forwarded_to_litellm():
+    """Verify all AWS params are passed as kwargs to litellm.completion()."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+        aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        aws_session_token="FwoGZXIvYXdzEBY",
+        aws_region_name="us-west-2",
+        aws_profile_name="dev-profile",
+        aws_role_name="arn:aws:iam::123456789012:role/MyRole",
+        aws_session_name="my-session",
+        aws_bedrock_runtime_endpoint="https://my-proxy.example.com",
+    )
+
+    with patch("openhands.sdk.llm.llm.litellm_completion") as mock_completion:
+        mock_completion.return_value = ModelResponse(
+            id="test-id",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "Hi"},
+                    "finish_reason": "stop",
+                }
+            ],
+            created=1234567890,
+            model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+            object="chat.completion",
+        )
+
+        messages = [Message(role="user", content=[TextContent(text="Hello")])]
+        llm.completion(messages=messages)
+
+        kw = mock_completion.call_args[1]
+        assert kw["aws_access_key_id"] == "AKIAIOSFODNN7EXAMPLE"
+        assert kw["aws_secret_access_key"] == "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        assert kw["aws_session_token"] == "FwoGZXIvYXdzEBY"
+        assert kw["aws_region_name"] == "us-west-2"
+        assert kw["aws_profile_name"] == "dev-profile"
+        assert kw["aws_role_name"] == "arn:aws:iam::123456789012:role/MyRole"
+        assert kw["aws_session_name"] == "my-session"
+        assert kw["aws_bedrock_runtime_endpoint"] == "https://my-proxy.example.com"
+
+
+def test_aws_env_vars_set_on_init(monkeypatch):
+    """Verify pre-existing AWS env vars are still set for backward compatibility."""
+    for k in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_REGION_NAME",
+    ]:
+        monkeypatch.delenv(k, raising=False)
+
+    LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_access_key_id="AKID",
+        aws_secret_access_key="SECRET",
+        aws_session_token="TOKEN",
+        aws_region_name="us-west-2",
+    )
+
+    assert os.environ["AWS_ACCESS_KEY_ID"] == "AKID"
+    assert os.environ["AWS_SECRET_ACCESS_KEY"] == "SECRET"
+    assert os.environ["AWS_SESSION_TOKEN"] == "TOKEN"
+    assert os.environ["AWS_REGION_NAME"] == "us-west-2"
+
+
+def test_aws_kwargs_returns_all_params():
+    """Verify _aws_kwargs() builds the correct dict from LLM fields."""
+    llm = LLM(
+        usage_id="test-llm",
+        model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+        api_key=None,
+        aws_access_key_id="AKID",
+        aws_secret_access_key="SECRET",
+        aws_session_token="TOKEN",
+        aws_region_name="us-west-2",
+        aws_profile_name="dev",
+        aws_role_name="arn:aws:iam::123:role/R",
+        aws_session_name="sess",
+        aws_bedrock_runtime_endpoint="https://proxy.example.com",
+    )
+
+    kw = llm._aws_kwargs()
+    assert kw == {
+        "aws_access_key_id": "AKID",
+        "aws_secret_access_key": "SECRET",
+        "aws_session_token": "TOKEN",
+        "aws_region_name": "us-west-2",
+        "aws_profile_name": "dev",
+        "aws_role_name": "arn:aws:iam::123:role/R",
+        "aws_session_name": "sess",
+        "aws_bedrock_runtime_endpoint": "https://proxy.example.com",
+    }
