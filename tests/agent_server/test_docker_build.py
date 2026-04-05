@@ -6,6 +6,8 @@ import tarfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 BUILDKIT_STDERR_SAMPLE = "\n".join(
     [
@@ -653,6 +655,43 @@ def test_parse_buildkit_telemetry_extracts_phase_timings():
     assert telemetry.cached_step_count == 1
 
 
+def test_parse_buildkit_telemetry_cache_export_with_preparing_line():
+    """Test that cache export timing is captured when sub-operations appear.
+
+    This reproduces a bug where BuildKit outputs:
+        #33 exporting cache to registry
+        #33 preparing build cache for export
+        #33 DONE 36.2s
+
+    Previously, the second line overwrote step_descriptions["33"], causing
+    the DONE time to be attributed to "preparing build cache for export"
+    which wasn't classified as cache_export.
+
+    The fix ensures that once a step has a classified description
+    ("exporting cache to registry" -> cache_export), subsequent sub-operation
+    descriptions don't overwrite it.
+    """
+    from openhands.agent_server.docker.build import _parse_buildkit_telemetry
+
+    # Real-world BuildKit output pattern
+    stderr_with_preparing = "\n".join(
+        [
+            "#33 exporting cache to registry",
+            "#33 preparing build cache for export",
+            "#33 writing layer sha256:abc123 0.5s done",
+            "#33 preparing build cache for export 36.2s done",
+            "#33 DONE 36.2s",
+            "",
+        ]
+    )
+
+    telemetry = _parse_buildkit_telemetry(stderr_with_preparing)
+
+    # Should capture the cache export time because "exporting cache to registry"
+    # is preserved as the step description (not overwritten by "preparing...")
+    assert telemetry.cache_export_seconds == 36.2
+
+
 def test_build_with_telemetry_returns_parsed_buildkit_fields(tmp_path: Path):
     from openhands.agent_server.docker.build import (
         BuildOptions,
@@ -759,3 +798,70 @@ def test_build_with_telemetry_preserves_telemetry_on_failure(tmp_path: Path):
     assert excinfo.value.telemetry.buildx_wall_clock_seconds == 25.5
     assert excinfo.value.telemetry.cache_export_seconds == 264.3
     assert excinfo.value.telemetry.cache_import_miss_count == 1
+
+
+@pytest.mark.parametrize(
+    "mode,expect_cache_to,expect_mode_value",
+    [
+        ("off", False, None),
+        ("max", True, "max"),
+        ("min", True, "min"),
+        ("invalid", True, "max"),  # Invalid values default to "max" (preserve behavior)
+    ],
+)
+def test_cache_export_modes(
+    tmp_path: Path,
+    mode: str,
+    expect_cache_to: bool,
+    expect_mode_value: str | None,
+):
+    """Test cache export behavior for different OPENHANDS_BUILDKIT_CACHE_MODE values."""
+    from openhands.agent_server.docker.build import (
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    ctx = tmp_path / "ctx"
+    ctx.mkdir()
+    docker_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd: list[str], cwd: str | None = None):
+        if cmd[:3] != ["docker", "buildx", "build"]:
+            raise AssertionError(f"unexpected command: {cmd}")
+        docker_calls.append((cmd, cwd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        image="ghcr.io/openhands/eval-agent-server",
+        target="source-minimal",
+        push=True,
+        sdk_project_root=_default_sdk_project_root(),
+    )
+
+    with (
+        patch.dict(os.environ, {"OPENHANDS_BUILDKIT_CACHE_MODE": mode}, clear=False),
+        patch(
+            "openhands.agent_server.docker.build._make_build_context",
+            return_value=ctx,
+        ),
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        build(opts)
+
+    cmd = docker_calls[0][0]
+    cmd_str = " ".join(cmd)
+
+    # Should always have --cache-from
+    assert "--cache-from" in cmd_str
+
+    if expect_cache_to:
+        assert "--cache-to" in cmd_str
+        assert f"mode={expect_mode_value}" in cmd_str
+    else:
+        assert "--cache-to" not in cmd_str

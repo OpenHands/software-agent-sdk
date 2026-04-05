@@ -45,7 +45,7 @@ Examples of straightforward and low-risk PRs you should approve (non-exhaustive)
 - **Documentation-only changes**: Docstring updates, clarifying notes, API documentation improvements
 - **Simple additions**: Adding entries to lists/dictionaries following existing patterns
 - **Test-only changes**: Adding or updating tests without changing production code
-- **Dependency updates**: Version bumps with passing CI
+- **Dependency updates**: Version bumps with passing CI, unless the updated package is newer than the repo's 7-day freshness guardrail described in the Security section below
 
 ### When NOT to APPROVE - Blocking Issues
 
@@ -54,6 +54,7 @@ Examples of straightforward and low-risk PRs you should approve (non-exhaustive)
 - **Package version bumps in non-release PRs**: If any `pyproject.toml` file has changes to the `version` field (e.g., `version = "1.12.0"` → `version = "1.13.0"`), and the PR is NOT explicitly a release PR (title/description doesn't indicate it's a release), **DO NOT APPROVE**. Version numbers should only be changed in dedicated release PRs managed by maintainers.
   - Check: Look for changes to `version = "..."` in any `*/pyproject.toml` files
   - Exception: PRs with titles like "release: v1.x.x" or "chore: bump version to 1.x.x" from maintainers
+- **Too-new dependency uploads**: If a dependency bump pulls in a package uploaded within the repo's 7-day freshness window, **DO NOT APPROVE**. See the Security section below for the exact review instructions and the Dependabot / `tool.uv.exclude-newer` caveat.
 
 Examples:
 - A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates
@@ -70,6 +71,30 @@ Use COMMENT when you have feedback or concerns:
 - Minor style preferences
 
 If there are significant issues, leave detailed comments explaining the concerns—but let a human maintainer decide whether to block the PR.
+
+## Security
+
+### Dependency freshness / supply-chain guardrail
+
+This repository intentionally uses a workspace-wide `uv` resolver guardrail:
+
+- Root `pyproject.toml`: `[tool.uv] exclude-newer = "7 days"`
+
+**Important:** Dependabot does **not** currently honor that `uv` guardrail when it opens `uv.lock` update PRs for this repo's workspace setup. A Dependabot PR can therefore bump to a version that was uploaded **less than 7 days ago**, even though a local `uv lock` would normally exclude it.
+
+When reviewing dependency update PRs (`uv.lock`, `pyproject.toml`, `requirements*.txt`, etc.), explicitly check for **too-new package uploads**:
+
+1. Check the package upload timestamp on the package index.
+2. For `uv.lock`, use the per-file `upload-time` metadata in the changed package entry.
+3. Treat `upload-time` as the upload time of that specific distribution file to the package index (for example, the wheel uploaded to PyPI) — not the Git tag time or GitHub release time.
+4. Compare that timestamp against the current date and the repo's 7-day freshness window.
+
+If the updated package was uploaded **within the last 7 days**, treat it as a real security / supply-chain concern:
+
+- Do **NOT** approve the PR.
+- Leave a **COMMENT** review that clearly calls out the package name, version, upload time, and that it is newer than the repo's 7-day guardrail.
+- Explain that this can happen because Dependabot currently ignores `tool.uv.exclude-newer` for this repo's workspace updates.
+- Ask a human maintainer to decide whether to wait until the package ages past the guardrail or to merge intentionally despite the freshness risk.
 
 ## Core Principles
 
