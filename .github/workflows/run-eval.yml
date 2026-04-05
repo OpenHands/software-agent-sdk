@@ -24,7 +24,9 @@ on:
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: v1.15.0
+                default: v1.16.1
+
+
 
 
 
@@ -106,7 +108,8 @@ on:
                 description: >-
                     Agent type: 'default' for standard Agent,
                     'acp-claude' for ACPAgent with Claude Code,
-                    'acp-codex' for ACPAgent with Codex.
+                    'acp-codex' for ACPAgent with Codex,
+                    'acp-gemini' for ACPAgent with Gemini CLI.
                 required: false
                 default: default
                 type: choice
@@ -114,6 +117,7 @@ on:
                     - default
                     - acp-claude
                     - acp-codex
+                    - acp-gemini
             partial_archive_url:
                 description: Resume partial work from full archive tar.gz
                 required: false
@@ -180,7 +184,7 @@ jobs:
 
         steps:
             - name: Checkout sdk code (base for validation)
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
               with:
                   ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk_ref || (github.event_name == 'pull_request_target' && 
                       github.event.pull_request.base.ref || github.ref) }}
@@ -205,11 +209,13 @@ jobs:
                     exit 1
                   fi
 
-            - name: Validate SDK reference (semantic version check)
+            - name: Validate SDK reference and workflow branches
               if: github.event_name == 'workflow_dispatch'
               env:
                   SDK_REF: ${{ github.event.inputs.sdk_ref }}
                   ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches }}
+                  EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
+                  BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
               run: |
                   python3 .github/run-eval/validate_sdk_ref.py
 
