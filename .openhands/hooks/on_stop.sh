@@ -163,122 +163,130 @@ else
         else
             >&2 echo "Commit has been pushed, checking CI status..."
             
-            # Check if GITHUB_TOKEN is available
-            if [ -z "$GITHUB_TOKEN" ]; then
-                >&2 echo "GITHUB_TOKEN not set, cannot check CI status"
-            else
-                # Use gh CLI if available, otherwise fall back to API
-                if command -v gh &> /dev/null; then
-                    >&2 echo "Using gh CLI to check CI status..."
-                    
-                    # Get check runs for this commit
-                    CI_STATUS=$(gh api "repos/$REPO_INFO/commits/$LOCAL_SHA/check-runs" \
-                        --jq '.check_runs | map({name: .name, status: .status, conclusion: .conclusion})' 2>&1)
-                    
-                    if [ $? -ne 0 ]; then
-                        >&2 echo "Failed to get CI status: $CI_STATUS"
-                    else
-                        # Parse the status
-                        TOTAL_CHECKS=$(echo "$CI_STATUS" | jq 'length')
-                        
-                        if [ "$TOTAL_CHECKS" -eq 0 ]; then
-                            >&2 echo "No CI checks found for this commit"
-                        else
-                            >&2 echo "Found $TOTAL_CHECKS CI check(s)"
-                            
-                            # Check for in-progress runs
-                            IN_PROGRESS=$(echo "$CI_STATUS" | jq '[.[] | select(.status != "completed")] | length')
-                            FAILED=$(echo "$CI_STATUS" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")] | length')
-                            
-                            if [ "$IN_PROGRESS" -gt 0 ]; then
-                                >&2 echo "⏳ $IN_PROGRESS check(s) still in progress"
-                                
-                                # Wait for CI to complete (with timeout)
-                                MAX_WAIT=300  # 5 minutes
-                                WAIT_INTERVAL=15
-                                TOTAL_WAITED=0
-                                
-                                while [ "$IN_PROGRESS" -gt 0 ] && [ "$TOTAL_WAITED" -lt "$MAX_WAIT" ]; do
-                                    >&2 echo "Waiting for CI... (${TOTAL_WAITED}s / ${MAX_WAIT}s max)"
-                                    sleep $WAIT_INTERVAL
-                                    TOTAL_WAITED=$((TOTAL_WAITED + WAIT_INTERVAL))
-                                    
-                                    CI_STATUS=$(gh api "repos/$REPO_INFO/commits/$LOCAL_SHA/check-runs" \
-                                        --jq '.check_runs | map({name: .name, status: .status, conclusion: .conclusion})' 2>&1)
-                                    IN_PROGRESS=$(echo "$CI_STATUS" | jq '[.[] | select(.status != "completed")] | length')
-                                done
-                                
-                                if [ "$IN_PROGRESS" -gt 0 ]; then
-                                    >&2 echo "⚠️  CI still running after ${MAX_WAIT}s timeout"
-                                    log_issue "## CI Still Running\n\nCI checks are still in progress after waiting ${MAX_WAIT} seconds. Please wait for CI to complete before finishing."
-                                fi
-                            fi
-                            
-                            # Re-check for failures after waiting
-                            FAILED=$(echo "$CI_STATUS" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")] | length')
-                            
-                            if [ "$FAILED" -gt 0 ]; then
-                                >&2 echo "❌ $FAILED check(s) failed!"
-                                
-                                # Get details of failed checks
-                                FAILED_DETAILS=$(echo "$CI_STATUS" | jq -r '.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- \(.name): \(.conclusion)"')
-                                >&2 echo "$FAILED_DETAILS"
-                                
-                                # Try to get failure logs
-                                FAILED_NAMES=$(echo "$CI_STATUS" | jq -r '.[] | select(.conclusion == "failure") | .name')
-                                
-                                FAILURE_MSG="## CI Failed\n\nThe following CI checks failed:\n\n${FAILED_DETAILS}\n"
-                                
-                                # Try to get the workflow run logs for more context
-                                WORKFLOW_RUNS=$(gh api "repos/$REPO_INFO/actions/runs?head_sha=$LOCAL_SHA" \
-                                    --jq '.workflow_runs[] | select(.conclusion == "failure") | {id: .id, name: .name}' 2>/dev/null)
-                                
-                                if [ -n "$WORKFLOW_RUNS" ]; then
-                                    FAILURE_MSG="${FAILURE_MSG}\nYou can view the full logs at: https://github.com/$REPO_INFO/actions\n"
-                                    
-                                    # Try to get job logs
-                                    FIRST_RUN_ID=$(echo "$WORKFLOW_RUNS" | jq -r '.id' | head -1)
-                                    if [ -n "$FIRST_RUN_ID" ]; then
-                                        JOBS_OUTPUT=$(gh api "repos/$REPO_INFO/actions/runs/$FIRST_RUN_ID/jobs" \
-                                            --jq '.jobs[] | select(.conclusion == "failure") | "### \(.name)\nConclusion: \(.conclusion)\nSteps:\n" + (.steps | map("- \(.name): \(.conclusion)") | join("\n"))' 2>/dev/null | head -100)
-                                        if [ -n "$JOBS_OUTPUT" ]; then
-                                            FAILURE_MSG="${FAILURE_MSG}\n### Failed Job Details:\n\`\`\`\n${JOBS_OUTPUT}\n\`\`\`"
-                                        fi
-                                    fi
-                                fi
-                                
-                                log_issue "$FAILURE_MSG"
-                            else
-                                >&2 echo "✓ All CI checks passed!"
-                            fi
-                        fi
-                    fi
+            # Determine which tool to use for GitHub API calls.
+            # Prefer `gh` (has its own stored auth) over raw curl (needs $GITHUB_TOKEN).
+            # The stop hook runs in the framework's subprocess where custom-secret
+            # injection may not apply, so $GITHUB_TOKEN can be empty even when
+            # `gh` is fully authenticated.
+            GH_AUTH_OK=false
+            if command -v gh &> /dev/null && gh auth status &> /dev/null; then
+                GH_AUTH_OK=true
+            elif [ -n "$GITHUB_TOKEN" ]; then
+                GH_AUTH_OK=true
+            fi
+
+            if [ "$GH_AUTH_OK" = false ]; then
+                >&2 echo "No GitHub credentials available (gh not authenticated and GITHUB_TOKEN not set), cannot check CI status"
+            elif command -v gh &> /dev/null && gh auth status &> /dev/null; then
+                >&2 echo "Using gh CLI to check CI status..."
+                
+                # Get check runs for this commit
+                CI_STATUS=$(gh api "repos/$REPO_INFO/commits/$LOCAL_SHA/check-runs" \
+                    --jq '.check_runs | map({name: .name, status: .status, conclusion: .conclusion})' 2>&1)
+                
+                if [ $? -ne 0 ]; then
+                    >&2 echo "Failed to get CI status: $CI_STATUS"
                 else
-                    # Fallback to curl
-                    >&2 echo "gh CLI not available, using API directly..."
-                    CI_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                        -H "Accept: application/vnd.github.v3+json" \
-                        "https://api.github.com/repos/$REPO_INFO/commits/$LOCAL_SHA/check-runs" 2>&1)
+                    # Parse the status
+                    TOTAL_CHECKS=$(echo "$CI_STATUS" | jq 'length')
                     
-                    TOTAL_CHECKS=$(echo "$CI_RESPONSE" | jq '.total_count // 0')
-                    
-                    if [ "$TOTAL_CHECKS" -gt 0 ]; then
-                        IN_PROGRESS=$(echo "$CI_RESPONSE" | jq '[.check_runs[] | select(.status != "completed")] | length')
-                        FAILED=$(echo "$CI_RESPONSE" | jq '[.check_runs[] | select(.conclusion == "failure")] | length')
+                    if [ "$TOTAL_CHECKS" -eq 0 ]; then
+                        >&2 echo "No CI checks found for this commit"
+                    else
+                        >&2 echo "Found $TOTAL_CHECKS CI check(s)"
+                        
+                        # Check for in-progress runs
+                        IN_PROGRESS=$(echo "$CI_STATUS" | jq '[.[] | select(.status != "completed")] | length')
+                        FAILED=$(echo "$CI_STATUS" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")] | length')
                         
                         if [ "$IN_PROGRESS" -gt 0 ]; then
-                            >&2 echo "⏳ CI checks still in progress"
-                            log_issue "## CI In Progress\n\nCI checks are still running. Please wait for CI to complete."
-                        elif [ "$FAILED" -gt 0 ]; then
-                            FAILED_NAMES=$(echo "$CI_RESPONSE" | jq -r '.check_runs[] | select(.conclusion == "failure") | .name')
-                            >&2 echo "❌ CI failed: $FAILED_NAMES"
-                            log_issue "## CI Failed\n\nThe following CI checks failed:\n${FAILED_NAMES}\n\nPlease fix the issues and try again."
+                            >&2 echo "⏳ $IN_PROGRESS check(s) still in progress"
+                            
+                            # Wait for CI to complete (with timeout)
+                            MAX_WAIT=300  # 5 minutes
+                            WAIT_INTERVAL=15
+                            TOTAL_WAITED=0
+                            
+                            while [ "$IN_PROGRESS" -gt 0 ] && [ "$TOTAL_WAITED" -lt "$MAX_WAIT" ]; do
+                                >&2 echo "Waiting for CI... (${TOTAL_WAITED}s / ${MAX_WAIT}s max)"
+                                sleep $WAIT_INTERVAL
+                                TOTAL_WAITED=$((TOTAL_WAITED + WAIT_INTERVAL))
+                                
+                                CI_STATUS=$(gh api "repos/$REPO_INFO/commits/$LOCAL_SHA/check-runs" \
+                                    --jq '.check_runs | map({name: .name, status: .status, conclusion: .conclusion})' 2>&1)
+                                IN_PROGRESS=$(echo "$CI_STATUS" | jq '[.[] | select(.status != "completed")] | length')
+                            done
+                            
+                            if [ "$IN_PROGRESS" -gt 0 ]; then
+                                >&2 echo "⚠️  CI still running after ${MAX_WAIT}s timeout"
+                                log_issue "## CI Still Running\n\nCI checks are still in progress after waiting ${MAX_WAIT} seconds. Please wait for CI to complete before finishing."
+                            fi
+                        fi
+                        
+                        # Re-check for failures after waiting
+                        FAILED=$(echo "$CI_STATUS" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")] | length')
+                        
+                        if [ "$FAILED" -gt 0 ]; then
+                            >&2 echo "❌ $FAILED check(s) failed!"
+                            
+                            # Get details of failed checks
+                            FAILED_DETAILS=$(echo "$CI_STATUS" | jq -r '.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- \(.name): \(.conclusion)"')
+                            >&2 echo "$FAILED_DETAILS"
+                            
+                            # Try to get failure logs
+                            FAILED_NAMES=$(echo "$CI_STATUS" | jq -r '.[] | select(.conclusion == "failure") | .name')
+                            
+                            FAILURE_MSG="## CI Failed\n\nThe following CI checks failed:\n\n${FAILED_DETAILS}\n"
+                            
+                            # Try to get the workflow run logs for more context
+                            WORKFLOW_RUNS=$(gh api "repos/$REPO_INFO/actions/runs?head_sha=$LOCAL_SHA" \
+                                --jq '.workflow_runs[] | select(.conclusion == "failure") | {id: .id, name: .name}' 2>/dev/null)
+                            
+                            if [ -n "$WORKFLOW_RUNS" ]; then
+                                FAILURE_MSG="${FAILURE_MSG}\nYou can view the full logs at: https://github.com/$REPO_INFO/actions\n"
+                                
+                                # Try to get job logs
+                                FIRST_RUN_ID=$(echo "$WORKFLOW_RUNS" | jq -r '.id' | head -1)
+                                if [ -n "$FIRST_RUN_ID" ]; then
+                                    JOBS_OUTPUT=$(gh api "repos/$REPO_INFO/actions/runs/$FIRST_RUN_ID/jobs" \
+                                        --jq '.jobs[] | select(.conclusion == "failure") | "### \(.name)\nConclusion: \(.conclusion)\nSteps:\n" + (.steps | map("- \(.name): \(.conclusion)") | join("\n"))' 2>/dev/null | head -100)
+                                    if [ -n "$JOBS_OUTPUT" ]; then
+                                        FAILURE_MSG="${FAILURE_MSG}\n### Failed Job Details:\n\`\`\`\n${JOBS_OUTPUT}\n\`\`\`"
+                                    fi
+                                fi
+                            fi
+                            
+                            log_issue "$FAILURE_MSG"
                         else
                             >&2 echo "✓ All CI checks passed!"
                         fi
-                    else
-                        >&2 echo "No CI checks found"
                     fi
+                fi
+            else
+                # Fallback to curl (requires $GITHUB_TOKEN)
+                >&2 echo "gh CLI not available, using API directly..."
+                CI_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github.v3+json" \
+                    "https://api.github.com/repos/$REPO_INFO/commits/$LOCAL_SHA/check-runs" 2>&1)
+                
+                TOTAL_CHECKS=$(echo "$CI_RESPONSE" | jq '.total_count // 0')
+                
+                if [ "$TOTAL_CHECKS" -gt 0 ]; then
+                    IN_PROGRESS=$(echo "$CI_RESPONSE" | jq '[.check_runs[] | select(.status != "completed")] | length')
+                    FAILED=$(echo "$CI_RESPONSE" | jq '[.check_runs[] | select(.conclusion == "failure")] | length')
+                    
+                    if [ "$IN_PROGRESS" -gt 0 ]; then
+                        >&2 echo "⏳ CI checks still in progress"
+                        log_issue "## CI In Progress\n\nCI checks are still running. Please wait for CI to complete."
+                    elif [ "$FAILED" -gt 0 ]; then
+                        FAILED_NAMES=$(echo "$CI_RESPONSE" | jq -r '.check_runs[] | select(.conclusion == "failure") | .name')
+                        >&2 echo "❌ CI failed: $FAILED_NAMES"
+                        log_issue "## CI Failed\n\nThe following CI checks failed:\n${FAILED_NAMES}\n\nPlease fix the issues and try again."
+                    else
+                        >&2 echo "✓ All CI checks passed!"
+                    fi
+                else
+                    >&2 echo "No CI checks found"
                 fi
             fi
         fi
