@@ -739,8 +739,10 @@ class Agent(CriticMixin, AgentBase):
         tool name and arguments.
 
         When the tool's own schema declares ``summary`` as a real parameter
-        (e.g. Jira's ticket title), the field is left untouched so that
-        downstream ``action_from_arguments`` validation does not fail.
+        (e.g. Jira's ticket title), the value is **read but not removed** so
+        that ``action_from_arguments`` validation still succeeds.  The tool's
+        own ``summary`` value is reused as the event-level summary because it
+        is usually descriptive (e.g. a Jira ticket title).
 
         Args:
             tool_name: Name of the tool being called
@@ -752,7 +754,12 @@ class Agent(CriticMixin, AgentBase):
             The summary string - either from LLM or a default generated one
         """
         if tool is not None and _tool_has_summary_param(tool):
-            # "summary" belongs to the tool — don't pop it.
+            # "summary" belongs to the tool — read it but don't pop it.
+            # Reuse the tool's own value as the event summary (e.g. a Jira
+            # ticket title is a reasonable description of the action).
+            summary = arguments.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
             args_str = json.dumps(arguments)
             return f"{tool_name}: {args_str}"
 

@@ -82,8 +82,9 @@ def test_extract_summary_preserves_mcp_tool_summary_param(agent):
 
     # The tool's real "summary" value must remain in the dict
     assert arguments["summary"] == "My ticket title"
-    # A default meta-summary should be generated instead
-    assert "jira_create_issue:" in result
+    # The tool's own summary value is reused as the event-level summary
+    # (e.g. a Jira ticket title is descriptive enough for visualization)
+    assert result == "My ticket title"
 
 
 def test_mcp_tool_with_summary_param_roundtrip(agent):
@@ -102,6 +103,23 @@ def test_mcp_tool_with_summary_param_roundtrip(agent):
     # action_from_arguments should succeed (not raise ValidationError)
     assert action.data["summary"] == "My ticket title"
     assert action.data["project_key"] == "PROJ"
+
+
+def test_extract_summary_mcp_tool_summary_missing_falls_back(agent):
+    """When tool declares 'summary' but it's empty, fall back to default."""
+    tool = _make_mcp_tool_with_summary()
+    arguments = {
+        "project_key": "PROJ",
+        "summary": "",
+        "issue_type": "Task",
+    }
+
+    result = agent._extract_summary(tool.name, arguments, tool=tool)
+
+    # Empty summary → falls back to default format
+    assert "jira_create_issue:" in result
+    # The empty value must still remain in arguments
+    assert arguments["summary"] == ""
 
 
 def test_extract_summary_still_pops_for_tools_without_summary_param(agent):
