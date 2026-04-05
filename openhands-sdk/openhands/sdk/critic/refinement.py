@@ -25,7 +25,7 @@ def _format_feature_for_prompt(feature: dict[str, Any]) -> str:
 
 def get_high_probability_issues(
     critic_result: CriticResult,
-    issue_threshold: float = DEFAULT_ISSUE_THRESHOLD,
+    issue_threshold: float,
 ) -> tuple[dict[str, Any], ...]:
     """Return critic-detected agent issues above the refinement threshold."""
     if not critic_result.metadata:
