@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
-from openhands.sdk.plugin import PluginSource
+from openhands.sdk.plugin import MarketplaceRegistration, PluginSource
 
 
 @pytest.fixture
@@ -65,6 +65,39 @@ def create_test_plugin(
         hooks_file.write_text(json.dumps(hooks))
 
     return plugin_dir
+
+
+def create_test_marketplace(marketplace_dir: Path, plugins: list[dict]) -> Path:
+    """Helper to create a test marketplace directory."""
+    metadata_dir = marketplace_dir / ".plugin"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    plugin_entries = []
+    for plugin in plugins:
+        plugin_name = plugin["name"]
+        create_test_plugin(
+            marketplace_dir / "plugins" / plugin_name,
+            name=plugin_name,
+            skills=plugin.get("skills"),
+            mcp_config=plugin.get("mcp_config"),
+            hooks=plugin.get("hooks"),
+        )
+        plugin_entries.append(
+            {
+                "name": plugin_name,
+                "source": f"./plugins/{plugin_name}",
+                "description": plugin.get("description", f"Test plugin {plugin_name}"),
+            }
+        )
+
+    marketplace_manifest = {
+        "name": marketplace_dir.name,
+        "owner": {"name": "Test Owner", "email": "test@example.com"},
+        "description": f"Test marketplace {marketplace_dir.name}",
+        "plugins": plugin_entries,
+    }
+    (metadata_dir / "marketplace.json").write_text(json.dumps(marketplace_manifest))
+    return marketplace_dir
 
 
 class TestLocalConversationPlugins:
@@ -273,6 +306,65 @@ class TestLocalConversationPlugins:
         assert len(mcp_tools_created) > 0
         assert "mcpServers" in mcp_tools_created[-1]
         assert "test-server" in mcp_tools_created[-1]["mcpServers"]
+
+        conversation.close()
+
+    def test_load_plugin_reinitializes_mcp_tools_after_startup(
+        self, tmp_path: Path, mock_llm, monkeypatch
+    ):
+        """Test runtime plugin loading reinitializes MCP tools after startup."""
+        mcp_tools_created = []
+
+        def mock_create_mcp_tools(config, timeout):
+            mcp_tools_created.append(config)
+            return []
+
+        import openhands.sdk.agent.base
+
+        monkeypatch.setattr(
+            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
+        )
+
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "runtime-plugin",
+                    "mcp_config": {
+                        "mcpServers": {"runtime-server": {"command": "test-cmd"}}
+                    },
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="test",
+                            source=str(marketplace_dir),
+                        )
+                    ]
+                ),
+            ),
+            workspace=workspace,
+            visualizer=None,
+        )
+
+        conversation._ensure_agent_ready()
+        assert mcp_tools_created == []
+
+        conversation.load_plugin("runtime-plugin@test")
+
+        assert conversation.agent.mcp_config is not None
+        assert "runtime-server" in conversation.agent.mcp_config["mcpServers"]
+        assert len(mcp_tools_created) == 1
+        assert "runtime-server" in mcp_tools_created[0]["mcpServers"]
 
         conversation.close()
 
