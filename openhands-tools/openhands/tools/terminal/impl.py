@@ -107,6 +107,11 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         return self._pool is not None
 
     @property
+    def working_dir(self) -> str:
+        """Return the working directory for this executor."""
+        return self._working_dir
+
+    @property
     def session(self) -> TerminalSession:
         """Access the single-session terminal.
 

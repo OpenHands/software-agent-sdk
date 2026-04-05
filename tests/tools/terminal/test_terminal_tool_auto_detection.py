@@ -43,7 +43,8 @@ def test_default_auto_detection():
 
         # In pool mode there is no single session attribute;
         # in single-session mode there is.
-        if executor._pool is not None:
+        if executor.is_pooled:
+            assert executor._pool is not None
             assert executor._pool.max_panes >= 1
         else:
             assert isinstance(executor.session, TerminalSession)
@@ -93,7 +94,7 @@ def test_unix_auto_detection(mock_system):
             executor = tool.executor
             assert isinstance(executor, TerminalExecutor)
             # Pool mode: no single session, pool is active
-            assert executor._pool is not None
+            assert executor.is_pooled
 
         # Mock tmux as unavailable → single-session / subprocess mode
         with (
