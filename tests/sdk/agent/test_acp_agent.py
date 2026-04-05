@@ -94,6 +94,26 @@ class TestACPAgentInstantiation:
         with pytest.raises(Exception):
             agent.acp_command = ["other"]  # type: ignore[misc]
 
+    def test_acp_model_propagated_to_metrics(self):
+        """When acp_model is set, metrics.model_name should reflect the actual model."""
+        agent = _make_agent(acp_model="gemini-3-flash-preview")
+        assert agent.llm.metrics.model_name == "gemini-3-flash-preview"
+        assert agent.llm.metrics.accumulated_token_usage is not None
+        assert (
+            agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
+        )
+
+    def test_no_acp_model_keeps_sentinel(self):
+        """Without acp_model, metrics.model_name remains the sentinel value."""
+        agent = _make_agent()
+        assert agent.llm.metrics.model_name == "acp-managed"
+
+    def test_acp_model_used_in_cost_entries(self):
+        """Cost entries should use the actual model name, not the sentinel."""
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        agent.llm.metrics.add_cost(0.05)
+        assert agent.llm.metrics.costs[0].model == "claude-opus-4-6"
+
 
 # ---------------------------------------------------------------------------
 # Serialization
@@ -259,6 +279,198 @@ class TestOpenHandsACPClient:
     async def test_ext_notification_is_noop(self):
         client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Activity heartbeat
+# ---------------------------------------------------------------------------
+
+
+class TestACPActivityHeartbeat:
+    """Tests for the on_activity heartbeat in _OpenHandsACPBridge."""
+
+    def test_reset_clears_on_activity(self):
+        client = _OpenHandsACPBridge()
+        client.on_activity = lambda: None
+        client.reset()
+        assert client.on_activity is None
+
+    def test_reset_preserves_last_activity_signal(self):
+        """_last_activity_signal persists across resets (like telemetry state)."""
+        client = _OpenHandsACPBridge()
+        client._last_activity_signal = 999.0
+        client.reset()
+        assert client._last_activity_signal == 999.0
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_signals_activity(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read file"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_signals_activity(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        # Need a ToolCallStart first
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Reset throttle so ToolCallProgress can fire
+        client._last_activity_signal = 0.0
+        signals.clear()
+
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "ok"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_message_chunk_signals_activity(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "hello"
+
+        await client.session_update("sess-1", chunk)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_activity_signal_is_throttled(self):
+        """Signals should be throttled to at most one per interval."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        for i in range(5):
+            start = MagicMock(spec=ToolCallStart)
+            start.tool_call_id = f"tc-{i}"
+            start.title = f"Tool {i}"
+            start.kind = "read"
+            start.status = "completed"
+            start.raw_input = None
+            start.raw_output = None
+            start.content = None
+            await client.session_update("sess-1", start)
+
+        # All happened within the same throttle window → only 1 signal
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_signal_without_callback(self):
+        """No error when on_activity is None."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        assert client.on_activity is None
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_activity_callback_error_is_swallowed(self):
+        """Errors in on_activity must not break session_update."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.on_activity = MagicMock(side_effect=RuntimeError("boom"))
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+        client.on_activity.assert_called_once()
+
+    def test_step_wires_on_activity(self, tmp_path):
+        """step() should set on_activity on the bridge from _on_activity."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        # Wire up a user message
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="sys"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="test")]),
+            ),
+        )
+
+        activity_fn = MagicMock()
+        agent._on_activity = activity_fn
+
+        # Mock the internals so step() doesn't actually call the ACP server
+        agent._client = _OpenHandsACPBridge()
+        agent._executor = MagicMock()
+        agent._executor.run_async = MagicMock(return_value=MagicMock(usage=None))
+        agent._session_id = "sess-1"
+        agent._initialized = True
+
+        conversation = MagicMock()
+        conversation.state = state
+        events: list = []
+
+        agent.step(conversation, on_event=events.append)
+
+        # Verify on_activity was wired to the bridge
+        assert agent._client.on_activity is activity_fn
 
 
 # ---------------------------------------------------------------------------
@@ -1652,6 +1864,106 @@ class TestACPPromptRetry:
             with pytest.raises(ConnectionError, match="Persistent connection failure"):
                 agent.step(conversation, on_event=events.append)
 
+        assert call_count == 4
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_retry_on_acp_server_error_then_success(self, tmp_path):
+        """Retry succeeds after transient ACP server error (JSON-RPC -32603)."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ACPRequestError(-32603, "Internal Server Error")
+            mock_client.accumulated_text.append("Success after server error retry")
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert (
+            "Success after server error retry" in events[0].llm_message.content[0].text
+        )
+
+    def test_no_retry_on_non_retriable_acp_error(self, tmp_path):
+        """Non-retriable ACP error codes fail immediately."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32600, "Invalid request")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(ACPRequestError, match="Invalid request"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 1  # No retry for non-retriable error codes
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_max_retries_exceeded_acp_server_error(self, tmp_path):
+        """ACP server error raised after max retries exhausted."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32603, "Internal Server Error")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            with pytest.raises(ACPRequestError, match="Internal Server Error"):
+                agent.step(conversation, on_event=events.append)
+
+        # Default max retries is 3, so 4 total attempts
         assert call_count == 4
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 

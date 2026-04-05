@@ -570,3 +570,13 @@ def test_converse_nemotron_super_3_120b_config():
         model["llm_config"]["model"] == "litellm_proxy/converse-nemotron-super-3-120b"
     )
     assert model["llm_config"]["temperature"] == 0.0
+
+
+def test_qwen3_6_plus_config():
+    """Test that qwen3.6-plus has correct configuration."""
+    model = MODELS["qwen3.6-plus"]
+
+    assert model["id"] == "qwen3.6-plus"
+    assert model["display_name"] == "Qwen3.6 Plus"
+    assert model["llm_config"]["model"] == "litellm_proxy/dashscope/qwen3.6-plus"
+    assert model["llm_config"]["temperature"] == 0.0

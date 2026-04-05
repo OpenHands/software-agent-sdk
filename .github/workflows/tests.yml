@@ -16,7 +16,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect sdk changes
@@ -86,7 +86,7 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect tools changes
@@ -143,7 +143,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect Agent Server changes
@@ -200,7 +200,7 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with: {fetch-depth: 0}
 
             - name: Detect cross changes
@@ -259,7 +259,7 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7

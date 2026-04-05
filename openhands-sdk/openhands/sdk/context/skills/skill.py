@@ -11,6 +11,7 @@ from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
+from openhands.sdk.context.skills.execute import render_content_with_commands
 from openhands.sdk.context.skills.trigger import (
     KeywordTrigger,
     TaskTrigger,
@@ -625,6 +626,25 @@ class Skill(BaseModel):
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
         )
+
+    def render_content(
+        self,
+        working_dir: Path | None = None,
+    ) -> str:
+        """Render skill content, executing inline !`command` blocks.
+
+        Inline !`command` patterns in the content are executed and
+        replaced with their stdout output. Code blocks (fenced and
+        inline) are preserved. Unclosed fenced blocks are treated as
+        extending to EOF. Use \\!`cmd` to produce literal !`cmd` text.
+
+        Args:
+            working_dir: Directory to run commands in.
+
+        Returns:
+            Processed content with command outputs substituted.
+        """
+        return render_content_with_commands(self.content, working_dir)
 
 
 def load_skills_from_dir(
