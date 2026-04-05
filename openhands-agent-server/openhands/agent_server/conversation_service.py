@@ -30,6 +30,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.title_utils import (
+    extract_message_text,
+    generate_title_from_message,
+)
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
@@ -816,9 +820,26 @@ class AutoTitleSubscriber(Subscriber):
         if self.service.stored.title is not None:
             return
 
+        # Extract the message text now, before spawning the background task,
+        # to avoid a race where the event hasn't been persisted to the events
+        # list yet when title generation tries to read it.
+        message_text = extract_message_text(event)
+        if not message_text:
+            return
+
+        conversation = self.service._conversation
+        llm = conversation.agent.llm if conversation else None
+
         async def _generate_and_save() -> None:
             try:
-                title = await self.service.generate_title()
+                loop = asyncio.get_running_loop()
+                title = await loop.run_in_executor(
+                    None,
+                    generate_title_from_message,
+                    message_text,
+                    llm,
+                    50,
+                )
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
                     self.service.stored.updated_at = utc_now()
