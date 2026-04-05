@@ -17,6 +17,7 @@ sandbox < public < user < org < project
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -286,6 +287,7 @@ def load_all_skills(
     org_name: str | None = None,
     sandbox_exposed_urls: list[ExposedUrlData] | None = None,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
+    user_skills_dirs: Sequence[str | Path] | None = None,
 ) -> SkillLoadResult:
     """Load and merge skills from all configured sources.
 
@@ -308,6 +310,9 @@ def load_all_skills(
         sandbox_exposed_urls: List of exposed URLs from sandbox.
         marketplace_path: Relative marketplace JSON path for public skills.
             Pass None to load all public skills without marketplace filtering.
+        user_skills_dirs: Additional directories to search for user skills.
+            Useful when user skills are mounted at a custom path inside
+            the agent-server container.
 
     Returns:
         SkillLoadResult containing merged skills and source counts.
@@ -331,6 +336,7 @@ def load_all_skills(
         include_project=False,
         include_public=load_public,
         marketplace_path=marketplace_path,
+        user_skills_dirs=user_skills_dirs,
     )
     sources["sdk_base"] = len(sdk_base)
     skill_lists.append(list(sdk_base.values()))

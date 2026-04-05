@@ -357,6 +357,21 @@ class TestLoadAllSkills:
             assert len(shared_skills) == 1
             assert shared_skills[0].content == "project"
 
+    def test_load_all_skills_passes_user_skills_dirs(self):
+        """Test that user_skills_dirs is forwarded to load_available_skills."""
+        with patch(self._PATCH_TARGET, side_effect=[{}, {}]) as mock_avail:
+            load_all_skills(
+                load_public=False,
+                load_user=True,
+                load_project=False,
+                load_org=False,
+                user_skills_dirs=["/mounted/skills"],
+            )
+
+        # sdk_base call should have user_skills_dirs
+        sdk_base_call = mock_avail.call_args_list[0]
+        assert sdk_base_call.kwargs["user_skills_dirs"] == ["/mounted/skills"]
+
 
 class TestSyncPublicSkills:
     """Tests for sync_public_skills function."""

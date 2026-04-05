@@ -1,5 +1,6 @@
 """Tests for load_user_skills functionality."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -9,8 +10,10 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.skills import (
     KeywordTrigger,
     Skill,
+    get_user_skills_dirs,
     load_user_skills,
 )
+from openhands.sdk.context.skills.skill import USER_SKILLS_DIRS_ENV
 
 
 @pytest.fixture
@@ -304,5 +307,130 @@ def test_agent_context_explicit_skill_takes_precedence(temp_user_skills_dir):
         assert len(context.skills) == 1
         # Explicit skill should be used, not the user skill
         assert context.skills[0].content == "Explicit skill content."
+    finally:
+        skill.USER_SKILLS_DIRS = original_dirs
+
+
+# --- Tests for extra_dirs / env var support ---
+
+
+def test_get_user_skills_dirs_defaults():
+    """Test that default dirs are returned when no extras are given."""
+    from openhands.sdk.context.skills import skill
+
+    # Temporarily clear env var to isolate test
+    old_env = os.environ.pop(USER_SKILLS_DIRS_ENV, None)
+    try:
+        dirs = get_user_skills_dirs()
+        assert dirs == skill.USER_SKILLS_DIRS
+    finally:
+        if old_env is not None:
+            os.environ[USER_SKILLS_DIRS_ENV] = old_env
+
+
+def test_get_user_skills_dirs_with_extra_dirs(tmp_path):
+    """Test that extra_dirs are prepended (highest priority)."""
+    old_env = os.environ.pop(USER_SKILLS_DIRS_ENV, None)
+    try:
+        extra = tmp_path / "custom_skills"
+        dirs = get_user_skills_dirs(extra_dirs=[str(extra)])
+        assert dirs[0] == extra
+    finally:
+        if old_env is not None:
+            os.environ[USER_SKILLS_DIRS_ENV] = old_env
+
+
+def test_get_user_skills_dirs_with_env_var(tmp_path, monkeypatch):
+    """Test that OPENHANDS_USER_SKILLS_DIRS env var paths are included."""
+    env_dir = tmp_path / "env_skills"
+    monkeypatch.setenv(USER_SKILLS_DIRS_ENV, str(env_dir))
+
+    dirs = get_user_skills_dirs()
+    # env var dirs come after extra_dirs (if any) but before defaults
+    assert env_dir in dirs
+    from openhands.sdk.context.skills import skill
+
+    # env var dirs should appear before the defaults
+    env_idx = dirs.index(env_dir)
+    default_idx = dirs.index(skill.USER_SKILLS_DIRS[0])
+    assert env_idx < default_idx
+
+
+def test_get_user_skills_dirs_priority(tmp_path, monkeypatch):
+    """Test priority: extra_dirs > env var > defaults."""
+    extra_dir = tmp_path / "extra"
+    env_dir = tmp_path / "env"
+    monkeypatch.setenv(USER_SKILLS_DIRS_ENV, str(env_dir))
+
+    dirs = get_user_skills_dirs(extra_dirs=[str(extra_dir)])
+    assert dirs[0] == extra_dir
+    assert dirs[1] == env_dir
+
+
+def test_load_user_skills_with_extra_dirs(tmp_path):
+    """Test load_user_skills loads from extra_dirs."""
+    from openhands.sdk.context.skills import skill
+
+    extra_dir = tmp_path / "extra_skills"
+    extra_dir.mkdir()
+    (extra_dir / "extra_skill.md").write_text(
+        "---\nname: extra_skill\n---\nExtra skill content."
+    )
+
+    original_dirs = skill.USER_SKILLS_DIRS
+    try:
+        # Point defaults to nonexistent dirs so only extra_dirs matters
+        skill.USER_SKILLS_DIRS = [tmp_path / "nonexistent"]
+        skills = load_user_skills(extra_dirs=[str(extra_dir)])
+        assert len(skills) == 1
+        assert skills[0].name == "extra_skill"
+        assert skills[0].content == "Extra skill content."
+    finally:
+        skill.USER_SKILLS_DIRS = original_dirs
+
+
+def test_load_user_skills_with_env_var(tmp_path, monkeypatch):
+    """Test load_user_skills loads from OPENHANDS_USER_SKILLS_DIRS env var."""
+    from openhands.sdk.context.skills import skill
+
+    env_dir = tmp_path / "env_skills"
+    env_dir.mkdir()
+    (env_dir / "env_skill.md").write_text(
+        "---\nname: env_skill\n---\nEnv skill content."
+    )
+
+    monkeypatch.setenv(USER_SKILLS_DIRS_ENV, str(env_dir))
+
+    original_dirs = skill.USER_SKILLS_DIRS
+    try:
+        # Point defaults to nonexistent dirs so only env var matters
+        skill.USER_SKILLS_DIRS = [tmp_path / "nonexistent"]
+        skills = load_user_skills()
+        assert len(skills) == 1
+        assert skills[0].name == "env_skill"
+        assert skills[0].content == "Env skill content."
+    finally:
+        skill.USER_SKILLS_DIRS = original_dirs
+
+
+def test_load_user_skills_extra_dirs_take_precedence(tmp_path):
+    """Test that extra_dirs skills override default dir skills."""
+    from openhands.sdk.context.skills import skill
+
+    default_dir = tmp_path / "default"
+    default_dir.mkdir()
+    (default_dir / "shared.md").write_text("---\nname: shared\n---\nDefault version.")
+
+    extra_dir = tmp_path / "extra"
+    extra_dir.mkdir()
+    (extra_dir / "shared.md").write_text("---\nname: shared\n---\nExtra version.")
+
+    original_dirs = skill.USER_SKILLS_DIRS
+    try:
+        skill.USER_SKILLS_DIRS = [default_dir]
+        skills = load_user_skills(extra_dirs=[str(extra_dir)])
+        assert len(skills) == 1
+        assert skills[0].name == "shared"
+        assert skills[0].content == "Extra version."
     finally:
         skill.USER_SKILLS_DIRS = original_dirs

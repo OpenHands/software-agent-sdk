@@ -1,6 +1,8 @@
 import io
 import json
+import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
@@ -719,14 +721,67 @@ USER_SKILLS_DIRS = [
     Path.home() / ".openhands" / "microagents",  # Legacy support
 ]
 
+# Environment variable for specifying additional user skill directories.
+# When the agent-server runs inside a container, the host's skill directories
+# are not visible. Use this env var (colon-separated paths on Linux/macOS,
+# semicolon-separated on Windows) to tell the agent-server where user skills
+# have been mounted.
+USER_SKILLS_DIRS_ENV = "OPENHANDS_USER_SKILLS_DIRS"
 
-def load_user_skills() -> list[Skill]:
+
+def get_user_skills_dirs(
+    extra_dirs: Sequence[str | Path] | None = None,
+) -> list[Path]:
+    """Build the full list of user skill directories to search.
+
+    Merges default paths, environment variable paths, and explicit extras.
+    Priority (highest first): *extra_dirs* → env-var dirs → defaults.
+
+    Args:
+        extra_dirs: Additional directories to search (highest priority).
+
+    Returns:
+        Ordered list of directories to search for user skills.
+    """
+    dirs: list[Path] = []
+
+    # 1. Explicit extra dirs (highest priority)
+    if extra_dirs:
+        for p in extra_dirs:
+            dirs.append(Path(p) if isinstance(p, str) else p)
+
+    # 2. Environment variable dirs
+    env_value = os.environ.get(USER_SKILLS_DIRS_ENV, "")
+    if env_value:
+        for raw in env_value.split(os.pathsep):
+            raw = raw.strip()
+            if raw:
+                dirs.append(Path(raw))
+
+    # 3. Defaults (lowest priority)
+    dirs.extend(USER_SKILLS_DIRS)
+
+    return dirs
+
+
+def load_user_skills(
+    extra_dirs: Sequence[str | Path] | None = None,
+) -> list[Skill]:
     """Load skills from user's home directory.
 
     Searches for skills in ~/.agents/skills/, ~/.openhands/skills/, and
     ~/.openhands/microagents/ (legacy). Skills from all directories are merged,
-    with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
-    names.
+    with earlier entries taking precedence for duplicate names.
+
+    Additional directories can be supplied via the *extra_dirs* argument
+    (highest priority) or the ``OPENHANDS_USER_SKILLS_DIRS`` environment
+    variable (colon-separated paths). This is useful when the agent-server
+    runs inside a container where the host's home directory is not visible:
+    mount the user skills at an arbitrary path and point to it.
+
+    Args:
+        extra_dirs: Additional directories to search for user skills.
+            These take highest precedence over env-var and default paths.
 
     Returns:
         List of Skill objects loaded from user directories.
@@ -735,7 +790,8 @@ def load_user_skills() -> list[Skill]:
     all_skills: list[Skill] = []
     seen_names: set[str] = set()
 
-    _load_and_merge_from_dirs(USER_SKILLS_DIRS, seen_names, all_skills, "user skills")
+    dirs = get_user_skills_dirs(extra_dirs)
+    _load_and_merge_from_dirs(dirs, seen_names, all_skills, "user skills")
 
     logger.debug(
         f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
@@ -1079,6 +1135,7 @@ def load_available_skills(
     include_project: bool = False,
     include_public: bool = False,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
+    user_skills_dirs: Sequence[str | Path] | None = None,
 ) -> dict[str, Skill]:
     """Load and merge skills from SDK-level sources with consistent precedence.
 
@@ -1097,6 +1154,9 @@ def load_available_skills(
         include_public: Load public skills from the OpenHands extensions repo.
         marketplace_path: Relative marketplace JSON path to use for public skills.
             Pass None to load all public skills without marketplace filtering.
+        user_skills_dirs: Additional directories to search for user skills.
+            Useful when the agent-server runs inside a container and user
+            skills are mounted at a custom path.
 
     Returns:
         Dict mapping skill name → Skill, with higher-precedence sources
@@ -1113,7 +1173,7 @@ def load_available_skills(
 
     if include_user:
         try:
-            for s in load_user_skills():
+            for s in load_user_skills(extra_dirs=user_skills_dirs):
                 available[s.name] = s
         except Exception as e:
             logger.warning(f"Failed to load user skills: {e}")

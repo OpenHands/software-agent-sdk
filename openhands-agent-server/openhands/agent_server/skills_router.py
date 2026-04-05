@@ -74,6 +74,14 @@ class SkillsRequest(BaseModel):
     project_dir: str | None = Field(
         default=None, description="Workspace directory path for project skills"
     )
+    user_skills_dirs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Additional directories to search for user skills. "
+            "Useful when user skills are mounted at a custom path "
+            "inside the agent-server container."
+        ),
+    )
     org_config: OrgConfig | None = Field(
         default=None, description="Organization skills configuration"
     )
@@ -154,6 +162,7 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         org_name=org_name,
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=request.marketplace_path,
+        user_skills_dirs=request.user_skills_dirs,
     )
 
     # Convert Skill objects to SkillInfo for response
