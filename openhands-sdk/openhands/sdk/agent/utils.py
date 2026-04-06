@@ -209,6 +209,21 @@ def _infer_file_editor_command(arguments: dict[str, Any]) -> str | None:
     return None
 
 
+def _has_file_editor_hint(arguments: dict[str, Any]) -> bool:
+    """Check if arguments contain any hint that this is a file_editor call."""
+    file_editor_hints = frozenset(
+        {
+            "old_str",
+            "new_str",
+            "insert_line",
+            "file_text",
+            "path",
+            "view_range",
+        }
+    )
+    return bool(arguments and any(k in arguments for k in file_editor_hints))
+
+
 def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
     """Return a safe terminal command for structured grep fallbacks.
 
@@ -291,6 +306,16 @@ def normalize_tool_call(
                 "command": inferred_command,
                 **normalized_arguments,
             }
+        elif not normalized_arguments or (
+            "command" not in normalized_arguments
+            and not _has_file_editor_hint(normalized_arguments)
+        ):
+            raise ValueError(
+                f"Cannot infer 'command' for tool '{tool_name}' from empty arguments "
+                f"{normalized_arguments!r}. Expected one of: str_replace, insert, "
+                f"create, view with appropriate arguments (e.g., old_str for "
+                f"str_replace, path for view)."
+            )
 
     return normalized_tool_name, normalized_arguments
 

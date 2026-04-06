@@ -376,3 +376,25 @@ def test_file_editor_command_inferred_from_old_str(tmp_path):
     assert action_event.action is not None
     assert getattr(action_event.action, "command") == "str_replace"
     assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_file_editor_empty_args_emits_error(tmp_path):
+    """Test that file_editor with empty args produces helpful error."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="file_editor",
+        arguments={},
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+    observations = [e for e in events if isinstance(e, ObservationEvent)]
+
+    assert not observations
+    assert len(errors) == 1
+    error_event = errors[0]
+    assert "file_editor" in error_event.error
+    assert "Cannot infer" in error_event.error or "command" in error_event.error.lower()
+    # Should NOT be the raw Pydantic validation error
+    assert "Field required" not in error_event.error
+    assert "validation errors" not in error_event.error
