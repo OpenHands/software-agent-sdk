@@ -77,6 +77,16 @@ class TestPolicyRails:
         assert decision.outcome == SecurityRisk.HIGH
         assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
 
+    def test_catastrophic_delete_with_intervening_flag(self):
+        decision = _evaluate_rail("rm --no-preserve-root -rf /")
+        assert decision.outcome == SecurityRisk.HIGH
+        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
+
+    def test_catastrophic_delete_split_flags_with_long_option(self):
+        decision = _evaluate_rail("rm --preserve-root=all -r -f /")
+        assert decision.outcome == SecurityRisk.HIGH
+        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
+
 
 class TestPolicyRailAnalyzer:
     """Integration tests for PolicyRailSecurityAnalyzer."""

@@ -70,8 +70,11 @@ DET_INJECT_IDENTITY = "inject.identity"
 DEFAULT_HIGH_PATTERNS: list[tuple[str, str, str]] = [
     # Destructive filesystem operations
     (
-        r"\brm\s+(?:-[frR]{2,}|-[rR]\s+-f|-f\s+-[rR]"
-        r"|--recursive\s+--force|--force\s+--recursive)\b",
+        r"\brm\b(?:(?![;&|]).){0,120}"
+        r"(?:(?:--recursive\b|-[^\s-]*[rR][^\s]*)"
+        r"(?:(?![;&|]).){0,120}(?:--force\b|-[^\s-]*f[^\s]*)"
+        r"|(?:--force\b|-[^\s-]*f[^\s]*)"
+        r"(?:(?![;&|]).){0,120}(?:--recursive\b|-[^\s-]*[rR][^\s]*))",
         "Recursive force-delete (rm -rf variants)",
         DET_EXEC_DESTRUCT_RM_RF,
     ),

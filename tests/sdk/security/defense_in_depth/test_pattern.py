@@ -288,6 +288,8 @@ _HIGH_CASES = [
     ("rm -rf /", "rm -rf"),
     ("rm -fr /home", "rm -fr"),
     ("rm -r -f /tmp", "rm -r -f"),
+    ("rm --no-preserve-root -rf /", "rm with intervening long flag"),
+    ("rm --preserve-root=all -r -f /tmp", "rm split flags with long option"),
     ("rm --recursive --force /", "rm --recursive --force"),
     ("sudo rm secret.db", "sudo rm"),
     ("mkfs.ext4 /dev/sda", "mkfs"),
