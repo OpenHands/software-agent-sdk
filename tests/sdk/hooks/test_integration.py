@@ -1199,3 +1199,106 @@ class TestHookExecutionEventEmission:
         assert hook_event.hook_event_type == "Stop"
         assert hook_event.success is True
         assert hook_event.hook_input == {"reason": "finish"}
+
+
+class TestHookSecretInjection:
+    """Tests that conversation secrets are injected into hook subprocesses."""
+
+    @pytest.fixture
+    def conversation_state(self, tmp_path):
+        import uuid
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent import Agent
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.workspace import LocalWorkspace
+
+        llm = LLM(model="test-model", api_key=SecretStr("k"))
+        agent = Agent(llm=llm, tools=[])
+        workspace = LocalWorkspace(working_dir=str(tmp_path))
+        return ConversationState(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=None,
+        )
+
+    def test_stop_hook_subprocess_sees_secret_env_var(
+        self, tmp_path, conversation_state
+    ):
+        """End-to-end: hook subprocess can read a secret env var.
+
+        Regression test: the agent-server process may not have secrets
+        like GITHUB_TOKEN in os.environ — they live only in the
+        conversation's SecretRegistry. Without explicit injection, hook
+        subprocesses would not see them.
+        """  # noqa: E501
+        script = tmp_path / "echo_secret.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            'if [ "$MY_TOKEN" = "token-123" ]; then\n'
+            '  echo \'{"decision":"allow"}\'\n'
+            "else\n"
+            '  echo \'{"decision":"deny","reason":"token missing"}\'\n'
+            "  exit 2\n"
+            "fi\n"
+        )
+        script.chmod(0o755)
+
+        config = HookConfig.model_validate({"stop": [{"command": f"bash {script}"}]})
+        conversation_state.secret_registry.update_secrets({"MY_TOKEN": "token-123"})
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processor = HookEventProcessor(hook_manager=manager)
+        processor.set_conversation_state(conversation_state)
+
+        should_stop, feedback = processor.run_stop()
+
+        # Hook should succeed because it received the secret
+        assert should_stop is True
+        assert feedback is None
+
+    def test_stop_hook_without_secrets_does_not_crash(
+        self, tmp_path, conversation_state
+    ):
+        """Hooks still work when no secrets are registered."""
+        config = HookConfig.model_validate({"stop": [{"command": "echo '{}'"}]})
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processor = HookEventProcessor(hook_manager=manager)
+        processor.set_conversation_state(conversation_state)
+
+        should_stop, _ = processor.run_stop()
+        assert should_stop is True
+
+    def test_get_secret_env_returns_none_without_state(self, tmp_path):
+        """_get_secret_env returns None when no state is set."""
+        manager = HookManager(config=HookConfig(), working_dir=str(tmp_path))
+        processor = HookEventProcessor(hook_manager=manager)
+
+        assert processor._get_secret_env() is None
+
+    def test_session_start_hook_receives_secrets(self, tmp_path, conversation_state):
+        """SessionStart hooks also receive secrets."""
+        script = tmp_path / "start_check.sh"
+        script.write_text(
+            '#!/bin/bash\nif [ -n "$GH_TOKEN" ]; then exit 0; else exit 1; fi\n'
+        )
+        script.chmod(0o755)
+
+        config = HookConfig.model_validate(
+            {"session_start": [{"command": f"bash {script}"}]}
+        )
+        conversation_state.secret_registry.update_secrets({"GH_TOKEN": "ghp_abc123"})
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processor = HookEventProcessor(hook_manager=manager)
+        processor.set_conversation_state(conversation_state)
+
+        processor.run_session_start()
+
+        # Verify the _get_secret_env includes the token
+        env = processor._get_secret_env()
+        assert env is not None
+        assert "GH_TOKEN" in env

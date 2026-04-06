@@ -50,6 +50,7 @@ class HookManager:
         self,
         tool_name: str,
         tool_input: dict[str, Any],
+        env: dict[str, str] | None = None,
     ) -> tuple[bool, list[HookResult]]:
         """Run PreToolUse hooks. Returns (should_continue, results)."""
         hooks = self.config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, tool_name)
@@ -70,7 +71,7 @@ class HookManager:
             tool_input=tool_input,
         )
 
-        results = self.executor.execute_all(hooks, event, stop_on_block=True)
+        results = self.executor.execute_all(hooks, event, env=env, stop_on_block=True)
 
         # Check if any hook blocked the operation
         should_continue = all(r.should_continue for r in results)
@@ -82,6 +83,7 @@ class HookManager:
         tool_name: str,
         tool_input: dict[str, Any],
         tool_response: dict[str, Any],
+        env: dict[str, str] | None = None,
     ) -> list[HookResult]:
         """Run PostToolUse hooks after a tool completes."""
         hooks = self.config.get_hooks_for_event(HookEventType.POST_TOOL_USE, tool_name)
@@ -96,11 +98,12 @@ class HookManager:
         )
 
         # PostToolUse hooks don't block - they just run
-        return self.executor.execute_all(hooks, event, stop_on_block=False)
+        return self.executor.execute_all(hooks, event, env=env, stop_on_block=False)
 
     def run_user_prompt_submit(
         self,
         message: str,
+        env: dict[str, str] | None = None,
     ) -> tuple[bool, str | None, list[HookResult]]:
         """Run UserPromptSubmit hooks."""
         hooks = self.config.get_hooks_for_event(HookEventType.USER_PROMPT_SUBMIT)
@@ -112,7 +115,7 @@ class HookManager:
             message=message,
         )
 
-        results = self.executor.execute_all(hooks, event, stop_on_block=True)
+        results = self.executor.execute_all(hooks, event, env=env, stop_on_block=True)
 
         # Check if any hook blocked
         should_continue = all(r.should_continue for r in results)
@@ -127,22 +130,30 @@ class HookManager:
 
         return should_continue, additional_context, results
 
-    def run_session_start(self) -> list[HookResult]:
+    def run_session_start(
+        self,
+        env: dict[str, str] | None = None,
+    ) -> list[HookResult]:
         """Run SessionStart hooks when a conversation begins."""
         hooks = self.config.get_hooks_for_event(HookEventType.SESSION_START)
         if not hooks:
             return []
 
         event = self._create_event(HookEventType.SESSION_START)
-        return self.executor.execute_all(hooks, event, stop_on_block=False)
+        return self.executor.execute_all(hooks, event, env=env, stop_on_block=False)
 
-    def run_session_end(self) -> list[HookResult]:
+    def run_session_end(
+        self,
+        env: dict[str, str] | None = None,
+    ) -> list[HookResult]:
         """Run SessionEnd hooks when a conversation ends."""
         hooks = self.config.get_hooks_for_event(HookEventType.SESSION_END)
         results: list[HookResult] = []
         if hooks:
             event = self._create_event(HookEventType.SESSION_END)
-            results = self.executor.execute_all(hooks, event, stop_on_block=False)
+            results = self.executor.execute_all(
+                hooks, event, env=env, stop_on_block=False
+            )
 
         # Cleanup any background async processes
         self.cleanup_async_processes()
@@ -156,6 +167,7 @@ class HookManager:
     def run_stop(
         self,
         reason: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> tuple[bool, list[HookResult]]:
         """Run Stop hooks. Returns (should_stop, results)."""
         hooks = self.config.get_hooks_for_event(HookEventType.STOP)
@@ -167,7 +179,7 @@ class HookManager:
             metadata={"reason": reason} if reason else {},
         )
 
-        results = self.executor.execute_all(hooks, event, stop_on_block=True)
+        results = self.executor.execute_all(hooks, event, env=env, stop_on_block=True)
 
         # If a hook blocks, the agent should NOT stop (continue running)
         should_stop = all(r.should_continue for r in results)

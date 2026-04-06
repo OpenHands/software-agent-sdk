@@ -93,6 +93,31 @@ class SecretRegistry(OpenHandsModel):
         logger.debug(f"Prepared {len(env_vars)} secrets as environment variables")
         return env_vars
 
+    def get_all_secrets_as_env_vars(self) -> dict[str, str]:
+        """Resolve all secrets and return them as environment variables.
+
+        Unlike :meth:`get_secrets_as_env_vars`, this does not filter by
+        command text — every registered secret is resolved.  This is used
+        for hook subprocesses which need the same secrets available to
+        agent bash commands but whose *command strings* do not reference
+        them directly.
+
+        Returns:
+            Dictionary of environment variables (key → value) for all
+            successfully resolved secrets.
+        """
+        env_vars: dict[str, str] = {}
+        for key, source in self.secret_sources.items():
+            try:
+                value = source.get_value()
+                if value:
+                    env_vars[key] = value
+                    self._exported_values[key] = value
+            except Exception as e:
+                logger.error(f"Failed to retrieve secret for key '{key}': {e}")
+                continue
+        return env_vars
+
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 

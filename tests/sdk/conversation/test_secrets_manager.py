@@ -152,3 +152,47 @@ def test_get_secrets_as_env_vars_handles_callable_exceptions():
 
     # Only working secret should be returned
     assert env_vars == {"WORKING_SECRET": "working-value"}
+
+
+def test_get_all_secrets_as_env_vars():
+    """Test that get_all_secrets_as_env_vars resolves all secrets."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_KEY": "test-api-key",
+            "DATABASE_URL": "postgresql://localhost/test",
+            "GITHUB_TOKEN": "ghp_abc123",
+        }
+    )
+
+    env_vars = secret_registry.get_all_secrets_as_env_vars()
+    assert env_vars == {
+        "API_KEY": "test-api-key",
+        "DATABASE_URL": "postgresql://localhost/test",
+        "GITHUB_TOKEN": "ghp_abc123",
+    }
+
+
+def test_get_all_secrets_as_env_vars_empty_registry():
+    """get_all_secrets_as_env_vars returns empty dict when no secrets."""
+    secret_registry = SecretRegistry()
+    assert secret_registry.get_all_secrets_as_env_vars() == {}
+
+
+def test_get_all_secrets_as_env_vars_skips_failures():
+    """get_all_secrets_as_env_vars skips secrets that fail to resolve."""
+    secret_registry = SecretRegistry()
+
+    class FailingSource(SecretSource):
+        def get_value(self):
+            raise ValueError("boom")
+
+    secret_registry.update_secrets(
+        {
+            "GOOD": "good-value",
+            "BAD": FailingSource(),
+        }
+    )
+
+    env_vars = secret_registry.get_all_secrets_as_env_vars()
+    assert env_vars == {"GOOD": "good-value"}

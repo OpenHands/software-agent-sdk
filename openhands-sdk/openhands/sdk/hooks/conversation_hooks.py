@@ -67,6 +67,23 @@ class HookEventProcessor:
         """Set conversation state for blocking support."""
         self._conversation_state = state
 
+    def _get_secret_env(self) -> dict[str, str] | None:
+        """Resolve all conversation secrets as env vars for hook subprocesses.
+
+        The agent-server process may not have secrets (e.g. ``GITHUB_TOKEN``)
+        in its own ``os.environ``; they are injected per-command for agent
+        bash actions via :class:`SecretRegistry`.  Hook subprocesses bypass
+        that injection, so we explicitly resolve secrets here and pass them
+        through the ``env`` parameter of the executor.
+        """
+        if self._conversation_state is None:
+            return None
+        registry = self._conversation_state.secret_registry
+        if not registry.secret_sources:
+            return None
+        env = registry.get_all_secrets_as_env_vars()
+        return env or None
+
     def _emit_hook_execution_event(
         self,
         hook_event_type: HookEventType,
@@ -143,6 +160,7 @@ class HookEventProcessor:
         should_continue, results = self.hook_manager.run_pre_tool_use(
             tool_name=tool_name,
             tool_input=tool_input,
+            env=self._get_secret_env(),
         )
 
         # Emit HookExecutionEvents for each hook
@@ -218,6 +236,7 @@ class HookEventProcessor:
             tool_name=tool_name,
             tool_input=tool_input,
             tool_response=tool_response,
+            env=self._get_secret_env(),
         )
 
         # Emit HookExecutionEvents for each hook and log errors
@@ -259,7 +278,9 @@ class HookEventProcessor:
         )
 
         should_continue, additional_context, results = (
-            self.hook_manager.run_user_prompt_submit(message=message)
+            self.hook_manager.run_user_prompt_submit(
+                message=message, env=self._get_secret_env()
+            )
         )
 
         # Emit HookExecutionEvents for each hook
@@ -323,7 +344,7 @@ class HookEventProcessor:
         hooks = self.hook_manager.config.get_hooks_for_event(
             HookEventType.SESSION_START
         )
-        results = self.hook_manager.run_session_start()
+        results = self.hook_manager.run_session_start(env=self._get_secret_env())
 
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
@@ -337,7 +358,7 @@ class HookEventProcessor:
     def run_session_end(self) -> None:
         """Run SessionEnd hooks. Call before conversation is closed."""
         hooks = self.hook_manager.config.get_hooks_for_event(HookEventType.SESSION_END)
-        results = self.hook_manager.run_session_end()
+        results = self.hook_manager.run_session_end(env=self._get_secret_env())
 
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
@@ -354,7 +375,9 @@ class HookEventProcessor:
             return True, None
 
         hooks = self.hook_manager.config.get_hooks_for_event(HookEventType.STOP)
-        should_stop, results = self.hook_manager.run_stop(reason=reason)
+        should_stop, results = self.hook_manager.run_stop(
+            reason=reason, env=self._get_secret_env()
+        )
 
         # Emit events and log errors
         for hook, result in zip(hooks, results, strict=False):
