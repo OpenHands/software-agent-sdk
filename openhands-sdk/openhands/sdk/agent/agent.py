@@ -862,14 +862,44 @@ class Agent(CriticMixin, AgentBase):
                 arguments,
                 self.tools_map.keys(),
             )
+        except ValueError as e:
+            # normalize_tool_call raised ValueError for validation errors (e.g.,
+            # "Cannot infer 'command' for file_editor"). Determine resolved name.
+            from openhands.sdk.agent.utils import TOOL_NAME_ALIASES  # noqa: PLC0415
+
+            resolved_name = TOOL_NAME_ALIASES.get(
+                requested_tool_name, requested_tool_name
+            )
+            if resolved_name not in self.tools_map:
+                resolved_name = requested_tool_name
+
+            display_tool_name = resolved_name
+            err = (
+                f"Error validating args {tool_call.arguments} for tool "
+                f"'{display_tool_name}': {e}"
+            )
+            self._emit_tool_error(
+                error=err,
+                tool_name=display_tool_name,
+                tool_call=tool_call,
+                llm_response_id=llm_response_id,
+                on_event=on_event,
+                thought=thought,
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks,
+                responses_reasoning_item=responses_reasoning_item,
+            )
+            return
+
+        try:
             tool = self.tools_map.get(tool_name, None)
             if tool is None:
                 available = list(self.tools_map.keys())
-                err = f"Tool '{requested_tool_name}' not found. Available: {available}"
+                err = f"Tool '{tool_name}' not found. Available: {available}"
                 logger.error(err)
                 self._emit_tool_error(
                     error=err,
-                    tool_name=requested_tool_name,
+                    tool_name=tool_name,
                     tool_call=tool_call,
                     llm_response_id=llm_response_id,
                     on_event=on_event,
@@ -900,8 +930,8 @@ class Agent(CriticMixin, AgentBase):
             summary = self._extract_summary(tool.name, arguments, tool=tool)
 
             action: Action = tool.action_from_arguments(arguments)
-        except (json.JSONDecodeError, ValidationError, ValueError) as e:
-            display_tool_name = tool.name if tool is not None else requested_tool_name
+        except (json.JSONDecodeError, ValidationError) as e:
+            display_tool_name = tool.name if tool is not None else tool_name
             err = (
                 f"Error validating args {tool_call.arguments} for tool "
                 f"'{display_tool_name}': {e}"

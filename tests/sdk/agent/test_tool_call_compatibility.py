@@ -398,3 +398,24 @@ def test_file_editor_empty_args_emits_error(tmp_path):
     # Should NOT be the raw Pydantic validation error
     assert "Field required" not in error_event.error
     assert "validation errors" not in error_event.error
+
+
+def test_str_replace_alias_error_message_shows_file_editor(tmp_path):
+    """Test that str_replace alias shows 'file_editor' in error, not 'str_replace'."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace",
+        arguments={},  # Empty args should fail with helpful error
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert len(errors) == 1
+    error_event = errors[0]
+    # The error should reference 'file_editor' (the resolved name), not 'str_replace'
+    # since str_replace is an alias for file_editor
+    assert "file_editor" in error_event.error
+    assert "Cannot infer" in error_event.error
+    # Should NOT show str_replace in error message since it resolved to file_editor
+    assert "for tool 'str_replace'" not in error_event.error

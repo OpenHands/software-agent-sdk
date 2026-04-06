@@ -311,10 +311,11 @@ def normalize_tool_call(
             and not _has_file_editor_hint(normalized_arguments)
         ):
             raise ValueError(
-                f"Cannot infer 'command' for tool '{tool_name}' from empty arguments "
-                f"{normalized_arguments!r}. Expected one of: str_replace, insert, "
-                f"create, view with appropriate arguments (e.g., old_str for "
-                f"str_replace, path for view)."
+                f"Cannot infer 'command' for tool '{normalized_tool_name}' "
+                f"from empty arguments {normalized_arguments!r}. "
+                f"Expected one of: str_replace, insert, create, view with "
+                f"appropriate arguments (e.g., old_str for str_replace, "
+                f"path for view)."
             )
 
     return normalized_tool_name, normalized_arguments
