@@ -22,7 +22,7 @@ jobs:
                   echo "✅ Version format is valid: ${{ inputs.version }}"
 
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   token: ${{ secrets.PAT_TOKEN }}
 

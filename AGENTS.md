@@ -108,6 +108,8 @@ When reviewing code, provide constructive feedback:
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
 - AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
+- `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
+- Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
 
 
 ## Package-specific guidance
