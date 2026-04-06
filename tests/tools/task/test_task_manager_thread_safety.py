@@ -1,31 +1,33 @@
-"""Thread-safety tests for TaskManager.
+"""Thread-safety tests for TaskManager under parallel tool execution.
 
-These tests verify that TaskManager is safe under concurrent access.
-Currently they FAIL because TaskManager has no locking — proving
-that _generate_ids, _create_task, and _evict_task are not thread-safe.
+These tests verify that guarantee by routing concurrent ``_create_task``
+calls through the real ``ParallelToolExecutor`` and the real
+``TaskTool.declared_resources()``.  A threading barrier inside
+``_generate_ids`` forces all threads to read ``len(_tasks)`` at the same
+instant, maximising the window for races.
 
-Fix TaskManager with proper synchronization, then these tests will pass.
+If the internal locking in TaskManager is removed or broken, these tests
+will fail with duplicate task IDs and lost dict updates.
 """
 
 import threading
-import uuid
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.subagent.registry import (
-    _reset_registry_for_tests,
-)
+from openhands.sdk.conversation.resource_lock_manager import ResourceLockManager
+from openhands.sdk.subagent.registry import _reset_registry_for_tests
+from openhands.sdk.tool import ToolDefinition
 from openhands.tools.preset import register_builtins_agents
-from openhands.tools.task.manager import (
-    Task,
-    TaskManager,
-    TaskStatus,
-)
+from openhands.tools.task.definition import TaskAction, TaskTool
+from openhands.tools.task.impl import TaskExecutor
+from openhands.tools.task.manager import TaskManager
 
 
 def _make_llm() -> LLM:
@@ -47,114 +49,109 @@ def _make_parent_conversation(tmp_path: Path) -> LocalConversation:
     )
 
 
-def _manager_with_parent(tmp_path: Path) -> tuple[TaskManager, LocalConversation]:
+def _make_action_event(call_id: str) -> Any:
+    """Create a mock ActionEvent carrying a real TaskAction."""
+    ae = MagicMock()
+    ae.tool_name = TaskTool.name
+    ae.tool_call_id = call_id
+    ae.action = TaskAction(prompt=f"do something ({call_id})")
+    return ae
+
+
+@pytest.fixture(autouse=True)
+def _register_agents():
+    _reset_registry_for_tests()
+    register_builtins_agents()
+    yield
+    _reset_registry_for_tests()
+
+
+NUM_CALLS = 10
+
+
+def _run_concurrent_create_tasks(
+    tmp_path: Path,
+) -> tuple[TaskManager, list[str]]:
+    """Run NUM_CALLS concurrent _create_task calls through
+    ParallelToolExecutor using the real TaskTool.
+
+    A barrier inside _generate_ids forces threads to hit
+    len(_tasks) simultaneously, stressing the lock.
+    """
     manager = TaskManager()
     parent = _make_parent_conversation(tmp_path)
     manager._ensure_parent(parent)
-    return manager, parent
+
+    mock_conversation = MagicMock(spec=LocalConversation)
+    mock_conversation.state.confirmation_policy = MagicMock()
+
+    created_ids: list[str] = []
+    id_lock = threading.Lock()
+
+    barrier = threading.Barrier(NUM_CALLS, timeout=10)
+    original_generate_ids = manager._generate_ids
+
+    def racy_generate_ids():
+        try:
+            barrier.wait(timeout=0.5)
+        except threading.BrokenBarrierError:
+            pass
+        return original_generate_ids()
+
+    task_executor = TaskExecutor(manager=manager)
+    task_tools = TaskTool.create(executor=task_executor, description="test")
+    task_tool = task_tools[0]
+    tools: dict[str, ToolDefinition] = {TaskTool.name: task_tool}
+
+    action_events = [_make_action_event(f"call_{i}") for i in range(NUM_CALLS)]
+
+    def tool_runner(ae: Any) -> list[Any]:
+        with (
+            patch.object(manager, "_get_conversation", return_value=mock_conversation),
+            patch.object(manager, "_generate_ids", side_effect=racy_generate_ids),
+        ):
+            task = manager._create_task(
+                subagent_type="default",
+                description=f"task from {ae.tool_call_id}",
+            )
+            with id_lock:
+                created_ids.append(task.id)
+        return [MagicMock()]
+
+    executor = ParallelToolExecutor(
+        max_workers=NUM_CALLS,
+        lock_manager=ResourceLockManager(),
+    )
+    executor.execute_batch(action_events, tool_runner, tools)
+
+    return manager, created_ids
 
 
-def _make_task(task_id: str, **kwargs) -> Task:
-    """Create a Task bypassing pydantic validation (allows mock conversation)."""
-    defaults = {
-        "id": task_id,
-        "status": TaskStatus.RUNNING,
-        "conversation_id": uuid.uuid4(),
-        "result": None,
-        "error": None,
-        "conversation": None,
-    }
-    defaults.update(kwargs)
-    return Task.model_construct(**defaults)
+def test_concurrent_task_ids_are_unique(tmp_path: Path):
+    """Concurrent _create_task calls must each produce a unique task ID.
+
+    Without _tasks_lock, threads would read the same len(_tasks) and
+    generate duplicate IDs like 'task_00000001' for every thread.
+    """
+    _, created_ids = _run_concurrent_create_tasks(tmp_path)
+
+    unique_ids = set(created_ids)
+    assert len(unique_ids) == NUM_CALLS, (
+        f"Duplicate task IDs: got {len(unique_ids)} unique "
+        f"out of {NUM_CALLS}. IDs: {created_ids}"
+    )
 
 
-class TestGenerateIdsThreadSafety:
-    def test_concurrent_generate_ids_are_unique(self, tmp_path: Path):
-        """All concurrently generated task IDs must be unique."""
-        manager, _ = _manager_with_parent(tmp_path)
-        num_threads = 20
-        barrier = threading.Barrier(num_threads)
-        results: list[str] = []
-        lock = threading.Lock()
+def test_concurrent_tasks_all_preserved_in_dict(tmp_path: Path):
+    """Concurrent _create_task calls must all survive in the _tasks dict.
 
-        def generate():
-            barrier.wait(timeout=5)
-            task_id, _ = manager._generate_ids()
-            with lock:
-                results.append(task_id)
+    Without _tasks_lock, two threads generating the same ID would
+    silently overwrite each other, losing tasks.
+    """
+    manager, _ = _run_concurrent_create_tasks(tmp_path)
 
-        threads = [threading.Thread(target=generate) for _ in range(num_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        assert len(results) == num_threads
-        unique_ids = set(results)
-        assert len(unique_ids) == num_threads, (
-            f"Duplicate task IDs generated: got {len(unique_ids)} unique "
-            f"out of {num_threads}. IDs: {results}"
-        )
-
-
-class TestCreateTaskThreadSafety:
-    @pytest.fixture(autouse=True)
-    def _register_agents(self):
-        _reset_registry_for_tests()
-        register_builtins_agents()
-        yield
-        _reset_registry_for_tests()
-
-    def test_concurrent_create_tasks_all_preserved(self, tmp_path: Path):
-        """All concurrently created tasks must be preserved in the dict
-        with unique IDs — no lost updates, no overwrites."""
-        manager, _ = _manager_with_parent(tmp_path)
-        num_threads = 10
-        barrier = threading.Barrier(num_threads)
-        errors: list[Exception] = []
-        created_tasks: list[Task] = []
-        lock = threading.Lock()
-
-        mock_conversation = MagicMock(spec=LocalConversation)
-        mock_conversation.state.confirmation_policy = MagicMock()
-
-        def create_task_thread():
-            try:
-                barrier.wait(timeout=5)
-                with patch.object(
-                    manager, "_get_conversation", return_value=mock_conversation
-                ):
-                    task = manager._create_task(
-                        subagent_type="default",
-                        description="test task",
-                    )
-                    with lock:
-                        created_tasks.append(task)
-            except Exception as e:
-                with lock:
-                    errors.append(e)
-
-        threads = [
-            threading.Thread(target=create_task_thread) for _ in range(num_threads)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-
-        assert not errors, f"Unexpected errors: {errors}"
-        assert len(created_tasks) == num_threads
-
-        # Every task must have a unique ID
-        task_ids = [t.id for t in created_tasks]
-        unique_ids = set(task_ids)
-        assert len(unique_ids) == num_threads, (
-            f"Duplicate task IDs: got {len(unique_ids)} unique "
-            f"out of {num_threads}. IDs: {task_ids}"
-        )
-
-        # Every task must be in the dict — no lost updates
-        assert len(manager._tasks) == num_threads, (
-            f"Lost updates: only {len(manager._tasks)} tasks in dict, "
-            f"expected {num_threads}"
-        )
+    assert len(manager._tasks) == NUM_CALLS, (
+        f"Lost updates: only {len(manager._tasks)} tasks in dict, "
+        f"expected {NUM_CALLS}. "
+        f"Keys: {list(manager._tasks.keys())}"
+    )
