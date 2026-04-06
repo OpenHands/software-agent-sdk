@@ -1651,10 +1651,16 @@ class TestSafeRmtree:
 class TestAutoTitle:
     """Tests for AutoTitleSubscriber."""
 
-    def _make_service(self, title: str | None = None) -> AsyncMock:
+    _GENERATE_TITLE_PATH = (
+        "openhands.agent_server.conversation_service.generate_title_from_message"
+    )
+
+    def _make_service(
+        self, title: str | None = None, llm_model: str = "gpt-4o"
+    ) -> AsyncMock:
         stored = StoredConversation(
             id=uuid4(),
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model=llm_model, usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1663,22 +1669,30 @@ class TestAutoTitle:
         )
         service = AsyncMock(spec=EventService)
         service.stored = stored
+
+        mock_conversation = MagicMock()
+        mock_conversation.agent.llm = stored.agent.llm
+        service._conversation = mock_conversation
         return service
 
-    def _user_message_event(self) -> MessageEvent:
-        return MessageEvent(id="evt-1", source="user", llm_message=Message(role="user"))
+    def _user_message_event(self, text: str = "Fix the login bug") -> MessageEvent:
+        from openhands.sdk.llm.message import TextContent
+
+        return MessageEvent(
+            id="evt-1",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text=text)]),
+        )
 
     @pytest.mark.asyncio
     async def test_autotitle_sets_title_on_first_user_message(self):
         """Title is generated and saved when the first user message arrives."""
         service = self._make_service()
-        service.generate_title.return_value = "✨ Generated Title"
 
-        subscriber = AutoTitleSubscriber(service=service)
-        await subscriber(self._user_message_event())
-
-        # Allow the background task to complete
-        await asyncio.sleep(0)
+        with patch(self._GENERATE_TITLE_PATH, return_value="✨ Generated Title"):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
 
         assert service.stored.title == "✨ Generated Title"
         service.save_meta.assert_called_once()
@@ -1704,8 +1718,6 @@ class TestAutoTitle:
         )
 
         await asyncio.sleep(0)
-
-        service.generate_title.assert_not_called()
         assert service.stored.title is None
 
     @pytest.mark.asyncio
@@ -1714,23 +1726,83 @@ class TestAutoTitle:
         service = self._make_service(title="Existing Title")
         subscriber = AutoTitleSubscriber(service=service)
 
-        await subscriber(self._user_message_event())
-        await asyncio.sleep(0)
+        with patch(self._GENERATE_TITLE_PATH) as mock_generate_title:
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
+            mock_generate_title.assert_not_called()
 
-        service.generate_title.assert_not_called()
         assert service.stored.title == "Existing Title"
 
     @pytest.mark.asyncio
     async def test_autotitle_handles_generate_title_failure(self):
         """A failed title generation is logged as a warning and not re-raised."""
         service = self._make_service()
-        service.generate_title.side_effect = Exception("LLM unavailable")
 
-        subscriber = AutoTitleSubscriber(service=service)
-        # Should not raise
-        await subscriber(self._user_message_event())
-        await asyncio.sleep(0)
+        with patch(self._GENERATE_TITLE_PATH, side_effect=Exception("LLM unavailable")):
+            subscriber = AutoTitleSubscriber(service=service)
+            # Should not raise
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
 
         # Title remains unset; save_meta was never called
         assert service.stored.title is None
         service.save_meta.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_empty_message(self):
+        """No title generation if the user message has no text content."""
+        service = self._make_service()
+        event = MessageEvent(
+            id="evt-1", source="user", llm_message=Message(role="user")
+        )
+
+        with patch(self._GENERATE_TITLE_PATH) as mock_generate_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(event)
+            await asyncio.sleep(0)
+            mock_generate_title.assert_not_called()
+
+        assert service.stored.title is None
+
+    @pytest.mark.asyncio
+    async def test_autotitle_falls_back_for_acp_managed_llm(self):
+        """ACP-managed agents should skip LLM title generation and fall back."""
+        service = self._make_service(llm_model="acp-managed")
+        subscriber = AutoTitleSubscriber(service=service)
+
+        await subscriber(self._user_message_event("Fix the login bug"))
+        await asyncio.sleep(0)
+
+        assert service.stored.title == "Fix the login bug"
+        service.save_meta.assert_called_once()
+
+
+class TestACPActivityHeartbeatWiring:
+    """Tests for _setup_acp_activity_heartbeat in EventService."""
+
+    def test_acp_agent_gets_on_activity_wired(self):
+        """_setup_acp_activity_heartbeat should set _on_activity on ACPAgent."""
+        from openhands.agent_server.event_service import EventService
+        from openhands.agent_server.server_details_router import (
+            update_last_execution_time,
+        )
+
+        service = AsyncMock(spec=EventService)
+        # Call the real method
+        agent = ACPAgent(acp_command=["echo", "test"])
+        assert agent._on_activity is None
+
+        EventService._setup_acp_activity_heartbeat(service, agent)
+
+        assert agent._on_activity is update_last_execution_time
+
+    def test_non_acp_agent_unchanged(self):
+        """_setup_acp_activity_heartbeat is a no-op for non-ACP agents."""
+        from openhands.agent_server.event_service import EventService
+
+        service = AsyncMock(spec=EventService)
+        agent = Agent(llm=LLM(model="test-model"))
+
+        # Should not raise and should not set any attribute
+        EventService._setup_acp_activity_heartbeat(service, agent)
+        assert not hasattr(agent, "_on_activity")

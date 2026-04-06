@@ -88,6 +88,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "qwen3.6-plus": {
+        "id": "qwen3.6-plus",
+        "display_name": "Qwen3.6 Plus",
+        "llm_config": {
+            "model": "litellm_proxy/dashscope/qwen3.6-plus",
+            "temperature": 0.0,
+        },
+    },
     "claude-4.5-opus": {
         "id": "claude-4.5-opus",
         "display_name": "Claude 4.5 Opus",
