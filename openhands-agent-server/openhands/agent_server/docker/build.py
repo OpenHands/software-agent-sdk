@@ -36,7 +36,15 @@ from openhands.sdk.workspace import PlatformType, TargetType
 
 logger = get_logger(__name__)
 
-VALID_TARGETS = {"binary", "binary-minimal", "source", "source-minimal"}
+VALID_TARGETS = {
+    "binary",
+    "binary-minimal",
+    "source",
+    "source-minimal",
+    "base-image-minimal",
+    "base-image",
+    "builder",
+}
 _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
 _BUILDKIT_INLINE_DONE_RE = re.compile(
@@ -341,7 +349,7 @@ _DEFAULT_PACKAGE_VERSION = _package_version()
 class BuildOptions(BaseModel):
     # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
     # with Python 3.13. See issue #1886 for details.
-    base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22")
+    base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22-slim")
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
     )
@@ -730,11 +738,18 @@ def build_with_telemetry(opts: BuildOptions) -> BuildResult:
 
     telemetry = BuildTelemetry()
     build_context_started = time.monotonic()
-    ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
+    # Base-image targets don't need SDK source (no COPY from build context),
+    # so use an empty temp dir instead of running the expensive uv build --sdist.
+    is_base_only = opts.target in ("base-image-minimal", "base-image")
+    if is_base_only:
+        ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
+        shutil.copy2(dockerfile_path, ctx / "Dockerfile")
+    else:
+        ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
     telemetry.build_context_seconds = _round_seconds(
         time.monotonic() - build_context_started
     )
-    logger.info(f"[build] Clean build context: {ctx}")
+    logger.info(f"[build] {'Empty' if is_base_only else 'Clean'} build context: {ctx}")
 
     args = [
         "docker",
@@ -900,7 +915,7 @@ def main(argv: list[str]) -> int:
         "--base-image",
         # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
         # with Python 3.13. See issue #1886.
-        default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22"),
+        default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22-slim"),
         help="Base image to use (default from $BASE_IMAGE).",
     )
     parser.add_argument(

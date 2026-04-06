@@ -10,6 +10,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import griffe
 
@@ -29,10 +30,12 @@ def _load_prod_module():
 
 _prod = _load_prod_module()
 PackageConfig = _prod.PackageConfig
+DeprecatedSymbols = _prod.DeprecatedSymbols
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
+_was_deprecated = _prod._was_deprecated
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
 
 # Reusable test config matching the _write_pkg_init helper
@@ -473,6 +476,44 @@ def test_is_field_metadata_only_change_deprecated_bool_only():
     assert _is_field_metadata_only_change(old, new) is True
 
 
+def test_is_field_metadata_only_change_added_deprecated_kwarg():
+    """Adding deprecated metadata should still be treated as metadata-only."""
+    old = "Field(default=False, description='old description')"
+    new = "Field(default=False, deprecated=True, description='new description')"
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_json_schema_extra_dict():
+    """Adding json_schema_extra with a dict value is metadata-only."""
+    old = "Field(default='claude-sonnet-4-20250514', description='Model name.')"
+    new = (
+        "Field(default='claude-sonnet-4-20250514', description='Model name.', "
+        "json_schema_extra={'openhands_settings': "
+        "{'label': None, 'prominence': 'critical', 'depends_on': []}})"
+    )
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_json_schema_extra_function_call():
+    """Adding json_schema_extra with a function call value is metadata-only."""
+    old = "Field(default=None, description='API key.')"
+    new = (
+        "Field(default=None, description='API key.', "
+        "json_schema_extra=field_meta(SettingProminence.CRITICAL, label='API Key'))"
+    )
+    assert _is_field_metadata_only_change(old, new) is True
+
+
+def test_is_field_metadata_only_change_json_schema_extra_with_real_change():
+    """json_schema_extra + real default change is NOT metadata-only."""
+    old = "Field(default='old-model', description='Model name.')"
+    new = (
+        "Field(default='new-model', description='Model name.', "
+        "json_schema_extra={'key': 'value'})"
+    )
+    assert _is_field_metadata_only_change(old, new) is False
+
+
 def test_field_deprecated_change_is_not_breaking(tmp_path):
     """Field deprecated metadata changes should not count as breaking changes."""
     old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
@@ -492,6 +533,43 @@ def test_field_deprecated_change_is_not_breaking(tmp_path):
         + "\nfrom pydantic import BaseModel, Field\n\n"
         + "class Config(BaseModel):\n"
         + "    enabled: bool = Field(default=False, deprecated=True)\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+    )
+    assert total_breaks == 0
+    assert undeprecated == 0
+
+
+def test_field_added_deprecated_kwarg_is_not_breaking(tmp_path):
+    """Adding deprecated metadata should not count as a breaking change."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(default=False, description='Old description')\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    enabled: bool = Field(\n"
+        + "        default=False,\n"
+        + "        deprecated=True,\n"
+        + "        description='New description',\n"
+        + "    )\n"
     )
 
     old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
@@ -537,4 +615,135 @@ def test_field_description_change_is_not_breaking(tmp_path):
     )
     # Field description changes should NOT count as breaking
     assert total_breaks == 0
+    assert undeprecated == 0
+
+
+def test_field_json_schema_extra_dict_is_not_breaking(tmp_path):
+    """Adding json_schema_extra with a dict value should not be breaking."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(\n"
+        + "        default='claude-sonnet-4-20250514',\n"
+        + "        description='Model name.',\n"
+        + "    )\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(\n"
+        + "        default='claude-sonnet-4-20250514',\n"
+        + "        description='Model name.',\n"
+        + "        json_schema_extra={\n"
+        + "            'settings': {\n"
+        + "                'label': None,\n"
+        + "                'prominence': 'critical',\n"
+        + "            }\n"
+        + "        },\n"
+        + "    )\n"
+    )
+
+    old_root = griffe.load(
+        "openhands.sdk",
+        search_paths=[str(tmp_path / "old")],
+    )
+    new_root = griffe.load(
+        "openhands.sdk",
+        search_paths=[str(tmp_path / "new")],
+    )
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+    )
+    assert total_breaks == 0
+    assert undeprecated == 0
+
+
+# -- _was_deprecated unit tests --
+
+
+def test_was_deprecated_direct_qualified_match():
+    """Direct 'ClassName.member' match in deprecated.qualified."""
+    cls = SimpleNamespace(name="Agent", resolved_bases=[])
+    dep = DeprecatedSymbols(qualified={"Agent.system_message"}, top_level=set())
+    assert _was_deprecated(cls, "system_message", dep) is True
+
+
+def test_was_deprecated_top_level_match():
+    """If the class itself is in deprecated.top_level, all members count."""
+    cls = SimpleNamespace(name="OldClass", resolved_bases=[])
+    dep = DeprecatedSymbols(qualified=set(), top_level={"OldClass"})
+    assert _was_deprecated(cls, "anything", dep) is True
+
+
+def test_was_deprecated_via_parent_class():
+    """Deprecated on a parent class is found via resolved_bases walk."""
+    base = SimpleNamespace(name="AgentBase")
+    cls = SimpleNamespace(name="Agent", resolved_bases=[base])
+    dep = DeprecatedSymbols(qualified={"AgentBase.system_message"}, top_level=set())
+    assert _was_deprecated(cls, "system_message", dep) is True
+
+
+def test_was_deprecated_returns_false_for_undeprecated():
+    """Genuinely undeprecated removal returns False."""
+    base = SimpleNamespace(name="AgentBase")
+    cls = SimpleNamespace(name="Agent", resolved_bases=[base])
+    dep = DeprecatedSymbols(qualified=set(), top_level=set())
+    assert _was_deprecated(cls, "some_method", dep) is False
+
+
+def test_was_deprecated_parent_different_member():
+    """Parent deprecates a different member — should return False."""
+    base = SimpleNamespace(name="AgentBase")
+    cls = SimpleNamespace(name="Agent", resolved_bases=[base])
+    dep = DeprecatedSymbols(qualified={"AgentBase.other_prop"}, top_level=set())
+    assert _was_deprecated(cls, "system_message", dep) is False
+
+
+# -- _was_deprecated integration via _compute_breakages --
+
+
+def test_subclass_member_deprecated_on_base_is_not_undeprecated(tmp_path):
+    """Member deprecated on base class but removed from subclass."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Child"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Child"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\n\nclass Base:\n"
+        + "    @deprecated(deprecated_in='1.0', removed_in='2.0')\n"
+        + "    def old_method(self) -> int:\n"
+        + "        return 1\n"
+        + "\n\nclass Child(Base):\n"
+        + "    def old_method(self) -> int:\n"
+        + "        return 2\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\n\nclass Base:\n"
+        + "    pass\n"
+        + "\n\nclass Child(Base):\n"
+        + "    pass\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(old_root, new_root, _SDK_CFG)
+    assert total_breaks > 0
+    # The removal should NOT be flagged as undeprecated because
+    # Base.old_method carried a @deprecated marker
     assert undeprecated == 0

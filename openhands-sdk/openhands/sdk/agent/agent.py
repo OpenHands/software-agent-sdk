@@ -1,11 +1,17 @@
-import json
+from __future__ import annotations
 
-from pydantic import ValidationError, model_validator
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from pydantic import PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
@@ -22,6 +28,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Event,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -57,6 +64,11 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
@@ -67,9 +79,154 @@ from openhands.sdk.tool.builtins import (
 logger = get_logger(__name__)
 maybe_init_laminar()
 
+
+def _tool_has_summary_param(tool: ToolDefinition) -> bool:
+    """Return True if the tool's own schema declares ``summary`` as a parameter.
+
+    Checks both regular tool action_type model_fields and MCP tool inputSchema
+    so that ``_extract_summary`` can avoid popping the field when it belongs
+    to the tool (e.g. Jira's ticket title).
+    """
+    if "summary" in tool.action_type.model_fields:
+        return True
+    if isinstance(tool, MCPToolDefinition):
+        props = tool.mcp_tool.inputSchema.get("properties", {})
+        if "summary" in props:
+            return True
+    return False
+
+
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
+
+
+@dataclass(frozen=True, slots=True)
+class _ActionBatch:
+    """Immutable result of preparing a batch of actions for execution.
+
+    Owns the full lifecycle of a tool-call batch: preparation (truncation,
+    blocked-action partitioning, execution), event emission, and post-batch
+    state transitions. Agent-specific logic (iterative refinement, state
+    mutation) is injected via callables so the batch stays decoupled from
+    the Agent class.
+    """
+
+    action_events: list[ActionEvent]
+    has_finish: bool
+    blocked_reasons: dict[str, str] = field(default_factory=dict)
+    results_by_id: dict[str, list[Event]] = field(default_factory=dict)
+
+    @staticmethod
+    def _truncate_at_finish(
+        action_events: list[ActionEvent],
+    ) -> tuple[list[ActionEvent], bool]:
+        """
+        Return (events[:finish+1], True) or (events, False).
+        Discards and logs any calls after FinishTool.
+        """
+        finish_idx = next(
+            (
+                i
+                for i, ae in enumerate(action_events)
+                if ae.tool_name == FinishTool.name
+            ),
+            None,
+        )
+        if finish_idx is None:
+            return action_events, False
+
+        discarded = action_events[finish_idx + 1 :]
+        if discarded:
+            names = [ae.tool_name for ae in discarded]
+            logger.warning(
+                f"Discarding {len(discarded)} tool call(s) "
+                f"after FinishTool: {', '.join(names)}"
+            )
+        return action_events[: finish_idx + 1], True
+
+    @classmethod
+    def prepare(
+        cls,
+        action_events: list[ActionEvent],
+        state: ConversationState,
+        executor: ParallelToolExecutor,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tools: dict[str, ToolDefinition] | None = None,
+    ) -> _ActionBatch:
+        """Truncate, partition blocked actions, execute the rest, return the batch."""
+        action_events, has_finish = cls._truncate_at_finish(action_events)
+
+        blocked_reasons: dict[str, str] = {}
+        executable: list[ActionEvent] = []
+        for ae in action_events:
+            reason = state.pop_blocked_action(ae.id)
+            if reason is not None:
+                blocked_reasons[ae.id] = reason
+            else:
+                executable.append(ae)
+
+        executed_results = executor.execute_batch(executable, tool_runner, tools)
+        results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+
+        return cls(
+            action_events=action_events,
+            has_finish=has_finish,
+            blocked_reasons=blocked_reasons,
+            results_by_id=results_by_id,
+        )
+
+    def emit(self, on_event: ConversationCallbackType) -> None:
+        """Emit all events in original action order."""
+        for ae in self.action_events:
+            reason = self.blocked_reasons.get(ae.id)
+            if reason is not None:
+                logger.info(f"Action '{ae.tool_name}' blocked by hook: {reason}")
+                on_event(
+                    UserRejectObservation(
+                        action_id=ae.id,
+                        tool_name=ae.tool_name,
+                        tool_call_id=ae.tool_call_id,
+                        rejection_reason=reason,
+                        rejection_source="hook",
+                    )
+                )
+            else:
+                for event in self.results_by_id[ae.id]:
+                    on_event(event)
+
+    def finalize(
+        self,
+        on_event: ConversationCallbackType,
+        check_iterative_refinement: Callable[[ActionEvent], tuple[bool, str | None]],
+        mark_finished: Callable[[], None],
+    ) -> None:
+        """Transition state after FinishTool, or inject iterative-refinement followup.
+
+        Args:
+            on_event: Callback for emitting events.
+            check_iterative_refinement: Returns (should_continue, followup)
+                for a FinishTool action event.
+            mark_finished: Called to set the conversation execution status
+                to FINISHED when the agent is done.
+        """
+        # Nothing to finalise: no FinishTool, or it was blocked by a hook.
+        if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+            return
+
+        should_continue, followup = check_iterative_refinement(self.action_events[-1])
+        if should_continue and followup:
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[TextContent(text=followup)],
+                    ),
+                )
+            )
+        else:
+            mark_finished()
 
 
 class Agent(CriticMixin, AgentBase):
@@ -96,6 +253,16 @@ class Agent(CriticMixin, AgentBase):
         agent = Agent(llm=llm, tools=tools)
         ```
     """
+
+    _parallel_executor: ParallelToolExecutor = PrivateAttr(
+        default_factory=ParallelToolExecutor
+    )
+
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        self._parallel_executor = ParallelToolExecutor(
+            max_workers=self.tool_concurrency_limit
+        )
 
     @model_validator(mode="before")
     @classmethod
@@ -258,9 +425,28 @@ class Agent(CriticMixin, AgentBase):
         conversation: LocalConversation,
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
-    ):
-        for action_event in action_events:
-            self._execute_action_event(conversation, action_event, on_event=on_event)
+    ) -> None:
+        """Prepare a batch, emit results, and handle finish."""
+        state = conversation.state
+        batch = _ActionBatch.prepare(
+            action_events,
+            state=state,
+            executor=self._parallel_executor,
+            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
+        )
+        batch.emit(on_event)
+        batch.finalize(
+            on_event=on_event,
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
+            ),
+            mark_finished=lambda: setattr(
+                state,
+                "execution_status",
+                ConversationExecutionStatus.FINISHED,
+            ),
+        )
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -432,6 +618,33 @@ class Agent(CriticMixin, AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
+        # When the LLM produced no tool call and no user-facing content,
+        # inject corrective feedback so the model knows it must act.
+        # This prevents the monologue stuck-detector from firing when the
+        # model simply forgot to emit a function call (common with Qwen,
+        # which sometimes places tool-call XML inside reasoning_content).
+        if not has_content:
+            logger.warning(
+                "LLM response contained no tool call and no content"
+                " - sending corrective feedback"
+            )
+            nudge = MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[
+                        TextContent(
+                            text=(
+                                "Your last response did not include a "
+                                "function call or a message. Please "
+                                "use a tool to proceed with the task."
+                            )
+                        )
+                    ],
+                ),
+            )
+            on_event(nudge)
+
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> bool:
@@ -513,20 +726,43 @@ class Agent(CriticMixin, AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
-    def _extract_summary(self, tool_name: str, arguments: dict) -> str:
+    def _extract_summary(
+        self,
+        tool_name: str,
+        arguments: dict,
+        tool: ToolDefinition | None = None,
+    ) -> str:
         """Extract and validate the summary field from tool arguments.
 
         Summary field is always requested but optional - if LLM doesn't provide
         it or provides invalid data, we generate a default summary using the
         tool name and arguments.
 
+        When the tool's own schema declares ``summary`` as a real parameter
+        (e.g. Jira's ticket title), the value is **read but not removed** so
+        that ``action_from_arguments`` validation still succeeds.  The tool's
+        own ``summary`` value is reused as the event-level summary because it
+        is usually descriptive (e.g. a Jira ticket title).
+
         Args:
             tool_name: Name of the tool being called
             arguments: Dictionary of tool arguments from LLM
+            tool: The tool definition (used to check if "summary" is a
+                declared parameter of the tool's schema)
 
         Returns:
             The summary string - either from LLM or a default generated one
         """
+        if tool is not None and _tool_has_summary_param(tool):
+            # "summary" belongs to the tool — read it but don't pop it.
+            # Reuse the tool's own value as the event summary (e.g. a Jira
+            # ticket title is a reasonable description of the action).
+            summary = arguments.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+            args_str = json.dumps(arguments)
+            return f"{tool_name}: {args_str}"
+
         summary = arguments.pop("summary", None)
 
         # If valid summary provided by LLM, use it
@@ -585,10 +821,17 @@ class Agent(CriticMixin, AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            # Sanitize raw control characters (U+0000–U+001F) that some
-            # models emit as literal bytes instead of JSON escape sequences.
-            sanitized_args = sanitize_json_control_chars(tool_call.arguments)
-            arguments = json.loads(sanitized_args)
+            # Try parsing arguments as-is first.  Raw newlines / tabs are
+            # legal JSON whitespace and many models emit them between tokens
+            # (e.g. Qwen: "view_range": \n[1, 100]\n).  sanitize_json_
+            # control_chars would escape those to \\n, which breaks parsing.
+            # Fall back to sanitization only when the raw string is invalid
+            # (handles models that emit raw control chars *inside* strings).
+            try:
+                arguments = json.loads(tool_call.arguments)
+            except json.JSONDecodeError:
+                sanitized_args = sanitize_json_control_chars(tool_call.arguments)
+                arguments = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
@@ -602,7 +845,7 @@ class Agent(CriticMixin, AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
-            summary = self._extract_summary(tool.name, arguments)
+            summary = self._extract_summary(tool.name, arguments, tool=tool)
 
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
@@ -659,38 +902,26 @@ class Agent(CriticMixin, AgentBase):
         on_event(action_event)
         return action_event
 
-    @observe(ignore_inputs=["state", "on_event"])
+    @observe()
     def _execute_action_event(
         self,
         conversation: LocalConversation,
         action_event: ActionEvent,
-        on_event: ConversationCallbackType,
-    ):
-        """Execute an action event and update the conversation state.
+    ) -> list[Event]:
+        """Execute a single tool and return the resulting events.
 
-        It will call the tool's executor and update the state & call callback fn
-        with the observation.
+        Called from parallel threads by _execute_actions. This method must
+        not mutate shared conversation state (blocked_actions,
+        execution_status) — those transitions are handled by the caller
+        on the main thread.
 
-        If the action was blocked by a PreToolUse hook (recorded in
-        state.blocked_actions), a UserRejectObservation is emitted instead
-        of executing the action.
+        Note: the tool itself receives ``conversation`` and may mutate it
+        (e.g. filesystem, working directory). Thread safety of individual
+        tools is the tool's responsibility.
+
+        Returns a list of events (observation or error). Events are NOT
+        emitted here — the caller is responsible for emitting them in order.
         """
-        state = conversation.state
-
-        # Check if this action was blocked by a PreToolUse hook
-        reason = state.pop_blocked_action(action_event.id)
-        if reason is not None:
-            logger.info(f"Action '{action_event.tool_name}' blocked by hook: {reason}")
-            rejection = UserRejectObservation(
-                action_id=action_event.id,
-                tool_name=action_event.tool_name,
-                tool_call_id=action_event.tool_call_id,
-                rejection_reason=reason,
-                rejection_source="hook",
-            )
-            on_event(rejection)
-            return rejection
-
         tool = self.tools_map.get(action_event.tool_name, None)
         if tool is None:
             raise RuntimeError(
@@ -720,8 +951,7 @@ class Agent(CriticMixin, AgentBase):
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
             )
-            on_event(error_event)
-            return error_event
+            return [error_event]
 
         obs_event = ObservationEvent(
             observation=observation,
@@ -729,27 +959,7 @@ class Agent(CriticMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
-        on_event(obs_event)
-
-        # Set conversation state
-        if tool.name == FinishTool.name:
-            # Check if iterative refinement should continue
-            should_continue, followup = self._check_iterative_refinement(
-                conversation, action_event
-            )
-            if should_continue and followup:
-                # Send follow-up message and continue agent loop
-                followup_msg = MessageEvent(
-                    source="user",
-                    llm_message=Message(
-                        role="user", content=[TextContent(text=followup)]
-                    ),
-                )
-                on_event(followup_msg)
-                # Don't set FINISHED - let the agent continue
-            else:
-                state.execution_status = ConversationExecutionStatus.FINISHED
-        return obs_event
+        return [obs_event]
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType

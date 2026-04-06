@@ -272,6 +272,27 @@ class EventService:
             timestamp__lt,
         )
 
+    def _get_execution_status_sync(self) -> ConversationExecutionStatus:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        with self._conversation._state as state:
+            return state.execution_status
+
+    async def _get_execution_status(self) -> ConversationExecutionStatus:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_execution_status_sync)
+
+    def _create_state_update_event_sync(self) -> ConversationStateUpdateEvent:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        state = self._conversation._state
+        with state:
+            return ConversationStateUpdateEvent.from_conversation_state(state)
+
+    async def _create_state_update_event(self) -> ConversationStateUpdateEvent:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._create_state_update_event_sync)
+
     def _event_matches_body(self, event: Event, body: str) -> bool:
         """Check if event's message content matches body filter (case-insensitive)."""
         # Import here to avoid circular imports
@@ -311,8 +332,10 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
-            with self._conversation.state as state:
-                run = state.execution_status != ConversationExecutionStatus.RUNNING
+            run = (
+                await self._get_execution_status()
+                != ConversationExecutionStatus.RUNNING
+            )
         if run:
             conversation = self._conversation
 
@@ -333,20 +356,12 @@ class EventService:
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
 
-        # Send current state to the new subscriber immediately
+        # Send current state to the new subscriber immediately.
+        # The snapshot is created in a worker thread so waiting on the
+        # conversation's synchronous FIFOLock cannot block the server event loop.
         if self._conversation:
-            state = self._conversation._state
-            # Create state snapshot while holding the lock to ensure consistency.
-            # ConversationStateUpdateEvent inherits from Event which has frozen=True
-            # in its model_config, making the snapshot immutable after creation.
-            with state:
-                state_update_event = (
-                    ConversationStateUpdateEvent.from_conversation_state(state)
-                )
+            state_update_event = await self._create_state_update_event()
 
-            # Send state update outside the lock - the event is frozen (immutable),
-            # so we don't need to hold the lock during the async send operation.
-            # This prevents potential deadlocks between the sync FIFOLock and async I/O.
             try:
                 await subscriber(state_update_event)
             except Exception as e:
@@ -404,6 +419,28 @@ class EventService:
 
             llm.telemetry.set_log_completions_callback(log_callback)
 
+    def _setup_acp_activity_heartbeat(self, agent: AgentBase) -> None:
+        """Wire ACP activity heartbeat to the idle timer.
+
+        ACP agents delegate to an external subprocess (e.g. gemini-cli,
+        claude-agent-acp).  Tool calls run inside that subprocess and never
+        hit the agent-server's HTTP endpoints, so update_last_execution_time()
+        is never called during conn.prompt().  Without a heartbeat the
+        runtime-api sees growing idle_time and kills the pod (~20 min).
+
+        This method checks if the agent is an ACPAgent and, if so, injects a
+        callback that resets the idle timer whenever the ACP bridge receives
+        a streaming update (throttled to every 30 s by the bridge).
+        """
+        from openhands.sdk.agent import ACPAgent
+
+        if isinstance(agent, ACPAgent):
+            from openhands.agent_server.server_details_router import (
+                update_last_execution_time,
+            )
+
+            agent._on_activity = update_last_execution_time
+
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
 
@@ -457,6 +494,7 @@ class EventService:
             secrets=self.stored.secrets,
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
+            tags=self.stored.tags,
         )
 
         # Set confirmation mode if enabled
@@ -471,6 +509,12 @@ class EventService:
 
         # Setup stats streaming for remote execution
         self._setup_stats_streaming(self._conversation.agent)
+
+        # Wire ACP activity heartbeat so ACP tool calls (which run inside
+        # the subprocess and never hit HTTP endpoints) still reset the
+        # agent-server's idle timer and prevent runtime-api from killing
+        # the pod during long conn.prompt() calls.
+        self._setup_acp_activity_heartbeat(self._conversation.agent)
 
         # If the execution_status was "running" while serialized, then the
         # conversation can't possibly be running - something is wrong
@@ -510,10 +554,11 @@ class EventService:
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
-            # Check if already running
-            with self._conversation._state as state:
-                if state.execution_status == ConversationExecutionStatus.RUNNING:
-                    raise ValueError("conversation_already_running")
+            if (
+                await self._get_execution_status()
+                == ConversationExecutionStatus.RUNNING
+            ):
+                raise ValueError("conversation_already_running")
 
             # Check if there's already a running task
             if self._run_task is not None and not self._run_task.done():
@@ -670,15 +715,7 @@ class EventService:
         if not self._conversation:
             return
 
-        state = self._conversation._state
-        # Create state snapshot while holding the lock to ensure consistency.
-        # ConversationStateUpdateEvent inherits from Event which has frozen=True
-        # in its model_config, making the snapshot immutable after creation.
-        with state:
-            state_update_event = ConversationStateUpdateEvent.from_conversation_state(
-                state
-            )
-        # Publish outside the lock - the event is frozen (immutable).
+        state_update_event = await self._create_state_update_event()
         # Note: _pub_sub iterates through subscribers sequentially. If any subscriber
         # is slow, it will delay subsequent subscribers. For high-throughput scenarios,
         # consider using asyncio.gather() for concurrent notification in the future.

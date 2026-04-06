@@ -95,9 +95,19 @@ The documentation includes:
 
 The `examples/` directory contains comprehensive usage examples:
 
-- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and microagents
+- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and skills
 - **Remote Agent Server** (`examples/02_remote_agent_server/`) - Client-server architecture and WebSocket connections
 - **GitHub Workflows** (`examples/03_github_workflows/`) - CI/CD integration and automated workflows
+
+## Skills for modern package tooling
+
+If you enable public skills with `AgentContext(load_public_skills=True)`, the default
+`OpenHands/extensions` marketplace includes, for example, `uv` and `deno` skills.
+Agents can automatically pick up current package-management guidance for repositories
+that use markers like `uv.lock`, `deno.json`, `deno.jsonc`, or `deno.lock`.
+
+See `examples/01_standalone_sdk/03_activate_skill.py` for a minimal example that
+turns on public skill loading.
 
 ## Contributing
 
@@ -122,3 +132,65 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
       url={https://arxiv.org/abs/2511.03690}, 
 }
 ```
+<hr>
+
+### Thank You to Our Contributors
+
+[![Contributors](https://assets.openhands.dev/readme/openhands-software-agent-sdk-contributors.svg)](https://github.com/OpenHands/software-agent-sdk/graphs/contributors)
+
+<hr>
+
+### Trusted by Engineers at
+
+<div align="center">
+<br/><br/>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/tiktok.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/tiktok.svg" alt="TikTok" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/vmware.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/vmware.svg" alt="VMware" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/roche.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/roche.svg" alt="Roche" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/amazon.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/amazon.svg" alt="Amazon" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/c3-ai.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/c3-ai.svg" alt="C3 AI" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/netflix.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/netflix.svg" alt="Netflix" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/mastercard.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/mastercard.svg" alt="Mastercard" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/red-hat.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/red-hat.svg" alt="Red Hat" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/mongodb.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/mongodb.svg" alt="MongoDB" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/apple.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/apple.svg" alt="Apple" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/nvidia.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/nvidia.svg" alt="NVIDIA" height="17" hspace="5">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://assets.openhands.dev/logos/external/white/google.svg">
+  <img src="https://assets.openhands.dev/logos/external/black/google.svg" alt="Google" height="17" hspace="5">
+</picture>
+</div>
+

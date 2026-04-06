@@ -399,11 +399,17 @@ class TestEventServiceSearchEvents:
     async def test_search_events_timestamp_filter_with_timezone_aware(
         self, event_service, mock_conversation_with_timestamped_events
     ):
-        """Test filtering events with timezone-aware datetime."""
+        """Test filtering events with timezone-aware datetime requires normalization.
+
+        Event timestamps are naive (server local time), so callers must normalize
+        timezone-aware datetimes to naive before filtering. This is done by the
+        REST/WebSocket API layer via normalize_datetime_to_server_timezone().
+        """
         event_service._conversation = mock_conversation_with_timestamped_events
 
-        # Filter events >= 12:00:00 UTC (should return events 3, 4, 5)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        # Filter events >= 12:00:00 (naive, as if normalized by API layer)
+        # The API layer would convert a tz-aware datetime to naive server time
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)  # naive datetime
         result = await event_service.search_events(timestamp__gte=filter_time)
 
         assert len(result.items) == 3
@@ -541,11 +547,16 @@ class TestEventServiceCountEvents:
     async def test_count_events_timestamp_filter_with_timezone_aware(
         self, event_service, mock_conversation_with_timestamped_events
     ):
-        """Test counting events with timezone-aware datetime."""
+        """Test counting events with timezone-aware datetime requires normalization.
+
+        Event timestamps are naive (server local time), so callers must normalize
+        timezone-aware datetimes to naive before filtering. This is done by the
+        REST/WebSocket API layer via normalize_datetime_to_server_timezone().
+        """
         event_service._conversation = mock_conversation_with_timestamped_events
 
-        # Count events >= 12:00:00 UTC (should return 3)
-        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        # Count events >= 12:00:00 (naive, as if normalized by API layer)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)  # naive datetime
         result = await event_service.count_events(timestamp__gte=filter_time)
         assert result == 3
 
@@ -600,6 +611,7 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock()
 
@@ -610,7 +622,7 @@ class TestEventServiceSendMessage:
         with patch("asyncio.get_running_loop") as mock_get_loop:
             mock_loop = MagicMock()
             mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
 
             # Call send_message with default run=True
             await event_service.send_message(message)
@@ -640,7 +652,7 @@ class TestEventServiceSendMessage:
         with patch("asyncio.get_running_loop") as mock_get_loop:
             mock_loop = MagicMock()
             mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
 
             # Call send_message with run=False
             await event_service.send_message(message, run=False)
@@ -664,27 +676,22 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock()
 
         event_service._conversation = conversation
+        event_service._get_execution_status = AsyncMock(
+            return_value=ConversationExecutionStatus.RUNNING
+        )
         message = Message(role="user", content=[])
 
-        # Mock the event loop and executor
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+        # Call send_message with run=True
+        await event_service.send_message(message, run=True)
 
-            # Call send_message with run=True
-            await event_service.send_message(message, run=True)
-
-            # Verify send_message was called via executor
-            mock_loop.run_in_executor.assert_called_once_with(
-                None, conversation.send_message, message
-            )
-            # Verify run was NOT called since agent is already running
-            assert mock_loop.run_in_executor.call_count == 1  # Only send_message call
+        conversation.send_message.assert_called_once_with(message)
+        event_service._get_execution_status.assert_awaited_once()
+        conversation.run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_idle(self, event_service):
@@ -696,6 +703,7 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock()
 
@@ -728,6 +736,7 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock(side_effect=RuntimeError("Test error"))
 
@@ -1500,6 +1509,61 @@ class TestEventServiceConcurrentSubscriptions:
         # (it's released before the await subscriber() call)
         assert not lock_held_during_sleep, (
             "Lock should not be held during async subscriber call"
+        )
+
+    @pytest.mark.asyncio
+    async def test_subscription_snapshot_wait_does_not_block_event_loop(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Creating the initial state snapshot must not stall the async loop.
+
+        A reconnecting WebSocket subscriber takes an initial state snapshot before
+        the subscription starts streaming events. If snapshot creation waits on the
+        conversation's synchronous FIFOLock, it must do so in a worker thread; if
+        it blocks in the async task, the whole server loop stops answering liveness
+        probes.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+
+        original_snapshot = event_service._create_state_update_event_sync
+        release_snapshot = threading.Event()
+        timings: dict[str, float] = {}
+
+        def blocking_snapshot() -> ConversationStateUpdateEvent:
+            timings["snapshot_start"] = time.monotonic()
+            release_snapshot.wait(timeout=1.0)
+            timings["snapshot_end"] = time.monotonic()
+            return original_snapshot()
+
+        event_service._create_state_update_event_sync = blocking_snapshot
+
+        def release_after_delay() -> None:
+            time.sleep(0.2)
+            release_snapshot.set()
+
+        threading.Thread(target=release_after_delay, daemon=True).start()
+
+        class TestSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                return None
+
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.05)
+            timings["heartbeat"] = time.monotonic()
+
+        await asyncio.wait_for(
+            asyncio.gather(
+                event_service.subscribe_to_events(TestSubscriber()),
+                heartbeat(),
+            ),
+            timeout=1.0,
+        )
+
+        assert "snapshot_end" in timings
+        assert "heartbeat" in timings
+        assert timings["heartbeat"] < timings["snapshot_end"], (
+            "subscribe_to_events blocked the async loop while waiting for the "
+            "state snapshot lock"
         )
 
     @pytest.mark.asyncio
