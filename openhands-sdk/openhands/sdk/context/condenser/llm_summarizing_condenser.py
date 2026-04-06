@@ -245,6 +245,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         # to ensure all resource constraints are met.
         events_from_tail = min(suffix_events_to_keep)
 
+        # Ensure we keep at least 1 event from the suffix to avoid edge cases
+        # where naive_end would equal len(view), causing find_next to fail.
+        events_from_tail = max(events_from_tail, 1)
+
         # Calculate naive forgetting end (without considering atomic boundaries)
         naive_end = len(view) - events_from_tail
 

@@ -799,3 +799,40 @@ def test_minimum_progress_threshold_met(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
+
+
+def test_condense_with_small_view_and_request_reason(mock_llm: LLM) -> None:
+    """Test condensation when REQUEST reason is triggered with a small view.
+
+    This tests the edge case where the view is so small that the calculation
+    of suffix_events_to_keep would result in 0 or negative values. The condenser
+    should handle this gracefully by ensuring at least 1 event is kept in the suffix.
+
+    Reproduces issue #2703 where Nemotron model failed with
+    NoCondensationAvailableException when condensation was triggered with
+    only a few events in the view.
+    """
+    # Use default keep_first=2 and small max_size to trigger the edge case
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Set up mock response
+    cast(Any, mock_llm).set_mock_response_content("Summary of forgotten events")
+
+    # Create a view with 5 events - when condensation is requested:
+    # target_size = 5 // 2 = 2
+    # suffix_events_to_keep = 2 - 2 - 1 = -1 -> clamped to 1
+    events: list[Event] = [message_event(f"Event {i}") for i in range(5)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Verify REQUEST reason is triggered
+    reasons = condenser.get_condensation_reasons(view)
+    assert Reason.REQUEST in reasons
+
+    # This should not raise NoCondensationAvailableException
+    result = condenser.condense(view)
+
+    # Should return a valid condensation
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary of forgotten events"
+    assert len(result.forgotten_event_ids) > 0
