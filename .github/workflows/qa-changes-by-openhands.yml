@@ -46,7 +46,7 @@ jobs:
                   llm-base-url: https://llm-proxy.app.all-hands.dev
                   max-budget: '10.0'
                   timeout-minutes: '30'
-                  max-iterations: '200'
+                  max-iterations: '500'
                   # EXPERIMENTAL: use the feature branch of extensions
                   extensions-version: feat/qa-changes-plugin
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
