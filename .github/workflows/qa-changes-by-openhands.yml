@@ -1,0 +1,53 @@
+---
+# EXPERIMENTAL: Automated QA validation of PR changes using OpenHands.
+#
+# Unlike pr-review (which reads diffs and posts code-review comments),
+# this workflow actually runs the code — setting up the environment,
+# executing tests, exercising changed behavior, and posting a structured
+# QA report as a PR comment.
+#
+# This is an early experiment; expect rough edges.  The plugin source is
+# pinned to the extensions feature branch while we iterate.
+name: "QA Changes by OpenHands [experimental]"
+
+on:
+    pull_request:
+        types: [opened, ready_for_review, labeled, review_requested]
+
+permissions:
+    contents: read
+    pull-requests: write
+    issues: write
+
+jobs:
+    qa-changes:
+        # Only run for same-repo PRs (secrets aren't available for forks).
+        # Trigger conditions mirror pr-review, but use the 'qa-this' label
+        # and openhands-agent reviewer request.
+        if: |
+            github.event.pull_request.head.repo.full_name == github.repository && (
+                (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
+                (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
+                github.event.label.name == 'qa-this' ||
+                github.event.requested_reviewer.login == 'openhands-agent' ||
+                github.event.requested_reviewer.login == 'all-hands-bot'
+            )
+        concurrency:
+            group: qa-changes-${{ github.event.pull_request.number }}
+            cancel-in-progress: true
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        steps:
+            - name: Run QA Changes
+              # EXPERIMENTAL: pointing at feature branch while iterating
+              uses: OpenHands/extensions/plugins/qa-changes@feat/qa-changes-plugin
+              with:
+                  llm-model: litellm_proxy/claude-sonnet-4-5-20250929
+                  llm-base-url: https://llm-proxy.app.all-hands.dev
+                  max-budget: '10.0'
+                  timeout-minutes: '30'
+                  max-iterations: '200'
+                  # EXPERIMENTAL: use the feature branch of extensions
+                  extensions-version: feat/qa-changes-plugin
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.PAT_TOKEN }}
