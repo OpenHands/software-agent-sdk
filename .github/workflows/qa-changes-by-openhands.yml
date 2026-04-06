@@ -8,7 +8,7 @@
 #
 # This is an early experiment; expect rough edges.  The plugin source is
 # pinned to the extensions feature branch while we iterate.
-name: "QA Changes by OpenHands [experimental]"
+name: QA Changes by OpenHands [experimental]
 
 on:
     pull_request:
