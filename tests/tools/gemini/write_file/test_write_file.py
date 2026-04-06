@@ -1,5 +1,7 @@
 """Tests for write_file tool."""
 
+from pathlib import Path
+
 from openhands.tools.gemini.write_file.definition import WriteFileAction, WriteFileTool
 from openhands.tools.gemini.write_file.impl import WriteFileExecutor
 
@@ -93,9 +95,9 @@ def test_write_file_empty_content(tmp_path):
     assert (tmp_path / "empty.txt").read_text() == ""
 
 
-def test_declared_resources_locks_on_file_path(tmp_path):
+def test_declared_resources_locks_on_file_path(fake_conv_state):
     """declared_resources returns a file-path key for per-file locking."""
-    tool = WriteFileTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    tool = WriteFileTool.create(conv_state=fake_conv_state)[0]
     action = WriteFileAction(file_path="/a/b.py", content="x")
     resources = tool.declared_resources(action)
     assert resources.declared is True
@@ -104,17 +106,19 @@ def test_declared_resources_locks_on_file_path(tmp_path):
     assert resources.keys[0].endswith("b.py")
 
 
-def test_declared_resources_different_files_different_keys(tmp_path):
+def test_declared_resources_different_files_different_keys(fake_conv_state):
     """Different file paths produce different resource keys."""
-    tool = WriteFileTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    tool = WriteFileTool.create(conv_state=fake_conv_state)[0]
     a = tool.declared_resources(WriteFileAction(file_path="/a.py", content="x"))
     b = tool.declared_resources(WriteFileAction(file_path="/b.py", content="x"))
     assert a.keys != b.keys
 
 
-def _fake_conv_state(tmp_path):
-    from unittest.mock import MagicMock
-
-    cs = MagicMock()
-    cs.workspace.working_dir = str(tmp_path)
-    return cs
+def test_declared_resources_relative_path_resolves_against_workspace(fake_conv_state):
+    """Relative paths must resolve against workspace_root, not process CWD."""
+    tool = WriteFileTool.create(conv_state=fake_conv_state)[0]
+    workspace = fake_conv_state.workspace.working_dir
+    resources = tool.declared_resources(
+        WriteFileAction(file_path="src/foo.py", content="x")
+    )
+    assert resources.keys[0] == f"file:{Path(workspace) / 'src' / 'foo.py'}"

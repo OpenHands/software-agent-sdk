@@ -115,8 +115,10 @@ class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
         Reads of different files run in parallel.
         """
         assert isinstance(action, ReadFileAction)
-        normalized_path = Path(action.file_path).resolve()
-        return DeclaredResources(keys=(f"file:{normalized_path}",), declared=True)
+        path = Path(action.file_path)
+        if not path.is_absolute() and self.meta:
+            path = Path(self.meta["workspace_root"]) / path
+        return DeclaredResources(keys=(f"file:{path.resolve()}",), declared=True)
 
     @classmethod
     def create(
@@ -152,6 +154,7 @@ class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
                     openWorldHint=False,
                 ),
                 executor=executor,
+                meta={"workspace_root": working_dir},
             )
         ]
 
