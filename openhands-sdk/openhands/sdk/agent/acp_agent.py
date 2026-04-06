@@ -24,6 +24,7 @@ from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 
 from acp.client.connection import ClientSideConnection
+from acp.exceptions import RequestError as ACPRequestError
 from acp.helpers import text_block
 from acp.schema import (
     AgentMessageChunk,
@@ -85,6 +86,13 @@ _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 # Exception types that indicate transient connection issues worth retrying
 _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
 
+# JSON-RPC error codes from the ACP server that are transient and worth
+# retrying.  These map to server-side failures (HTTP 500 equivalents) where
+# the session state is still valid but the request failed.
+# -32603 = "Internal error" (JSON-RPC spec) — covers ACP server crashes,
+#          upstream model 500s, and transient infrastructure errors.
+_RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
+
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
 # carry large tool-call outputs (e.g. file contents, test results).  When
@@ -95,6 +103,11 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # JSON-RPC payloads; the long-term fix is protocol-level chunking/streaming
 # for large tool output.
 _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
+
+# Minimum interval between on_activity heartbeat signals (seconds).
+# Throttled to avoid excessive calls while still keeping the idle timer
+# well below the ~20 min runtime-api kill threshold.
+_ACTIVITY_SIGNAL_INTERVAL: float = 30.0
 
 
 def _make_dummy_llm() -> LLM:
@@ -280,6 +293,11 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
+        # Activity heartbeat — called (throttled) during session_update to
+        # signal that the ACP subprocess is still actively working.  Set by
+        # ACPAgent.step() to keep the agent-server's idle timer alive.
+        self.on_activity: Any = None  # Callable[[], None] | None
+        self._last_activity_signal: float = float("-inf")
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._last_cost_by_session: dict[str, float] = {}
@@ -299,10 +317,11 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
         self.on_token = None
+        self.on_activity = None
         self._turn_usage_updates.clear()
         self._usage_received.clear()
-        # Note: telemetry state (_last_cost, _context_window, etc.)
-        # is intentionally NOT cleared — it accumulates across turns.
+        # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
+        # etc.) is intentionally NOT cleared — it accumulates across turns.
 
     def prepare_usage_sync(self, session_id: str) -> asyncio.Event:
         """Prepare per-turn UsageUpdate synchronization for a session."""
@@ -346,6 +365,7 @@ class _OpenHandsACPBridge:
                         self.on_token(text)
                     except Exception:
                         logger.debug("on_token callback failed", exc_info=True)
+            self._maybe_signal_activity()
         elif isinstance(update, AgentThoughtChunk):
             if isinstance(update.content, TextContentBlock):
                 self.accumulated_thoughts.append(update.content.text)
@@ -370,6 +390,7 @@ class _OpenHandsACPBridge:
                 }
             )
             logger.debug("ACP tool call start: %s", update.tool_call_id)
+            self._maybe_signal_activity()
         elif isinstance(update, ToolCallProgress):
             # Find the existing tool call entry and merge updates
             for tc in self.accumulated_tool_calls:
@@ -388,8 +409,30 @@ class _OpenHandsACPBridge:
                         tc["content"] = _serialize_tool_content(update.content)
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
+            self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def _maybe_signal_activity(self) -> None:
+        """Signal activity to the agent-server's idle tracker (throttled).
+
+        During conn.prompt(), ACP tool calls run inside the subprocess and
+        never hit the agent-server's HTTP endpoints.  Without this heartbeat
+        the server's idle_time grows unboundedly and the runtime-api kills
+        the pod (default idle threshold ~20 min).
+
+        Throttled to at most once per _ACTIVITY_SIGNAL_INTERVAL seconds to
+        avoid excessive overhead on chatty ACP servers.
+        """
+        if self.on_activity is None:
+            return
+        now = time.monotonic()
+        if now - self._last_activity_signal >= _ACTIVITY_SIGNAL_INTERVAL:
+            self._last_activity_signal = now
+            try:
+                self.on_activity()
+            except Exception:
+                logger.debug("on_activity callback failed", exc_info=True)
 
     async def request_permission(
         self,
@@ -494,7 +537,7 @@ class ACPAgent(AgentBase):
         ...,
         description=(
             "Command to start the ACP server, e.g."
-            " ['npx', '-y', '@zed-industries/claude-agent-acp']"
+            " ['npx', '-y', '@agentclientprotocol/claude-agent-acp']"
         ),
     )
     acp_args: list[str] = Field(
@@ -530,6 +573,16 @@ class ACPAgent(AgentBase):
         ),
     )
 
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        # Propagate the actual model name to metrics so that cost/token
+        # entries are attributed to the real model, not the sentinel
+        # "acp-managed" placeholder.
+        if self.acp_model:
+            self.llm.metrics.model_name = self.acp_model
+            if self.llm.metrics.accumulated_token_usage is not None:
+                self.llm.metrics.accumulated_token_usage.model = self.acp_model
+
     # Private runtime state
     _executor: Any = PrivateAttr(default=None)
     _conn: Any = PrivateAttr(default=None)  # ClientSideConnection
@@ -545,6 +598,9 @@ class ACPAgent(AgentBase):
     _agent_version: str = PrivateAttr(
         default=""
     )  # ACP server version from InitializeResponse
+    # Callback to signal that the ACP subprocess is actively working.
+    # Injected by the agent-server to call update_last_execution_time().
+    _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
 
     # -- Helpers -----------------------------------------------------------
 
@@ -857,6 +913,7 @@ class ACPAgent(AgentBase):
         # Reset client accumulators
         self._client.reset()
         self._client.on_token = on_token
+        self._client.on_activity = self._on_activity
 
         t0 = time.monotonic()
         try:
@@ -911,6 +968,31 @@ class ACPAgent(AgentBase):
                             attempt + 1,
                             max_retries + 1,
                             delay,
+                            e,
+                        )
+                        time.sleep(delay)
+                        self._client.reset()
+                        self._client.on_token = on_token
+                    else:
+                        raise
+                except ACPRequestError as e:
+                    # Retry transient server errors (e.g. "Internal Server
+                    # Error" from Gemini).  These are JSON-RPC -32603 errors
+                    # that indicate a server-side failure, not a client bug.
+                    if (
+                        e.code in _RETRIABLE_SERVER_ERROR_CODES
+                        and attempt < max_retries
+                    ):
+                        delay = _ACP_PROMPT_RETRY_DELAYS[
+                            min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
+                        ]
+                        logger.warning(
+                            "ACP prompt failed with server error (attempt %d/%d), "
+                            "retrying in %.0fs: [%d] %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            delay,
+                            e.code,
                             e,
                         )
                         time.sleep(delay)

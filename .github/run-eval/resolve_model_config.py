@@ -88,6 +88,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "qwen3.6-plus": {
+        "id": "qwen3.6-plus",
+        "display_name": "Qwen3.6 Plus",
+        "llm_config": {
+            "model": "litellm_proxy/dashscope/qwen3.6-plus",
+            "temperature": 0.0,
+        },
+    },
     "claude-4.5-opus": {
         "id": "claude-4.5-opus",
         "display_name": "Claude 4.5 Opus",
@@ -263,6 +271,14 @@ MODELS = {
         "display_name": "NVIDIA Nemotron-3 Super 120B",
         "llm_config": {
             "model": "litellm_proxy/nvidia/nemotron-3-super-120b-a12b",
+            "temperature": 0.0,
+        },
+    },
+    "converse-nemotron-super-3-120b": {
+        "id": "converse-nemotron-super-3-120b",
+        "display_name": "NVIDIA Converse Nemotron Super 3 120B",
+        "llm_config": {
+            "model": "litellm_proxy/converse-nemotron-super-3-120b",
             "temperature": 0.0,
         },
     },

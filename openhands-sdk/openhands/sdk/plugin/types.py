@@ -67,6 +67,48 @@ class PluginSource(BaseModel):
             )
         return v
 
+    @property
+    def source_url(self) -> str | None:
+        """Convert the plugin source to a canonical URL.
+
+        Converts the 'github:' convenience prefix to a full URL.
+        For sources that are already URLs, returns them directly.
+        Local paths return None (not portable).
+
+        Returns:
+            URL string, or None for local paths.
+
+        Examples:
+            >>> PluginSource(source="github:owner/repo").source_url
+            'https://github.com/owner/repo'
+
+            >>> PluginSource(source="github:owner/repo", ref="v1.0").source_url
+            'https://github.com/owner/repo/tree/v1.0'
+
+            >>> PluginSource(source="https://github.com/owner/repo").source_url
+            'https://github.com/owner/repo'
+
+            >>> PluginSource(source="/local/path").source_url
+            None
+        """
+        # Handle github: shorthand - the only convenience prefix we support
+        if self.source.startswith("github:"):
+            repo_part = self.source[7:]  # Remove 'github:' prefix
+            base_url = f"https://github.com/{repo_part}"
+            if self.ref or self.repo_path:
+                ref = self.ref or "main"
+                if self.repo_path:
+                    return f"{base_url}/tree/{ref}/{self.repo_path}"
+                return f"{base_url}/tree/{ref}"
+            return base_url
+
+        # Already a URL - return as-is
+        if self.source.startswith(("https://", "http://", "git@", "git://")):
+            return self.source
+
+        # Local paths - not portable, return None
+        return None
+
 
 class ResolvedPluginSource(BaseModel):
     """A plugin source with resolved ref (pinned to commit SHA).
