@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -13,7 +13,11 @@ from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTags,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -31,7 +35,6 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -160,6 +163,14 @@ class ConversationState(OpenHandsModel):
         description="Registry for handling secrets and sensitive data",
     )
 
+    # User-defined tags (key-value metadata)
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description="User-defined key-value tags for the conversation. "
+        "Keys must be lowercase alphanumeric. Values are arbitrary strings "
+        "up to 256 characters.",
+    )
+
     # Agent-specific runtime state (simple dict for flexibility)
     agent_state: dict[str, Any] = Field(
         default_factory=dict,
@@ -194,29 +205,6 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
-
-    @model_validator(mode="before")
-    @classmethod
-    def _handle_legacy_fields(cls, data: Any) -> Any:
-        """Handle legacy field names for backward compatibility."""
-        if not isinstance(data, dict):
-            return data
-
-        # Handle legacy 'secrets_manager' field name
-        if "secrets_manager" in data:
-            warn_deprecated(
-                "ConversationState.secrets_manager",
-                deprecated_in="1.12.0",
-                removed_in="1.15.0",
-                details=(
-                    "The 'secrets_manager' field has been renamed to "
-                    "'secret_registry'. Please update your code to use "
-                    "'secret_registry' instead."
-                ),
-                stacklevel=4,
-            )
-            data["secret_registry"] = data.pop("secrets_manager")
-        return data
 
     @property
     def events(self) -> EventLog:
@@ -269,6 +257,7 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -296,6 +285,8 @@ class ConversationState(OpenHandsModel):
                     persisted state. If provided, secrets are encrypted when
                     saving and decrypted when loading. If not provided, secrets
                     are redacted (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
 
         Returns:
             ConversationState ready for use
@@ -365,6 +356,7 @@ class ConversationState(OpenHandsModel):
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
+            tags=tags or {},
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)

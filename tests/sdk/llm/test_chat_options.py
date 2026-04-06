@@ -14,7 +14,6 @@ class DummyLLM:
     extra_headers: dict[str, str] | None = None
     reasoning_effort: str | None = None
     extended_thinking_budget: int | None = None
-    safety_settings: list[dict[str, Any]] | None = None
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
@@ -58,6 +57,18 @@ def test_gpt5_uses_reasoning_effort_and_strips_temp_top_p():
     assert "anthropic-beta" not in headers
     assert "temperature" not in out
     assert "top_p" not in out
+
+
+def test_kimi_k2_thinking_does_not_send_reasoning_effort():
+    llm = DummyLLM(
+        model="litellm_proxy/moonshot/kimi-k2-thinking",
+        temperature=1.0,
+        reasoning_effort="high",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+    assert out.get("temperature") == 1.0
 
 
 def test_gemini_2_5_pro_without_reasoning_effort_preserves_temp_and_top_p():
