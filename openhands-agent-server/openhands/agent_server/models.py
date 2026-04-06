@@ -171,6 +171,15 @@ class _StartConversationRequestBase(BaseModel):
             "the first user message using the conversation's LLM."
         ),
     )
+    mcp_server_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "List of server-level MCP server IDs to attach to this conversation. "
+            "These reference MCP servers previously registered via the "
+            "POST /api/mcp endpoint. Their configurations are merged into the "
+            "agent's mcp_config at conversation start."
+        ),
+    )
 
 
 class StartConversationRequest(_StartConversationRequestBase):
@@ -513,3 +522,73 @@ class BashEventSortOrder(Enum):
 class BashEventPage(OpenHandsModel):
     items: list[BashEventBase]
     next_page_id: str | None = None
+
+
+# ── MCP Server Management Models ──
+
+
+class MCPServerStatus(str, Enum):
+    """Status of a registered MCP server."""
+
+    ACTIVE = "active"
+    ERROR = "error"
+
+
+class CreateMCPServerRequest(BaseModel):
+    """Payload to register a new server-level MCP server."""
+
+    id: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9_-]+$",
+        description=(
+            "Human-readable identifier for the MCP server. "
+            "Must be alphanumeric with hyphens/underscores."
+        ),
+    )
+    config: dict[str, Any] = Field(
+        ...,
+        description=(
+            "MCP server configuration. Must be a valid MCPConfig dict with an "
+            "'mcpServers' key mapping server names to their configurations. "
+            "Example: {'mcpServers': {'fetch': {'command': 'uvx', "
+            "'args': ['mcp-server-fetch']}}}"
+        ),
+    )
+
+
+class UpdateMCPServerRequest(BaseModel):
+    """Payload to update an existing MCP server configuration."""
+
+    config: dict[str, Any] = Field(
+        ...,
+        description=(
+            "Updated MCP server configuration. Same format as CreateMCPServerRequest."
+        ),
+    )
+
+
+class MCPServerToolInfo(BaseModel):
+    """Information about a tool provided by an MCP server."""
+
+    name: str = Field(description="Tool name")
+    description: str | None = Field(default=None, description="Tool description")
+
+
+class MCPServerInfo(BaseModel):
+    """Information about a registered MCP server."""
+
+    id: str = Field(description="Human-readable MCP server identifier")
+    config: dict[str, Any] = Field(description="MCP server configuration")
+    status: MCPServerStatus = Field(description="Current status of the MCP server")
+    tools: list[MCPServerToolInfo] = Field(
+        default_factory=list,
+        description="Tools discovered from this MCP server",
+    )
+    error: str | None = Field(
+        default=None,
+        description="Error message if the server failed to start",
+    )
+    created_at: datetime = Field(description="When the server was registered")
+    updated_at: datetime = Field(description="When the server was last updated")

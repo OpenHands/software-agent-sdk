@@ -130,7 +130,10 @@ async def batch_get_conversations(
 
 @conversation_router.post(
     "",
-    responses={409: {"description": "Conversation contract mismatch"}},
+    responses={
+        409: {"description": "Conversation contract mismatch"},
+        422: {"description": "Invalid MCP server reference"},
+    },
 )
 async def start_conversation(
     request: Annotated[
@@ -147,6 +150,13 @@ async def start_conversation(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
         ) from e
+    except ValueError as e:
+        if "mcp_server_ids" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(e),
+            ) from e
+        raise
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info
 

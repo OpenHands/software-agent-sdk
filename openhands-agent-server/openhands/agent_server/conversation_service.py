@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.mcp_service import MCPService, get_mcp_service
 from openhands.agent_server.models import (
     ACPConversationInfo,
     ACPConversationPage,
@@ -159,6 +160,7 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
+    mcp_service: MCPService | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -464,20 +466,39 @@ class ConversationService:
                 context=f"conversation {conversation_id}",
             )
 
+        # Merge server-level MCP configs into the agent's mcp_config
+        request_data = request.model_dump(mode="json", context={"expose_secrets": True})
+        if request.mcp_server_ids and self.mcp_service is not None:
+            try:
+                server_mcp_config = self.mcp_service.get_config_for_ids(
+                    request.mcp_server_ids
+                )
+                if server_mcp_config:
+                    # Merge into the agent's existing mcp_config
+                    agent_data = request_data.get("agent", {})
+                    existing_mcp = agent_data.get("mcp_config", {})
+                    existing_servers = existing_mcp.get("mcpServers", {})
+                    new_servers = server_mcp_config.get("mcpServers", {})
+                    merged_servers = {**new_servers, **existing_servers}
+                    agent_data["mcp_config"] = {"mcpServers": merged_servers}
+                    request_data["agent"] = agent_data
+                    logger.info(
+                        "Merged %d server-level MCP server(s) into conversation %s",
+                        len(new_servers),
+                        conversation_id,
+                    )
+            except (KeyError, ValueError) as e:
+                raise ValueError(f"Failed to resolve mcp_server_ids: {e}") from e
+
         # Plugin loading is now handled lazily by LocalConversation.
         # Just pass the plugin specs through to StoredConversation.
         # LocalConversation will:
         # 1. Fetch and load plugins on first run()/send_message()
         # 2. Resolve refs to commit SHAs for deterministic resume
         # 3. Merge plugin skills/MCP/hooks into the agent
-        #
-        # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers)
-        # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
-        # are preserved through the round-trip; the dict is only used in-process to
-        # construct StoredConversation, not sent over the network.
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(mode="json", context={"expose_secrets": True}),
+            **request_data,
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
@@ -747,6 +768,7 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
+            mcp_service=get_mcp_service(),
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:
