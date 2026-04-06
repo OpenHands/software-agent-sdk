@@ -662,19 +662,19 @@ def test_condensation_requirement_returns_hard(
 def test_condense_with_hard_requirement_and_no_condensation_available(
     mock_llm: LLM,
 ) -> None:
-    """Test that condense raises error with hard requirement but no condensation.
+    """Test that condense falls back to view with hard requirement but no condensation.
 
-    When there's a hard requirement but no valid condensation range available
-    (e.g., entire view is a single atomic unit), should raise an exception.
+    When there's a hard requirement but no valid condensation range available,
+    and hard_context_reset also fails, should fall back to returning the
+    uncondensed view instead of raising an exception. This prevents conversations
+    from crashing when condensation cannot be performed.
     """
-    from openhands.sdk.context.condenser.base import NoCondensationAvailableException
-
     condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
     events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
     view = View.from_events(events)
 
     # Mock to return HARD requirement but no events to condense
-    # Also mock hard_context_reset to return None so the exception gets re-raised
+    # Also mock hard_context_reset to return None so it falls back to view
     with (
         patch.object(
             LLMSummarizingCondenser,
@@ -684,8 +684,10 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
         patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
         patch.object(LLMSummarizingCondenser, "hard_context_reset", return_value=None),
     ):
-        with pytest.raises(NoCondensationAvailableException):
-            condenser.condense(view)
+        result = condenser.condense(view)
+        # Should return the view instead of raising an exception
+        assert isinstance(result, View)
+        assert result == view
 
 
 def test_condense_with_soft_requirement_and_no_condensation_available(

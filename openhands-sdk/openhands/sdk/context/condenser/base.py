@@ -171,10 +171,23 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
                         if hard_reset_condensation is not None:
                             return hard_reset_condensation
 
-                    # And if something goes wrong with the hard reset make sure we keep
-                    # both errors in the stack
                     except Exception as hard_reset_exception:
-                        raise hard_reset_exception from e
+                        # Log the hard reset failure but don't crash - fall through
+                        # to return the uncondensed view below
+                        logger.warning(
+                            f"Hard context reset also failed: {hard_reset_exception}. "
+                            f"Falling back to uncondensed view."
+                        )
+
+                    # If we reach here, both condensation and hard reset failed.
+                    # Return the uncondensed view instead of crashing the conversation.
+                    # The condensation request will remain unhandled and may be
+                    # retried on the next agent step.
+                    logger.warning(
+                        f"Condensation unavailable for HARD requirement: {e}. "
+                        "Returning uncondensed view."
+                    )
+                    return view
 
                 # In all other situations re-raise the exception.
                 raise e

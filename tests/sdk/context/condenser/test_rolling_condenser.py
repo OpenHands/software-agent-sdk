@@ -157,12 +157,13 @@ def test_no_condensation_available_exception_message() -> None:
         raise NoCondensationAvailableException(exception_message)
 
 
-def test_default_hard_context_reset_raises_error() -> None:
-    """Test that default hard_context_reset raises NoCondensationAvailableException.
+def test_default_hard_context_reset_falls_back_to_view() -> None:
+    """Test that default hard_context_reset falls back to returning uncondensed view.
 
     When there's a hard requirement but no condensation available, and the default
-    hard_context_reset implementation is used (returns None), the
-    NoCondensationAvailableException should be raised.
+    hard_context_reset implementation is used (returns None), the condenser should
+    fall back to returning the uncondensed view instead of raising an exception.
+    This prevents conversations from crashing when condensation cannot be performed.
     """
     condenser = MockRollingCondenser(
         condensation_requirement_value=CondensationRequirement.HARD,
@@ -176,9 +177,11 @@ def test_default_hard_context_reset_raises_error() -> None:
     ]
     view = View.from_events(events)
 
-    # The default hard_context_reset returns None, so the exception should be raised
-    with pytest.raises(NoCondensationAvailableException):
-        condenser.condense(view)
+    # The default hard_context_reset returns None, so the view should be returned
+    # instead of raising an exception (prevents conversation crashes)
+    result = condenser.condense(view)
+    assert isinstance(result, View)
+    assert result == view
 
 
 class MockRollingCondenserWithHardReset(RollingCondenser):
