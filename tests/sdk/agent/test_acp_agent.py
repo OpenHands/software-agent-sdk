@@ -342,7 +342,7 @@ class TestACPActivityHeartbeat:
         await client.session_update("sess-1", start)
 
         # Reset throttle so ToolCallProgress can fire
-        client._last_activity_signal = 0.0
+        client._last_activity_signal = float("-inf")
         signals.clear()
 
         progress = MagicMock(spec=ToolCallProgress)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, TypeGuard
 
 from litellm import ChatCompletionToolParam, Message as LiteLLMMessage
@@ -70,7 +71,7 @@ class NonNativeToolCallingMixin:
             )
 
         def _all_choices(
-            items: list[Choices | StreamingChoices],
+            items: Sequence[Choices | StreamingChoices],
         ) -> TypeGuard[list[Choices]]:
             return all(isinstance(c, Choices) for c in items)
 
