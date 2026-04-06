@@ -25,7 +25,9 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.defense_in_depth.utils import (
     _extract_content,
+    _extract_exec_segments,
     _extract_exec_content,
+    _has_rm_recursive_force,
     _normalize,
 )
 from openhands.sdk.security.risk import SecurityRisk
@@ -69,15 +71,6 @@ DET_INJECT_IDENTITY = "inject.identity"
 
 DEFAULT_HIGH_PATTERNS: list[tuple[str, str, str]] = [
     # Destructive filesystem operations
-    (
-        r"\brm\b(?:(?![;&|]).){0,120}"
-        r"(?:(?:--recursive\b|-[^\s-]*[rR][^\s]*)"
-        r"(?:(?![;&|]).){0,120}(?:--force\b|-[^\s-]*f[^\s]*)"
-        r"|(?:--force\b|-[^\s-]*f[^\s]*)"
-        r"(?:(?![;&|]).){0,120}(?:--recursive\b|-[^\s-]*[rR][^\s]*))",
-        "Recursive force-delete (rm -rf variants)",
-        DET_EXEC_DESTRUCT_RM_RF,
-    ),
     (r"\bsudo\s+rm\b", "Privileged file deletion", DET_EXEC_DESTRUCT_SUDO_RM),
     (r"\bmkfs\.\w+", "Filesystem format command", DET_EXEC_DESTRUCT_MKFS),
     (r"\bdd\b.{0,100}of=/dev/", "Raw disk write", DET_EXEC_DESTRUCT_DD),
@@ -214,11 +207,17 @@ class PatternSecurityAnalyzer(SecurityAnalyzerBase):
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
         """Evaluate security risk via two-corpus pattern matching."""
+        exec_segments = [_normalize(s) for s in _extract_exec_segments(action)]
         exec_content = _normalize(_extract_exec_content(action))
         all_content = _normalize(_extract_content(action))
 
         if not exec_content and not all_content:
             return SecurityRisk.LOW
+
+        # HIGH: rm recursive+force detection uses token parsing, not regex.
+        if any(_has_rm_recursive_force(seg) for seg in exec_segments):
+            logger.debug("Pattern matched: %s -> HIGH", DET_EXEC_DESTRUCT_RM_RF)
+            return SecurityRisk.HIGH
 
         # HIGH: patterns on executable fields only
         for pattern, _desc, det_id in self._compiled_high:
