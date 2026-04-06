@@ -1,13 +1,13 @@
 ---
-name: QA Changes Evaluation
+name: QA Changes Evaluation [experimental]
 
 # This workflow evaluates how well QA validation performed.
 # It runs when a PR is closed to assess QA effectiveness.
 #
-# Security note: pull_request_target is safe here because:
-# 1. Only triggers on PR close (not on code changes)
-# 2. Does not checkout PR code - only downloads artifacts from trusted workflow runs
-# 3. Runs evaluation scripts from the extensions repo, not from the PR
+# Security note: pull_request_target is safe here because this workflow
+# never checks out or executes PR code. It only:
+# 1. Downloads artifacts produced by a trusted workflow run
+# 2. Runs evaluation scripts from the extensions repo (main/pinned branch)
 
 on:
     pull_request_target:
