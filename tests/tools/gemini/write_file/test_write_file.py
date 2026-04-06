@@ -1,6 +1,6 @@
 """Tests for write_file tool."""
 
-from openhands.tools.gemini.write_file.definition import WriteFileAction
+from openhands.tools.gemini.write_file.definition import WriteFileAction, WriteFileTool
 from openhands.tools.gemini.write_file.impl import WriteFileExecutor
 
 
@@ -91,3 +91,30 @@ def test_write_file_empty_content(tmp_path):
     assert obs.is_new_file
     assert (tmp_path / "empty.txt").exists()
     assert (tmp_path / "empty.txt").read_text() == ""
+
+
+def test_declared_resources_locks_on_file_path(tmp_path):
+    """declared_resources returns a file-path key for per-file locking."""
+    tool = WriteFileTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    action = WriteFileAction(file_path="/a/b.py", content="x")
+    resources = tool.declared_resources(action)
+    assert resources.declared is True
+    assert len(resources.keys) == 1
+    assert resources.keys[0].startswith("file:")
+    assert resources.keys[0].endswith("b.py")
+
+
+def test_declared_resources_different_files_different_keys(tmp_path):
+    """Different file paths produce different resource keys."""
+    tool = WriteFileTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    a = tool.declared_resources(WriteFileAction(file_path="/a.py", content="x"))
+    b = tool.declared_resources(WriteFileAction(file_path="/b.py", content="x"))
+    assert a.keys != b.keys
+
+
+def _fake_conv_state(tmp_path):
+    from unittest.mock import MagicMock
+
+    cs = MagicMock()
+    cs.workspace.working_dir = str(tmp_path)
+    return cs

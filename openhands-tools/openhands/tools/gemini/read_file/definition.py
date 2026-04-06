@@ -1,6 +1,7 @@
 """Read file tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -8,6 +9,7 @@ from rich.text import Text
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -106,6 +108,15 @@ MAX_LINES_PER_READ = 1000
 
 class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
     """Tool for reading file contents with pagination support."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        """Lock on the target file path so a read never sees
+        partially-written content from a concurrent write.
+        Reads of different files run in parallel.
+        """
+        assert isinstance(action, ReadFileAction)
+        normalized_path = Path(action.file_path).resolve()
+        return DeclaredResources(keys=(f"file:{normalized_path}",), declared=True)
 
     @classmethod
     def create(

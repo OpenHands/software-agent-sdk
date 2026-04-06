@@ -1,6 +1,6 @@
 """Tests for read_file tool."""
 
-from openhands.tools.gemini.read_file.definition import ReadFileAction
+from openhands.tools.gemini.read_file.definition import ReadFileAction, ReadFileTool
 from openhands.tools.gemini.read_file.impl import ReadFileExecutor
 
 
@@ -108,3 +108,30 @@ def test_read_file_offset_beyond_length(tmp_path):
 
     assert obs.is_error
     assert "beyond" in obs.text.lower()
+
+
+def test_declared_resources_locks_on_file_path(tmp_path):
+    """declared_resources returns a file-path key for per-file locking."""
+    tool = ReadFileTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    action = ReadFileAction(file_path="/a/b.py")
+    resources = tool.declared_resources(action)
+    assert resources.declared is True
+    assert len(resources.keys) == 1
+    assert resources.keys[0].startswith("file:")
+    assert resources.keys[0].endswith("b.py")
+
+
+def test_declared_resources_different_files_different_keys(tmp_path):
+    """Different file paths produce different resource keys."""
+    tool = ReadFileTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    a = tool.declared_resources(ReadFileAction(file_path="/a.py"))
+    b = tool.declared_resources(ReadFileAction(file_path="/b.py"))
+    assert a.keys != b.keys
+
+
+def _fake_conv_state(tmp_path):
+    from unittest.mock import MagicMock
+
+    cs = MagicMock()
+    cs.workspace.working_dir = str(tmp_path)
+    return cs

@@ -1,6 +1,6 @@
 """Tests for edit tool."""
 
-from openhands.tools.gemini.edit.definition import EditAction
+from openhands.tools.gemini.edit.definition import EditAction, EditTool
 from openhands.tools.gemini.edit.impl import EditExecutor
 
 
@@ -148,3 +148,34 @@ def test_edit_multiline_replacement(tmp_path):
     assert not obs.is_error
     assert obs.replacements_made == 1
     assert test_file.read_text() == "def foo():\n    print('new')\n    return 2\n"
+
+
+def test_declared_resources_locks_on_file_path(tmp_path):
+    """declared_resources returns a file-path key for per-file locking."""
+    tool = EditTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    action = EditAction(file_path="/a/b.py", old_string="x", new_string="y")
+    resources = tool.declared_resources(action)
+    assert resources.declared is True
+    assert len(resources.keys) == 1
+    assert resources.keys[0].startswith("file:")
+    assert resources.keys[0].endswith("b.py")
+
+
+def test_declared_resources_different_files_different_keys(tmp_path):
+    """Different file paths produce different resource keys."""
+    tool = EditTool.create(conv_state=_fake_conv_state(tmp_path))[0]
+    a = tool.declared_resources(
+        EditAction(file_path="/a.py", old_string="", new_string="x")
+    )
+    b = tool.declared_resources(
+        EditAction(file_path="/b.py", old_string="", new_string="x")
+    )
+    assert a.keys != b.keys
+
+
+def _fake_conv_state(tmp_path):
+    from unittest.mock import MagicMock
+
+    cs = MagicMock()
+    cs.workspace.working_dir = str(tmp_path)
+    return cs
