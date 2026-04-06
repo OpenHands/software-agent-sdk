@@ -164,6 +164,24 @@ TOOL_NAME_ALIASES: dict[str, str] = {
 # that are useful as read-only defaults when some models emit them as tool names.
 _SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
 
+# Typo normalization for common mistakes in security_risk field
+_SECURITY_RISK_TYPOS = {"security_rort", "securtiy_risk", "security_riks"}
+
+
+def _normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Normalize common typos and inconsistencies in tool arguments."""
+    normalized = arguments.copy()
+
+    # Fix security_risk typos
+    for typo in _SECURITY_RISK_TYPOS:
+        if typo in normalized:
+            normalized["security_risk"] = normalized.pop(typo)
+            break
+
+    # Remove any arguments that are clearly not valid (None values, etc.)
+    # but keep all others to preserve tool-specific arguments
+    return {k: v for k, v in normalized.items() if v is not None}
+
 
 def parse_tool_call_arguments(raw_arguments: str) -> dict[str, Any]:
     """Parse tool call arguments, sanitizing raw control chars only on fallback."""
@@ -173,7 +191,8 @@ def parse_tool_call_arguments(raw_arguments: str) -> dict[str, Any]:
         sanitized_args = sanitize_json_control_chars(raw_arguments)
         parsed = json.loads(sanitized_args)
 
-    return parsed if isinstance(parsed, dict) else {}
+    result = parsed if isinstance(parsed, dict) else {}
+    return _normalize_arguments(result)
 
 
 def _infer_file_editor_command(arguments: dict[str, Any]) -> str | None:
@@ -256,13 +275,14 @@ def normalize_tool_call(
         )
         if terminal_command is not None:
             normalized_tool_name = "terminal"
-            passthrough_arguments = {
+            # Preserve only terminal-relevant arguments (security_risk, summary)
+            # along with the generated command
+            normalized_arguments = {
                 key: value
                 for key, value in normalized_arguments.items()
                 if key in {"security_risk", "summary"}
             }
-            passthrough_arguments["command"] = terminal_command
-            normalized_arguments = passthrough_arguments
+            normalized_arguments["command"] = terminal_command
 
     if normalized_tool_name == "file_editor":
         inferred_command = _infer_file_editor_command(normalized_arguments)

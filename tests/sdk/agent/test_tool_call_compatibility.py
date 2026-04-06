@@ -328,3 +328,51 @@ def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
     assert action_event.action is not None
     assert "grep -RIn" in getattr(action_event.action, "command")
     assert "needle.txt" in observation_event.observation.text
+
+
+def test_security_risk_typo_normalized(tmp_path):
+    """Test that security_risk typos are normalized before validation."""
+    test_file = tmp_path / "hello.txt"
+    test_file.write_text("hello\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="bash",
+        arguments={"command": "cat hello.txt", "security_rort": "LOW"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    observation_event = next(e for e in events if isinstance(e, ObservationEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert "hello" in observation_event.observation.text
+
+
+def test_file_editor_command_inferred_from_old_str(tmp_path):
+    """Test that file_editor command is inferred when old_str is present."""
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace_editor",
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "str_replace"
+    assert test_file.read_text() == "value = 'new'\n"
