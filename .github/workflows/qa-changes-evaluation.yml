@@ -48,12 +48,14 @@ jobs:
                     echo "No trace file found for PR #$PR_NUMBER - skipping evaluation"
                   fi
 
-            # Always checkout main branch for security - cannot test script changes in PRs
+            # EXPERIMENTAL: pinned to feature branch while qa-changes plugin is in development.
+            # Switch to @main (and remove ref:) once the plugin is merged.
             - name: Checkout extensions repository
               if: steps.check-trace.outputs.trace_exists == 'true'
               uses: actions/checkout@v6
               with:
                   repository: OpenHands/extensions
+                  ref: feat/qa-changes-plugin
                   path: extensions
 
             - name: Set up Python
