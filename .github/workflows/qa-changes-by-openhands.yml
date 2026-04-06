@@ -51,3 +51,4 @@ jobs:
                   extensions-version: feat/qa-changes-plugin
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.GITHUB_TOKEN }}
+                  lmnr-api-key: ${{ secrets.LMNR_SKILLS_API_KEY }}
