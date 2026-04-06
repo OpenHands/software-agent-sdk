@@ -25,6 +25,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
@@ -417,7 +418,6 @@ def test_send_message_resets_stuck_to_idle():
 
 def test_execution_status_error_on_max_iterations():
     """Test that status is set to ERROR with clear message when max iterations hit."""
-    from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
     status_during_execution: list[ConversationExecutionStatus] = []
     events_received: list = []
@@ -484,7 +484,6 @@ def test_execution_status_finished_on_final_iteration():
     ERROR when the task completes exactly on the max_iteration_per_run
     boundary.
     """
-    from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
     events_received: list = []
 
