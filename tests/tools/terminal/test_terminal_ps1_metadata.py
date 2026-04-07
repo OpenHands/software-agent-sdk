@@ -1,4 +1,5 @@
 import json
+from unittest.mock import MagicMock
 
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_METADATA_PS1_REGEX,
@@ -9,6 +10,9 @@ from openhands.tools.terminal.definition import (
     TerminalObservation,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
+from openhands.tools.terminal.terminal.terminal_session import (
+    TerminalSession,
+)
 
 
 def test_ps1_metadata_format():
@@ -354,3 +358,39 @@ def test_ps1_metadata_empty_fields():
     assert metadata.hostname == "host"
     assert metadata.working_dir == "dir"
     assert metadata.py_interpreter_path == "path"
+
+
+def test_issue_2416_missing_ps1_metadata_graceful_fallback():
+    """When PS1 markers are missing, _handle_completed_command should
+    return a valid observation instead of crashing with an assertion error.
+
+    This happens when commands produce complex output (TUI rendering,
+    ANSI escape sequences) that corrupts the PS1 markers in the terminal
+    screen buffer.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2416
+    """
+    mock_terminal = MagicMock()
+    mock_terminal.work_dir = "/tmp"
+    mock_terminal.username = None
+
+    session = TerminalSession(terminal=mock_terminal)
+    session._cwd = "/home/user/project"
+    session._initialized = True
+
+    # Simulate terminal output with no PS1 metadata (markers corrupted)
+    terminal_content = (
+        "running 139 tests\n"
+        "test result: ok. 139 passed; 0 failed; 0 ignored\n"
+    )
+
+    obs = session._handle_completed_command(
+        command="cargo test",
+        terminal_content=terminal_content,
+        ps1_matches=[],  # No PS1 metadata found
+    )
+
+    assert isinstance(obs, TerminalObservation)
+    assert obs.exit_code == -1
+    assert "139 passed" in obs.text
+    assert "PS1 metadata" in obs.metadata.suffix
