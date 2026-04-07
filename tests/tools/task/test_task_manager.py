@@ -185,9 +185,7 @@ class TestTaskManager:
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
 
-        task = manager._create_task(
-            subagent_type="general-purpose", description=None, max_turns=None
-        )
+        task = manager._create_task(subagent_type="general-purpose", description=None)
         assert task.id in manager._tasks
         assert isinstance(manager._tasks[task.id].conversation_id, uuid.UUID)
 
@@ -258,9 +256,7 @@ class TestTaskManager:
         register_builtins_agents()
 
         # Create and evict a task (simulating a completed first run)
-        task = manager._create_task(
-            subagent_type="general-purpose", description=None, max_turns=None
-        )
+        task = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = task.id
         original_uuid = task.conversation_id
         manager._evict_task(task)
@@ -566,9 +562,7 @@ class TestStartTask:
         register_builtins_agents()
 
         # Create and evict a task to simulate a prior completed run
-        first = manager._create_task(
-            subagent_type="general-purpose", description=None, max_turns=None
-        )
+        first = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = first.id
         manager._evict_task(first)
 
