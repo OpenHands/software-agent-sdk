@@ -1081,7 +1081,7 @@ def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_
     rather than the output limit. Without capping, this could request output
     that exceeds the context window.
 
-    See: https://github.com/OpenHands/software-agent-sdk/issues/XXX
+    See: https://github.com/OpenHands/software-agent-sdk/pull/2264
     """
     from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
