@@ -13,7 +13,7 @@ from openhands.tools.preset.planning import register_planning_tools
 
 tool_router = APIRouter(prefix="/tools", tags=["Tools"])
 register_default_tools(enable_browser=True)
-register_builtins_agents(cli_mode=False)
+register_builtins_agents(enable_browser=True)
 register_gemini_tools(enable_browser=True)
 register_planning_tools()
 
