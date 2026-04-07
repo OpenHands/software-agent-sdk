@@ -20,7 +20,7 @@ from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import Action, Observation, Tool, ToolExecutor, register_tool
-from openhands.sdk.tool.tool import ToolDefinition
+from openhands.sdk.tool.tool import DeclaredResources, ToolDefinition
 
 
 if TYPE_CHECKING:
@@ -55,6 +55,10 @@ class SlowExecutor(ToolExecutor[SlowAction, SlowObservation]):
 
 class SlowTool(ToolDefinition[SlowAction, SlowObservation]):
     name = "slow_tool"
+
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        # Each invocation is independent — safe to run in parallel.
+        return DeclaredResources(keys=(), declared=True)
 
     @classmethod
     def create(cls, conv_state: "ConversationState | None" = None) -> Sequence[Self]:
