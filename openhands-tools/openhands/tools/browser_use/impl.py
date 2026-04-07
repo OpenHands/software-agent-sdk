@@ -91,6 +91,12 @@ else:
 logger = get_logger(__name__)
 
 DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 300.0
+# After this many consecutive failures, reset the browser session
+# (assumes the browser has crashed or become unrecoverable).
+MAX_CONSECUTIVE_FAILURES = 3
+# Shorter timeout used after a failure to avoid long cascading waits
+# against a dead browser.
+DEGRADED_TIMEOUT_SECONDS = 30.0
 
 
 def _format_browser_operation_error(
@@ -324,6 +330,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._async_executor = AsyncExecutor()
         self._cleanup_initiated = False
         self._action_timeout_seconds = action_timeout_seconds
+        self._consecutive_failures = 0
 
     def __call__(
         self,
@@ -331,20 +338,59 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
+        # Use a shorter timeout after recent failures to avoid long waits
+        # against a potentially dead browser.
+        effective_timeout = (
+            DEGRADED_TIMEOUT_SECONDS
+            if self._consecutive_failures > 0
+            else self._action_timeout_seconds
+        )
+
         try:
-            return self._async_executor.run_async(
+            result = self._async_executor.run_async(
                 self._execute_action,
                 action,
-                timeout=self._action_timeout_seconds,
+                timeout=effective_timeout,
             )
         except builtins.TimeoutError as error:
-            return BrowserObservation.from_text(
-                text=_format_browser_operation_error(
-                    error, timeout_seconds=self._action_timeout_seconds
-                ),
-                is_error=True,
-                full_output_save_dir=self.full_output_save_dir,
+            return self._handle_action_failure(
+                _format_browser_operation_error(
+                    error, timeout_seconds=effective_timeout
+                )
             )
+
+        if result.is_error:
+            return self._handle_action_failure(result.text)
+
+        self._consecutive_failures = 0
+        return result
+
+    def _handle_action_failure(self, error_text: str):
+        """Track consecutive failures and reset the session if needed."""
+        from openhands.tools.browser_use.definition import BrowserObservation
+
+        self._consecutive_failures += 1
+
+        if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.warning(
+                "Browser appears crashed (%d consecutive failures). "
+                "Resetting session for automatic recovery.",
+                self._consecutive_failures,
+            )
+            self._initialized = False
+            self._consecutive_failures = 0
+            error_text = (
+                f"{error_text}\n\n"
+                "The browser session has been reset after multiple consecutive "
+                "failures (possible crash). The browser will be restarted on "
+                "the next action. Please retry your action."
+            )
+
+        return BrowserObservation.from_text(
+            text=error_text,
+            is_error=True,
+            full_output_save_dir=self.full_output_save_dir,
+        )
 
     async def _execute_action(self, action):
         """Execute browser action asynchronously."""
