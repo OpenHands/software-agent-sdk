@@ -1210,17 +1210,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             elif self._model_info is not None:
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
-                    # Guard: if the registry reports max_output_tokens >= the
-                    # context window, requesting that many output tokens would
-                    # leave zero room for input and the provider will reject
-                    # every call. Cap to half the context window so input has
-                    # headroom (e.g. Nemotron 262 144 / 262 144).
+                    # Guard: if max_output_tokens >= the context window,
+                    # requesting that many output tokens would leave zero
+                    # room for input and strict providers (e.g. AWS Bedrock,
+                    # Nemotron 262 144 / 262 144) will reject every call.
+                    # Halve it so input has headroom. We check both
+                    # max_input_tokens and max_tokens since either may
+                    # represent the context window depending on the provider.
+                    context_window = self.max_input_tokens or self._model_info.get(
+                        "max_tokens"
+                    )
                     if (
-                        self.max_input_tokens is not None
+                        context_window is not None
                         and self.max_output_tokens is not None
-                        and self.max_output_tokens >= self.max_input_tokens
+                        and self.max_output_tokens >= context_window
                     ):
-                        capped = self.max_input_tokens // 2
+                        capped = self.max_output_tokens // 2
                         logger.debug(
                             "Capping max_output_tokens from %s to %s "
                             "for %s (max_output_tokens >= context "
@@ -1228,7 +1233,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             self.max_output_tokens,
                             capped,
                             self.model,
-                            self.max_input_tokens,
+                            context_window,
                         )
                         self.max_output_tokens = capped
                 elif isinstance(self._model_info.get("max_tokens"), int):

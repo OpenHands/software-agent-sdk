@@ -1168,8 +1168,8 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
     """max_output_tokens == context window leaves zero input headroom.
 
     Nemotron reports max_output_tokens = max_input_tokens = 262144.
-    Without capping, every LLM call is rejected because the entire context
-    window is reserved for output.
+    Strict providers (e.g. AWS Bedrock) reject every call when
+    max_output_tokens fills the entire context window.
     """
     mock_get_model_info.return_value = {
         "max_output_tokens": 262144,
@@ -1184,6 +1184,30 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
 
     assert llm.max_output_tokens == 262144 // 2
     assert llm.max_input_tokens == 262144
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_equal_to_max_tokens(
+    mock_get_model_info,
+):
+    """max_output_tokens == max_tokens should also be halved.
+
+    Some registries only provide max_tokens (context window) without
+    max_input_tokens. The guard should still fire.
+    """
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 131072,
+        "max_tokens": 131072,
+        "max_input_tokens": None,
+    }
+
+    llm = LLM(
+        model="litellm_proxy/test-model-max-tokens-only",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 131072 // 2
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
