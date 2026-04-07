@@ -123,7 +123,7 @@ class DockerWorkspace(RemoteWorkspace):
     )
     health_check_timeout: float = Field(
         default=120.0,
-        description=("Timeout in seconds to wait for container health check to pass."),
+        description="Timeout in seconds to wait for container health check to pass.",
     )
 
     _container_id: str | None = PrivateAttr(default=None)

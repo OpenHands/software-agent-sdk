@@ -8,11 +8,16 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from openhands.workspace import (
+    ApptainerWorkspace,
+    DockerDevWorkspace,
+    DockerWorkspace,
+)
+
 
 @pytest.fixture
 def mock_docker_workspace():
     """Fixture to create a mocked DockerWorkspace with minimal setup."""
-    from openhands.workspace import DockerWorkspace
 
     with patch("openhands.workspace.docker.workspace.execute_command") as mock_exec:
         # Mock execute_command to return success
@@ -40,7 +45,6 @@ def mock_docker_workspace():
 
 def test_docker_workspace_import():
     """Test that DockerWorkspace can be imported from the new package."""
-    from openhands.workspace import DockerWorkspace
 
     assert DockerWorkspace is not None
     assert hasattr(DockerWorkspace, "__init__")
@@ -49,14 +53,12 @@ def test_docker_workspace_import():
 def test_docker_workspace_inheritance():
     """Test that DockerWorkspace inherits from RemoteWorkspace."""
     from openhands.sdk.workspace import RemoteWorkspace
-    from openhands.workspace import DockerWorkspace
 
     assert issubclass(DockerWorkspace, RemoteWorkspace)
 
 
 def test_docker_dev_workspace_import():
     """Test that DockerDevWorkspace can be imported from the new package."""
-    from openhands.workspace import DockerDevWorkspace
 
     assert DockerDevWorkspace is not None
     assert hasattr(DockerDevWorkspace, "__init__")
@@ -64,7 +66,6 @@ def test_docker_dev_workspace_import():
 
 def test_docker_dev_workspace_inheritance():
     """Test that DockerDevWorkspace inherits from DockerWorkspace."""
-    from openhands.workspace import DockerDevWorkspace, DockerWorkspace
 
     assert issubclass(DockerDevWorkspace, DockerWorkspace)
 
@@ -94,15 +95,12 @@ def test_docker_workspace_no_build_import():
     )
     assert result.stdout.strip() == "0"
 
-    from openhands.workspace import DockerWorkspace
-
     assert "server_image" in DockerWorkspace.model_fields
     assert "base_image" not in DockerWorkspace.model_fields
 
 
 def test_docker_dev_workspace_has_build_fields():
     """Test that DockerDevWorkspace has both base_image and server_image fields."""
-    from openhands.workspace import DockerDevWorkspace
 
     # DockerDevWorkspace should have both fields for flexibility
     assert "server_image" in DockerDevWorkspace.model_fields
@@ -145,7 +143,6 @@ def test_cleanup_with_image_deletion(mock_docker_workspace):
 
 def test_docker_network(mock_docker_workspace):
     """Test that specifying `network` passes the value to Docker."""
-    from openhands.workspace import DockerWorkspace
 
     # We need to mock things that _start_container calls before and after docker run
     with (
@@ -182,14 +179,12 @@ def test_docker_network(mock_docker_workspace):
 
 def test_docker_workspace_health_check_timeout_field_exists():
     """Test that health_check_timeout is a recognised model field."""
-    from openhands.workspace import DockerWorkspace
 
     assert "health_check_timeout" in DockerWorkspace.model_fields
 
 
 def test_docker_workspace_health_check_timeout_default():
     """Test that health_check_timeout defaults to 120.0 seconds."""
-    from openhands.workspace import DockerWorkspace
 
     field = DockerWorkspace.model_fields["health_check_timeout"]
     assert field.default == 120.0
@@ -197,7 +192,6 @@ def test_docker_workspace_health_check_timeout_default():
 
 def test_docker_workspace_health_check_timeout_custom(mock_docker_workspace):
     """Test that a custom health_check_timeout is forwarded to _wait_for_health."""
-    from openhands.workspace import DockerWorkspace
 
     with patch.object(DockerWorkspace, "_wait_for_health") as mock_wait:
         with patch.object(DockerWorkspace, "_start_container"):
@@ -216,7 +210,6 @@ def test_docker_workspace_health_check_timeout_custom(mock_docker_workspace):
 
 def test_docker_workspace_resume_uses_health_check_timeout(mock_docker_workspace):
     """Test that resume() passes health_check_timeout to _wait_for_health."""
-    from openhands.workspace import DockerWorkspace
 
     with patch.object(DockerWorkspace, "_start_container"):
         with patch("openhands.workspace.docker.workspace.execute_command") as mock_exec:
@@ -240,14 +233,12 @@ def test_docker_workspace_resume_uses_health_check_timeout(mock_docker_workspace
 
 def test_apptainer_workspace_health_check_timeout_field_exists():
     """Test that health_check_timeout is a recognised model field."""
-    from openhands.workspace import ApptainerWorkspace
 
     assert "health_check_timeout" in ApptainerWorkspace.model_fields
 
 
 def test_apptainer_workspace_health_check_timeout_default():
     """Test that health_check_timeout defaults to 120.0 seconds."""
-    from openhands.workspace import ApptainerWorkspace
 
     field = ApptainerWorkspace.model_fields["health_check_timeout"]
     assert field.default == 120.0
@@ -255,7 +246,6 @@ def test_apptainer_workspace_health_check_timeout_default():
 
 def test_apptainer_workspace_health_check_timeout_startup_call():
     """Test that model_post_init passes health_check_timeout to _wait_for_health."""
-    from openhands.workspace import ApptainerWorkspace
 
     with (
         patch("openhands.workspace.apptainer.workspace.execute_command") as mock_exec,
