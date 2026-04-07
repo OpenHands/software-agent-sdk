@@ -9,7 +9,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.agent.response_dispatch import LLMResponseType, classify_response
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import ActionEvent, Event, MessageEvent
 from openhands.sdk.llm import (
     LLM,
     LLMResponse,
@@ -186,7 +186,7 @@ def _make_llm_response(message: Message) -> LLMResponse:
 
 def _run_single_step(
     llm_response: LLMResponse,
-) -> tuple[list[MessageEvent], LocalConversation]:
+) -> tuple[list[Event], LocalConversation]:
     """Run one agent step with a canned LLM response."""
     from pydantic import PrivateAttr
 
@@ -207,11 +207,10 @@ def _run_single_step(
     conversation = Conversation(agent=agent)
     conversation._ensure_agent_ready()
 
-    events: list[MessageEvent] = []
+    events: list[Event] = []
 
-    def on_event(e):  # type: ignore[no-untyped-def]
-        if isinstance(e, MessageEvent):
-            events.append(e)
+    def on_event(e: Event) -> None:
+        events.append(e)
 
     agent.step(conversation, on_event=on_event)
     return events, conversation
@@ -221,22 +220,24 @@ def test_content_response_sets_finished():
     """_handle_content_response sets execution status to FINISHED."""
     msg = Message(role="assistant", content=[TextContent(text="Done!")])
     events, convo = _run_single_step(_make_llm_response(msg))
+    msg_events = [e for e in events if isinstance(e, MessageEvent)]
 
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
-    assert len(events) == 1
-    assert events[0].source == "agent"
+    assert len(msg_events) == 1
+    assert msg_events[0].source == "agent"
 
 
 def test_empty_response_sends_nudge():
     """_handle_no_content_response emits agent message + corrective nudge."""
     msg = Message(role="assistant", content=[])
     events, convo = _run_single_step(_make_llm_response(msg))
+    msg_events = [e for e in events if isinstance(e, MessageEvent)]
 
     assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
-    assert len(events) == 2
-    assert events[0].source == "agent"
-    assert events[1].source == "user"
-    nudge_content = events[1].llm_message.content[0]
+    assert len(msg_events) == 2
+    assert msg_events[0].source == "agent"
+    assert msg_events[1].source == "user"
+    nudge_content = msg_events[1].llm_message.content[0]
     assert isinstance(nudge_content, TextContent)
     assert "function call" in nudge_content.text
 
@@ -245,8 +246,30 @@ def test_reasoning_only_sends_nudge():
     """_handle_no_content_response sends corrective nudge for reasoning-only."""
     msg = Message(role="assistant", reasoning_content="Let me think...")
     events, convo = _run_single_step(_make_llm_response(msg))
+    msg_events = [e for e in events if isinstance(e, MessageEvent)]
 
     assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
-    assert len(events) == 2
-    assert events[0].source == "agent"
-    assert events[1].source == "user"
+    assert len(msg_events) == 2
+    assert msg_events[0].source == "agent"
+    assert msg_events[1].source == "user"
+
+
+def test_tool_calls_response_executes_actions():
+    """_handle_tool_calls creates and executes action events."""
+    tool_call = MessageToolCall(
+        id="tc-finish",
+        name="finish",
+        arguments='{"message": "All done"}',
+        origin="completion",
+    )
+    msg = Message(
+        role="assistant",
+        tool_calls=[tool_call],
+        content=[TextContent(text="Finishing up")],
+    )
+    events, convo = _run_single_step(_make_llm_response(msg))
+    action_events = [e for e in events if isinstance(e, ActionEvent)]
+
+    assert len(action_events) == 1
+    assert action_events[0].tool_call_id == "tc-finish"
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED

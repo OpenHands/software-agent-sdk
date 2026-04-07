@@ -196,7 +196,9 @@ class ResponseDispatchMixin:
         thought_content = [c for c in message.content if isinstance(c, TextContent)]
 
         action_events: list[ActionEvent] = []
-        assert message.tool_calls is not None
+        if not message.tool_calls:
+            logger.error("_handle_tool_calls called with no tool_calls")
+            return
         for i, tool_call in enumerate(message.tool_calls):
             action_event = self._get_action_event(
                 tool_call,
