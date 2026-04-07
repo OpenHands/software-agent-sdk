@@ -209,9 +209,24 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         Returns:
             A tuple of (events to forget, summary_offset).
+
+        Raises:
+            ValueError: If the view is too small to condense
+            (e.g., len(view) <= keep_first).
         """
         reasons = self.get_condensation_reasons(view, agent_llm=agent_llm)
         assert reasons != set(), "No condensation reasons found."
+
+        # Check if view is large enough for condensation. We need at least:
+        # - keep_first events at the start
+        # - 1 event in the suffix (to keep)
+        # - 1 event to actually forget
+        # So len(view) must be at least keep_first + 2
+        if len(view) <= self.keep_first:
+            raise ValueError(
+                f"View has {len(view)} events but keep_first={self.keep_first}. "
+                "Not enough events to condense."
+            )
 
         suffix_events_to_keep: set[int] = set()
 

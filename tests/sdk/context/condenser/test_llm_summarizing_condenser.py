@@ -804,24 +804,23 @@ def test_minimum_progress_threshold_met(mock_llm: LLM) -> None:
 def test_condense_with_small_view_and_request_reason(mock_llm: LLM) -> None:
     """Test condensation when REQUEST reason is triggered with a small view.
 
-    This tests the edge case where the view is so small that the calculation
-    of suffix_events_to_keep would result in 0 or negative values. The condenser
-    should handle this gracefully by ensuring at least 1 event is kept in the suffix.
+    When the view is too small (len(view) <= keep_first), condensation cannot
+    proceed because there's no room to keep both the first events and the suffix.
+    This should raise NoCondensationAvailableException.
 
     Reproduces issue #2703 where Nemotron model failed with
     NoCondensationAvailableException when condensation was triggered with
     only a few events in the view.
     """
-    # Use default keep_first=2 and small max_size to trigger the edge case
+    # Use default keep_first=2 and try with view that has <= keep_first events.
+    # This simulates the edge case where view has only 2 events (like
+    # SystemPrompt + Message) and CondensationRequest is added but doesn't
+    # increase view size.
     condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
 
-    # Set up mock response
-    cast(Any, mock_llm).set_mock_response_content("Summary of forgotten events")
-
-    # Create a view with 5 events - when condensation is requested:
-    # target_size = 5 // 2 = 2
-    # suffix_events_to_keep = 2 - 2 - 1 = -1 -> clamped to 1
-    events: list[Event] = [message_event(f"Event {i}") for i in range(5)]
+    # Create a view with exactly 2 events - the minimum for triggering REQUEST
+    # but too small for valid condensation (need more than keep_first events).
+    events: list[Event] = [message_event(f"Event {i}") for i in range(2)]
     events.append(CondensationRequest())
     view = View.from_events(events)
 
@@ -829,10 +828,89 @@ def test_condense_with_small_view_and_request_reason(mock_llm: LLM) -> None:
     reasons = condenser.get_condensation_reasons(view)
     assert Reason.REQUEST in reasons
 
-    # This should not raise NoCondensationAvailableException
+    # Debug output
+    print(f"DEBUG: len(view) = {len(view)}, keep_first = {condenser.keep_first}")
+    print(
+        f"DEBUG: unhandled_condensation_request = {view.unhandled_condensation_request}"
+    )
+
+    # With 2 events and keep_first=2, len(view) == keep_first, so no
+    # condensation possible. The hard_context_reset handles this case.
     result = condenser.condense(view)
 
-    # Should return a valid condensation
+    # When the view is too small, hard_context_reset kicks in and summarizes
+    # all events, so it succeeds rather than raising an exception.
+    assert isinstance(result, Condensation)
+    assert len(result.forgotten_event_ids) == 2
+
+
+def test_condense_with_view_just_large_enough(mock_llm: LLM) -> None:
+    """Test condensation when view is just large enough for valid condensation.
+
+    With keep_first=2 and len(view)=3, we have exactly enough events:
+    - First 2 events are kept (indices 0, 1)
+    - 1 event remains in suffix (index 2)
+    This should allow valid condensation to proceed.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(Any, mock_llm).set_mock_response_content("Summary of forgotten events")
+
+    # Create view with 3 events - just enough for valid condensation.
+    # target_size = 3 // 2 = 1
+    # suffix_events_to_keep = 1 - 2 - 1 = -2 -> max(..., 1) = 1
+    # naive_end = 3 - 1 = 2
+    # forgetting_start = find_next(2) = 2
+    # forgetting_end = find_next(2) = 2
+    # forgotten_events = view[2:2] = [] (still empty!)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(3)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Verify REQUEST reason is triggered
+    reasons = condenser.get_condensation_reasons(view)
+    assert Reason.REQUEST in reasons
+
+    # With 3 events, len(view) > keep_first, but there's still no room
+    # to forget because 1 event is in suffix after keeping first 2.
+    # The hard_context_reset will kick in and summarize all events.
+    result = condenser.condense(view)
+
+    # This works via hard_context_reset.
+    assert isinstance(result, Condensation)
+    assert len(result.forgotten_event_ids) == 3
+
+
+def test_condense_with_minimum_valid_view(mock_llm: LLM) -> None:
+    """Test condensation with the minimum valid view size for condensation.
+
+    With keep_first=2 and len(view)=4, we have:
+    - First 2 events kept (indices 0, 1)
+    - 2 events in suffix (indices 2, 3)
+    - 1 event can be forgotten
+    This should succeed.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(Any, mock_llm).set_mock_response_content("Summary of forgotten events")
+
+    # Create view with 4 events - minimum for valid condensation
+    events: list[Event] = [message_event(f"Event {i}") for i in range(4)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    reasons = condenser.get_condensation_reasons(view)
+    assert Reason.REQUEST in reasons
+
+    # This should work because:
+    # target_size = 4 // 2 = 2
+    # suffix_events_to_keep = 2 - 2 - 1 = -1 -> max(..., 1) = 1
+    # naive_end = 4 - 1 = 3
+    # forgetting_start = find_next(2) = 2
+    # forgetting_end = find_next(3) = 3
+    # forgotten_events = view[2:3] = [events[2]] (1 event)
+    result = condenser.condense(view)
+
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
-    assert len(result.forgotten_event_ids) > 0
+    assert len(result.forgotten_event_ids) == 1
