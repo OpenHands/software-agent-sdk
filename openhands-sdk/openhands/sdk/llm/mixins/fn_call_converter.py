@@ -53,6 +53,8 @@ This is the value for the second parameter
 that can span
 multiple lines
 </parameter>
+<parameter=security_risk>LOW</parameter>
+<parameter=summary>Brief description of action</parameter>
 </function>
 
 <IMPORTANT>

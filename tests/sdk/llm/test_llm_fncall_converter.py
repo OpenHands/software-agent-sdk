@@ -17,6 +17,7 @@ from openhands.sdk.llm.mixins.fn_call_converter import (
     convert_non_fncall_messages_to_fncall_messages,
     convert_tool_call_to_string,
     convert_tools_to_description,
+    system_message_suffix_TEMPLATE,
 )
 
 
@@ -919,3 +920,15 @@ def test_convert_tools_to_description_object_details():
     )
 
     assert result.strip() == expected.strip()
+
+
+def test_system_message_suffix_template_includes_security_risk():
+    """Test that system_message_suffix_TEMPLATE includes security_risk parameter.
+
+    This is a regression test for issue #2740: When using prompt-based tool calling
+    (native_tool_calling=False) with smaller models, the models learn from examples
+    in the prompt. If examples don't include security_risk, the models won't emit
+    it, causing validation errors when LLMSecurityAnalyzer is active.
+    """
+    assert "<parameter=security_risk>" in system_message_suffix_TEMPLATE
+    assert "<parameter=summary>" in system_message_suffix_TEMPLATE
