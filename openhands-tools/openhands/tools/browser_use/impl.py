@@ -375,6 +375,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "Resetting session for automatic recovery.",
                 self._consecutive_failures,
             )
+            # Best-effort cleanup of the old browser process/session.
+            # If the browser truly crashed this will fail fast; if it's
+            # wedged this avoids leaking the process.
+            try:
+                self._async_executor.run_async(self.cleanup, timeout=5.0)
+            except Exception as e:
+                logger.debug("Cleanup during session reset failed (expected if browser crashed): %s", e)
             self._initialized = False
             self._consecutive_failures = 0
             error_text = (
