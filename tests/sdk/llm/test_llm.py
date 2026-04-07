@@ -1167,7 +1167,6 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
 ):
     """max_output_tokens == context window leaves zero input headroom.
 
-    Nemotron reports max_output_tokens = max_input_tokens = 262144.
     Strict providers (e.g. AWS Bedrock) reject every call when
     max_output_tokens fills the entire context window.
     """
@@ -1177,7 +1176,7 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
     }
 
     llm = LLM(
-        model="litellm_proxy/converse-nemotron-super-3-120b",
+        model="litellm_proxy/test-model-equal-windows",
         api_key=SecretStr("test-key"),
         usage_id="test-llm",
     )

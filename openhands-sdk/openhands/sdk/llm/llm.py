@@ -1212,11 +1212,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
                     # Guard: if max_output_tokens >= the context window,
                     # requesting that many output tokens would leave zero
-                    # room for input and strict providers (e.g. AWS Bedrock,
-                    # Nemotron 262 144 / 262 144) will reject every call.
-                    # Halve it so input has headroom. We check both
-                    # max_input_tokens and max_tokens since either may
-                    # represent the context window depending on the provider.
+                    # room for input and strict providers (e.g. AWS Bedrock)
+                    # will reject every call. Halve it so input has
+                    # headroom. We check both max_input_tokens and
+                    # max_tokens since either may represent the context
+                    # window depending on the provider.
                     context_window = self.max_input_tokens or self._model_info.get(
                         "max_tokens"
                     )
