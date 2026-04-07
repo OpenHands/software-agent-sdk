@@ -380,8 +380,7 @@ def test_issue_2416_missing_ps1_metadata_graceful_fallback():
 
     # Simulate terminal output with no PS1 metadata (markers corrupted)
     terminal_content = (
-        "running 139 tests\n"
-        "test result: ok. 139 passed; 0 failed; 0 ignored\n"
+        "running 139 tests\ntest result: ok. 139 passed; 0 failed; 0 ignored\n"
     )
 
     obs = session._handle_completed_command(

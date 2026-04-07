@@ -176,9 +176,7 @@ class TerminalSession(TerminalSessionBase):
                 "Command output may have overwritten the markers "
                 "(e.g., TUI rendering, large output)."
             )
-            metadata = CmdOutputMetadata(
-                exit_code=-1, working_dir=self._cwd
-            )
+            metadata = CmdOutputMetadata(exit_code=-1, working_dir=self._cwd)
             metadata.suffix = (
                 "\n[The command completed but the exit code could not "
                 "be determined. Terminal output may have corrupted the "
