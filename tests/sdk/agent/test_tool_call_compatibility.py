@@ -419,3 +419,22 @@ def test_str_replace_alias_error_message_shows_file_editor(tmp_path):
     assert "Cannot infer" in error_event.error
     # Should NOT show str_replace in error message since it resolved to file_editor
     assert "for tool 'str_replace'" not in error_event.error
+
+
+def test_grep_pattern_with_shell_metacharacters_is_escaped(tmp_path):
+    """Verify shlex.join() prevents shell injection in grep patterns."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="grep",
+        arguments={"pattern": "; rm -rf /", "path": str(tmp_path)},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    # shlex.join() quotes the pattern, preventing shell injection
+    assert "; rm -rf /" in getattr(action_event.action, "command")
