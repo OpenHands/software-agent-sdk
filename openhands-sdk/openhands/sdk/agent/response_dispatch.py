@@ -133,50 +133,49 @@ class ResponseDispatchMixin:
     Expects the host class to satisfy :class:`_AgentProtocol`.
     """
 
-    # -- Declarations for attributes/methods provided by the host class -----
-    # (Same pattern as CriticMixin.critic)
+    # Declared for pyright — the actual implementations live on Agent.
+    if TYPE_CHECKING:
+        critic: CriticBase | None
 
-    critic: CriticBase | None
+        def _get_action_event(
+            self,
+            tool_call: MessageToolCall,
+            conversation: LocalConversation,
+            llm_response_id: str,
+            on_event: ConversationCallbackType,
+            security_analyzer: SecurityAnalyzerBase | None = None,
+            thought: list[TextContent] | None = None,
+            reasoning_content: str | None = None,
+            thinking_blocks: (
+                list[ThinkingBlock | RedactedThinkingBlock] | None
+            ) = None,
+            responses_reasoning_item: ReasoningItemModel | None = None,
+        ) -> ActionEvent | None: ...
 
-    def _get_action_event(
-        self,
-        tool_call: MessageToolCall,
-        conversation: LocalConversation,
-        llm_response_id: str,
-        on_event: ConversationCallbackType,
-        security_analyzer: SecurityAnalyzerBase | None = None,
-        thought: list[TextContent] | None = None,
-        reasoning_content: str | None = None,
-        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
-        responses_reasoning_item: ReasoningItemModel | None = None,
-    ) -> ActionEvent | None: ...
+        def _execute_actions(
+            self,
+            conversation: LocalConversation,
+            action_events: list[ActionEvent],
+            on_event: ConversationCallbackType,
+        ) -> None: ...
 
-    def _execute_actions(
-        self,
-        conversation: LocalConversation,
-        action_events: list[ActionEvent],
-        on_event: ConversationCallbackType,
-    ) -> None: ...
+        def _requires_user_confirmation(
+            self,
+            state: ConversationState,
+            action_events: list[ActionEvent],
+        ) -> bool: ...
 
-    def _requires_user_confirmation(
-        self,
-        state: ConversationState,
-        action_events: list[ActionEvent],
-    ) -> bool: ...
+        def _maybe_emit_vllm_tokens(
+            self,
+            llm_response: LLMResponse,
+            on_event: ConversationCallbackType,
+        ) -> None: ...
 
-    def _maybe_emit_vllm_tokens(
-        self,
-        llm_response: LLMResponse,
-        on_event: ConversationCallbackType,
-    ) -> None: ...
-
-    def _evaluate_with_critic(
-        self,
-        conversation: LocalConversation,
-        event: ActionEvent | MessageEvent,
-    ) -> CriticResult | None: ...
-
-    # -- Handler methods ----------------------------------------------------
+        def _evaluate_with_critic(
+            self,
+            conversation: LocalConversation,
+            event: ActionEvent | MessageEvent,
+        ) -> CriticResult | None: ...
 
     def _handle_tool_calls(
         self,
@@ -196,9 +195,7 @@ class ResponseDispatchMixin:
         thought_content = [c for c in message.content if isinstance(c, TextContent)]
 
         action_events: list[ActionEvent] = []
-        if not message.tool_calls:
-            logger.error("_handle_tool_calls called with no tool_calls")
-            return
+        assert message.tool_calls, "classify_response guarantees tool_calls"
         for i, tool_call in enumerate(message.tool_calls):
             action_event = self._get_action_event(
                 tool_call,
