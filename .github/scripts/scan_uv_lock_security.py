@@ -55,6 +55,16 @@ IGNORED_PATH_PARTS = {
 }
 
 NATIVE_SUFFIXES = {".dll", ".dylib", ".node", ".pyd", ".so"}
+PREFERRED_WHEEL_PATTERNS = (
+    re.compile(r"manylinux.*x86_64.*\.whl$"),
+    re.compile(r"musllinux.*x86_64.*\.whl$"),
+    re.compile(r"manylinux.*aarch64.*\.whl$"),
+    re.compile(r"musllinux.*aarch64.*\.whl$"),
+    re.compile(r"macosx_.*arm64\.whl$"),
+    re.compile(r"macosx_.*x86_64\.whl$"),
+    re.compile(r"win_amd64\.whl$"),
+    re.compile(r"win32\.whl$"),
+)
 MAX_ARTIFACT_DELTA_MEMBERS = 10
 ARTIFACT_PROCESSING_ERRORS = (
     OSError,
@@ -283,6 +293,18 @@ def package_artifacts(package: dict[str, Any]) -> list[Artifact]:
     return artifacts
 
 
+def choose_representative_wheel(wheels: list[Artifact]) -> Artifact | None:
+    if not wheels:
+        return None
+
+    sorted_wheels = sorted(wheels, key=lambda artifact: artifact.filename)
+    for pattern in PREFERRED_WHEEL_PATTERNS:
+        for artifact in sorted_wheels:
+            if pattern.search(artifact.filename):
+                return artifact
+    return sorted_wheels[0]
+
+
 def choose_artifacts(artifacts: list[Artifact]) -> list[Artifact]:
     selected: list[Artifact] = []
     sdist = next((artifact for artifact in artifacts if artifact.kind == "sdist"), None)
@@ -296,8 +318,10 @@ def choose_artifacts(artifacts: list[Artifact]) -> list[Artifact]:
     )
     if universal is not None:
         selected.append(universal)
-    elif len(wheels) == 1:
-        selected.append(wheels[0])
+    else:
+        representative_wheel = choose_representative_wheel(wheels)
+        if representative_wheel is not None:
+            selected.append(representative_wheel)
 
     deduped: list[Artifact] = []
     seen: set[str] = set()
@@ -686,6 +710,21 @@ def render_report(
             ]
         )
 
+        wheel_count = sum(
+            1 for artifact in report.artifacts if artifact.kind == "wheel"
+        )
+        selected_wheel_count = sum(
+            1
+            for inspection in report.inspections
+            if inspection.filename.endswith(".whl")
+        )
+        if wheel_count > selected_wheel_count:
+            lines.append(
+                "- Wheel coverage: inspected a representative wheel only; "
+                "review additional platform wheels manually if the package still "
+                "looks risky"
+            )
+
         newest = latest_upload_time(report.artifacts)
         if newest is not None:
             age = datetime.now(UTC) - newest
@@ -794,6 +833,27 @@ def render_report(
                 lines.extend(f"    - `{hit}`" for hit in hits)
         lines.append("")
 
+    lines.extend(
+        [
+            "## Manual follow-up checklist",
+            "",
+            "- Keep the review static: do not import or execute package code while "
+            "investigating artifacts.",
+            "- Verify the sdist and at least one representative wheel hash against "
+            "the package index metadata.",
+            "- For multi-wheel packages, inspect the sdist plus a representative "
+            "platform wheel for entry points, startup hooks, native binaries, and "
+            "unexpected top-level files.",
+            "- Review old-vs-new artifact deltas and changed source/build files "
+            "for newly introduced suspicious patterns.",
+            "- Check advisory and incident sources (for example `pip-audit`, OSV, "
+            "GitHub advisories/issues, and reputable security reports or web/X "
+            "searches) for compromised-release chatter.",
+            '- Distinguish "this release fixes known vulnerabilities" from '
+            '"this release looks suspicious", and document both conclusions.',
+            "",
+        ]
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 

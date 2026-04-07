@@ -66,6 +66,52 @@ def test_select_packages_detects_dependency_only_change():
     ]
 
 
+def test_choose_artifacts_prefers_representative_platform_wheel():
+    sdist = SCAN_UV_LOCK_SECURITY.Artifact(
+        kind="sdist",
+        filename="demo-1.0.0.tar.gz",
+        url="https://example.com/demo-1.0.0.tar.gz",
+        hash="",
+        size=1,
+        upload_time=datetime.now(UTC),
+    )
+    macos_wheel = SCAN_UV_LOCK_SECURITY.Artifact(
+        kind="wheel",
+        filename="demo-1.0.0-cp313-cp313-macosx_11_0_arm64.whl",
+        url="https://example.com/demo-macos.whl",
+        hash="",
+        size=1,
+        upload_time=datetime.now(UTC),
+    )
+    linux_wheel = SCAN_UV_LOCK_SECURITY.Artifact(
+        kind="wheel",
+        filename=(
+            "demo-1.0.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+        ),
+        url="https://example.com/demo-linux.whl",
+        hash="",
+        size=1,
+        upload_time=datetime.now(UTC),
+    )
+    windows_wheel = SCAN_UV_LOCK_SECURITY.Artifact(
+        kind="wheel",
+        filename="demo-1.0.0-cp313-cp313-win_amd64.whl",
+        url="https://example.com/demo-win.whl",
+        hash="",
+        size=1,
+        upload_time=datetime.now(UTC),
+    )
+
+    selected = SCAN_UV_LOCK_SECURITY.choose_artifacts(
+        [sdist, macos_wheel, linux_wheel, windows_wheel]
+    )
+
+    assert [artifact.filename for artifact in selected] == [
+        "demo-1.0.0.tar.gz",
+        ("demo-1.0.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"),
+    ]
+
+
 def test_inspect_artifact_reads_startup_hooks_and_metadata(tmp_path: Path):
     wheel_path = tmp_path / "demo-1.0.0-py3-none-any.whl"
     write_wheel(
@@ -178,7 +224,15 @@ def test_render_report_includes_dependency_and_artifact_deltas():
                 hash="sha256:abc123",
                 size=42,
                 upload_time=datetime(2026, 3, 1, tzinfo=UTC),
-            )
+            ),
+            SCAN_UV_LOCK_SECURITY.Artifact(
+                kind="wheel",
+                filename="demo-1.0.0-cp313-cp313-win_amd64.whl",
+                url="https://example.com/demo-win.whl",
+                hash="sha256:def456",
+                size=52,
+                upload_time=datetime(2026, 3, 1, tzinfo=UTC),
+            ),
         ],
         lockfile_dependencies=["requests", "urllib3"],
         new_dependencies=["urllib3"],
@@ -222,3 +276,6 @@ def test_render_report_includes_dependency_and_artifact_deltas():
     assert "  - new entry points: `new = demo.cli:main`" in rendered
     assert "  - startup hooks: `demo_startup.pth`" in rendered
     assert "  - metadata Requires-Dist: `requests`, `urllib3`" in rendered
+    assert "- Wheel coverage: inspected a representative wheel only;" in rendered
+    assert "## Manual follow-up checklist" in rendered
+    assert "- Keep the review static: do not import or execute package code" in rendered
