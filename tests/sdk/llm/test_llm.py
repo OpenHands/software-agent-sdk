@@ -1070,6 +1070,31 @@ def test_llm_reset_metrics():
     assert llm.metrics.accumulated_cost == 0.0
 
 
+def test_issue_2459_restore_metrics_syncs_telemetry():
+    """Restore metrics must update telemetry's reference to avoid desync.
+
+    After restore_metrics(), llm.telemetry.metrics must point to the same
+    object as llm.metrics. Otherwise post-resume LLM calls record
+    tokens/cost into a stale metrics object and accounting data is lost.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2459
+    """
+    llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+    )
+
+    # Force telemetry creation (simulates normal init before resume)
+    _ = llm.telemetry
+
+    restored = Metrics(model_name=llm.model)
+    llm.restore_metrics(restored)
+
+    assert llm.metrics is restored
+    assert llm.telemetry.metrics is restored
+    assert llm.telemetry.metrics is llm.metrics
+
+
 # max_output_tokens Capping Tests
 
 
