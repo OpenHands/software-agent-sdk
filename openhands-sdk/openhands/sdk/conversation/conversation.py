@@ -79,6 +79,7 @@ class Conversation:
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
+        tags: dict[str, str] | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -102,6 +103,7 @@ class Conversation:
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
+        tags: dict[str, str] | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -125,6 +127,7 @@ class Conversation:
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
+        tags: dict[str, str] | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -137,6 +140,32 @@ class Conversation:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
                 )
+
+            # Build effective tags by merging multiple sources:
+            # 1. Workspace default tags (automation context)
+            # 2. Auto-generated tags (plugins/skills)
+            # 3. User-provided tags (highest priority)
+            effective_tags: dict[str, str] = {}
+
+            # 1. Start with workspace default tags
+            default_tags = workspace.default_conversation_tags
+            if default_tags:
+                effective_tags.update(default_tags)
+                logger.debug(
+                    f"Merged workspace default tags: {list(default_tags.keys())}"
+                )
+
+            # 2. Auto-generate plugins/skills tag from plugins parameter
+            if plugins:
+                plugin_urls = [p.source_url for p in plugins if p.source_url]
+                if plugin_urls:
+                    effective_tags["plugins"] = ",".join(plugin_urls)
+                    logger.debug(f"Added plugins tag with {len(plugin_urls)} plugin(s)")
+
+            # 3. User-provided tags override everything
+            if tags:
+                effective_tags.update(tags)
+
             return RemoteConversation(
                 agent=agent,
                 plugins=plugins,
@@ -151,6 +180,7 @@ class Conversation:
                 workspace=workspace,
                 secrets=secrets,
                 delete_on_close=delete_on_close,
+                tags=effective_tags if effective_tags else None,
             )
 
         return LocalConversation(
@@ -168,4 +198,5 @@ class Conversation:
             persistence_dir=persistence_dir,
             secrets=secrets,
             delete_on_close=delete_on_close,
+            tags=tags,
         )

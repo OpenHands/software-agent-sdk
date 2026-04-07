@@ -55,7 +55,7 @@ jobs:
             todo-count: ${{ steps.scan.outputs.todo-count }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 0 # Full history for better context
 
@@ -127,10 +127,10 @@ jobs:
             max-parallel: 1 # Process one TODO at a time to avoid conflicts
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 0
-                  token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  token: ${{ secrets.PAT_TOKEN }}
 
             - name: Switch to feature branch with TODO management files
               run: |
@@ -170,7 +170,7 @@ jobs:
                   LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
                   LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
                   GITHUB_REPOSITORY: ${{ github.repository }}
                   TODO_FILE: ${{ matrix.todo.file }}
                   TODO_LINE: ${{ matrix.todo.line }}

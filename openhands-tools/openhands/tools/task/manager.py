@@ -144,7 +144,6 @@ class TaskManager:
         prompt: str,
         subagent_type: str = "default",
         resume: str | None = None,
-        max_turns: int | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
     ) -> Task:
@@ -155,7 +154,6 @@ class TaskManager:
             subagent_type: Type of agent to use.
             resume: Task ID to resume (continues existing conversation).
             description: Short label for the task.
-            max_turns: Maximum number of agent iterations.
             conversation: Parent conversation (set on first call).
 
         Returns:
@@ -173,7 +171,6 @@ class TaskManager:
             task = self._create_task(
                 subagent_type=subagent_type,
                 description=description,
-                max_turns=max_turns,
             )
 
         return self._run_task(
@@ -219,30 +216,23 @@ class TaskManager:
         self,
         subagent_type: str,
         description: str | None,
-        max_turns: int | None,
     ) -> Task:
         """Create a fresh task.
 
         The iteration limit is resolved with the following precedence:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
-        2. ``max_turns`` (explicit caller override)
-        3. Hard-coded default of 500
+        2. The parent conversation's ``max_iteration_per_run``
         """
         task_id, conversation_id = self._generate_ids()
 
         factory = get_agent_factory(subagent_type)
         worker_agent = self._get_sub_agent_from_factory(factory)
 
-        # Priority:
-        # 1. factory.definition.max_iteration_per_run (agent def)
-        # 2. max_turns (caller)
-        # 3. default to 500
-        if factory.definition.max_iteration_per_run:
-            effective_max_iter = factory.definition.max_iteration_per_run
-        elif max_turns:
-            effective_max_iter = max_turns
-        else:
-            effective_max_iter = 500
+        effective_max_iter = (
+            factory.definition.max_iteration_per_run
+            if factory.definition.max_iteration_per_run
+            else self.parent_conversation.max_iteration_per_run
+        )
 
         sub_conversation = self._get_conversation(
             description=description,

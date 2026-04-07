@@ -89,6 +89,10 @@ class ApptainerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to expose additional ports (VSCode, VNC).",
     )
+    enable_gpu: bool = Field(
+        default=False,
+        description="Whether to enable GPU support with --nv.",
+    )
     cache_dir: str | None = Field(
         default=None,
         description=(
@@ -260,6 +264,8 @@ class ApptainerWorkspace(RemoteWorkspace):
             container_opts.append("--fakeroot")
         if self.enable_docker_compat:
             container_opts.append("--compat")
+        if self.enable_gpu:
+            container_opts.append("--nv")
         if self.disable_mount_locations:
             for loc in self.disable_mount_locations:
                 container_opts += [
