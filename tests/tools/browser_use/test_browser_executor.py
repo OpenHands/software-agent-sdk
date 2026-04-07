@@ -330,9 +330,7 @@ def test_issue_2412_action_errors_do_not_trigger_reset(mock_browser_executor):
 
     mock_browser_executor._initialized = True
 
-    error_result = BrowserObservation.from_text(
-        text="Element not found", is_error=True
-    )
+    error_result = BrowserObservation.from_text(text="Element not found", is_error=True)
     with patch.object(
         mock_browser_executor._async_executor,
         "run_async",
