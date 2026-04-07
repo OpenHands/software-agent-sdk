@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Final, TypeVar
 
 
 if TYPE_CHECKING:
@@ -90,13 +90,13 @@ else:
 
 logger = get_logger(__name__)
 
-DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 300.0
+DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS: Final[float] = 300.0
 # After this many consecutive failures, reset the browser session
 # (assumes the browser has crashed or become unrecoverable).
-MAX_CONSECUTIVE_FAILURES = 3
+MAX_CONSECUTIVE_FAILURES: Final[int] = 3
 # Shorter timeout used after a failure to avoid long cascading waits
 # against a dead browser.
-DEGRADED_TIMEOUT_SECONDS = 30.0
+DEGRADED_TIMEOUT_SECONDS: Final[float] = 30.0
 
 
 def _format_browser_operation_error(
@@ -367,8 +367,6 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     def _handle_action_failure(self, error_text: str):
         """Track consecutive failures and reset the session if needed."""
-        from openhands.tools.browser_use.definition import BrowserObservation
-
         self._consecutive_failures += 1
 
         if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
