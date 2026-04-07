@@ -7,7 +7,10 @@ from litellm.exceptions import (
     OpenAIError,
 )
 
-from .types import LLMContextWindowExceedError
+from .types import (
+    LLMContextWindowExceedError,
+    LLMMalformedConversationHistoryError,
+)
 
 
 # Minimal, provider-agnostic context-window detection
@@ -20,6 +23,25 @@ LONG_PROMPT_PATTERNS: list[str] = [
     "context length exceeded",
     "input exceeds the context window",
     "context window exceeds limit",  # Minimax provider
+]
+
+# These indicate malformed tool-use/tool-result history being sent to the
+# provider. They are tracked separately from true context-window errors so the
+# logs and agent control flow can preserve that distinction while still routing
+# into condensation-based recovery.
+MALFORMED_HISTORY_PATTERNS: list[str] = [
+    "tool_use ids were found without `tool_result` blocks immediately after",
+    (
+        "each `tool_use` block must have a corresponding `tool_result` block "
+        "in the next message"
+    ),
+    "each tool_use must have a single result",
+    "found multiple `tool_result` blocks with id:",
+    "unexpected `tool_use_id` found in `tool_result` blocks",
+    (
+        "each `tool_result` block must have a corresponding `tool_use` block "
+        "in the previous message"
+    ),
 ]
 
 
@@ -35,6 +57,17 @@ def is_context_window_exceeded(exception: Exception) -> bool:
 
     s = str(exception).lower()
     return any(p in s for p in LONG_PROMPT_PATTERNS)
+
+
+def looks_like_malformed_conversation_history_error(exception: Exception) -> bool:
+    if isinstance(exception, LLMMalformedConversationHistoryError):
+        return True
+
+    if not isinstance(exception, (BadRequestError, OpenAIError, APIConnectionError)):
+        return False
+
+    s = str(exception).lower()
+    return any(p in s for p in MALFORMED_HISTORY_PATTERNS)
 
 
 AUTH_PATTERNS: list[str] = [
