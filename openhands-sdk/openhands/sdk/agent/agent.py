@@ -856,42 +856,15 @@ class Agent(CriticMixin, AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
+            # Parse and normalize tool call (handles aliasing, terminal fallback,
+            # and argument sanitization)
             arguments = parse_tool_call_arguments(tool_call.arguments)
             tool_name, arguments = normalize_tool_call(
                 requested_tool_name,
                 arguments,
                 self.tools_map.keys(),
             )
-        except ValueError as e:
-            # normalize_tool_call raised ValueError for validation errors (e.g.,
-            # "Cannot infer 'command' for file_editor"). Determine resolved name.
-            from openhands.sdk.agent.utils import TOOL_NAME_ALIASES  # noqa: PLC0415
 
-            resolved_name = TOOL_NAME_ALIASES.get(
-                requested_tool_name, requested_tool_name
-            )
-            if resolved_name not in self.tools_map:
-                resolved_name = requested_tool_name
-
-            display_tool_name = resolved_name
-            err = (
-                f"Error validating args {tool_call.arguments} for tool "
-                f"'{display_tool_name}': {e}"
-            )
-            self._emit_tool_error(
-                error=err,
-                tool_name=display_tool_name,
-                tool_call=tool_call,
-                llm_response_id=llm_response_id,
-                on_event=on_event,
-                thought=thought,
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks,
-                responses_reasoning_item=responses_reasoning_item,
-            )
-            return
-
-        try:
             tool = self.tools_map.get(tool_name, None)
             if tool is None:
                 available = list(self.tools_map.keys())
@@ -930,16 +903,37 @@ class Agent(CriticMixin, AgentBase):
             summary = self._extract_summary(tool.name, arguments, tool=tool)
 
             action: Action = tool.action_from_arguments(arguments)
-        except (json.JSONDecodeError, ValidationError) as e:
-            display_tool_name = tool.name if tool is not None else tool_name
-            err = (
-                f"Error validating args {tool_call.arguments} for tool "
-                f"'{display_tool_name}': {e}"
+
+        except (ValueError, json.JSONDecodeError, ValidationError) as e:
+            # normalize_tool_call or json.loads or Pydantic validation raised an
+            # error. Build concise error message with parameter names only (not values).
+            parsed_args = parse_tool_call_arguments(tool_call.arguments)
+            keys = list(parsed_args.keys()) if isinstance(parsed_args, dict) else None
+            params = (
+                f"Parameters provided: {keys}"
+                if keys is not None
+                else "Arguments: unparseable JSON"
             )
+            display_tool_name = tool.name if tool is not None else requested_tool_name
+            err = f"Error validating tool '{display_tool_name}': {e}. {params}"
+            # Persist assistant function_call so next turn has matching call_id
+            tc_event = ActionEvent(
+                source="agent",
+                thought=thought or [],
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks or [],
+                responses_reasoning_item=responses_reasoning_item,
+                tool_call=tool_call,
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                llm_response_id=llm_response_id,
+                action=None,
+            )
+            on_event(tc_event)
             self._emit_tool_error(
                 error=err,
                 tool_name=display_tool_name,
-                tool_call=normalized_tool_call,
+                tool_call=tool_call,
                 llm_response_id=llm_response_id,
                 on_event=on_event,
                 thought=thought,
