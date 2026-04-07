@@ -113,7 +113,7 @@ RUN set -eux; \
     PATH="$ACP_NODE_DIR/bin:$PATH"; \
     node --version; \
     npm install -g \
-      @zed-industries/claude-agent-acp \
+      @agentclientprotocol/claude-agent-acp \
       @zed-industries/codex-acp \
       @google/gemini-cli; \
     # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
