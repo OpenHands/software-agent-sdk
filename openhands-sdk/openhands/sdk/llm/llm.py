@@ -1210,6 +1210,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             elif self._model_info is not None:
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
+                    # Guard: if the registry reports max_output_tokens >= the
+                    # context window, requesting that many output tokens would
+                    # leave zero room for input and the provider will reject
+                    # every call. Cap to half the context window so input has
+                    # headroom (e.g. Nemotron 262 144 / 262 144).
+                    if (
+                        self.max_input_tokens is not None
+                        and self.max_output_tokens is not None
+                        and self.max_output_tokens >= self.max_input_tokens
+                    ):
+                        capped = self.max_input_tokens // 2
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s "
+                            "for %s (max_output_tokens >= context "
+                            "window %s)",
+                            self.max_output_tokens,
+                            capped,
+                            self.model,
+                            self.max_input_tokens,
+                        )
+                        self.max_output_tokens = capped
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting

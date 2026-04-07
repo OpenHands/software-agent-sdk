@@ -1161,4 +1161,48 @@ def test_explicit_max_output_tokens_not_overridden():
     assert llm.max_output_tokens == 32768
 
 
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_equal_to_context_window(
+    mock_get_model_info,
+):
+    """max_output_tokens == context window leaves zero input headroom.
+
+    Nemotron reports max_output_tokens = max_input_tokens = 262144.
+    Without capping, every LLM call is rejected because the entire context
+    window is reserved for output.
+    """
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 262144,
+        "max_input_tokens": 262144,
+    }
+
+    llm = LLM(
+        model="litellm_proxy/converse-nemotron-super-3-120b",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 262144 // 2
+    assert llm.max_input_tokens == 262144
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_not_capped_when_below_context_window(
+    mock_get_model_info,
+):
+    """max_output_tokens < context window should be used as-is."""
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 8192,
+        "max_input_tokens": 200000,
+    }
+
+    llm = LLM(
+        model="anthropic/claude-3-5-sonnet-latest",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 8192
+
+
 # LLM Registry Tests
