@@ -877,12 +877,12 @@ class Agent(CriticMixin, AgentBase):
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
             # Build concise error message with parameter names only (not values)
-            # to avoid wasting LLM context on large payloads
-            keys = list(parsed_args.keys()) if isinstance(parsed_args, dict) else None
-            params = (
-                f"Parameters provided: {keys}"
-                if keys
-                else "Arguments: unparseable JSON"
+keys = list(parsed_args.keys()) if isinstance(parsed_args, dict) else None
+params = (
+    f"Parameters provided: {keys}"
+    if keys is not None
+    else "Arguments: unparseable JSON"
+)
             )
             err = f"Error validating tool '{tool.name}': {e}. {params}"
             # Persist assistant function_call so next turn has matching call_id
