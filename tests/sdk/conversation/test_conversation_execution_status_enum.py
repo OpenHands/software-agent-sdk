@@ -41,6 +41,13 @@ def test_agent_execution_state_enum_basic():
     conversation._state.execution_status = ConversationExecutionStatus.ERROR
     assert conversation._state.execution_status == ConversationExecutionStatus.ERROR
 
+    # Test setting to ITERATION_LIMIT
+    conversation._state.execution_status = ConversationExecutionStatus.ITERATION_LIMIT
+    assert (
+        conversation._state.execution_status
+        == ConversationExecutionStatus.ITERATION_LIMIT
+    )
+
 
 def test_enum_values():
     """Test that all enum values are correct."""
@@ -53,6 +60,7 @@ def test_enum_values():
     )
     assert ConversationExecutionStatus.FINISHED == "finished"
     assert ConversationExecutionStatus.ERROR == "error"
+    assert ConversationExecutionStatus.ITERATION_LIMIT == "iteration_limit"
 
 
 def test_enum_serialization():
@@ -79,3 +87,12 @@ def test_enum_serialization():
     conversation._state.execution_status = ConversationExecutionStatus.ERROR
     serialized = conversation._state.model_dump_json()
     assert '"execution_status":"error"' in serialized
+
+    conversation._state.execution_status = ConversationExecutionStatus.ITERATION_LIMIT
+    serialized = conversation._state.model_dump_json()
+    assert '"execution_status":"iteration_limit"' in serialized
+
+
+def test_iteration_limit_is_terminal():
+    """Iteration-limit status should be treated as terminal."""
+    assert ConversationExecutionStatus.ITERATION_LIMIT.is_terminal() is True

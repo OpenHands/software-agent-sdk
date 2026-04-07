@@ -20,13 +20,16 @@ def _make_agent() -> Agent:
     return Agent(llm=llm)
 
 
-def _make_state(agent: Agent, tmp_path) -> ConversationState:
+def _make_state(
+    agent: Agent, tmp_path, *, max_iterations: int = 500
+) -> ConversationState:
     from openhands.sdk.workspace.local import LocalWorkspace
 
     return ConversationState.create(
         id=uuid.uuid4(),
         agent=agent,
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        max_iterations=max_iterations,
     )
 
 
@@ -44,6 +47,26 @@ def test_agent_init_state_adds_system_prompt_via_callback(tmp_path) -> None:
 
     assert len(emitted) == 1
     assert isinstance(emitted[0], SystemPromptEvent)
+
+
+def test_agent_init_state_includes_iteration_budget_context(tmp_path) -> None:
+    agent = _make_agent()
+    state = _make_state(agent, tmp_path, max_iterations=7)
+
+    emitted: list[SystemPromptEvent] = []
+
+    def on_event(e):
+        if isinstance(e, SystemPromptEvent):
+            emitted.append(e)
+
+    agent.init_state(state, on_event=on_event)
+
+    assert len(emitted) == 1
+    assert emitted[0].dynamic_context is not None
+    dynamic_context = emitted[0].dynamic_context.text
+    assert "<iteration_budget>" in dynamic_context
+    assert "at most 7 agent steps" in dynamic_context
+    assert "final step" in dynamic_context
 
 
 def test_agent_init_state_skips_when_system_prompt_already_present(tmp_path) -> None:

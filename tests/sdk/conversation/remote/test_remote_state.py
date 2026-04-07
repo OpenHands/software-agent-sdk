@@ -90,6 +90,7 @@ def test_remote_state_initialization(mock_client, conversation_id):
         ("running", ConversationExecutionStatus.RUNNING),
         ("paused", ConversationExecutionStatus.PAUSED),
         ("finished", ConversationExecutionStatus.FINISHED),
+        ("iteration_limit", ConversationExecutionStatus.ITERATION_LIMIT),
     ],
 )
 def test_remote_state_execution_status(

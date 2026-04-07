@@ -29,6 +29,7 @@ from openhands.sdk.conversation.visualizer import (
 from openhands.sdk.event import (
     ActionEvent,
     CondensationRequest,
+    ConversationIterationLimitEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -547,6 +548,7 @@ class LocalConversation(BaseConversation):
         with self._state:
             if self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.ITERATION_LIMIT,
                 ConversationExecutionStatus.STUCK,
             ):
                 self._state.execution_status = (
@@ -585,6 +587,39 @@ class LocalConversation(BaseConversation):
             )
             self._on_event(user_msg_event)
 
+    def _emit_iteration_budget_warning(self, iteration: int) -> None:
+        """Warn the LLM when the current run is about to exhaust its budget."""
+        remaining = self.max_iteration_per_run - iteration
+        if remaining not in (1, 2):
+            return
+
+        used = iteration
+        if remaining == 1:
+            warning_text = (
+                "[SYSTEM] You have used "
+                f"{used}/{self.max_iteration_per_run} steps. This is your FINAL "
+                "step. Do not start new investigations or delegate more work. "
+                "Provide your best possible answer now based on everything you "
+                "have already gathered."
+            )
+        else:
+            warning_text = (
+                "[SYSTEM] You have used "
+                f"{used}/{self.max_iteration_per_run} steps. Only {remaining} "
+                "steps remain in this run, including this one. Begin wrapping up "
+                "and prioritize a best-effort answer over more exploration."
+            )
+
+        self._on_event(
+            MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text=warning_text)],
+                ),
+            )
+        )
+
     @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
@@ -606,6 +641,7 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
                 ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.ITERATION_LIMIT,
                 ConversationExecutionStatus.STUCK,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
@@ -672,6 +708,7 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
+                    self._emit_iteration_budget_warning(iteration)
                     self.agent.step(
                         self, on_event=self._on_event, on_token=self._on_token
                     )
@@ -704,12 +741,15 @@ class LocalConversation(BaseConversation):
                             f"Agent reached maximum iterations limit "
                             f"({self.max_iteration_per_run})."
                         )
-                        logger.error(error_msg)
-                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        logger.warning(error_msg)
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.ITERATION_LIMIT
+                        )
                         self._on_event(
-                            ConversationErrorEvent(
+                            ConversationIterationLimitEvent(
                                 source="environment",
-                                code="MaxIterationsReached",
+                                iteration=iteration,
+                                max_iterations=self.max_iteration_per_run,
                                 detail=error_msg,
                             )
                         )

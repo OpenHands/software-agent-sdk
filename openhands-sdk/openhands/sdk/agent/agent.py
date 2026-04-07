@@ -400,6 +400,18 @@ class Agent(CriticMixin, AgentBase):
         """
         # Get secret infos from conversation's secret_registry
         secret_infos = state.secret_registry.get_secret_infos()
+        context_parts: list[str] = []
+
+        iteration_budget_context = (
+            "<iteration_budget>\n"
+            f"- This run is limited to at most {state.max_iterations} agent steps.\n"
+            "- Prioritize the most important work first and avoid long detours late "
+            "in the budget.\n"
+            "- If you are warned that you are on the final step, stop exploring and "
+            "provide your best possible answer immediately.\n"
+            "</iteration_budget>"
+        )
+        context_parts.append(iteration_budget_context)
 
         if not self.agent_context:
             # No agent_context but we might have secrets from registry
@@ -408,18 +420,25 @@ class Agent(CriticMixin, AgentBase):
 
                 # Create a minimal context just for secrets
                 temp_context = AgentContext()
-                return temp_context.get_system_message_suffix(
-                    llm_model=self.llm.model,
-                    llm_model_canonical=self.llm.model_canonical_name,
-                    additional_secret_infos=secret_infos,
+                context_parts.append(
+                    temp_context.get_system_message_suffix(
+                        llm_model=self.llm.model,
+                        llm_model_canonical=self.llm.model_canonical_name,
+                        additional_secret_infos=secret_infos,
+                    )
+                    or ""
                 )
-            return None
+            return "\n\n".join(part for part in context_parts if part)
 
-        return self.agent_context.get_system_message_suffix(
-            llm_model=self.llm.model,
-            llm_model_canonical=self.llm.model_canonical_name,
-            additional_secret_infos=secret_infos,
+        context_parts.append(
+            self.agent_context.get_system_message_suffix(
+                llm_model=self.llm.model,
+                llm_model_canonical=self.llm.model_canonical_name,
+                additional_secret_infos=secret_infos,
+            )
+            or ""
         )
+        return "\n\n".join(part for part in context_parts if part)
 
     def _execute_actions(
         self,

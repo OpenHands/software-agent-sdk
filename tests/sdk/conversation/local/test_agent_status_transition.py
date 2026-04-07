@@ -17,15 +17,17 @@ State transition matrix tested:
 - FINISHED -> remain unchanged (run() exits immediately without new message)
 """
 
+import copy
 import threading
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import Any, ClassVar
+
+from pydantic import PrivateAttr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
-from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event import ConversationIterationLimitEvent, MessageEvent
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
@@ -92,6 +94,26 @@ class StatusTransitionTestTool(
                 executor=executor,
             )
         ]
+
+
+class CapturingTestLLM(TestLLM):
+    """TestLLM variant that records the message history sent to the LLM."""
+
+    _captured_messages: list[list[Message]] = PrivateAttr(default_factory=list)
+
+    def __init__(
+        self, *, scripted_responses: list[Message | Exception], **kwargs: Any
+    ) -> None:
+        kwargs.setdefault("model", "test-model")
+        super().__init__(scripted_responses=scripted_responses, **kwargs)
+
+    @property
+    def captured_messages(self) -> list[list[Message]]:
+        return self._captured_messages
+
+    def completion(self, messages: list[Message], *args, **kwargs):
+        self._captured_messages.append(copy.deepcopy(messages))
+        return super().completion(messages, *args, **kwargs)
 
 
 def test_execution_status_transitions_to_running_from_idle():
@@ -416,8 +438,8 @@ def test_send_message_resets_stuck_to_idle():
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
-def test_execution_status_error_on_max_iterations():
-    """Test that status is set to ERROR with clear message when max iterations hit."""
+def test_execution_status_iteration_limit_on_max_iterations():
+    """Test that max iterations ends with a dedicated iteration-limit status."""
 
     status_during_execution: list[ConversationExecutionStatus] = []
     events_received: list = []
@@ -429,7 +451,6 @@ def test_execution_status_error_on_max_iterations():
 
     register_tool("test_tool", _make_tool)
 
-    # Create a tool call message that will be returned repeatedly
     tool_call_message = Message(
         role="assistant",
         content=[TextContent(text="")],
@@ -443,38 +464,85 @@ def test_execution_status_error_on_max_iterations():
         ],
     )
 
-    # Use TestLLM with enough responses to hit max iterations
-    # max_iteration_per_run=2 means we need at least 2 tool call responses
     llm = TestLLM.from_messages(
         [
             tool_call_message,
             tool_call_message,
-            tool_call_message,  # Extra in case needed
+            tool_call_message,
         ]
     )
     agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
-    # Set max_iteration_per_run to 2 to quickly hit the limit
     conversation = Conversation(
         agent=agent,
         max_iteration_per_run=2,
         callbacks=[lambda e: events_received.append(e)],
     )
 
-    # Send message and run
     conversation.send_message(
         Message(role="user", content=[TextContent(text="Execute command")])
     )
     conversation.run()
 
-    # Status should be ERROR
-    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.ITERATION_LIMIT
+    )
 
-    # Should have emitted a ConversationErrorEvent with clear message
-    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
-    assert len(error_events) == 1
-    assert error_events[0].code == "MaxIterationsReached"
-    assert "maximum iterations limit" in error_events[0].detail
-    assert "(2)" in error_events[0].detail  # max_iteration_per_run value
+    limit_events = [
+        e for e in events_received if isinstance(e, ConversationIterationLimitEvent)
+    ]
+    assert len(limit_events) == 1
+    assert limit_events[0].iteration == 2
+    assert limit_events[0].max_iterations == 2
+    assert "maximum iterations limit" in limit_events[0].detail
+    assert "(2)" in limit_events[0].detail
+
+
+def test_final_step_warning_is_visible_to_llm():
+    """The LLM should receive an explicit final-step wrap-up warning."""
+
+    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+        return StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))
+
+    register_tool("test_tool", _make_tool)
+
+    tool_call_message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id="call_1",
+                name="test_tool",
+                arguments='{"command": "test_command"}',
+                origin="completion",
+            )
+        ],
+    )
+    finish_message = Message(role="assistant", content=[TextContent(text="Done")])
+
+    llm = CapturingTestLLM(
+        scripted_responses=[tool_call_message, finish_message],
+        usage_id="capturing-test-llm",
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    conversation = Conversation(agent=agent, max_iteration_per_run=2)
+
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    conversation.run()
+
+    assert len(llm.captured_messages) == 2
+    second_call_messages = llm.captured_messages[1]
+    final_step_messages = [
+        content.text
+        for message in second_call_messages
+        if message.role == "user"
+        for content in message.content
+        if isinstance(content, TextContent) and "FINAL step" in content.text
+    ]
+    assert len(final_step_messages) == 1
+    assert "Provide your best possible answer now" in final_step_messages[0]
 
 
 def test_execution_status_finished_on_final_iteration():
@@ -537,9 +605,10 @@ def test_execution_status_finished_on_final_iteration():
         "Agent completing on the final iteration should not be treated as an error."
     )
 
-    # No MaxIterationsReached error event should have been emitted
-    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
-    max_iter_errors = [e for e in error_events if e.code == "MaxIterationsReached"]
-    assert len(max_iter_errors) == 0, (
-        "Expected no MaxIterationsReached error when agent finishes on final iteration"
+    # No iteration-limit event should have been emitted when agent finishes in time
+    limit_events = [
+        e for e in events_received if isinstance(e, ConversationIterationLimitEvent)
+    ]
+    assert len(limit_events) == 0, (
+        "Expected no iteration-limit event when agent finishes on final iteration"
     )
