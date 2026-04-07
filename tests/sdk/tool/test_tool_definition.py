@@ -704,6 +704,13 @@ class TestTool:
         # Original action fields must come after
         assert keys.index("command") > keys.index("security_risk")
 
+        # Verify all original fields are still present (exclude discriminator
+        # fields like 'kind' which are stripped by to_mcp_schema)
+        original_schema = ToolMockAction.to_mcp_schema()
+        original_keys = set(original_schema["properties"].keys())
+        schema_keys = set(keys)
+        assert original_keys.issubset(schema_keys)
+
     def test_as_executable_with_executor(self):
         """Test as_executable() method with a tool that has an executor."""
 

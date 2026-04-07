@@ -539,10 +539,10 @@ def _prioritize_schema_fields(
     if "properties" not in schema:
         return
     props = schema["properties"]
-    front = [(k, props[k]) for k in priority if k in props]
-    schema["properties"] = dict(
-        front + [(k, v) for k, v in props.items() if k not in dict(front)]
-    )
+    priority_set = set(priority)
+    ordered = {k: props[k] for k in priority if k in props}
+    ordered.update({k: v for k, v in props.items() if k not in priority_set})
+    schema["properties"] = ordered
 
 
 def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
