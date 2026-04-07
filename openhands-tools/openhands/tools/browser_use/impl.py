@@ -381,7 +381,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             try:
                 self._async_executor.run_async(self.cleanup, timeout=5.0)
             except Exception as e:
-                logger.debug("Cleanup during session reset failed (expected if browser crashed): %s", e)
+                logger.debug(
+                    "Cleanup during session reset failed "
+                    "(expected if browser crashed): %s",
+                    e,
+                )
             self._initialized = False
             self._consecutive_failures = 0
             error_text = (
