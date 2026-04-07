@@ -338,11 +338,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
-        # Use a shorter timeout after recent failures to avoid long waits
-        # against a potentially dead browser.
+        # Use a shorter timeout after multiple consecutive timeout failures
+        # to avoid long cascading waits against a dead browser.
         effective_timeout = (
             DEGRADED_TIMEOUT_SECONDS
-            if self._consecutive_failures > 0
+            if self._consecutive_failures >= 2
             else self._action_timeout_seconds
         )
 
@@ -353,21 +353,27 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 timeout=effective_timeout,
             )
         except builtins.TimeoutError as error:
-            return self._handle_action_failure(
+            # Timeouts indicate the browser may be dead/hung — track them
+            # for crash detection. Regular action errors (invalid selector,
+            # missing element) are NOT counted since those are normal agent
+            # mistakes, not browser crashes.
+            return self._handle_timeout_failure(
                 _format_browser_operation_error(
                     error, timeout_seconds=effective_timeout
                 )
             )
 
-        if result.is_error:
-            return self._handle_action_failure(result.text)
-
         self._consecutive_failures = 0
         return result
 
-    def _handle_action_failure(self, error_text: str):
-        """Track consecutive failures and reset the session if needed."""
+    def _handle_timeout_failure(self, error_text: str):
+        """Track consecutive timeout failures and reset session if needed."""
         self._consecutive_failures += 1
+        logger.debug(
+            "Browser timeout failure %d/%d",
+            self._consecutive_failures,
+            MAX_CONSECUTIVE_FAILURES,
+        )
 
         if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
             logger.warning(

@@ -318,8 +318,37 @@ def test_issue_2412_success_resets_failure_counter(mock_browser_executor):
     assert mock_browser_executor._consecutive_failures == 0
 
 
-def test_issue_2412_degraded_timeout_after_failure(mock_browser_executor):
-    """After a failure, subsequent actions should use a shorter timeout.
+def test_issue_2412_action_errors_do_not_trigger_reset(mock_browser_executor):
+    """Regular action errors should NOT count toward crash detection.
+
+    Only timeouts indicate a potentially dead browser. Errors like
+    invalid selector or missing element are normal agent mistakes.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2412
+    """
+    from openhands.tools.browser_use.impl import MAX_CONSECUTIVE_FAILURES
+
+    mock_browser_executor._initialized = True
+
+    error_result = BrowserObservation.from_text(
+        text="Element not found", is_error=True
+    )
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        return_value=error_result,
+    ):
+        action = BrowserNavigateAction(url="https://example.com")
+        for _ in range(MAX_CONSECUTIVE_FAILURES + 1):
+            mock_browser_executor(action)
+
+    # Session should NOT be reset despite many action errors
+    assert mock_browser_executor._initialized is True
+    assert mock_browser_executor._consecutive_failures == 0
+
+
+def test_issue_2412_degraded_timeout_after_failures(mock_browser_executor):
+    """Degraded timeout kicks in after 2+ consecutive timeout failures.
 
     See: https://github.com/OpenHands/software-agent-sdk/issues/2412
     """
@@ -340,7 +369,7 @@ def test_issue_2412_degraded_timeout_after_failure(mock_browser_executor):
         _, kwargs = mock_run.call_args
         assert kwargs["timeout"] == 300.0
 
-    # Second call should use degraded timeout
+    # Second call still uses normal timeout (degraded kicks in at 2+)
     with patch.object(
         mock_browser_executor._async_executor,
         "run_async",
@@ -348,6 +377,20 @@ def test_issue_2412_degraded_timeout_after_failure(mock_browser_executor):
     ) as mock_run:
         mock_browser_executor(action)
         _, kwargs = mock_run.call_args
+        assert kwargs["timeout"] == 300.0
+
+    # Third call should use degraded timeout for the action.
+    # Note: the reset also calls run_async for cleanup, so we check
+    # the first call (the action), not the last (the cleanup).
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        side_effect=builtins.TimeoutError(),
+    ) as mock_run:
+        mock_browser_executor(action)
+        # First call is the action (degraded timeout),
+        # second call may be cleanup (5s) if reset triggers.
+        _, kwargs = mock_run.call_args_list[0]
         assert kwargs["timeout"] == DEGRADED_TIMEOUT_SECONDS
 
 
