@@ -273,6 +273,17 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Find actual forgetting_end: smallest manipulation index >= naive_end
         forgetting_end = view.manipulation_indices.find_next(naive_end)
 
+        # Check if we have a valid range for forgetting. When manipulation indices
+        # are restricted (e.g., due to tool loop atomicity), forgetting_start may
+        # equal forgetting_end, resulting in 0 events forgotten.
+        if forgetting_start >= forgetting_end:
+            raise ValueError(
+                f"No valid forgetting range: forgetting_start={forgetting_start} "
+                f">= forgetting_end={forgetting_end}. This can happen when "
+                "manipulation indices are restricted and the view is too small "
+                "for standard condensation."
+            )
+
         # Extract events to forget using boundary-aware indices
         forgotten_events = view[forgetting_start:forgetting_end]
 

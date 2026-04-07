@@ -381,6 +381,58 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
+def test_condense_with_restricted_manipulation_indices(mock_llm: LLM) -> None:
+    """Test when manipulation indices are restricted due to tool loop atomicity.
+
+    When certain indices cannot be manipulated (e.g., due to tool loop atomicity
+    constraints), the forgetting range may collapse to empty. In this case,
+    condensation should raise NoCondensationAvailableException and fall back to
+    hard_context_reset for HARD requirements.
+
+    This reproduces the scenario seen in production where models like Nemotron
+    with thinking enabled would trigger condensation but have restricted
+    manipulation indices that prevented valid forgetting ranges.
+    """
+    from unittest.mock import PropertyMock, patch
+
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Set up mock response
+    cast(Any, mock_llm).set_mock_response_content("Summary of forgotten events")
+
+    # Create view with 5 events
+    events: list[Event] = [message_event(f"Event {i}") for i in range(5)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Verify REQUEST reason is triggered
+    reasons = condenser.get_condensation_reasons(view)
+    assert Reason.REQUEST in reasons
+
+    # Create a mock manipulation_indices that simulates restricted indices
+    # (e.g., due to tool loop atomicity). In this case, indices 2 and 3 are removed.
+    from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
+
+    # The restricted indices mean events 2 and 3 are in a tool loop and can't be
+    # manipulated. This causes the forgetting range to collapse.
+    restricted_indices = ManipulationIndices({0, 1, 4, 5})
+
+    # Patch the property on the View class
+    with patch.object(
+        View,
+        "manipulation_indices",
+        new_callable=PropertyMock,
+        return_value=restricted_indices,
+    ):
+        # The condenser should fall back to hard_context_reset when normal
+        # condensation fails due to invalid forgetting range.
+        result = condenser.condense(view)
+
+        # hard_context_reset succeeds by summarizing all events
+        assert isinstance(result, Condensation)
+        assert len(result.forgotten_event_ids) == 5
+
+
 def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
     """Test condensation when both REQUEST and TOKENS reasons are true simultaneously.
 
