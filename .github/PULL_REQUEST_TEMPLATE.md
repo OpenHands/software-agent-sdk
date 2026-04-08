@@ -46,4 +46,4 @@ Provide a video or screenshots of testing your PR. e.g. you added a new feature 
 
 ## Notes
 
-<!-- Optional: migrations, config changes, rollout concerns, follow-ups, or anything reviewers should know. -->
+<!-- Optional: config changes, rollout concerns, follow-ups, or anything reviewers should know. -->
