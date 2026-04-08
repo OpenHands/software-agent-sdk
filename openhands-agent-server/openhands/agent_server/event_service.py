@@ -705,6 +705,19 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
 
+    async def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._conversation.load_plugin, plugin_ref
+        )
+
     async def get_state(self) -> ConversationState:
         if not self._conversation:
             raise ValueError("inactive_service")

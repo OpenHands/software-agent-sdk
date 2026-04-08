@@ -304,6 +304,29 @@ class BaseConversation(ABC):
         """
         ...
 
+    @abstractmethod
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Resolves the plugin reference against the agent's registered marketplaces
+        and loads the plugin into the conversation. The plugin's skills, hooks,
+        and MCP configuration will be merged into the agent.
+
+        Plugin references can be:
+        - "plugin-name@marketplace-name" - Explicit marketplace qualifier
+        - "plugin-name" - Search all registered marketplaces (errors if ambiguous)
+
+        Args:
+            plugin_ref: Plugin reference to resolve and load.
+
+        Raises:
+            PluginNotFoundError: If the plugin is not found.
+            AmbiguousPluginError: If the plugin name matches multiple marketplaces.
+            MarketplaceNotFoundError: If a specified marketplace is not registered.
+            ValueError: If no marketplaces are registered.
+        """
+        ...
+
     @staticmethod
     def compose_callbacks(callbacks: Iterable[CallbackType]) -> CallbackType:
         """Compose multiple callbacks into a single callback function.

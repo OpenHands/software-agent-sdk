@@ -68,6 +68,10 @@ class MockConversation(BaseConversation):
         """Mock implementation of execute_tool method."""
         raise NotImplementedError("Mock execute_tool not implemented")
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Mock implementation of load_plugin method."""
+        pass
+
 
 def test_base_conversation_span_management():
     """Test that BaseConversation properly manages span state to prevent double-ending."""  # noqa: E501

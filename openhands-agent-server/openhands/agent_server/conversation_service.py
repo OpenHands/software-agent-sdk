@@ -659,6 +659,18 @@ class ConversationService:
         await event_service.condense()
         return True
 
+    async def load_plugin(self, conversation_id: UUID, plugin_ref: str) -> bool:
+        """Load a plugin from a registered marketplace into the conversation."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return False
+
+        # Delegate to EventService to access conversation internals
+        await event_service.load_plugin(plugin_ref)
+        return True
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}

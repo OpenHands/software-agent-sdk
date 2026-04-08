@@ -4,6 +4,7 @@ This module defines the HTTP API endpoints for skill operations.
 Business logic is delegated to skills_service.py.
 """
 
+import warnings
 from typing import Literal
 
 from fastapi import APIRouter
@@ -15,6 +16,7 @@ from openhands.agent_server.skills_service import (
     sync_public_skills,
 )
 from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.plugin.types import MarketplaceRegistration
 
 
 skills_router = APIRouter(prefix="/skills", tags=["Skills"])
@@ -66,9 +68,20 @@ class SkillsRequest(BaseModel):
     load_org: bool = Field(default=True, description="Load organization-level skills")
     marketplace_path: str | None = Field(
         default=DEFAULT_MARKETPLACE_PATH,
+        deprecated=True,
         description=(
+            "DEPRECATED: Use registered_marketplaces instead. "
             "Relative marketplace JSON path for public skills. "
             "Set to null to load all public skills."
+        ),
+    )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "List of marketplace registrations for skill loading. "
+            "Each registration specifies a marketplace source and whether to "
+            "auto-load its skills. When provided, this takes precedence over "
+            "marketplace_path for public skill filtering."
         ),
     )
     project_dir: str | None = Field(
@@ -143,6 +156,26 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         org_repo_url = request.org_config.org_repo_url
         org_name = request.org_config.org_name
 
+    # Handle deprecation: prefer registered_marketplaces over marketplace_path
+    marketplace_path = request.marketplace_path
+    if request.registered_marketplaces:
+        # New behavior: use registered_marketplaces
+        # For now, we extract marketplace_path from the first 'public' registration
+        # with auto_load='all' for backward compatibility with the existing service
+        for reg in request.registered_marketplaces:
+            if reg.name == "public" and reg.auto_load == "all":
+                # Use repo_path as marketplace_path if set
+                marketplace_path = reg.repo_path
+                break
+    elif request.marketplace_path is not None:
+        # Emit deprecation warning when using old field
+        warnings.warn(
+            "SkillsRequest.marketplace_path is deprecated. "
+            "Use registered_marketplaces instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     # Call the service
     result = load_all_skills(
         load_public=request.load_public,
@@ -153,7 +186,8 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         org_repo_url=org_repo_url,
         org_name=org_name,
         sandbox_exposed_urls=sandbox_urls,
-        marketplace_path=request.marketplace_path,
+        marketplace_path=marketplace_path,
+        registered_marketplaces=request.registered_marketplaces,
     )
 
     # Convert Skill objects to SkillInfo for response

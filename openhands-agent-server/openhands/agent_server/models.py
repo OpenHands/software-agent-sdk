@@ -459,6 +459,17 @@ class AskAgentResponse(BaseModel):
     response: str = Field(description="The agent's response to the question")
 
 
+class LoadPluginRequest(BaseModel):
+    """Payload to load a plugin from a registered marketplace."""
+
+    plugin_ref: str = Field(
+        description=(
+            "Plugin reference to resolve and load. "
+            "Can be 'plugin-name@marketplace-name' or just 'plugin-name'."
+        )
+    )
+
+
 class BashEventBase(DiscriminatedUnionMixin, ABC):
     """Base class for all bash event types"""
 
