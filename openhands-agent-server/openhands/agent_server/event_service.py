@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -498,9 +499,10 @@ class EventService:
                         if isinstance(reasoning, str)
                         else None,
                     )
-                    asyncio.run_coroutine_threadsafe(
-                        self._pub_sub(event), self._main_loop
-                    )
+                    with suppress(RuntimeError):
+                        asyncio.run_coroutine_threadsafe(
+                            self._pub_sub(event), self._main_loop
+                        )
 
         conversation = LocalConversation(
             agent=agent,
