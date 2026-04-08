@@ -119,8 +119,7 @@ def test_declared_resources_locks_on_file_path(fake_conv_state):
     resources = tool.declared_resources(action)
     assert resources.declared is True
     assert len(resources.keys) == 1
-    assert resources.keys[0].startswith("file:")
-    assert resources.keys[0].endswith("b.py")
+    assert resources.keys[0] == f"file:{Path('/a/b.py').resolve()}"
 
 
 def test_declared_resources_different_files_different_keys(fake_conv_state):
@@ -136,4 +135,4 @@ def test_declared_resources_relative_path_resolves_against_workspace(fake_conv_s
     tool = ReadFileTool.create(conv_state=fake_conv_state)[0]
     workspace = fake_conv_state.workspace.working_dir
     resources = tool.declared_resources(ReadFileAction(file_path="src/foo.py"))
-    assert resources.keys[0] == f"file:{Path(workspace) / 'src' / 'foo.py'}"
+    assert resources.keys[0] == f"file:{(Path(workspace) / 'src' / 'foo.py').resolve()}"

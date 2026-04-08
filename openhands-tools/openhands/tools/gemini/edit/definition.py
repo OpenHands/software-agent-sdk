@@ -140,7 +140,10 @@ class EditTool(ToolDefinition[EditAction, EditObservation]):
         """
         assert isinstance(action, EditAction)
         path = Path(action.file_path)
-        if not path.is_absolute() and self.meta:
+        if not path.is_absolute():
+            assert self.meta is not None, (
+                "workspace_root required to resolve relative paths"
+            )
             path = Path(self.meta["workspace_root"]) / path
         return DeclaredResources(keys=(f"file:{path.resolve()}",), declared=True)
 
