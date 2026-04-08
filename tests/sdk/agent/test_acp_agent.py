@@ -342,7 +342,7 @@ class TestACPActivityHeartbeat:
         await client.session_update("sess-1", start)
 
         # Reset throttle so ToolCallProgress can fire
-        client._last_activity_signal = 0.0
+        client._last_activity_signal = float("-inf")
         signals.clear()
 
         progress = MagicMock(spec=ToolCallProgress)
@@ -1577,7 +1577,7 @@ class TestResolveBypassMode:
 
     def test_claude_agent_with_scope(self):
         assert (
-            _resolve_bypass_mode("@zed-industries/claude-agent-acp")
+            _resolve_bypass_mode("@agentclientprotocol/claude-agent-acp")
             == "bypassPermissions"
         )
 
