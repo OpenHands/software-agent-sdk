@@ -18,9 +18,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import AgentErrorEvent
+from openhands.sdk.event import AgentErrorEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -481,6 +482,26 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
+        def _token_streaming_callback(chunk: LLMStreamChunk) -> None:
+            if not self._main_loop or not self._main_loop.is_running():
+                return
+            for choice in chunk.choices:
+                delta = choice.delta
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                reasoning = getattr(delta, "reasoning_content", None)
+                if content or reasoning:
+                    event = StreamingDeltaEvent(
+                        content=content if isinstance(content, str) else None,
+                        reasoning_content=reasoning
+                        if isinstance(reasoning, str)
+                        else None,
+                    )
+                    asyncio.run_coroutine_threadsafe(
+                        self._pub_sub(event), self._main_loop
+                    )
+
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -488,6 +509,7 @@ class EventService:
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
             callbacks=[self._callback_wrapper],
+            token_callbacks=[_token_streaming_callback],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
