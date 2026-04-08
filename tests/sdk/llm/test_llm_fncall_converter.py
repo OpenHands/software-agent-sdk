@@ -922,13 +922,41 @@ def test_convert_tools_to_description_object_details():
     assert result.strip() == expected.strip()
 
 
-def test_system_message_suffix_template_includes_security_risk():
-    """Test that system_message_suffix_TEMPLATE includes security_risk parameter.
+def test_system_message_suffix_template_excludes_security_risk_by_default():
+    """Test that system_message_suffix_TEMPLATE does NOT include security_risk
+    when the security analyzer is disabled."""
+    assert "<parameter=security_risk>" not in system_message_suffix_TEMPLATE
+    assert "<parameter=summary>" not in system_message_suffix_TEMPLATE
 
-    This is a regression test for issue #2740: When using prompt-based tool calling
-    (native_tool_calling=False) with smaller models, the models learn from examples
-    in the prompt. If examples don't include security_risk, the models won't emit
-    it, causing validation errors when LLMSecurityAnalyzer is active.
+
+def test_security_params_included_when_flag_is_true():
+    """Test that security_risk and summary appear in converted messages
+    when include_security_params=True (i.e., security analyzer is active).
+
+    Regression test for issue #2740.
     """
-    assert "<parameter=security_risk>" in system_message_suffix_TEMPLATE
-    assert "<parameter=summary>" in system_message_suffix_TEMPLATE
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello"},
+    ]
+    result = convert_fncall_messages_to_non_fncall_messages(
+        messages, FNCALL_TOOLS, include_security_params=True
+    )
+    system_content = result[0]["content"]
+    assert "<parameter=security_risk>" in system_content
+    assert "<parameter=summary>" in system_content
+
+
+def test_security_params_excluded_when_flag_is_false():
+    """Test that security_risk and summary do NOT appear in converted messages
+    when include_security_params=False (default)."""
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello"},
+    ]
+    result = convert_fncall_messages_to_non_fncall_messages(
+        messages, FNCALL_TOOLS, include_security_params=False
+    )
+    system_content = result[0]["content"]
+    assert "<parameter=security_risk>" not in system_content
+    assert "<parameter=summary>" not in system_content
