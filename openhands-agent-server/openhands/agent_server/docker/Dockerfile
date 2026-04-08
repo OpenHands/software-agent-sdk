@@ -13,22 +13,39 @@ ARG PORT=8000
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
 #
-# NOTE: We use the base image's system Python (--python-preference only-system)
-# instead of uv-managed python-build-standalone. The python-build-standalone
-# builds ship libpython with an executable stack (PT_GNU_STACK PF_X).
-# Docker containers running under seccomp restrictions (e.g. GitHub Actions
-# Docker-in-Docker) reject dlopen() on such libraries with:
+# SELF-CONTAINED /agent-server CONTRACT:
+# We install a uv-managed (python-build-standalone) CPython into
+# /agent-server/uv-managed-python and use it as the interpreter for
+# /agent-server/.venv. Both live under /agent-server, so downstream
+# consumers can COPY /agent-server onto *any* base image (including ones
+# with no /usr/local/bin/python3) and the venv keeps working.
+#
+# The obstacle this used to trip on:
+# python-build-standalone ships libpython3.13.so.1.0 with
+# ``PT_GNU_STACK PF_X`` (executable stack).  Under Debian's glibc
+# 2.41-12+deb13u2 (Trixie) NX enforcement and under Docker-in-Docker with
+# seccomp restrictions (GitHub Actions, sysbox-runc), the dynamic linker
+# refuses to load such libraries with:
 #   "cannot enable executable stack as shared object requires: Invalid argument"
-# Debian's CPython packages do not have this issue.
+#
+# We address that at its actual layer (ELF program headers) by running the
+# clear_execstack helper across the uv-managed Python tree immediately
+# after install. The helper clears PF_X on every PT_GNU_STACK entry of
+# every bundled .so, making the Python tree DinD/sysbox/seccomp safe while
+# preserving the self-contained .venv property.
+# See OpenHands/software-agent-sdk#2761.
 ####################################################################################
 FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
+ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
- && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME}
+ && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
+ && mkdir -p /agent-server/uv-managed-python \
+ && chown -R ${USERNAME}:${USERNAME} /agent-server
 USER ${USERNAME}
 WORKDIR /agent-server
 # Cache-friendly: lockfiles first
@@ -37,8 +54,20 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-sdk ./openhands-sdk
 COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
+# Install python-build-standalone into /agent-server/uv-managed-python, then
+# sanitize PT_GNU_STACK on every bundled .so before the venv is created so the
+# interpreter and its C extensions load under strict NX.
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv venv --python-preference only-system .venv && uv sync --frozen --no-editable --extra boto3
+    uv python install 3.13 && \
+    python3 openhands-agent-server/openhands/agent_server/docker/clear_execstack.py \
+        /agent-server/uv-managed-python && \
+    uv venv --python-preference only-managed --python 3.13 .venv && \
+    uv sync --frozen --no-editable --managed-python --extra boto3 && \
+    # Fail fast if the venv did not end up pointing at the bundled interpreter.
+    # If this assertion ever fires, downstream consumers are about to break on
+    # base images without a matching /usr/local/bin/python3 — bail in the
+    # builder instead.
+    readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
 ####################################################################################
 # Binary Builder (binary mode)

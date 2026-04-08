@@ -137,6 +137,62 @@ a = Analysis(
 _EXCLUDE_LIB_PREFIXES = ('libgcc_s.so', 'libtinfo.so', 'libncurses')
 a.binaries = [x for x in a.binaries if not x[0].startswith(_EXCLUDE_LIB_PREFIXES)]
 
+# ---------------------------------------------------------------------------
+# Fix executable stack flags on bundled shared libraries.
+#
+# python-build-standalone's libpython3.13.so.1.0 (used by uv-managed Python)
+# is built with PT_GNU_STACK PF_X.  glibc >= 2.41-12+deb13u2 (Debian Trixie,
+# used in the nikolaik runtime image) tightened NX-stack enforcement and the
+# dynamic linker now rejects such libraries with EINVAL.  sysbox-runc's
+# seccomp policy also blocks the mprotect(PROT_EXEC) fallback.
+#
+# We reuse the same clear_execstack helper the Dockerfile builder stage
+# applies to /agent-server/uv-managed-python, now as a post-Analysis hook
+# against PyInstaller's collected binaries — so the one-file archive ships
+# clean .so files that load under strict NX.
+#
+# We copy each affected .so into a temp directory (so we never mutate the
+# files on disk that Analysis pointed at) and rewrite the binaries list to
+# use the sanitized copy. PyInstaller's subsequent strip preserves program
+# headers, so the cleared flag survives into the final binary.
+# See OpenHands/software-agent-sdk#2761 (and #2574 for the original spec-only
+# version this supersedes).
+# ---------------------------------------------------------------------------
+import importlib.util as _clear_execstack_importer
+import shutil as _nxfix_shutil
+import tempfile as _nxfix_tempfile
+
+_clear_execstack_path = str(
+    project_root
+    / "openhands-agent-server"
+    / "openhands"
+    / "agent_server"
+    / "docker"
+    / "clear_execstack.py"
+)
+_spec = _clear_execstack_importer.spec_from_file_location(
+    "agent_server_clear_execstack", _clear_execstack_path
+)
+assert _spec is not None and _spec.loader is not None, (
+    f"clear_execstack helper not found at {_clear_execstack_path}"
+)
+_clear_execstack_mod = _clear_execstack_importer.module_from_spec(_spec)
+_spec.loader.exec_module(_clear_execstack_mod)
+
+_nxfix_tmpdir = _nxfix_tempfile.mkdtemp(prefix='pyinstaller_nxfix_')
+_fixed_binaries = []
+for _name, _path, _typecode in a.binaries:
+    if '.so' in _name:
+        _tmp_path = os.path.join(_nxfix_tmpdir, _name.replace(os.sep, '_'))
+        _nxfix_shutil.copy2(_path, _tmp_path)
+        if _clear_execstack_mod.clear_execstack(_tmp_path):
+            print(f'  [NX-fix] Cleared executable stack: {_name}')
+            _fixed_binaries.append((_name, _tmp_path, _typecode))
+            continue
+        os.unlink(_tmp_path)
+    _fixed_binaries.append((_name, _path, _typecode))
+a.binaries = _fixed_binaries
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
