@@ -916,20 +916,6 @@ class Agent(CriticMixin, AgentBase):
             )
             display_tool_name = tool.name if tool is not None else requested_tool_name
             err = f"Error validating tool '{display_tool_name}': {e}. {params}"
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
             self._emit_tool_error(
                 error=err,
                 tool_name=display_tool_name,

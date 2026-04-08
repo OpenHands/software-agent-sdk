@@ -1,4 +1,6 @@
+import contextlib
 import json
+import logging
 import re
 import shlex
 import types
@@ -34,6 +36,9 @@ _CTRL_ESCAPE_TABLE: dict[int, str] = {
     0x0C: "\\f",
     0x0D: "\\r",
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 def _escape_control_char(m: re.Match[str]) -> str:
@@ -145,9 +150,23 @@ def fix_malformed_tool_arguments(
                 if isinstance(parsed_value, (list, dict)):
                     fixed_arguments[data_key] = parsed_value
             except (json.JSONDecodeError, ValueError):
-                # If parsing fails, leave the original value
-                # Pydantic will raise validation error if needed
-                pass
+                # LLMs sometimes append trailing garbage (e.g. XML tags)
+                # after valid JSON. Truncate at the last } or ] and retry.
+                for end_char in ("}", "]"):
+                    idx = value.rfind(end_char)
+                    if idx == -1:
+                        continue
+                    with contextlib.suppress(json.JSONDecodeError, ValueError):
+                        parsed_value = json.loads(value[: idx + 1], strict=False)
+                        if isinstance(parsed_value, (list, dict)):
+                            truncated = value[idx + 1 :]
+                            logger.warning(
+                                "Truncated trailing garbage from tool argument %r: %r",
+                                data_key,
+                                truncated,
+                            )
+                            fixed_arguments[data_key] = parsed_value
+                            break
     return fixed_arguments
 
 
