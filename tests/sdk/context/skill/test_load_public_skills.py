@@ -12,7 +12,13 @@ from openhands.sdk.context.skills import (
     Skill,
     load_public_skills,
 )
-from openhands.sdk.context.skills.skill import load_marketplace_skill_names
+from openhands.sdk.context.skills.skill import (
+    _fallback_skill_lookup,
+    _is_remote_source,
+    _load_marketplace_object,
+    _load_skills_from_resolved_path,
+    load_marketplace_skill_names,
+)
 from openhands.sdk.context.skills.utils import update_skills_repository
 
 
@@ -879,3 +885,375 @@ def test_load_public_skills_handles_legacy_md_files_with_marketplace(tmp_path):
         skill_names = {s.name for s in skills}
         assert skill_names == {"git", "docker"}
         assert "internal" not in skill_names
+
+
+# ---- Tests for source resolution (issue #2757) ----
+
+
+def test_is_remote_source():
+    """Test _is_remote_source correctly classifies source strings."""
+    assert _is_remote_source("github:owner/repo")
+    assert _is_remote_source("https://github.com/owner/repo.git")
+    assert _is_remote_source("http://gitlab.com/org/repo")
+    assert _is_remote_source("git@github.com:owner/repo.git")
+    assert _is_remote_source("git://example.com/repo.git")
+    assert not _is_remote_source("/local/path")
+    assert not _is_remote_source("./relative/path")
+    assert not _is_remote_source("~/home/path")
+
+
+def test_load_marketplace_object_returns_marketplace(tmp_path):
+    """Test _load_marketplace_object returns a full Marketplace object."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    marketplaces_dir = repo_dir / "marketplaces"
+    marketplaces_dir.mkdir()
+    marketplace_data = {
+        "name": "test",
+        "owner": {"name": "Test"},
+        "plugins": [
+            {"name": "git", "source": "./git", "description": "Git"},
+        ],
+    }
+    (marketplaces_dir / "default.json").write_text(json.dumps(marketplace_data))
+
+    marketplace = _load_marketplace_object(repo_dir, "marketplaces/default.json")
+    assert marketplace is not None
+    assert marketplace.name == "test"
+    assert len(marketplace.plugins) == 1
+    assert marketplace.plugins[0].name == "git"
+
+
+def test_load_marketplace_object_returns_none_for_missing_file(tmp_path):
+    """Test _load_marketplace_object returns None for missing file."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    assert _load_marketplace_object(repo_dir, "marketplaces/missing.json") is None
+
+
+def test_load_marketplace_object_returns_none_for_invalid_json(tmp_path):
+    """Test _load_marketplace_object returns None for invalid JSON."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    marketplaces_dir = repo_dir / "marketplaces"
+    marketplaces_dir.mkdir()
+    (marketplaces_dir / "default.json").write_text("{ invalid }")
+
+    assert _load_marketplace_object(repo_dir, "marketplaces/default.json") is None
+
+
+def test_fallback_skill_lookup_finds_skill_md(tmp_path):
+    """Test _fallback_skill_lookup finds SKILL.md in subdirectory."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    skills_dir = repo_dir / "skills"
+    skills_dir.mkdir()
+    git_dir = skills_dir / "git"
+    git_dir.mkdir()
+    (git_dir / "SKILL.md").write_text(
+        "---\nname: git\ndescription: Git skill\n---\nGit content."
+    )
+
+    skills = _fallback_skill_lookup("git", skills_dir, repo_dir)
+    assert len(skills) == 1
+    assert skills[0].name == "git"
+
+
+def test_fallback_skill_lookup_finds_legacy_md(tmp_path):
+    """Test _fallback_skill_lookup finds legacy .md files."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    skills_dir = repo_dir / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "git.md").write_text(
+        "---\nname: git\ntriggers:\n  - git\n---\nGit content."
+    )
+
+    skills = _fallback_skill_lookup("git", skills_dir, repo_dir)
+    assert len(skills) == 1
+    assert skills[0].name == "git"
+
+
+def test_fallback_skill_lookup_returns_empty_for_missing(tmp_path):
+    """Test _fallback_skill_lookup returns empty for missing skill."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    skills_dir = repo_dir / "skills"
+    skills_dir.mkdir()
+
+    skills = _fallback_skill_lookup("nonexistent", skills_dir, repo_dir)
+    assert skills == []
+
+
+def test_load_skills_from_resolved_path_with_skill_md(tmp_path):
+    """Test _load_skills_from_resolved_path loads SKILL.md."""
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: Test\n---\nContent."
+    )
+
+    skills = _load_skills_from_resolved_path(skill_dir)
+    assert len(skills) == 1
+    assert skills[0].name == "my-skill"
+
+
+def test_load_skills_from_resolved_path_with_plugin_structure(tmp_path):
+    """Test _load_skills_from_resolved_path loads from plugin skills/ dir."""
+    plugin_dir = tmp_path / "my-plugin"
+    plugin_dir.mkdir()
+    inner_skills = plugin_dir / "skills"
+    inner_skills.mkdir()
+    skill_subdir = inner_skills / "helper"
+    skill_subdir.mkdir()
+    (skill_subdir / "SKILL.md").write_text(
+        "---\nname: helper\ndescription: Helper\n---\nHelper content."
+    )
+
+    skills = _load_skills_from_resolved_path(plugin_dir)
+    assert len(skills) == 1
+    assert skills[0].name == "helper"
+
+
+def test_load_skills_from_resolved_path_empty_dir(tmp_path):
+    """Test _load_skills_from_resolved_path returns empty for empty dir."""
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    assert _load_skills_from_resolved_path(empty_dir) == []
+
+
+def test_load_skills_from_resolved_path_nonexistent(tmp_path):
+    """Test _load_skills_from_resolved_path returns empty for missing path."""
+    assert _load_skills_from_resolved_path(tmp_path / "nonexistent") == []
+
+
+@pytest.fixture
+def mock_repo_with_external_plugin(tmp_path):
+    """Create a mock repo with a marketplace referencing an external plugin."""
+    repo_dir = tmp_path / "mock_repo"
+    repo_dir.mkdir()
+
+    # Create skills directory with one local skill
+    skills_dir = repo_dir / "skills"
+    skills_dir.mkdir()
+    git_dir = skills_dir / "git"
+    git_dir.mkdir()
+    (git_dir / "SKILL.md").write_text(
+        "---\nname: git\ndescription: Git skill\n---\nGit content."
+    )
+
+    # Marketplace references git locally AND an external plugin
+    marketplaces_dir = repo_dir / "marketplaces"
+    marketplaces_dir.mkdir()
+    marketplace = {
+        "name": "default",
+        "owner": {"name": "Test"},
+        "plugins": [
+            {"name": "git", "source": "./git", "description": "Git"},
+            {
+                "name": "external-tool",
+                "source": {
+                    "source": "github",
+                    "repo": "owner/plugin-repo",
+                    "ref": "main",
+                },
+                "description": "External plugin",
+            },
+        ],
+    }
+    (marketplaces_dir / "default.json").write_text(json.dumps(marketplace))
+
+    (repo_dir / ".git").mkdir()
+    return repo_dir
+
+
+def test_load_public_skills_fetches_external_plugin(
+    mock_repo_with_external_plugin, tmp_path
+):
+    """Test that external plugins are fetched and their skills loaded."""
+    # Create a fake fetched plugin directory
+    fetched_plugin_dir = tmp_path / "fetched-plugin"
+    fetched_plugin_dir.mkdir()
+    fetched_skills = fetched_plugin_dir / "skills"
+    fetched_skills.mkdir()
+    ext_skill_dir = fetched_skills / "ext-skill"
+    ext_skill_dir.mkdir()
+    (ext_skill_dir / "SKILL.md").write_text(
+        "---\nname: ext-skill\ndescription: External\n---\nExternal skill content."
+    )
+    # Plugin manifest
+    plugin_meta_dir = fetched_plugin_dir / ".plugin"
+    plugin_meta_dir.mkdir()
+    (plugin_meta_dir / "plugin.json").write_text(
+        json.dumps({"name": "external-tool", "version": "1.0.0"})
+    )
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return mock_repo_with_external_plugin
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+        patch(
+            "openhands.sdk.plugin.plugin.fetch_plugin",
+            return_value=fetched_plugin_dir,
+        ),
+    ):
+        skills = load_public_skills()
+
+    skill_names = {s.name for s in skills}
+    # git is loaded via fallback, ext-skill from fetched external plugin
+    assert "git" in skill_names
+    assert "ext-skill" in skill_names
+
+
+def test_load_public_skills_external_fetch_failure_is_graceful(
+    mock_repo_with_external_plugin, tmp_path
+):
+    """Test that a failed external plugin fetch doesn't break other skills."""
+    from openhands.sdk.plugin.fetch import PluginFetchError
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return mock_repo_with_external_plugin
+
+    def mock_fetch(*args, **kwargs):
+        raise PluginFetchError("Network error")
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+        patch(
+            "openhands.sdk.plugin.plugin.fetch_plugin",
+            side_effect=mock_fetch,
+        ),
+    ):
+        skills = load_public_skills()
+
+    # Only the local git skill should be loaded; external failed gracefully
+    skill_names = {s.name for s in skills}
+    assert "git" in skill_names
+
+
+@pytest.fixture
+def mock_repo_with_local_plugin_source(tmp_path):
+    """Create a mock repo where plugin source points to a local directory
+    that actually contains a skills/ subdirectory (proper plugin structure).
+    """
+    repo_dir = tmp_path / "mock_repo"
+    repo_dir.mkdir()
+
+    # Create a plugin directory at repo_root/my-plugin/ (not under skills/)
+    plugin_dir = repo_dir / "my-plugin"
+    plugin_dir.mkdir()
+    inner_skills = plugin_dir / "skills"
+    inner_skills.mkdir()
+    tool_skill_dir = inner_skills / "my-tool"
+    tool_skill_dir.mkdir()
+    (tool_skill_dir / "SKILL.md").write_text(
+        "---\nname: my-tool\ndescription: My tool\n---\nTool content."
+    )
+
+    # Skills directory still needed (even if empty, for load_public_skills)
+    (repo_dir / "skills").mkdir()
+
+    # Marketplace points to the local plugin directory
+    marketplaces_dir = repo_dir / "marketplaces"
+    marketplaces_dir.mkdir()
+    marketplace = {
+        "name": "default",
+        "owner": {"name": "Test"},
+        "plugins": [
+            {
+                "name": "my-plugin",
+                "source": "./my-plugin",
+                "description": "Local plugin",
+            },
+        ],
+    }
+    (marketplaces_dir / "default.json").write_text(json.dumps(marketplace))
+
+    (repo_dir / ".git").mkdir()
+    return repo_dir
+
+
+def test_load_public_skills_resolves_local_plugin_source(
+    mock_repo_with_local_plugin_source, tmp_path
+):
+    """Test that local plugin source paths are resolved and skills loaded."""
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return mock_repo_with_local_plugin_source
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        skills = load_public_skills()
+
+    skill_names = {s.name for s in skills}
+    assert "my-tool" in skill_names
+
+
+def test_resolve_plugin_skills_deduplicates_by_name(tmp_path):
+    """Test that skills with the same name are not duplicated."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    skills_dir = repo_dir / "skills"
+    skills_dir.mkdir()
+    git_dir = skills_dir / "git"
+    git_dir.mkdir()
+    (git_dir / "SKILL.md").write_text(
+        "---\nname: git\ndescription: Git\n---\nGit content."
+    )
+
+    # Marketplace lists git twice with different sources
+    marketplaces_dir = repo_dir / "marketplaces"
+    marketplaces_dir.mkdir()
+    marketplace = {
+        "name": "default",
+        "owner": {"name": "Test"},
+        "plugins": [
+            {"name": "git", "source": "./git", "description": "Git 1"},
+            {"name": "git", "source": "./git2", "description": "Git 2"},
+        ],
+    }
+    (marketplaces_dir / "default.json").write_text(json.dumps(marketplace))
+    (repo_dir / ".git").mkdir()
+
+    def mock_update_repo(repo_url, branch, cache_dir):
+        return repo_dir
+
+    with (
+        patch(
+            "openhands.sdk.context.skills.skill.update_skills_repository",
+            side_effect=mock_update_repo,
+        ),
+        patch(
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            return_value=tmp_path,
+        ),
+    ):
+        skills = load_public_skills()
+
+    # Should only have one "git" skill (deduplicated)
+    git_skills = [s for s in skills if s.name == "git"]
+    assert len(git_skills) == 1
