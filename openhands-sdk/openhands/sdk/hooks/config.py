@@ -47,13 +47,22 @@ class HookDefinition(BaseModel):
     """A single hook definition."""
 
     type: HookType = HookType.COMMAND
-    command: str
+    command: str | None = None
+    prompt: str | None = None
     timeout: int = 60
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
 
     model_config = {
         "populate_by_name": True,  # Allow both 'async' and 'async_' in input
     }
+
+    @model_validator(mode="after")
+    def _check_required_fields(self) -> "HookDefinition":
+        if self.type == HookType.COMMAND and not self.command:
+            raise ValueError("'command' is required when type is 'command'")
+        if self.type == HookType.PROMPT and not self.prompt:
+            raise ValueError("'prompt' is required when type is 'prompt'")
+        return self
 
 
 class HookMatcher(BaseModel):

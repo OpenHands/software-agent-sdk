@@ -309,3 +309,29 @@ class TestAsyncHooks:
         start_hooks = config.get_hooks_for_event(HookEventType.SESSION_START)
         assert len(start_hooks) == 1
         assert start_hooks[0].async_ is True
+
+
+def test_issue_2749():
+    """Prompt-based stop hooks should not cause a validation error.
+
+    https://github.com/OpenHands/software-agent-sdk/issues/2749
+    """
+    data = {
+        "hooks": {
+            "Stop": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "prompt",
+                            "prompt": "Evaluate if we should stop.",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    config = HookConfig.from_dict(data)
+    hooks = config.get_hooks_for_event(HookEventType.STOP)
+    assert len(hooks) == 1
+    assert hooks[0].type.value == "prompt"
