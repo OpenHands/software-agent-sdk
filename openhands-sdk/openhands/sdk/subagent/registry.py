@@ -36,6 +36,7 @@ from openhands.sdk.subagent.load import (
     load_user_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
@@ -358,10 +359,25 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     Raises:
         ValueError: If no agent factory with the given name is found
     """
-    if name is None or name == "":
-        factory_name = "default"
+    # Map old names to new names for backward compatibility
+    _DEPRECATED_NAMES = {
+        "default": "general-purpose",
+        "default cli mode": "general-purpose",
+        "explore": "code-explorer",
+        "bash": "bash-runner",
+    }
+
+    if name in _DEPRECATED_NAMES:
+        new_name = _DEPRECATED_NAMES[name]
+        warn_deprecated(
+            f"Agent name '{name}'",
+            deprecated_in="1.12.0",
+            removed_in="2.0.0",
+            details=f"Use '{new_name}' instead.",
+        )
+        factory_name = new_name
     else:
-        factory_name = name
+        factory_name = "general-purpose" if not name else name
 
     with _registry_lock:
         factory = _agent_factories.get(factory_name)
