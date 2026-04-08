@@ -29,6 +29,19 @@ categories = [
 ]
 
 
+def extract_message_text(event: MessageEvent) -> str | None:
+    """Extract plain-text content from a message event."""
+    if not event.llm_message.content:
+        return None
+
+    text_parts = []
+    for content in event.llm_message.content:
+        if isinstance(content, TextContent):
+            text_parts.append(content.text)
+
+    return " ".join(text_parts).strip() or None
+
+
 def extract_first_user_message(events: Sequence[Event]) -> str | None:
     """Extract the first user message from conversation events.
 
@@ -39,19 +52,9 @@ def extract_first_user_message(events: Sequence[Event]) -> str | None:
         The first user message text, or None if no user message is found.
     """
     for event in events:
-        if (
-            isinstance(event, MessageEvent)
-            and event.source == "user"
-            and event.llm_message.content
-        ):
-            # Extract text content from the message
-            text_parts = []
-            for content in event.llm_message.content:
-                if isinstance(content, TextContent):
-                    text_parts.append(content.text)
-
-            if text_parts:
-                return " ".join(text_parts).strip()
+        if isinstance(event, MessageEvent) and event.source == "user":
+            if text := extract_message_text(event):
+                return text
 
     return None
 
@@ -154,6 +157,20 @@ def generate_fallback_title(message: str, max_length: int = 50) -> str:
     return title
 
 
+def generate_title_from_message(
+    message: str, llm: LLM | None = None, max_length: int = 50
+) -> str:
+    """Generate a title from an already-extracted user message."""
+    llm_to_use = None if llm and llm.model == "acp-managed" else llm
+
+    if llm_to_use:
+        llm_title = generate_title_with_llm(message, llm_to_use, max_length)
+        if llm_title:
+            return llm_title
+
+    return generate_fallback_title(message, max_length)
+
+
 def generate_conversation_title(
     events: Sequence[Event], llm: LLM | None = None, max_length: int = 50
 ) -> str:
@@ -181,11 +198,4 @@ def generate_conversation_title(
     if not first_user_message:
         raise ValueError("No user messages found in conversation events")
 
-    # Try to generate title with LLM if provided
-    if llm:
-        llm_title = generate_title_with_llm(first_user_message, llm, max_length)
-        if llm_title:
-            return llm_title
-
-    # Fall back to simple truncation
-    return generate_fallback_title(first_user_message, max_length)
+    return generate_title_from_message(first_user_message, llm, max_length)

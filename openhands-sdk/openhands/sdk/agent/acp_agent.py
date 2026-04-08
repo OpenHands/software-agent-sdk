@@ -297,7 +297,7 @@ class _OpenHandsACPBridge:
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
         self.on_activity: Any = None  # Callable[[], None] | None
-        self._last_activity_signal: float = 0.0
+        self._last_activity_signal: float = float("-inf")
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._last_cost_by_session: dict[str, float] = {}
@@ -537,7 +537,7 @@ class ACPAgent(AgentBase):
         ...,
         description=(
             "Command to start the ACP server, e.g."
-            " ['npx', '-y', '@zed-industries/claude-agent-acp']"
+            " ['npx', '-y', '@agentclientprotocol/claude-agent-acp']"
         ),
     )
     acp_args: list[str] = Field(
