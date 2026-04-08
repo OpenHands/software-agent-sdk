@@ -962,11 +962,6 @@ def _load_marketplace_object(
         return None
 
 
-def _is_remote_source(source: str) -> bool:
-    """Check if a resolved source string is remote (needs fetching)."""
-    return source.startswith(("github:", "https://", "http://", "git@", "git://"))
-
-
 def _load_skills_from_resolved_path(
     plugin_dir: Path,
     skill_base_dir: Path | None = None,
@@ -975,25 +970,16 @@ def _load_skills_from_resolved_path(
 
     Tries to load as a full plugin first (has skills/ subdir), then
     falls back to loading as a single skill directory (has SKILL.md).
-
-    Args:
-        plugin_dir: Path to the resolved plugin or skill directory.
-        skill_base_dir: Base directory for computing relative skill source paths.
-
-    Returns:
-        List of loaded Skill objects (may be empty).
     """
     if not plugin_dir.is_dir():
         return []
 
-    # If it has a skills/ subdirectory, load skills from it (plugin structure)
     inner_skills_dir = plugin_dir / "skills"
     if inner_skills_dir.is_dir():
         from openhands.sdk.plugin.plugin import _load_skills
 
         return _load_skills(plugin_dir)
 
-    # If the directory itself contains a SKILL.md, load as a single skill
     md_path = find_skill_md(plugin_dir)
     if md_path:
         try:
@@ -1018,21 +1004,17 @@ def _resolve_plugin_skills(
     """Resolve a marketplace plugin entry's source and load its skills.
 
     Resolution order:
-    1. Resolve the source field via Marketplace.resolve_plugin_source()
-    2. For remote sources: fetch the plugin repo, then load skills from it
-    3. For local sources that exist: load skills directly
-    4. Fall back to name-based lookup in skills_dir (backward compatibility)
-
-    Args:
-        marketplace: The Marketplace object (for source resolution).
-        plugin_entry: The plugin entry to resolve.
-        skills_dir: The skills/ directory in the extensions repo.
-        repo_path: Root path of the extensions repo.
-
-    Returns:
-        List of Skill objects loaded from the plugin.
+    1. Resolve source via Marketplace.resolve_plugin_source()
+    2. Remote sources: fetch via Plugin.fetch(), then load skills
+    3. Local sources: load skills directly from the path
+    4. Fallback: name-based lookup in skills_dir (backward compatibility)
     """
+    from openhands.sdk.plugin import Plugin, PluginFetchError
+
     # Try to resolve the source field
+    source: str | None = None
+    ref: str | None = None
+    subpath: str | None = None
     try:
         source, ref, subpath = marketplace.resolve_plugin_source(plugin_entry)
     except Exception as e:
@@ -1041,110 +1023,60 @@ def _resolve_plugin_skills(
             plugin_entry.name,
             e,
         )
-        return _fallback_skill_lookup(plugin_entry.name, skills_dir, repo_path)
 
     # Remote source: fetch and load
-    if _is_remote_source(source):
-        return _fetch_and_load_remote_skills(source, ref, subpath, plugin_entry.name)
+    if source and source.startswith(
+        ("github:", "https://", "http://", "git@", "git://")
+    ):
+        try:
+            plugin_path = Plugin.fetch(source=source, ref=ref, repo_path=subpath)
+        except PluginFetchError as e:
+            logger.warning(
+                "Failed to fetch plugin '%s' from %s: %s",
+                plugin_entry.name,
+                source,
+                e,
+            )
+            return []
+
+        # Try loading as a full plugin, fall back to raw directory
+        try:
+            plugin = Plugin.load(plugin_path)
+            skills = plugin.get_all_skills()
+            if skills:
+                return skills
+        except Exception:
+            pass
+        return _load_skills_from_resolved_path(plugin_path)
 
     # Local source: try to load from the resolved path
-    local_path = Path(source)
-    if local_path.is_dir():
-        skills = _load_skills_from_resolved_path(local_path, skill_base_dir=repo_path)
-        if skills:
-            return skills
+    if source:
+        local_path = Path(source)
+        if local_path.is_dir():
+            skills = _load_skills_from_resolved_path(
+                local_path, skill_base_dir=repo_path
+            )
+            if skills:
+                return skills
 
     # Fall back to name-based lookup in skills/ directory
-    return _fallback_skill_lookup(plugin_entry.name, skills_dir, repo_path)
-
-
-def _fetch_and_load_remote_skills(
-    source: str,
-    ref: str | None,
-    subpath: str | None,
-    plugin_name: str,
-) -> list[Skill]:
-    """Fetch a remote plugin and load skills from it.
-
-    Args:
-        source: Remote source string (e.g. "github:owner/repo").
-        ref: Optional git ref (branch, tag, commit).
-        subpath: Optional subdirectory within the fetched repo.
-        plugin_name: Plugin name (for logging).
-
-    Returns:
-        List of loaded Skill objects.
-    """
-    from openhands.sdk.plugin import Plugin, PluginFetchError
-
-    try:
-        plugin_path = Plugin.fetch(source=source, ref=ref, repo_path=subpath)
-    except PluginFetchError as e:
-        logger.warning(
-            "Failed to fetch plugin '%s' from %s: %s",
-            plugin_name,
-            source,
-            e,
-        )
-        return []
-
-    # Try loading as a full plugin first
-    try:
-        plugin = Plugin.load(plugin_path)
-        skills = plugin.get_all_skills()
-        if skills:
-            logger.debug(
-                "Loaded %d skills from plugin '%s' (%s)",
-                len(skills),
-                plugin_name,
-                source,
-            )
-            return skills
-    except Exception:
-        pass
-
-    # Fall back to loading skills directly from the directory
-    return _load_skills_from_resolved_path(plugin_path)
-
-
-def _fallback_skill_lookup(
-    skill_name: str, skills_dir: Path, repo_path: Path
-) -> list[Skill]:
-    """Look up a skill by name in the skills directory (backward compat).
-
-    Checks for SKILL.md in a subdirectory, then legacy .md files.
-
-    Args:
-        skill_name: Name of the skill to look up.
-        skills_dir: The skills/ directory to search in.
-        repo_path: Root path of the repo (for Skill.load base_dir).
-
-    Returns:
-        List containing the loaded Skill, or empty list if not found.
-    """
-    skill_md = skills_dir / skill_name / "SKILL.md"
-    if skill_md.exists():
-        return _try_load_skill_file(skill_md, repo_path)
-
-    legacy_md = skills_dir / f"{skill_name}.md"
-    if legacy_md.exists():
-        return _try_load_skill_file(legacy_md, repo_path)
+    for candidate in (
+        skills_dir / plugin_entry.name / "SKILL.md",
+        skills_dir / f"{plugin_entry.name}.md",
+    ):
+        if candidate.exists():
+            try:
+                skill = Skill.load(path=candidate, skill_base_dir=repo_path)
+                if skill is not None:
+                    return [skill]
+            except Exception as e:
+                logger.warning(f"Failed to load skill from {candidate.name}: {e}")
+                return []
 
     logger.debug(
         "Skill '%s' not found in skills dir via fallback lookup",
-        skill_name,
+        plugin_entry.name,
     )
-    return []
-
-
-def _try_load_skill_file(skill_file: Path, repo_path: Path) -> list[Skill]:
-    """Try to load a single skill file, returning it in a list or empty."""
-    try:
-        skill = Skill.load(path=skill_file, skill_base_dir=repo_path)
-        if skill is not None:
-            return [skill]
-    except Exception as e:
-        logger.warning(f"Failed to load skill from {skill_file.name}: {e}")
     return []
 
 
@@ -1250,10 +1182,13 @@ def load_public_skills(
             )
 
             for skill_file in all_skill_files:
-                loaded = _try_load_skill_file(skill_file, repo_path)
-                for skill in loaded:
-                    all_skills.append(skill)
-                    logger.debug(f"Loaded public skill: {skill.name}")
+                try:
+                    skill = Skill.load(path=skill_file, skill_base_dir=repo_path)
+                    if skill is not None:
+                        all_skills.append(skill)
+                        logger.debug(f"Loaded public skill: {skill.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to load skill from {skill_file.name}: {e}")
 
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {e!s}")
