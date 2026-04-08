@@ -900,32 +900,6 @@ PUBLIC_SKILLS_BRANCH = "main"
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 
 
-def load_marketplace_skill_names(
-    repo_path: Path, marketplace_path: str
-) -> set[str] | None:
-    """Load the list of skill names from a marketplace manifest file.
-
-    Uses the existing Marketplace model from openhands.sdk.plugin to parse
-    the marketplace JSON file and extract plugin names.
-
-    Args:
-        repo_path: Path to the local repository.
-        marketplace_path: Relative path to the marketplace JSON file within the repo.
-
-    Returns:
-        Set of skill names to load, or None if marketplace file not found or invalid.
-    """
-    marketplace = _load_marketplace_object(repo_path, marketplace_path)
-    if marketplace is None:
-        return None
-
-    skill_names = {plugin.name for plugin in marketplace.plugins}
-    logger.debug(
-        f"Loaded {len(skill_names)} skill names from marketplace: {marketplace_path}"
-    )
-    return skill_names
-
-
 def _load_marketplace_object(
     repo_path: Path, marketplace_path: str
 ) -> "Marketplace | None":
@@ -1045,8 +1019,12 @@ def _resolve_plugin_skills(
             skills = plugin.get_all_skills()
             if skills:
                 return skills
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(
+                "Plugin.load failed for '%s', trying raw directory: %s",
+                plugin_entry.name,
+                e,
+            )
         return _load_skills_from_resolved_path(plugin_path)
 
     # Local source: try to load from the resolved path

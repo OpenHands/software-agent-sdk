@@ -12,7 +12,6 @@ from openhands.sdk.context.skills import (
     Skill,
     load_public_skills,
 )
-from openhands.sdk.context.skills.skill import load_marketplace_skill_names
 from openhands.sdk.context.skills.utils import update_skills_repository
 
 
@@ -672,49 +671,6 @@ def mock_repo_with_marketplace(tmp_path):
     (repo_dir / ".git").mkdir()
 
     return repo_dir
-
-
-def test_load_marketplace_skill_names_returns_skill_names(mock_repo_with_marketplace):
-    """Test that load_marketplace_skill_names correctly extracts skill names."""
-    skill_names = load_marketplace_skill_names(
-        mock_repo_with_marketplace, "marketplaces/default.json"
-    )
-
-    assert skill_names is not None
-    assert skill_names == {"git", "docker"}
-
-
-def test_load_marketplace_skill_names_returns_none_when_file_missing(tmp_path):
-    """Test that load_marketplace_skill_names returns None when file doesn't exist."""
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-
-    result = load_marketplace_skill_names(repo_dir, "marketplaces/default.json")
-    assert result is None
-
-
-def test_load_marketplace_skill_names_returns_none_for_invalid_json(tmp_path):
-    """Test that load_marketplace_skill_names handles invalid JSON gracefully."""
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-    marketplaces_dir = repo_dir / "marketplaces"
-    marketplaces_dir.mkdir()
-    (marketplaces_dir / "default.json").write_text("{ invalid json }")
-
-    result = load_marketplace_skill_names(repo_dir, "marketplaces/default.json")
-    assert result is None
-
-
-def test_load_marketplace_skill_names_returns_none_for_missing_plugins(tmp_path):
-    """Test that load_marketplace_skill_names handles missing plugins key."""
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-    marketplaces_dir = repo_dir / "marketplaces"
-    marketplaces_dir.mkdir()
-    (marketplaces_dir / "default.json").write_text(json.dumps({"name": "test"}))
-
-    result = load_marketplace_skill_names(repo_dir, "marketplaces/default.json")
-    assert result is None
 
 
 def test_load_public_skills_filters_by_marketplace(
