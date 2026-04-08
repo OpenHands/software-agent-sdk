@@ -3,7 +3,10 @@
 import json
 import tempfile
 
-from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+import pytest
+from pydantic import ValidationError
+
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher, HookType
 from openhands.sdk.hooks.types import HookEventType
 
 
@@ -335,3 +338,21 @@ def test_issue_2749():
     hooks = config.get_hooks_for_event(HookEventType.STOP)
     assert len(hooks) == 1
     assert hooks[0].type.value == "prompt"
+    assert hooks[0].prompt == "Evaluate if we should stop."
+
+
+@pytest.mark.parametrize(
+    ("hook_type", "match"),
+    [
+        (HookType.COMMAND, "command"),
+        (HookType.PROMPT, "'prompt' is required"),
+    ],
+    ids=["command_requires_command", "prompt_requires_prompt"],
+)
+def test_issue_2749_validation(hook_type: HookType, match: str):
+    """Validator should enforce required fields based on hook type.
+
+    https://github.com/OpenHands/software-agent-sdk/issues/2749
+    """
+    with pytest.raises(ValidationError, match=match):
+        HookDefinition(type=hook_type)  # type: ignore[call-arg]
