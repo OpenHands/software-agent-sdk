@@ -1,5 +1,6 @@
 import contextlib
 import json
+import logging
 import re
 import types
 from collections.abc import Sequence
@@ -34,6 +35,9 @@ _CTRL_ESCAPE_TABLE: dict[int, str] = {
     0x0C: "\\f",
     0x0D: "\\r",
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 def _escape_control_char(m: re.Match[str]) -> str:
@@ -154,6 +158,12 @@ def fix_malformed_tool_arguments(
                     with contextlib.suppress(json.JSONDecodeError, ValueError):
                         parsed_value = json.loads(value[: idx + 1], strict=False)
                         if isinstance(parsed_value, (list, dict)):
+                            truncated = value[idx + 1 :]
+                            logger.warning(
+                                "Truncated trailing garbage from tool argument %r: %r",
+                                data_key,
+                                truncated,
+                            )
                             fixed_arguments[data_key] = parsed_value
                             break
 
