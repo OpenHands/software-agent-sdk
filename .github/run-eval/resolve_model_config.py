@@ -282,6 +282,15 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "trinity-large-thinking": {
+        "id": "trinity-large-thinking",
+        "display_name": "Trinity Large Thinking",
+        "llm_config": {
+            "model": "litellm_proxy/trinity-large-thinking",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
 }
 
 
