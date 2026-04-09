@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import re
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
@@ -891,7 +892,9 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
 # Public skills repository configuration
 PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
-PUBLIC_SKILLS_BRANCH = "main"
+# Allow overriding the branch via EXTENSIONS_REF environment variable
+# (used by evaluation/benchmarks workflows to test feature branches)
+PUBLIC_SKILLS_BRANCH = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 
 
