@@ -13,11 +13,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
-from openhands.sdk.context.skills.skill import Skill, load_skills_from_dir
-from openhands.sdk.context.skills.utils import find_skill_md, validate_skill_name
 from openhands.sdk.logger import get_logger
+from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.fetch import fetch_skill_with_resolution
+from openhands.sdk.skills.skill import Skill, load_skills_from_dir
+from openhands.sdk.skills.utils import find_skill_md, validate_skill_name
 
 
 logger = get_logger(__name__)

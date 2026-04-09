@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import api
 from openhands.agent_server.skills_service import SkillLoadResult
-from openhands.sdk.context.skills import KeywordTrigger, Skill
+from openhands.sdk.skills import KeywordTrigger, Skill
 
 
 @pytest.fixture

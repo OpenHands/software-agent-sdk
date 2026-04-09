@@ -1,6 +1,6 @@
 """Tests for load_project_skills functionality."""
 
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     KeywordTrigger,
     load_project_skills,
 )

@@ -14,7 +14,7 @@ from openhands.agent_server.skills_service import (
     merge_skills,
     sync_public_skills,
 )
-from openhands.sdk.context.skills import Skill
+from openhands.sdk.skills import Skill
 
 
 class TestExposedUrlData:

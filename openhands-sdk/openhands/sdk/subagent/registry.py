@@ -189,7 +189,7 @@ def agent_definition_to_factory(
     # Priority: project skills override user skills (handled by load_available_skills).
     resolved_skills: list = []
     if agent_def.skills:
-        from openhands.sdk.context.skills import load_available_skills
+        from openhands.sdk.skills import load_available_skills
 
         available = load_available_skills(
             work_dir, include_user=True, include_project=True, include_public=False

@@ -34,7 +34,7 @@ def test_extensions_ref_default():
 import os
 if "EXTENSIONS_REF" in os.environ:
     del os.environ["EXTENSIONS_REF"]
-from openhands.sdk.context.skills.skill import PUBLIC_SKILLS_BRANCH
+from openhands.sdk.skills.skill import PUBLIC_SKILLS_BRANCH
 assert PUBLIC_SKILLS_BRANCH == "main", (
     f"Expected 'main' but got '{PUBLIC_SKILLS_BRANCH}'"
 )
@@ -45,7 +45,7 @@ assert PUBLIC_SKILLS_BRANCH == "main", (
 def test_extensions_ref_custom_branch():
     """PUBLIC_SKILLS_BRANCH should use EXTENSIONS_REF when set."""
     code = """
-from openhands.sdk.context.skills.skill import PUBLIC_SKILLS_BRANCH
+from openhands.sdk.skills.skill import PUBLIC_SKILLS_BRANCH
 assert PUBLIC_SKILLS_BRANCH == "feature-branch", (
     f"Expected 'feature-branch' but got '{PUBLIC_SKILLS_BRANCH}'"
 )
@@ -57,7 +57,7 @@ def test_extensions_ref_with_load_public_skills():
     """load_public_skills should respect EXTENSIONS_REF environment variable."""
     code = """
 from unittest import mock
-from openhands.sdk.context.skills.skill import (
+from openhands.sdk.skills.skill import (
     PUBLIC_SKILLS_BRANCH,
     load_public_skills,
 )
@@ -65,7 +65,7 @@ assert PUBLIC_SKILLS_BRANCH == "test-branch", (
     f"Expected 'test-branch' but got '{PUBLIC_SKILLS_BRANCH}'"
 )
 with mock.patch(
-    "openhands.sdk.context.skills.skill.update_skills_repository"
+    "openhands.sdk.skills.skill.update_skills_repository"
 ) as mock_update:
     mock_update.return_value = None
     load_public_skills()
@@ -82,7 +82,7 @@ with mock.patch(
 def test_extensions_ref_empty_string():
     """Empty EXTENSIONS_REF should fall back to 'main'."""
     code = """
-from openhands.sdk.context.skills.skill import PUBLIC_SKILLS_BRANCH
+from openhands.sdk.skills.skill import PUBLIC_SKILLS_BRANCH
 # Empty string returns empty string per os.environ.get behavior
 assert PUBLIC_SKILLS_BRANCH == "", (
     f"Expected '' but got '{PUBLIC_SKILLS_BRANCH}'"

@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     Skill,
     SkillValidationError,
     load_skills_from_dir,
 )
-from openhands.sdk.context.skills.utils import (
+from openhands.sdk.skills.utils import (
     find_skill_md,
     validate_skill_name,
 )
