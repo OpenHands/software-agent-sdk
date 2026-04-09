@@ -53,23 +53,23 @@ def test_extensions_ref_with_load_public_skills():
         # Verify the constant is set correctly
         assert PUBLIC_SKILLS_BRANCH == "test-branch"
 
-        # Mock the actual git operations to avoid needing a real clone
+        # Mock the actual git operations and verify branch is passed
         with mock.patch(
-            "openhands.sdk.context.skills.utils.update_skills_repository"
+            "openhands.sdk.context.skills.skill.update_skills_repository"
         ) as mock_update:
             mock_update.return_value = (
                 None  # Simulate failed clone (expected behavior for test)
             )
 
-            # This should use test-branch internally
-            # We expect it to fail/return empty since we're mocking the repo update
-            try:
-                skills = load_public_skills()
-                # If it succeeds, it should be an empty list since we mocked the update
-                assert isinstance(skills, list)
-            except Exception:
-                # Expected if the mock doesn't perfectly simulate the environment
-                pass
+            load_public_skills()
+
+            # Verify the branch was passed to update_skills_repository
+            mock_update.assert_called_once()
+            call_args = mock_update.call_args
+            # branch is 2nd positional arg: (repo_url, branch, cache_dir)
+            assert call_args[0][1] == "test-branch", (
+                f"Expected branch='test-branch' but got {call_args[0][1]}"
+            )
 
 
 def test_extensions_ref_empty_string():
