@@ -85,7 +85,7 @@ def clear_execstack(path: str | os.PathLike[str]) -> bool:
     """Clear ``PF_X`` from ``PT_GNU_STACK`` in the ELF at ``path``.
 
     Returns ``True`` if a byte was modified, ``False`` otherwise (not an ELF,
-    no ``PT_GNU_STACK`` entry, or ``PF_X`` already cleared).
+    symlink, no ``PT_GNU_STACK`` entry, or ``PF_X`` already cleared).
 
     Raises nothing for non-ELF files — they are silently skipped, so the
     caller can walk a tree indiscriminately.
