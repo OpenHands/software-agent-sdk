@@ -217,7 +217,7 @@ def test_install_with_force_overwrites(
     assert not marker_file.exists()
 
 
-@patch("openhands.sdk.plugin.installed.fetch_plugin_with_resolution")
+@patch("openhands.sdk.extensions.installed.fetch_extension_with_resolution")
 def test_install_from_github_mocked(
     mock_fetch, sample_plugin_dir: Path, installed_dir: Path
 ) -> None:
@@ -481,7 +481,7 @@ def test_update_existing_plugin_mocked(
 
     # Now mock for the update call only
     with patch(
-        "openhands.sdk.plugin.installed.fetch_plugin_with_resolution"
+        "openhands.sdk.extensions.installed.fetch_extension_with_resolution"
     ) as mock_fetch:
         mock_fetch.return_value = (sample_plugin_dir, "newcommit123")
 

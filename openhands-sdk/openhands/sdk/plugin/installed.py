@@ -18,35 +18,24 @@ The installed plugins directory structure follows the Claude Code pattern::
 
 from __future__ import annotations
 
-import json
 import re
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from openhands.sdk.logger import get_logger
-from openhands.sdk.plugin.fetch import (
-    fetch_plugin_with_resolution,
+from openhands.sdk.extensions import (
+    InstalledExtensionInfo,
+    InstalledExtensionManager,
+    InstalledExtensionMetadata,
 )
 from openhands.sdk.plugin.plugin import Plugin
 
 
-logger = get_logger(__name__)
-
 # Default directory for installed plugins
 DEFAULT_INSTALLED_PLUGINS_DIR = Path.home() / ".openhands" / "plugins" / "installed"
 
-# Metadata file for tracking installed plugins
-_METADATA_FILENAME = ".installed.json"
-
 _PLUGIN_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-
-
-def _resolve_installed_dir(installed_dir: Path | None) -> Path:
-    """Return installed_dir or the default if None."""
-    return installed_dir if installed_dir is not None else DEFAULT_INSTALLED_PLUGINS_DIR
 
 
 def get_installed_plugins_dir() -> Path:
@@ -69,32 +58,16 @@ def _validate_plugin_name(name: str) -> None:
         )
 
 
-class InstalledPluginInfo(BaseModel):
+class InstalledPluginInfo(InstalledExtensionInfo):
     """Information about an installed plugin.
 
     This model tracks metadata about a plugin installation, including
     where it was installed from and when.
+
+    Extends InstalledExtensionInfo with plugin-specific fields.
     """
 
-    name: str = Field(description="Plugin name (from manifest)")
     version: str = Field(default="1.0.0", description="Plugin version")
-    description: str = Field(default="", description="Plugin description")
-    enabled: bool = Field(default=True, description="Whether the plugin is enabled")
-    source: str = Field(description="Original source (e.g., 'github:owner/repo')")
-    resolved_ref: str | None = Field(
-        default=None,
-        description="Resolved git commit SHA (for version pinning)",
-    )
-    repo_path: str | None = Field(
-        default=None,
-        description="Subdirectory path within the repository (for monorepos)",
-    )
-    installed_at: str = Field(
-        description="ISO 8601 timestamp of installation",
-    )
-    install_path: str = Field(
-        description="Path where the plugin is installed",
-    )
 
     @classmethod
     def from_plugin(
@@ -118,39 +91,84 @@ class InstalledPluginInfo(BaseModel):
         )
 
 
-class InstalledPluginsMetadata(BaseModel):
-    """Metadata file for tracking all installed plugins."""
+# For backward compatibility, provide InstalledPluginsMetadata as a wrapper
+# around InstalledExtensionMetadata.
+class InstalledPluginsMetadata(InstalledExtensionMetadata[InstalledPluginInfo]):
+    """Metadata file for tracking all installed plugins.
 
-    plugins: dict[str, InstalledPluginInfo] = Field(
-        default_factory=dict,
-        description="Map of plugin name to installation info",
-    )
+    This class wraps InstalledExtensionMetadata for backward compatibility.
+    New code should use the InstalledExtensionManager instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        items: dict[str, InstalledPluginInfo] | None = None,
+        plugins: dict[str, InstalledPluginInfo] | None = None,
+    ) -> None:
+        """Initialize with either items or plugins keyword argument."""
+        # Support both 'items' (new) and 'plugins' (legacy) kwarg
+        data = items if items is not None else (plugins or {})
+        super().__init__(items=data)
+
+    # Alias 'items' as 'plugins' for backward compatibility
+    @property
+    def plugins(self) -> dict[str, InstalledPluginInfo]:
+        """Get installed plugins (alias for items)."""
+        return self.items
+
+    @plugins.setter
+    def plugins(self, value: dict[str, InstalledPluginInfo]) -> None:
+        """Set installed plugins (alias for items)."""
+        self.items = value
 
     @classmethod
-    def get_path(cls, installed_dir: Path) -> Path:
-        """Get the metadata file path for the given installed plugins directory."""
-        return installed_dir / _METADATA_FILENAME
-
-    @classmethod
-    def load_from_dir(cls, installed_dir: Path) -> InstalledPluginsMetadata:
+    def load_from_dir(  # type: ignore[override]
+        cls, installed_dir: Path
+    ) -> InstalledPluginsMetadata:
         """Load metadata from the installed plugins directory."""
-        metadata_path = cls.get_path(installed_dir)
-        if not metadata_path.exists():
-            return cls()
-        try:
-            with open(metadata_path) as f:
-                data = json.load(f)
-            return cls.model_validate(data)
-        except Exception as e:
-            logger.warning(f"Failed to load installed plugins metadata: {e}")
-            return cls()
+        base = InstalledExtensionMetadata.load_from_dir(
+            installed_dir, InstalledPluginInfo
+        )
+        return cls(items=base.items)
 
     def save_to_dir(self, installed_dir: Path) -> None:
-        """Save metadata to the installed plugins directory."""
+        """Save metadata to the installed plugins directory (legacy format)."""
+        import json
+
         metadata_path = self.get_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        # Use "plugins" key for backward compatibility
+        data = {
+            "plugins": {name: info.model_dump() for name, info in self.items.items()}
+        }
         with open(metadata_path, "w") as f:
-            json.dump(self.model_dump(), f, indent=2)
+            json.dump(data, f, indent=2)
+
+
+def _create_plugin_info(
+    plugin: Plugin,
+    source: str,
+    resolved_ref: str | None,
+    repo_path: str | None,
+    install_path: Path,
+) -> InstalledPluginInfo:
+    """Create InstalledPluginInfo from a loaded Plugin (for manager callback)."""
+    return InstalledPluginInfo.from_plugin(
+        plugin, source, resolved_ref, repo_path, install_path
+    )
+
+
+# Create the plugin manager instance
+_plugin_manager: InstalledExtensionManager[Plugin, InstalledPluginInfo] = (
+    InstalledExtensionManager(
+        default_dir=DEFAULT_INSTALLED_PLUGINS_DIR,
+        validate_name=_validate_plugin_name,
+        load_item=Plugin.load,
+        create_info=_create_plugin_info,
+        info_type=InstalledPluginInfo,
+    )
+)
 
 
 def install_plugin(
@@ -189,59 +207,13 @@ def install_plugin(
         >>> info = install_plugin("github:owner/my-plugin", ref="v1.0.0")
         >>> print(f"Installed {info.name} from {info.source}")
     """
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    # Fetch the plugin (downloads to cache if remote)
-    logger.info(f"Fetching plugin from {source}")
-    fetched_path, resolved_ref = fetch_plugin_with_resolution(
+    return _plugin_manager.install(
         source=source,
         ref=ref,
         repo_path=repo_path,
-        update=True,
+        installed_dir=installed_dir,
+        force=force,
     )
-
-    # Load the plugin to get its metadata
-    plugin = Plugin.load(fetched_path)
-    plugin_name = plugin.name
-    _validate_plugin_name(plugin_name)
-
-    # Check if already installed
-    install_path = installed_dir / plugin_name
-    if install_path.exists() and not force:
-        raise FileExistsError(
-            f"Plugin '{plugin_name}' is already installed at {install_path}. "
-            f"Use force=True to overwrite."
-        )
-
-    # Remove existing installation if force=True
-    if install_path.exists():
-        logger.info(f"Removing existing installation of '{plugin_name}'")
-        shutil.rmtree(install_path)
-
-    # Copy plugin to installed directory
-    logger.info(f"Installing plugin '{plugin_name}' to {install_path}")
-    installed_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(fetched_path, install_path)
-
-    # Create installation info
-    info = InstalledPluginInfo.from_plugin(
-        plugin=plugin,
-        source=source,
-        resolved_ref=resolved_ref,
-        repo_path=repo_path,
-        install_path=install_path,
-    )
-
-    # Update metadata
-    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
-    existing_info = metadata.plugins.get(plugin_name)
-    if existing_info is not None:
-        info.enabled = existing_info.enabled
-    metadata.plugins[plugin_name] = info
-    metadata.save_to_dir(installed_dir)
-
-    logger.info(f"Successfully installed plugin '{plugin_name}' v{plugin.version}")
-    return info
 
 
 def uninstall_plugin(
@@ -267,65 +239,7 @@ def uninstall_plugin(
         ... else:
         ...     print("Plugin was not installed")
     """
-    _validate_plugin_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
-    if name not in metadata.plugins:
-        logger.warning(f"Plugin '{name}' is not installed")
-        return False
-
-    plugin_path = installed_dir / name
-    if plugin_path.exists():
-        logger.info(f"Uninstalling plugin '{name}' from {plugin_path}")
-        shutil.rmtree(plugin_path)
-    else:
-        logger.warning(
-            f"Plugin '{name}' was tracked but its directory is missing: {plugin_path}"
-        )
-
-    del metadata.plugins[name]
-    metadata.save_to_dir(installed_dir)
-
-    logger.info(f"Successfully uninstalled plugin '{name}'")
-    return True
-
-
-def _set_plugin_enabled(
-    name: str,
-    enabled: bool,
-    installed_dir: Path | None = None,
-) -> bool:
-    _validate_plugin_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    if not installed_dir.exists():
-        logger.warning(f"Installed plugins directory does not exist: {installed_dir}")
-        return False
-
-    metadata, _ = _sync_installed_plugins_metadata(installed_dir)
-    info = metadata.plugins.get(name)
-    if info is None:
-        logger.warning(f"Plugin '{name}' is not installed")
-        return False
-
-    plugin_path = installed_dir / name
-    if not plugin_path.exists():
-        logger.warning(
-            f"Plugin '{name}' was tracked but its directory is missing: {plugin_path}"
-        )
-        return False
-
-    if info.enabled == enabled:
-        return True
-
-    info.enabled = enabled
-    metadata.plugins[name] = info
-    metadata.save_to_dir(installed_dir)
-
-    state = "enabled" if enabled else "disabled"
-    logger.info(f"Successfully {state} plugin '{name}'")
-    return True
+    return _plugin_manager.uninstall(name=name, installed_dir=installed_dir)
 
 
 def enable_plugin(
@@ -333,7 +247,7 @@ def enable_plugin(
     installed_dir: Path | None = None,
 ) -> bool:
     """Enable an installed plugin by name."""
-    return _set_plugin_enabled(name, True, installed_dir)
+    return _plugin_manager.enable(name=name, installed_dir=installed_dir)
 
 
 def disable_plugin(
@@ -341,106 +255,7 @@ def disable_plugin(
     installed_dir: Path | None = None,
 ) -> bool:
     """Disable an installed plugin by name."""
-    return _set_plugin_enabled(name, False, installed_dir)
-
-
-def _validate_tracked_plugins(
-    metadata: InstalledPluginsMetadata, installed_dir: Path
-) -> tuple[list[InstalledPluginInfo], bool]:
-    """Validate tracked plugins exist on disk.
-
-    Returns:
-        Tuple of (valid plugins list, whether metadata was modified).
-    """
-    valid_plugins: list[InstalledPluginInfo] = []
-    changed = False
-
-    for name, info in list(metadata.plugins.items()):
-        try:
-            _validate_plugin_name(name)
-        except ValueError as e:
-            logger.warning(f"Invalid tracked plugin name {name!r}, removing: {e}")
-            del metadata.plugins[name]
-            changed = True
-            continue
-
-        plugin_path = installed_dir / name
-        if plugin_path.exists():
-            valid_plugins.append(info)
-        else:
-            logger.warning(f"Plugin '{name}' directory missing, removing from metadata")
-            del metadata.plugins[name]
-            changed = True
-
-    return valid_plugins, changed
-
-
-def _discover_untracked_plugins(
-    metadata: InstalledPluginsMetadata, installed_dir: Path
-) -> tuple[list[InstalledPluginInfo], bool]:
-    """Discover plugin directories not tracked in metadata.
-
-    Returns:
-        Tuple of (discovered plugins list, whether metadata was modified).
-    """
-    discovered: list[InstalledPluginInfo] = []
-    changed = False
-
-    for item in installed_dir.iterdir():
-        if not item.is_dir() or item.name.startswith("."):
-            continue
-        if item.name in metadata.plugins:
-            continue
-
-        try:
-            _validate_plugin_name(item.name)
-        except ValueError:
-            logger.debug(f"Skipping directory with invalid plugin name: {item}")
-            continue
-
-        try:
-            plugin = Plugin.load(item)
-        except Exception as e:
-            logger.debug(f"Skipping directory {item}: {e}")
-            continue
-
-        if plugin.name != item.name:
-            logger.warning(
-                "Skipping plugin directory because manifest name doesn't match "
-                f"directory name: dir={item.name!r}, manifest={plugin.name!r}"
-            )
-            continue
-
-        info = InstalledPluginInfo(
-            name=plugin.name,
-            version=plugin.version,
-            description=plugin.description,
-            source="local",
-            installed_at=datetime.now(UTC).isoformat(),
-            install_path=str(item),
-        )
-        discovered.append(info)
-        metadata.plugins[item.name] = info
-        changed = True
-        logger.info(f"Discovered untracked plugin: {plugin.name}")
-
-    return discovered, changed
-
-
-def _sync_installed_plugins_metadata(
-    installed_dir: Path,
-) -> tuple[InstalledPluginsMetadata, list[InstalledPluginInfo]]:
-    """Sync installed plugins metadata with on-disk plugin directories."""
-    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
-    valid_plugins, tracked_changed = _validate_tracked_plugins(metadata, installed_dir)
-    discovered, discovered_changed = _discover_untracked_plugins(
-        metadata, installed_dir
-    )
-
-    if tracked_changed or discovered_changed:
-        metadata.save_to_dir(installed_dir)
-
-    return metadata, valid_plugins + discovered
+    return _plugin_manager.disable(name=name, installed_dir=installed_dir)
 
 
 def list_installed_plugins(
@@ -463,13 +278,7 @@ def list_installed_plugins(
         >>> for info in list_installed_plugins():
         ...     print(f"{info.name} v{info.version} - {info.description}")
     """
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    if not installed_dir.exists():
-        return []
-
-    _, plugins = _sync_installed_plugins_metadata(installed_dir)
-    return plugins
+    return _plugin_manager.list_installed(installed_dir=installed_dir)
 
 
 def load_installed_plugins(
@@ -492,20 +301,7 @@ def load_installed_plugins(
         >>> for plugin in plugins:
         ...     print(f"Loaded {plugin.name} with {len(plugin.skills)} skills")
     """
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    if not installed_dir.exists():
-        return []
-
-    installed_infos = list_installed_plugins(installed_dir)
-    plugins: list[Plugin] = []
-    for info in installed_infos:
-        if not info.enabled:
-            continue
-        plugin_path = installed_dir / info.name
-        if plugin_path.exists():
-            plugins.append(Plugin.load(plugin_path))
-    return plugins
+    return _plugin_manager.load_installed(installed_dir=installed_dir)
 
 
 def get_installed_plugin(
@@ -527,19 +323,7 @@ def get_installed_plugin(
         >>> if info:
         ...     print(f"Installed from {info.source} at {info.installed_at}")
     """
-    _validate_plugin_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    metadata = InstalledPluginsMetadata.load_from_dir(installed_dir)
-    info = metadata.plugins.get(name)
-
-    # Verify the plugin directory still exists
-    if info is not None:
-        plugin_path = installed_dir / name
-        if not plugin_path.exists():
-            return None
-
-    return info
+    return _plugin_manager.get(name=name, installed_dir=installed_dir)
 
 
 def update_plugin(
@@ -569,21 +353,4 @@ def update_plugin(
         >>> if info:
         ...     print(f"Updated to v{info.version}")
     """
-    _validate_plugin_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    # Get current installation info
-    current_info = get_installed_plugin(name, installed_dir)
-    if current_info is None:
-        logger.warning(f"Plugin '{name}' is not installed")
-        return None
-
-    # Re-install from the original source
-    logger.info(f"Updating plugin '{name}' from {current_info.source}")
-    return install_plugin(
-        source=current_info.source,
-        ref=None,  # Get latest (don't use pinned ref)
-        repo_path=current_info.repo_path,
-        installed_dir=installed_dir,
-        force=True,
-    )
+    return _plugin_manager.update(name=name, installed_dir=installed_dir)

@@ -6,16 +6,18 @@ home directory (~/.openhands/skills/installed/).
 
 from __future__ import annotations
 
-import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from openhands.sdk.extensions import (
+    InstalledExtensionInfo,
+    InstalledExtensionManager,
+    InstalledExtensionMetadata,
+)
 from openhands.sdk.logger import get_logger
-from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
-from openhands.sdk.skills.fetch import fetch_skill_with_resolution
+from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills.skill import Skill, load_skills_from_dir
 from openhands.sdk.skills.utils import find_skill_md, validate_skill_name
 
@@ -23,12 +25,6 @@ from openhands.sdk.skills.utils import find_skill_md, validate_skill_name
 logger = get_logger(__name__)
 
 DEFAULT_INSTALLED_SKILLS_DIR = Path.home() / ".openhands" / "skills" / "installed"
-_METADATA_FILENAME = ".installed.json"
-
-
-def _resolve_installed_dir(installed_dir: Path | None) -> Path:
-    """Return installed_dir or the default if None."""
-    return installed_dir if installed_dir is not None else DEFAULT_INSTALLED_SKILLS_DIR
 
 
 def get_installed_skills_dir() -> Path:
@@ -55,11 +51,12 @@ def _load_skill_from_dir(skill_root: Path) -> Skill:
     return Skill.load(skill_md, strict=True)
 
 
-class InstalledSkillInfo(BaseModel):
-    """Information about an installed skill."""
+class InstalledSkillInfo(InstalledExtensionInfo):
+    """Information about an installed skill.
 
-    name: str = Field(description="Skill name")
-    description: str = Field(default="", description="Skill description")
+    Extends InstalledExtensionInfo with AgentSkills-specific fields.
+    """
+
     license: str | None = Field(default=None, description="Skill license")
     compatibility: str | None = Field(
         default=None, description="Compatibility notes for the skill"
@@ -70,18 +67,6 @@ class InstalledSkillInfo(BaseModel):
     allowed_tools: list[str] | None = Field(
         default=None, description="Allowed tools list for the skill"
     )
-    enabled: bool = Field(default=True, description="Whether the skill is enabled")
-    source: str = Field(description="Original source (e.g., 'github:owner/repo')")
-    resolved_ref: str | None = Field(
-        default=None,
-        description="Resolved git commit SHA (for version pinning)",
-    )
-    repo_path: str | None = Field(
-        default=None,
-        description="Subdirectory path within the repository (for monorepos)",
-    )
-    installed_at: str = Field(description="ISO 8601 timestamp of installation")
-    install_path: str = Field(description="Path where the skill is installed")
 
     @classmethod
     def from_skill(
@@ -108,39 +93,84 @@ class InstalledSkillInfo(BaseModel):
         )
 
 
-class InstalledSkillsMetadata(BaseModel):
-    """Metadata file for tracking installed skills."""
+# For backward compatibility, provide InstalledSkillsMetadata as a wrapper
+# around InstalledExtensionMetadata.
+class InstalledSkillsMetadata(InstalledExtensionMetadata[InstalledSkillInfo]):
+    """Metadata file for tracking all installed skills.
 
-    skills: dict[str, InstalledSkillInfo] = Field(
-        default_factory=dict,
-        description="Map of skill name to installation info",
-    )
+    This class wraps InstalledExtensionMetadata for backward compatibility.
+    New code should use the InstalledExtensionManager instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        items: dict[str, InstalledSkillInfo] | None = None,
+        skills: dict[str, InstalledSkillInfo] | None = None,
+    ) -> None:
+        """Initialize with either items or skills keyword argument."""
+        # Support both 'items' (new) and 'skills' (legacy) kwarg
+        data = items if items is not None else (skills or {})
+        super().__init__(items=data)
+
+    # Alias 'items' as 'skills' for backward compatibility
+    @property
+    def skills(self) -> dict[str, InstalledSkillInfo]:
+        """Get installed skills (alias for items)."""
+        return self.items
+
+    @skills.setter
+    def skills(self, value: dict[str, InstalledSkillInfo]) -> None:
+        """Set installed skills (alias for items)."""
+        self.items = value
 
     @classmethod
-    def get_path(cls, installed_dir: Path) -> Path:
-        """Get the metadata file path for the given installed skills directory."""
-        return installed_dir / _METADATA_FILENAME
-
-    @classmethod
-    def load_from_dir(cls, installed_dir: Path) -> InstalledSkillsMetadata:
+    def load_from_dir(  # type: ignore[override]
+        cls, installed_dir: Path
+    ) -> InstalledSkillsMetadata:
         """Load metadata from the installed skills directory."""
-        metadata_path = cls.get_path(installed_dir)
-        if not metadata_path.exists():
-            return cls()
-        try:
-            with open(metadata_path) as f:
-                data = json.load(f)
-            return cls.model_validate(data)
-        except Exception as e:
-            logger.warning(f"Failed to load installed skills metadata: {e}")
-            return cls()
+        base = InstalledExtensionMetadata.load_from_dir(
+            installed_dir, InstalledSkillInfo
+        )
+        return cls(items=base.items)
 
     def save_to_dir(self, installed_dir: Path) -> None:
-        """Save metadata to the installed skills directory."""
+        """Save metadata to the installed skills directory (legacy format)."""
+        import json
+
         metadata_path = self.get_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        # Use "skills" key for backward compatibility
+        data = {
+            "skills": {name: info.model_dump() for name, info in self.items.items()}
+        }
         with open(metadata_path, "w") as f:
-            json.dump(self.model_dump(), f, indent=2)
+            json.dump(data, f, indent=2)
+
+
+def _create_skill_info(
+    skill: Skill,
+    source: str,
+    resolved_ref: str | None,
+    repo_path: str | None,
+    install_path: Path,
+) -> InstalledSkillInfo:
+    """Create InstalledSkillInfo from a loaded Skill (for manager callback)."""
+    return InstalledSkillInfo.from_skill(
+        skill, source, resolved_ref, repo_path, install_path
+    )
+
+
+# Create the skill manager instance
+_skill_manager: InstalledExtensionManager[Skill, InstalledSkillInfo] = (
+    InstalledExtensionManager(
+        default_dir=DEFAULT_INSTALLED_SKILLS_DIR,
+        validate_name=_validate_skill_name,
+        load_item=_load_skill_from_dir,
+        create_info=_create_skill_info,
+        info_type=InstalledSkillInfo,
+    )
+)
 
 
 def install_skill(
@@ -169,52 +199,13 @@ def install_skill(
         FileExistsError: If skill is already installed and force=False.
         SkillValidationError: If the skill metadata is invalid.
     """
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    logger.info(f"Fetching skill from {source}")
-    fetched_path, resolved_ref = fetch_skill_with_resolution(
+    return _skill_manager.install(
         source=source,
         ref=ref,
         repo_path=repo_path,
-        update=True,
+        installed_dir=installed_dir,
+        force=force,
     )
-
-    skill = _load_skill_from_dir(fetched_path)
-    skill_name = skill.name
-    _validate_skill_name(skill_name)
-
-    install_path = installed_dir / skill_name
-    if install_path.exists() and not force:
-        raise FileExistsError(
-            f"Skill '{skill_name}' is already installed at {install_path}. "
-            "Use force=True to overwrite."
-        )
-
-    if install_path.exists():
-        logger.info(f"Removing existing installation of '{skill_name}'")
-        shutil.rmtree(install_path)
-
-    logger.info(f"Installing skill '{skill_name}' to {install_path}")
-    installed_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(fetched_path, install_path)
-
-    info = InstalledSkillInfo.from_skill(
-        skill=skill,
-        source=source,
-        resolved_ref=resolved_ref,
-        repo_path=repo_path,
-        install_path=install_path,
-    )
-
-    metadata = InstalledSkillsMetadata.load_from_dir(installed_dir)
-    existing_info = metadata.skills.get(skill_name)
-    if existing_info is not None:
-        info.enabled = existing_info.enabled
-    metadata.skills[skill_name] = info
-    metadata.save_to_dir(installed_dir)
-
-    logger.info(f"Successfully installed skill '{skill_name}'")
-    return info
 
 
 def uninstall_skill(
@@ -231,68 +222,9 @@ def uninstall_skill(
             Defaults to ~/.openhands/skills/installed/
 
     Returns:
-        True if the skill was uninstalled, False if it wasn't installed.
+        True if uninstalled successfully, False if not found.
     """
-    _validate_skill_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    metadata = InstalledSkillsMetadata.load_from_dir(installed_dir)
-    if name not in metadata.skills:
-        logger.warning(f"Skill '{name}' is not installed")
-        return False
-
-    skill_path = installed_dir / name
-    if skill_path.exists():
-        logger.info(f"Uninstalling skill '{name}' from {skill_path}")
-        shutil.rmtree(skill_path)
-    else:
-        logger.warning(
-            f"Skill '{name}' was tracked but its directory is missing: {skill_path}"
-        )
-
-    del metadata.skills[name]
-    metadata.save_to_dir(installed_dir)
-
-    logger.info(f"Successfully uninstalled skill '{name}'")
-    return True
-
-
-def _set_skill_enabled(
-    name: str,
-    enabled: bool,
-    installed_dir: Path | None = None,
-) -> bool:
-    _validate_skill_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    if not installed_dir.exists():
-        logger.warning(f"Installed skills directory does not exist: {installed_dir}")
-        return False
-
-    list_installed_skills(installed_dir)
-    metadata = InstalledSkillsMetadata.load_from_dir(installed_dir)
-    info = metadata.skills.get(name)
-    if info is None:
-        logger.warning(f"Skill '{name}' is not installed")
-        return False
-
-    skill_path = installed_dir / name
-    if not skill_path.exists():
-        logger.warning(
-            f"Skill '{name}' was tracked but its directory is missing: {skill_path}"
-        )
-        return False
-
-    if info.enabled == enabled:
-        return True
-
-    info.enabled = enabled
-    metadata.skills[name] = info
-    metadata.save_to_dir(installed_dir)
-
-    state = "enabled" if enabled else "disabled"
-    logger.info(f"Successfully {state} skill '{name}'")
-    return True
+    return _skill_manager.uninstall(name=name, installed_dir=installed_dir)
 
 
 def enable_skill(
@@ -300,7 +232,7 @@ def enable_skill(
     installed_dir: Path | None = None,
 ) -> bool:
     """Enable an installed skill by name."""
-    return _set_skill_enabled(name, True, installed_dir)
+    return _skill_manager.enable(name=name, installed_dir=installed_dir)
 
 
 def disable_skill(
@@ -308,85 +240,7 @@ def disable_skill(
     installed_dir: Path | None = None,
 ) -> bool:
     """Disable an installed skill by name."""
-    return _set_skill_enabled(name, False, installed_dir)
-
-
-def _validate_tracked_skills(
-    metadata: InstalledSkillsMetadata, installed_dir: Path
-) -> tuple[list[InstalledSkillInfo], bool]:
-    """Validate tracked skills exist on disk."""
-    valid_skills: list[InstalledSkillInfo] = []
-    changed = False
-
-    for name, info in list(metadata.skills.items()):
-        try:
-            _validate_skill_name(name)
-        except ValueError as e:
-            logger.warning(f"Invalid tracked skill name {name!r}, removing: {e}")
-            del metadata.skills[name]
-            changed = True
-            continue
-
-        skill_path = installed_dir / name
-        if skill_path.exists():
-            valid_skills.append(info)
-        else:
-            logger.warning(f"Skill '{name}' directory missing, removing from metadata")
-            del metadata.skills[name]
-            changed = True
-
-    return valid_skills, changed
-
-
-def _discover_untracked_skills(
-    metadata: InstalledSkillsMetadata, installed_dir: Path
-) -> tuple[list[InstalledSkillInfo], bool]:
-    """Discover skill directories not tracked in metadata."""
-    discovered: list[InstalledSkillInfo] = []
-    changed = False
-
-    for item in installed_dir.iterdir():
-        if not item.is_dir() or item.name.startswith("."):
-            continue
-        if item.name in metadata.skills:
-            continue
-
-        try:
-            _validate_skill_name(item.name)
-        except ValueError:
-            logger.debug(f"Skipping directory with invalid skill name: {item}")
-            continue
-
-        try:
-            skill = _load_skill_from_dir(item)
-        except (SkillError, OSError) as e:
-            logger.debug(f"Skipping directory {item}: {e}")
-            continue
-
-        if skill.name != item.name:
-            logger.warning(
-                "Skipping skill directory because name doesn't match directory: "
-                f"dir={item.name!r}, skill={skill.name!r}"
-            )
-            continue
-
-        info = InstalledSkillInfo(
-            name=skill.name,
-            description=skill.description or "",
-            license=skill.license,
-            compatibility=skill.compatibility,
-            metadata=skill.metadata,
-            allowed_tools=skill.allowed_tools,
-            source="local",
-            installed_at=datetime.now(UTC).isoformat(),
-            install_path=str(item),
-        )
-        discovered.append(info)
-        metadata.skills[item.name] = info
-        changed = True
-        logger.info(f"Discovered untracked skill: {skill.name}")
-
-    return discovered, changed
+    return _skill_manager.disable(name=name, installed_dir=installed_dir)
 
 
 def list_installed_skills(
@@ -405,20 +259,7 @@ def list_installed_skills(
     Returns:
         List of InstalledSkillInfo for each installed skill.
     """
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    if not installed_dir.exists():
-        return []
-
-    metadata = InstalledSkillsMetadata.load_from_dir(installed_dir)
-
-    valid_skills, tracked_changed = _validate_tracked_skills(metadata, installed_dir)
-    discovered, discovered_changed = _discover_untracked_skills(metadata, installed_dir)
-
-    if tracked_changed or discovered_changed:
-        metadata.save_to_dir(installed_dir)
-
-    return valid_skills + discovered
+    return _skill_manager.list_installed(installed_dir=installed_dir)
 
 
 def load_installed_skills(
@@ -433,16 +274,19 @@ def load_installed_skills(
     Returns:
         List of loaded Skill objects.
     """
-    installed_dir = _resolve_installed_dir(installed_dir)
+    resolved_dir = installed_dir or DEFAULT_INSTALLED_SKILLS_DIR
 
-    if not installed_dir.exists():
+    if not resolved_dir.exists():
         return []
 
-    installed_infos = list_installed_skills(installed_dir)
+    # Get enabled skill names
+    installed_infos = list_installed_skills(resolved_dir)
     enabled_names = {info.name for info in installed_infos if info.enabled}
 
-    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(installed_dir)
+    # Load all skills from directory using existing loader
+    repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(resolved_dir)
     all_skills = {**repo_skills, **knowledge_skills, **agent_skills}
+
     return [skill for name, skill in all_skills.items() if name in enabled_names]
 
 
@@ -451,18 +295,7 @@ def get_installed_skill(
     installed_dir: Path | None = None,
 ) -> InstalledSkillInfo | None:
     """Get information about a specific installed skill."""
-    _validate_skill_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    metadata = InstalledSkillsMetadata.load_from_dir(installed_dir)
-    info = metadata.skills.get(name)
-
-    if info is not None:
-        skill_path = installed_dir / name
-        if not skill_path.exists():
-            return None
-
-    return info
+    return _skill_manager.get(name=name, installed_dir=installed_dir)
 
 
 def update_skill(
@@ -470,22 +303,7 @@ def update_skill(
     installed_dir: Path | None = None,
 ) -> InstalledSkillInfo | None:
     """Update an installed skill to the latest version."""
-    _validate_skill_name(name)
-    installed_dir = _resolve_installed_dir(installed_dir)
-
-    current_info = get_installed_skill(name, installed_dir)
-    if current_info is None:
-        logger.warning(f"Skill '{name}' is not installed")
-        return None
-
-    logger.info(f"Updating skill '{name}' from {current_info.source}")
-    return install_skill(
-        source=current_info.source,
-        ref=None,
-        repo_path=current_info.repo_path,
-        installed_dir=installed_dir,
-        force=True,
-    )
+    return _skill_manager.update(name=name, installed_dir=installed_dir)
 
 
 def install_skills_from_marketplace(
@@ -522,7 +340,7 @@ def install_skills_from_marketplace(
     from openhands.sdk.plugin import resolve_source_path
 
     marketplace_path = Path(marketplace_path)
-    installed_dir = _resolve_installed_dir(installed_dir)
+    resolved_dir = installed_dir or DEFAULT_INSTALLED_SKILLS_DIR
 
     # Load the marketplace
     marketplace = Marketplace.load(marketplace_path)
@@ -574,7 +392,7 @@ def install_skills_from_marketplace(
     # Install all collected skills
     for name, path in skill_dirs:
         try:
-            info = install_skill(str(path), installed_dir=installed_dir, force=force)
+            info = install_skill(str(path), installed_dir=resolved_dir, force=force)
             installed.append(info)
             logger.info(f"Installed skill '{info.name}'")
         except FileExistsError:

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import frontmatter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
+
+from openhands.sdk.extensions import ExtensionAuthor, ExtensionSource
 
 
-class PluginSource(BaseModel):
+# PluginSource is an alias for ExtensionSource for backward compatibility
+# and semantic clarity when working with plugins specifically.
+class PluginSource(ExtensionSource):
     """Specification for a plugin to load.
 
     This model describes where to find a plugin and is used by load_plugins()
@@ -28,80 +32,6 @@ class PluginSource(BaseModel):
         >>> # Local path
         >>> PluginSource(source="/path/to/plugin")
     """
-
-    source: str = Field(
-        description="Plugin source: 'github:owner/repo', any git URL, or local path"
-    )
-    ref: str | None = Field(
-        default=None,
-        description="Optional branch, tag, or commit (only for git sources)",
-    )
-    repo_path: str | None = Field(
-        default=None,
-        description=(
-            "Subdirectory path within the git repository "
-            "(e.g., 'plugins/my-plugin' for monorepos). "
-            "Only relevant for git sources, not local paths."
-        ),
-    )
-
-    @field_validator("repo_path")
-    @classmethod
-    def validate_repo_path(cls, v: str | None) -> str | None:
-        """Validate repo_path is a safe relative path within the repository."""
-        if v is None:
-            return v
-        # Must be relative (no absolute paths)
-        if v.startswith("/"):
-            raise ValueError("repo_path must be relative, not absolute")
-        # No parent directory traversal
-        if ".." in Path(v).parts:
-            raise ValueError(
-                "repo_path cannot contain '..' (parent directory traversal)"
-            )
-        return v
-
-    @property
-    def source_url(self) -> str | None:
-        """Convert the plugin source to a canonical URL.
-
-        Converts the 'github:' convenience prefix to a full URL.
-        For sources that are already URLs, returns them directly.
-        Local paths return None (not portable).
-
-        Returns:
-            URL string, or None for local paths.
-
-        Examples:
-            >>> PluginSource(source="github:owner/repo").source_url
-            'https://github.com/owner/repo'
-
-            >>> PluginSource(source="github:owner/repo", ref="v1.0").source_url
-            'https://github.com/owner/repo/tree/v1.0'
-
-            >>> PluginSource(source="https://github.com/owner/repo").source_url
-            'https://github.com/owner/repo'
-
-            >>> PluginSource(source="/local/path").source_url
-            None
-        """
-        # Handle github: shorthand - the only convenience prefix we support
-        if self.source.startswith("github:"):
-            repo_part = self.source[7:]  # Remove 'github:' prefix
-            base_url = f"https://github.com/{repo_part}"
-            if self.ref or self.repo_path:
-                ref = self.ref or "main"
-                if self.repo_path:
-                    return f"{base_url}/tree/{ref}/{self.repo_path}"
-                return f"{base_url}/tree/{ref}"
-            return base_url
-
-        # Already a URL - return as-is
-        if self.source.startswith(("https://", "http://", "git@", "git://")):
-            return self.source
-
-        # Local paths - not portable, return None
-        return None
 
 
 class ResolvedPluginSource(BaseModel):
@@ -139,7 +69,7 @@ class ResolvedPluginSource(BaseModel):
     @classmethod
     def from_plugin_source(
         cls, plugin_source: PluginSource, resolved_ref: str | None
-    ) -> ResolvedPluginSource:
+    ) -> Self:
         """Create a ResolvedPluginSource from a PluginSource and resolved ref."""
         return cls(
             source=plugin_source.source,
@@ -185,23 +115,9 @@ if TYPE_CHECKING:
     from openhands.sdk.skills.skill import Skill
 
 
-class PluginAuthor(BaseModel):
+# PluginAuthor is an alias for ExtensionAuthor for backward compatibility
+class PluginAuthor(ExtensionAuthor):
     """Author information for a plugin."""
-
-    name: str = Field(description="Author's name")
-    email: str | None = Field(default=None, description="Author's email address")
-    url: str | None = Field(
-        default=None, description="Author's URL (e.g., GitHub profile)"
-    )
-
-    @classmethod
-    def from_string(cls, author_str: str) -> PluginAuthor:
-        """Parse author from string format 'Name <email>'."""
-        if "<" in author_str and ">" in author_str:
-            name = author_str.split("<")[0].strip()
-            email = author_str.split("<")[1].split(">")[0].strip()
-            return cls(name=name, email=email)
-        return cls(name=author_str.strip())
 
 
 class PluginManifest(BaseModel):
