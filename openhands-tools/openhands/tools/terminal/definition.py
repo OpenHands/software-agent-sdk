@@ -14,6 +14,7 @@ from rich.text import Text
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -233,6 +234,17 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 
 class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
     """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        # When using the tmux backend, TmuxPanePool handles concurrency
+        # internally via pane-level isolation — opt out of framework
+        # serialization so parallel calls are allowed.
+        # When using the subprocess backend there is only a single
+        # session, so we declare a resource key to serialize terminal
+        # calls against each other without blocking unrelated tools.
+        if getattr(self.executor, "is_pooled", False):
+            return DeclaredResources(keys=(), declared=True)
+        return DeclaredResources(keys=("terminal:session",), declared=True)
 
     @classmethod
     def create(

@@ -83,6 +83,22 @@ class TerminalSession(TerminalSessionBase):
         # Stateful filter for terminal query sequences (handles split sequences)
         self._query_filter = TerminalQueryFilter()
 
+    @classmethod
+    def attach_to_existing(
+        cls,
+        terminal: TerminalInterface,
+        no_change_timeout_seconds: int | None = None,
+    ) -> "TerminalSession":
+        """Create a TerminalSession for an already-initialized terminal.
+
+        Use this instead of ``__init__`` + ``initialize()`` when the
+        terminal has already been set up (e.g. by a pane pool) and
+        calling ``initialize()`` again would create a duplicate session.
+        """
+        session = cls(terminal, no_change_timeout_seconds)
+        session._initialized = True
+        return session
+
     def initialize(self) -> None:
         """Initialize the terminal backend."""
         self.terminal.initialize()

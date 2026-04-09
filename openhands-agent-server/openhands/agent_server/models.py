@@ -459,6 +459,22 @@ class AskAgentResponse(BaseModel):
     response: str = Field(description="The agent's response to the question")
 
 
+class AgentResponseResult(BaseModel):
+    """The agent's final response for a conversation.
+
+    Contains the text of the last agent finish message or text response.
+    Empty string if the agent has not produced a final response yet.
+    """
+
+    response: str = Field(
+        description=(
+            "The agent's final response text. Extracted from either a "
+            "FinishAction message or the last agent MessageEvent. "
+            "Empty string if no final response is available."
+        )
+    )
+
+
 class BashEventBase(DiscriminatedUnionMixin, ABC):
     """Base class for all bash event types"""
 
