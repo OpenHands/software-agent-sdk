@@ -46,7 +46,9 @@ async def test_legacy_query_param_valid_key():
     ws = _make_mock_websocket()
     with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
         mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key="sk-oh-valid")
+        result = await _accept_authenticated_websocket(
+            ws, session_api_key="sk-oh-valid"
+        )
 
     assert result is True
     ws.accept.assert_called_once()
@@ -58,7 +60,9 @@ async def test_legacy_query_param_invalid_key():
     ws = _make_mock_websocket()
     with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
         mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        result = await _accept_authenticated_websocket(ws, session_api_key="sk-oh-wrong")
+        result = await _accept_authenticated_websocket(
+            ws, session_api_key="sk-oh-wrong"
+        )
 
     assert result is False
     ws.close.assert_called_once_with(code=4001, reason="Authentication failed")
@@ -202,8 +206,7 @@ async def test_events_socket_first_message_auth_e2e():
     from openhands.agent_server.sockets import events_socket
 
     ws = _make_mock_websocket()
-    # First call: auth message (read by _accept_authenticated_websocket via receive_text)
-    # Then receive_json calls: disconnect
+    # Auth via receive_text, then receive_json raises disconnect.
     ws.receive_text.return_value = json.dumps(
         {"type": "auth", "session_api_key": "sk-oh-valid"}
     )
@@ -220,9 +223,7 @@ async def test_events_socket_first_message_auth_e2e():
         patch("openhands.agent_server.sockets.get_default_config") as mock_config,
     ):
         mock_config.return_value.session_api_keys = ["sk-oh-valid"]
-        mock_conv_service.get_event_service = AsyncMock(
-            return_value=mock_event_service
-        )
+        mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
 
         await events_socket(uuid4(), ws, session_api_key=None)
 

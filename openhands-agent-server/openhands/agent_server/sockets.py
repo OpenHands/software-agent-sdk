@@ -132,9 +132,11 @@ async def _accept_authenticated_websocket(
             timeout=_FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS,
         )
         data = json.loads(raw)
-    except (asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+    except (TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
         logger.warning("WebSocket first-message auth failed: bad or missing payload")
-        await _safe_close_websocket(websocket, code=4001, reason="Authentication failed")
+        await _safe_close_websocket(
+            websocket, code=4001, reason="Authentication failed"
+        )
         return False
 
     if (
