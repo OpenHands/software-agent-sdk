@@ -450,15 +450,34 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         return self
 
+    _SENSITIVE_KEYS = frozenset({
+        'api_key', 'aws_access_key_id', 'aws_secret_access_key',
+        'aws_session_token', 'secrets',
+    })
+
     def model_dump_succint(self, **kwargs):
-        """Like model_dump, but excludes None fields by default."""
+        """Like model_dump, but excludes None fields and redacts secrets."""
         if "exclude_none" not in kwargs:
             kwargs["exclude_none"] = True
         dumped = super().model_dump(**kwargs)
         # remove tool schema details for brevity
         if "tools" in dumped and isinstance(dumped["tools"], dict):
             dumped["tools"] = list(dumped["tools"].keys())
+        self._redact_sensitive(dumped)
         return dumped
+
+    @classmethod
+    def _redact_sensitive(cls, obj: dict | list | object) -> None:
+        """Walk a nested dict/list and replace sensitive values with '***'."""
+        if isinstance(obj, dict):
+            for key in obj:
+                if key in cls._SENSITIVE_KEYS and obj[key] is not None:
+                    obj[key] = '***'
+                else:
+                    cls._redact_sensitive(obj[key])
+        elif isinstance(obj, list):
+            for item in obj:
+                cls._redact_sensitive(item)
 
     def get_all_llms(self) -> Generator[LLM]:
         """Recursively yield unique *base-class* LLM objects reachable from `self`.
