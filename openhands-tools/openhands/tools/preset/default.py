@@ -87,6 +87,7 @@ def get_default_agent(
         condenser=get_default_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})
         ),
+        tool_concurrency_limit=4,
     )
     return agent
 
