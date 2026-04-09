@@ -241,3 +241,33 @@ def test_roundtrip_preserves_llm_model() -> None:
     data = settings.model_dump()
     restored = AgentSettings.model_validate(data)
     assert restored.llm.model == "test-model"
+
+
+def test_load_persisted_agent_settings_migrates_legacy_payload() -> None:
+    legacy_payload = {
+        "llm": {"model": "legacy-model", "api_key": "secret-key"},
+        "verification": {"critic_enabled": True},
+    }
+
+    settings = AgentSettings.load_persisted(legacy_payload)
+
+    assert settings.llm.model == "legacy-model"
+    assert isinstance(settings.llm.api_key, SecretStr)
+    assert settings.llm.api_key.get_secret_value() == "secret-key"
+    assert settings.verification.critic_enabled is True
+    assert settings.dump_persisted() == {
+        "version": AgentSettings.CURRENT_PERSISTED_VERSION,
+        "settings": legacy_payload,
+    }
+
+
+def test_load_persisted_agent_settings_accepts_current_payload() -> None:
+    current_payload = {
+        "version": AgentSettings.CURRENT_PERSISTED_VERSION,
+        "settings": {"llm": {"model": "test-model"}},
+    }
+
+    settings = AgentSettings.load_persisted(current_payload)
+
+    assert settings.llm.model == "test-model"
+    assert settings.dump_persisted() == current_payload
