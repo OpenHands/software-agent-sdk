@@ -7,7 +7,11 @@ import libtmux
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
-from openhands.tools.terminal.constants import HISTORY_LIMIT
+from openhands.tools.terminal.constants import (
+    HISTORY_LIMIT,
+    TMUX_SESSION_HEIGHT,
+    TMUX_SESSION_WIDTH,
+)
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 
@@ -57,8 +61,8 @@ class TmuxTerminal(TerminalInterface):
             session_name=session_name,
             start_directory=self.work_dir,
             kill_session=True,
-            x=1000,
-            y=1000,
+            x=TMUX_SESSION_WIDTH,
+            y=TMUX_SESSION_HEIGHT,
         )
         for k, v in env.items():
             self.session.set_environment(k, v)
