@@ -518,7 +518,8 @@ def install_skills_from_marketplace(
         >>> for info in installed:
         ...     print(f"Installed: {info.name}")
     """
-    from openhands.sdk.plugin import Marketplace, resolve_source_path
+    from openhands.sdk.marketplace import Marketplace
+    from openhands.sdk.plugin import resolve_source_path
 
     marketplace_path = Path(marketplace_path)
     installed_dir = _resolve_installed_dir(installed_dir)

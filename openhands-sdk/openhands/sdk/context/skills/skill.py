@@ -913,7 +913,7 @@ def load_marketplace_skill_names(
     Returns:
         Set of skill names to load, or None if marketplace file not found or invalid.
     """
-    from openhands.sdk.plugin import Marketplace
+    from openhands.sdk.marketplace import Marketplace
 
     marketplace_file = repo_path / marketplace_path
     if not marketplace_file.exists():
