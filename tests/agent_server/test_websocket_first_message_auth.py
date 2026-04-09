@@ -69,6 +69,25 @@ async def test_legacy_query_param_invalid_key():
     ws.accept.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_legacy_query_param_takes_precedence_over_first_message():
+    """When both query param and first-message auth could apply, query param wins."""
+    ws = _make_mock_websocket()
+    ws.receive_text.return_value = json.dumps(
+        {"type": "auth", "session_api_key": "sk-oh-different"}
+    )
+    with patch("openhands.agent_server.sockets.get_default_config") as mock_config:
+        mock_config.return_value.session_api_keys = ["sk-oh-valid"]
+        result = await _accept_authenticated_websocket(
+            ws, session_api_key="sk-oh-valid"
+        )
+
+    assert result is True
+    ws.accept.assert_called_once()
+    # Should NOT read first message because query param already authenticated.
+    ws.receive_text.assert_not_called()
+
+
 # -- Legacy header auth (deprecated) --
 
 

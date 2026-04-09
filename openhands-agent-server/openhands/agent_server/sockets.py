@@ -85,6 +85,9 @@ def _resolve_websocket_session_api_key(
     return None
 
 
+# Give clients 10 seconds to send auth frame after connection opens.
+# This balances security (don't hold connections indefinitely) with
+# accommodating slow networks and client startup time.
 _FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS = 10
 
 
@@ -124,7 +127,10 @@ async def _accept_authenticated_websocket(
         await websocket.close(code=4001, reason="Authentication failed")
         return False
 
-    # First-message auth: accept the connection, then read the first frame.
+    # First-message auth: we must accept() before reading frames because the
+    # WebSocket protocol requires the handshake to complete first.  The legacy
+    # path above can reject *before* accepting (close on an un-accepted socket
+    # sends an HTTP 403-style response), but here we need to read a frame.
     await websocket.accept()
     try:
         raw = await asyncio.wait_for(
@@ -132,23 +138,50 @@ async def _accept_authenticated_websocket(
             timeout=_FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS,
         )
         data = json.loads(raw)
-    except (TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
-        logger.warning("WebSocket first-message auth failed: bad or missing payload")
+    except TimeoutError:
+        logger.warning(
+            "WebSocket first-message auth failed: timeout waiting for auth frame"
+        )
+        await _safe_close_websocket(
+            websocket, code=4001, reason="Authentication failed"
+        )
+        return False
+    except json.JSONDecodeError:
+        logger.warning("WebSocket first-message auth failed: malformed JSON")
+        await _safe_close_websocket(
+            websocket, code=4001, reason="Authentication failed"
+        )
+        return False
+    except WebSocketDisconnect:
+        logger.warning("WebSocket first-message auth failed: client disconnected")
         await _safe_close_websocket(
             websocket, code=4001, reason="Authentication failed"
         )
         return False
 
-    if (
-        isinstance(data, dict)
-        and data.get("type") == "auth"
-        and data.get("session_api_key") in config.session_api_keys
-    ):
-        return True
+    if not isinstance(data, dict):
+        logger.warning(
+            "WebSocket first-message auth failed: payload is not a JSON object"
+        )
+        await _safe_close_websocket(
+            websocket, code=4001, reason="Authentication failed"
+        )
+        return False
+    if data.get("type") != "auth":
+        logger.warning("WebSocket first-message auth failed: wrong message type")
+        await _safe_close_websocket(
+            websocket, code=4001, reason="Authentication failed"
+        )
+        return False
+    if data.get("session_api_key") not in config.session_api_keys:
+        logger.warning("WebSocket first-message auth failed: invalid API key")
+        await _safe_close_websocket(
+            websocket, code=4001, reason="Authentication failed"
+        )
+        return False
 
-    logger.warning("WebSocket first-message auth failed: invalid key or payload")
-    await _safe_close_websocket(websocket, code=4001, reason="Authentication failed")
-    return False
+    logger.info("WebSocket authenticated via first-message auth")
+    return True
 
 
 @sockets_router.websocket("/events/{conversation_id}")
