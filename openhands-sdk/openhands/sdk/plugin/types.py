@@ -188,7 +188,7 @@ type HooksConfigDict = dict[str, Any]
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.context.skills import Skill
+    from openhands.sdk.skills.skill import Skill
 
 
 class PluginAuthor(BaseModel):
@@ -335,8 +335,8 @@ class CommandDefinition(BaseModel):
             - Trigger keyword: "/city-weather:now"
             - When user types "/city-weather:now Tokyo", the skill activates
         """
-        from openhands.sdk.context.skills import Skill
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.skill import Skill
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         # Build the trigger keyword in Claude Code namespace format
         trigger_keyword = f"/{plugin_name}:{self.name}"

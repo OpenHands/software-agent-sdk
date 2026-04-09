@@ -1,6 +1,6 @@
 """Tests for skill validation improvements."""
 
-from openhands.sdk.context.skills import Skill
+from openhands.sdk.skills import Skill
 from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE
 
 

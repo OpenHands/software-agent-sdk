@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from openhands.sdk.context.skills.exceptions import SkillValidationError
+from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills import (
     InstalledSkillsMetadata,
     disable_skill,

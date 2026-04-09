@@ -13,7 +13,7 @@ from openhands.sdk.context import (
     load_project_skills,
     load_skills_from_dir,
 )
-from openhands.sdk.context.skills.utils import find_third_party_files
+from openhands.sdk.skills.utils import find_third_party_files
 
 
 CONTENT = "# dummy header\ndummy content\n## dummy subheader\ndummy subcontent\n"

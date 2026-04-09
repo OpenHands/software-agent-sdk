@@ -11,7 +11,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext
-from openhands.sdk.context.skills import Skill
+from openhands.sdk.skills import Skill
 from openhands.sdk.llm import Message, TextContent
 
 

@@ -4,7 +4,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
 )
