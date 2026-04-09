@@ -51,6 +51,7 @@ from openhands.sdk.llm import (
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContextWindowExceedError,
+    LLMMalformedConversationHistoryError,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
@@ -516,6 +517,30 @@ class Agent(CriticMixin, AgentBase):
             )
             on_event(error_message)
             return
+        except LLMMalformedConversationHistoryError as e:
+            # The provider rejected the current message history as structurally
+            # invalid (for example, broken tool_use/tool_result pairing). Route
+            # this into condensation recovery, but keep the logs distinct from
+            # true context-window exhaustion so upstream event-stream bugs remain
+            # visible.
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised malformed conversation history error, "
+                    "triggering condensation retry with condensed history: "
+                    f"{e}"
+                )
+                on_event(CondensationRequest())
+                return
+            logger.warning(
+                "LLM raised malformed conversation history error but no "
+                "condenser can handle condensation requests. This usually "
+                "indicates an upstream event-stream or resume bug: "
+                f"{e}"
+            )
+            raise e
         except LLMContextWindowExceedError as e:
             # If condenser is available and handles requests, trigger condensation
             if (
@@ -820,6 +845,7 @@ class Agent(CriticMixin, AgentBase):
 
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
+        parsed_args: dict | None = None
         try:
             # Try parsing arguments as-is first.  Raw newlines / tabs are
             # legal JSON whitespace and many models emit them between tokens
@@ -828,13 +854,14 @@ class Agent(CriticMixin, AgentBase):
             # Fall back to sanitization only when the raw string is invalid
             # (handles models that emit raw control chars *inside* strings).
             try:
-                arguments = json.loads(tool_call.arguments)
+                parsed_args = json.loads(tool_call.arguments)
             except json.JSONDecodeError:
                 sanitized_args = sanitize_json_control_chars(tool_call.arguments)
-                arguments = json.loads(sanitized_args)
+                parsed_args = json.loads(sanitized_args)
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
-            arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
+            assert isinstance(parsed_args, dict)
+            arguments = fix_malformed_tool_arguments(parsed_args, tool.action_type)
             security_risk = self._extract_security_risk(
                 arguments,
                 tool.name,
@@ -849,10 +876,14 @@ class Agent(CriticMixin, AgentBase):
 
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
-            err = (
-                f"Error validating args {tool_call.arguments} for tool "
-                f"'{tool.name}': {e}"
+            # Build concise error message with parameter names only (not values)
+            keys = list(parsed_args.keys()) if isinstance(parsed_args, dict) else None
+            params = (
+                f"Parameters provided: {keys}"
+                if keys is not None
+                else "Arguments: unparseable JSON"
             )
+            err = f"Error validating tool '{tool.name}': {e}. {params}"
             # Persist assistant function_call so next turn has matching call_id
             tc_event = ActionEvent(
                 source="agent",
