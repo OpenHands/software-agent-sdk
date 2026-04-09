@@ -2,11 +2,18 @@
 WebSocket endpoints for OpenHands SDK.
 
 These endpoints are separate from the main API routes to handle WebSocket-specific
-authentication. Browsers cannot send custom HTTP headers directly with WebSocket
-connections, so we support the `session_api_key` query param. For non-browser
-clients (e.g. Python/Node), we also support authenticating via headers.
+authentication.  Three auth methods are supported (highest to lowest precedence):
+
+1. **First-message auth** (recommended): The client sends
+   ``{"type": "auth", "session_api_key": "..."}`` as the very first WebSocket
+   frame after the connection opens.  This keeps tokens out of URLs and
+   therefore out of reverse-proxy / load-balancer access logs.
+2. Query parameter ``session_api_key`` — deprecated, kept for backwards compat.
+3. ``X-Session-API-Key`` header — for non-browser clients.
 """
 
+import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -78,19 +85,68 @@ def _resolve_websocket_session_api_key(
     return None
 
 
+_FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS = 10
+
+
 async def _accept_authenticated_websocket(
     websocket: WebSocket,
     session_api_key: str | None,
 ) -> bool:
-    """Authenticate and accept the socket, or close with an auth error."""
+    """Authenticate and accept the socket, or close with an auth error.
+
+    Authentication is attempted in the following order:
+
+    1. Query parameter / header (legacy, deprecated).
+    2. First-message auth — the client sends
+       ``{"type": "auth", "session_api_key": "..."}`` as the first frame.
+
+    The WebSocket is always *accepted* before first-message auth is attempted
+    because raw WebSocket requires ``accept()`` before any frames can be read.
+    """
     config = _get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
-    if config.session_api_keys and resolved_key not in config.session_api_keys:
-        logger.warning("WebSocket authentication failed: invalid or missing API key")
+
+    # No auth configured — accept unconditionally.
+    if not config.session_api_keys:
+        await websocket.accept()
+        return True
+
+    # Legacy path: key supplied via query param or header.
+    if resolved_key is not None:
+        if resolved_key in config.session_api_keys:
+            logger.warning(
+                "session_api_key passed via query param or header is deprecated. "
+                "Use first-message auth instead."
+            )
+            await websocket.accept()
+            return True
+        logger.warning("WebSocket authentication failed: invalid API key")
         await websocket.close(code=4001, reason="Authentication failed")
         return False
+
+    # First-message auth: accept the connection, then read the first frame.
     await websocket.accept()
-    return True
+    try:
+        raw = await asyncio.wait_for(
+            websocket.receive_text(),
+            timeout=_FIRST_MESSAGE_AUTH_TIMEOUT_SECONDS,
+        )
+        data = json.loads(raw)
+    except (asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+        logger.warning("WebSocket first-message auth failed: bad or missing payload")
+        await _safe_close_websocket(websocket, code=4001, reason="Authentication failed")
+        return False
+
+    if (
+        isinstance(data, dict)
+        and data.get("type") == "auth"
+        and data.get("session_api_key") in config.session_api_keys
+    ):
+        return True
+
+    logger.warning("WebSocket first-message auth failed: invalid key or payload")
+    await _safe_close_websocket(websocket, code=4001, reason="Authentication failed")
+    return False
 
 
 @sockets_router.websocket("/events/{conversation_id}")
@@ -329,9 +385,13 @@ async def _send_event(event: Event, websocket: WebSocket):
         logger.exception("error_sending_event: %r", event, stack_info=True)
 
 
-async def _safe_close_websocket(websocket: WebSocket):
+async def _safe_close_websocket(
+    websocket: WebSocket,
+    code: int = 1000,
+    reason: str = "Connection closed",
+):
     try:
-        await websocket.close(code=1000, reason="Connection closed")
+        await websocket.close(code=code, reason=reason)
     except Exception:
         # WebSocket may already be closed or in inconsistent state
         logger.debug("WebSocket close failed (may already be closed)")
