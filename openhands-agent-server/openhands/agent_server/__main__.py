@@ -1,6 +1,7 @@
 import argparse
 import atexit
 import faulthandler
+import importlib
 import signal
 import sys
 from types import FrameType
@@ -121,8 +122,6 @@ def main() -> None:
 
     # Pre-load user-specified modules (e.g. custom tool registrations)
     if args.import_modules:
-        import importlib
-
         for module_name in args.import_modules.split(","):
             module_name = module_name.strip()
             if module_name:
