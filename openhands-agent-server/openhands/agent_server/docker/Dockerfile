@@ -30,6 +30,9 @@ ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
+# uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
+# first release with the PT_GNU_STACK fix. Pin to 0.11.6 (latest at time of
+# writing) rather than :latest so builds are reproducible.
 COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
