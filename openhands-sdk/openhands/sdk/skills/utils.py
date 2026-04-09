@@ -10,13 +10,13 @@ from typing import TYPE_CHECKING
 
 from fastmcp.mcp_config import MCPConfig
 
-from openhands.sdk.context.skills.exceptions import SkillValidationError
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
+from openhands.sdk.skills.exceptions import SkillValidationError
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.context.skills.skill import Skill, SkillResources
+    from openhands.sdk.skills.skill import Skill, SkillResources
 
 logger = get_logger(__name__)
 
@@ -297,7 +297,7 @@ def load_and_categorize(
         agent_skills: Dictionary for AgentSkills standard SKILL.md files.
     """
     # Import here to avoid circular dependency
-    from openhands.sdk.context.skills.skill import Skill
+    from openhands.sdk.skills.skill import Skill
 
     skill = Skill.load(path, skill_base_dir)
 
@@ -360,7 +360,7 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
         SkillResources with lists of files in each resource directory.
     """
     # Import here to avoid circular dependency
-    from openhands.sdk.context.skills.skill import SkillResources
+    from openhands.sdk.skills.skill import SkillResources
 
     resources = SkillResources(skill_root=str(skill_dir.resolve()))
 

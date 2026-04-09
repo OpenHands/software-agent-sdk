@@ -7,17 +7,17 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.prompts import render_template
-from openhands.sdk.context.skills import (
+from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
+from openhands.sdk.logger import get_logger
+from openhands.sdk.secret import SecretSource, SecretValue
+from openhands.sdk.skills import (
     Skill,
     SkillKnowledge,
     load_available_skills,
     to_prompt,
 )
-from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
-from openhands.sdk.llm import Message, TextContent
-from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
-from openhands.sdk.logger import get_logger
-from openhands.sdk.secret import SecretSource, SecretValue
+from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
 
 
 logger = get_logger(__name__)

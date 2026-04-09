@@ -2,12 +2,12 @@
 
 from typing import Literal, get_args
 
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
     TaskTrigger,
 )
-from openhands.sdk.context.skills.skill import SkillInfo
+from openhands.sdk.skills.skill import SkillInfo
 
 
 SkillType = Literal["repo", "knowledge", "agentskills"]
