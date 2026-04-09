@@ -656,7 +656,8 @@ class EventService:
         await self._pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._conversation.close)
+            await loop.run_in_executor(None, self._conversation.close)
+            self._conversation = None
 
     async def generate_title(
         self, llm: "LLM | None" = None, max_length: int = 50
