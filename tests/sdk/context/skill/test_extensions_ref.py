@@ -2,10 +2,7 @@
 
 import os
 import sys
-from pathlib import Path
 from unittest import mock
-
-import pytest
 
 
 def test_extensions_ref_default():
@@ -14,15 +11,16 @@ def test_extensions_ref_default():
     with mock.patch.dict(os.environ, {}, clear=False):
         if "EXTENSIONS_REF" in os.environ:
             del os.environ["EXTENSIONS_REF"]
-        
+
         # Force reload of the module to pick up environment variable
         if "openhands.sdk.context.skills.skill" in sys.modules:
             del sys.modules["openhands.sdk.context.skills.skill"]
-        
+
         from openhands.sdk.context.skills.skill import PUBLIC_SKILLS_BRANCH
-        
-        assert PUBLIC_SKILLS_BRANCH == "main", \
+
+        assert PUBLIC_SKILLS_BRANCH == "main", (
             f"Expected 'main' but got '{PUBLIC_SKILLS_BRANCH}'"
+        )
 
 
 def test_extensions_ref_custom_branch():
@@ -32,11 +30,12 @@ def test_extensions_ref_custom_branch():
         # Force reload of the module to pick up environment variable
         if "openhands.sdk.context.skills.skill" in sys.modules:
             del sys.modules["openhands.sdk.context.skills.skill"]
-        
+
         from openhands.sdk.context.skills.skill import PUBLIC_SKILLS_BRANCH
-        
-        assert PUBLIC_SKILLS_BRANCH == "feature-branch", \
+
+        assert PUBLIC_SKILLS_BRANCH == "feature-branch", (
             f"Expected 'feature-branch' but got '{PUBLIC_SKILLS_BRANCH}'"
+        )
 
 
 def test_extensions_ref_with_load_public_skills():
@@ -45,19 +44,23 @@ def test_extensions_ref_with_load_public_skills():
         # Force reload of the module
         if "openhands.sdk.context.skills.skill" in sys.modules:
             del sys.modules["openhands.sdk.context.skills.skill"]
-        
+
         from openhands.sdk.context.skills.skill import (
             PUBLIC_SKILLS_BRANCH,
             load_public_skills,
         )
-        
+
         # Verify the constant is set correctly
         assert PUBLIC_SKILLS_BRANCH == "test-branch"
-        
+
         # Mock the actual git operations to avoid needing a real clone
-        with mock.patch("openhands.sdk.context.skills.utils.update_skills_repository") as mock_update:
-            mock_update.return_value = None  # Simulate failed clone (expected behavior for test)
-            
+        with mock.patch(
+            "openhands.sdk.context.skills.utils.update_skills_repository"
+        ) as mock_update:
+            mock_update.return_value = (
+                None  # Simulate failed clone (expected behavior for test)
+            )
+
             # This should use test-branch internally
             # We expect it to fail/return empty since we're mocking the repo update
             try:
@@ -75,9 +78,11 @@ def test_extensions_ref_empty_string():
         # Force reload of the module
         if "openhands.sdk.context.skills.skill" in sys.modules:
             del sys.modules["openhands.sdk.context.skills.skill"]
-        
+
         from openhands.sdk.context.skills.skill import PUBLIC_SKILLS_BRANCH
-        
+
         # Empty string should fall back to 'main' via os.environ.get default
-        assert PUBLIC_SKILLS_BRANCH == "", \
-            "Empty EXTENSIONS_REF should result in empty string (os.environ.get behavior)"
+        assert PUBLIC_SKILLS_BRANCH == "", (
+            "Empty EXTENSIONS_REF should result in empty string "
+            "(os.environ.get behavior)"
+        )
