@@ -243,31 +243,78 @@ def test_roundtrip_preserves_llm_model() -> None:
     assert restored.llm.model == "test-model"
 
 
-def test_load_persisted_agent_settings_migrates_legacy_payload() -> None:
+def test_from_persisted_agent_settings_migrates_legacy_flat_payload() -> None:
     legacy_payload = {
-        "llm": {"model": "legacy-model", "api_key": "secret-key"},
-        "verification": {"critic_enabled": True},
+        "schema_version": 1,
+        "llm.model": "legacy-model",
+        "llm.api_key": "secret-key",
+        "verification.critic_enabled": True,
     }
 
-    settings = AgentSettings.load_persisted(legacy_payload)
+    settings = AgentSettings.from_persisted(legacy_payload)
 
+    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
     assert settings.llm.model == "legacy-model"
     assert isinstance(settings.llm.api_key, SecretStr)
     assert settings.llm.api_key.get_secret_value() == "secret-key"
     assert settings.verification.critic_enabled is True
-    assert settings.dump_persisted() == {
-        "version": AgentSettings.CURRENT_PERSISTED_VERSION,
-        "settings": legacy_payload,
-    }
 
 
-def test_load_persisted_agent_settings_accepts_current_payload() -> None:
+def test_from_persisted_agent_settings_accepts_current_payload() -> None:
     current_payload = {
-        "version": AgentSettings.CURRENT_PERSISTED_VERSION,
-        "settings": {"llm": {"model": "test-model"}},
+        "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
+        "llm": {"model": "test-model"},
     }
 
-    settings = AgentSettings.load_persisted(current_payload)
+    settings = AgentSettings.from_persisted(current_payload)
 
+    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
     assert settings.llm.model == "test-model"
-    assert settings.dump_persisted() == current_payload
+
+
+def test_from_persisted_agent_settings_accepts_legacy_wrapped_payload() -> None:
+    wrapped_payload = {
+        "version": 2,
+        "settings": {
+            "llm": {"model": "wrapped-model"},
+        },
+    }
+
+    settings = AgentSettings.from_persisted(wrapped_payload)
+
+    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
+    assert settings.llm.model == "wrapped-model"
+
+
+def test_agent_settings_patch_accepts_sparse_nested_payload() -> None:
+    settings = AgentSettings.from_persisted(
+        {
+            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
+            "llm": {"model": "base-model", "base_url": "https://example.com"},
+        }
+    )
+
+    patched = settings.patch({"llm": {"base_url": None}})
+
+    assert patched.llm.model == "base-model"
+    assert patched.llm.base_url is None
+    assert patched.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
+
+
+def test_agent_settings_diff_returns_sparse_persisted_patch() -> None:
+    org_settings = AgentSettings.from_persisted(
+        {
+            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
+            "llm": {"model": "base-model", "base_url": "https://example.com"},
+        }
+    )
+    personal_settings = org_settings.patch(
+        {"llm": {"model": "personal-model", "base_url": None}}
+    )
+
+    member_patch = org_settings.diff(personal_settings)
+
+    assert member_patch == {"llm": {"base_url": None, "model": "personal-model"}}
+    assert org_settings.patch(member_patch).model_dump(
+        mode="json", context={"expose_secrets": True}
+    ) == personal_settings.model_dump(mode="json", context={"expose_secrets": True})
