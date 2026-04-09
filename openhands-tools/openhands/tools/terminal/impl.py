@@ -361,16 +361,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Execute *action* in pool mode with proper checkout/checkin.
 
         All pane lifecycle (checkout, optional replace, checkin) is
-        contained here so there is exactly one checkout and one checkin
-        per call, and the checkin is guaranteed by ``finally``.
+        managed by the pool's context manager so there is exactly one
+        checkout and one checkin per call.
         """
-        terminal = self._pool.checkout()  # type: ignore[union-attr]
-        try:
+        with self._pool.pane() as handle:  # type: ignore[union-attr]
             reset_text: str | None = None
 
-            if action.reset or terminal._closed:
-                self._discard_session(terminal)
-                terminal = self._pool.replace(terminal)  # type: ignore[union-attr]
+            if action.reset or handle.terminal._closed:
+                self._discard_session(handle.terminal)
+                handle.terminal = self._pool.replace(handle.terminal)  # type: ignore[union-attr]
                 reset_text = self._RESET_TEXT
                 logger.info(
                     f"Terminal pane replaced (reset) working_dir: {self._working_dir}"
@@ -383,7 +382,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                         exit_code=0,
                     )
 
-            session = self._wrap_session(terminal)
+            session = self._wrap_session(handle.terminal)
             self._prepare_pooled_session(session)
 
             cmd_action = (
@@ -409,8 +408,6 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 )
 
             return self._mask_observation(observation, conversation)
-        finally:
-            self._pool.checkin(terminal)  # type: ignore[union-attr]
 
     def __call__(
         self,

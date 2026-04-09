@@ -10,7 +10,8 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -46,6 +47,13 @@ class PooledTmuxTerminal(TmuxTerminal):
             with suppress(Exception):
                 self.window.kill()
             self._closed = True
+
+
+@dataclass(slots=True)
+class PaneHandle:
+    """Mutable handle to a checked-out pane, for use as a context manager target."""
+
+    terminal: PooledTmuxTerminal
 
 
 @dataclass(slots=True)
@@ -272,3 +280,17 @@ class TmuxPanePool:
 
         logger.debug(f"Replaced pane {old_pane_id} -> {new_pane_id}")
         return new_terminal
+
+    @contextmanager
+    def pane(self, timeout: float | None = None) -> Iterator[PaneHandle]:
+        """Context manager: checkout a pane, yield a handle, checkin on exit.
+
+        The yielded :class:`PaneHandle` is mutable — callers that call
+        :meth:`replace` should assign the new terminal back to
+        ``handle.terminal`` so that the correct pane is checked in.
+        """
+        handle = PaneHandle(self.checkout(timeout=timeout))
+        try:
+            yield handle
+        finally:
+            self.checkin(handle.terminal)
