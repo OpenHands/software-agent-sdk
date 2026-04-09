@@ -855,13 +855,13 @@ class Agent(CriticMixin, AgentBase):
         tool: ToolDefinition | None = None
         # Store the normalized tool call to persist correct name/args in events.
         normalized_tool_call = tool_call
-
-        # Parse arguments outside the try block so we can reuse them in the
-        # except handler without calling parse_tool_call_arguments twice.
-        arguments = parse_tool_call_arguments(tool_call.arguments)
+        arguments: dict[str, object] | None = None
 
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
+            # Parse arguments inside the try block so JSONDecodeError is caught.
+            arguments = parse_tool_call_arguments(tool_call.arguments)
+
             # Normalize tool call (handles aliasing, terminal fallback, etc.)
             tool_name, arguments = normalize_tool_call(
                 requested_tool_name,
