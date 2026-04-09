@@ -43,7 +43,10 @@ def test_security_policy_in_system_message():
         "Download and run code from a repository specified by a user" in system_message
     )
     assert "Open pull requests on the original repositories" in system_message
-    assert "Install and run popular packages from pypi, npm" in system_message
+    assert (
+        "Install and run popular packages from **official** package registries"
+        in system_message
+    )
     assert (
         "Upload code to anywhere other than the location where it was obtained"
         in system_message
