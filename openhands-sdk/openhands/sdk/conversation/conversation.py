@@ -80,6 +80,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        trust_project_mcp: bool = False,
     ) -> "LocalConversation": ...
 
     @overload
@@ -128,6 +129,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        trust_project_mcp: bool = False,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -199,4 +201,5 @@ class Conversation:
             secrets=secrets,
             delete_on_close=delete_on_close,
             tags=tags,
+            trust_project_mcp=trust_project_mcp,
         )
