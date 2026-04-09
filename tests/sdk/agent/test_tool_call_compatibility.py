@@ -438,3 +438,35 @@ def test_grep_pattern_with_shell_metacharacters_is_escaped(tmp_path):
     assert action_event.action is not None
     # shlex.join() quotes the pattern, preventing shell injection
     assert "; rm -rf /" in getattr(action_event.action, "command")
+
+
+def test_explicitly_registered_tool_not_hijacked_by_alias():
+    """Regression: explicitly registered 'bash' tool should not be hijacked to terminal.
+
+    When a tool named 'bash' is explicitly registered, it should be preserved
+    rather than aliased to 'terminal'. This prevents legitimate tools from being
+    silently overridden by the compatibility shim.
+    """
+    from openhands.sdk.agent.utils import normalize_tool_call
+
+    # When 'bash' is explicitly registered alongside 'terminal',
+    # normalize_tool_call should preserve 'bash', not alias to 'terminal'
+    available_tools = {"bash", "terminal", "file_editor"}
+
+    # Test with 'bash' tool name - should NOT be aliased since it's registered
+    tool_name, args = normalize_tool_call(
+        "bash", {"command": "echo hi"}, available_tools
+    )
+    assert tool_name == "bash", (
+        "Explicitly registered 'bash' should not be aliased to terminal"
+    )
+
+    # Test with 'ls' tool name - should still fallback since it's NOT registered
+    tool_name, args = normalize_tool_call("ls", {}, available_tools)
+    assert tool_name == "terminal", "Unknown 'ls' should fallback to terminal"
+
+    # Test with 'str_replace' - should be aliased (alias target is registered)
+    tool_name, args = normalize_tool_call(
+        "str_replace", {"old_str": "x", "new_str": "y"}, available_tools
+    )
+    assert tool_name == "file_editor", "str_replace alias should map to file_editor"

@@ -292,31 +292,35 @@ def normalize_tool_call(
 ) -> tuple[str, dict[str, Any]]:
     """Normalize legacy tool names and Anthropic-style argument shapes.
 
-    Precedence is intentional: legacy aliases resolve first, terminal fallback
-    only applies to still-unknown names, and file_editor command inference runs
+    Precedence is intentional: preserve explicitly registered tools first,
+    then apply legacy aliases for unknown names, terminal fallback only
+    applies to still-unknown names, and file_editor command inference runs
     after the canonical tool name is known.
     """
     normalized_tool_name = tool_name
     normalized_arguments = arguments.copy()
 
-    alias_target = TOOL_NAME_ALIASES.get(tool_name)
-    if alias_target and alias_target in available_tools:
-        normalized_tool_name = alias_target
-    elif tool_name not in available_tools and "terminal" in available_tools:
-        terminal_command = _maybe_rewrite_as_terminal_command(
-            tool_name,
-            normalized_arguments,
-        )
-        if terminal_command is not None:
-            normalized_tool_name = "terminal"
-            # Preserve only terminal-relevant arguments (security_risk, summary)
-            # along with the generated command
-            normalized_arguments = {
-                key: value
-                for key, value in normalized_arguments.items()
-                if key in {"security_risk", "summary"}
-            }
-            normalized_arguments["command"] = terminal_command
+    # Only apply aliases for tool names that are not explicitly registered.
+    # This prevents hijacking legitimate tools that share names with aliases.
+    if tool_name not in available_tools:
+        alias_target = TOOL_NAME_ALIASES.get(tool_name)
+        if alias_target and alias_target in available_tools:
+            normalized_tool_name = alias_target
+        elif "terminal" in available_tools:
+            terminal_command = _maybe_rewrite_as_terminal_command(
+                tool_name,
+                normalized_arguments,
+            )
+            if terminal_command is not None:
+                normalized_tool_name = "terminal"
+                # Preserve only terminal-relevant arguments (security_risk, summary)
+                # along with the generated command
+                normalized_arguments = {
+                    key: value
+                    for key, value in normalized_arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                normalized_arguments["command"] = terminal_command
 
     if normalized_tool_name == "file_editor":
         inferred_command = _infer_file_editor_command(normalized_arguments)

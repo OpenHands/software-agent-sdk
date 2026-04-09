@@ -907,8 +907,16 @@ class Agent(CriticMixin, AgentBase):
         except (ValueError, json.JSONDecodeError, ValidationError) as e:
             # normalize_tool_call or json.loads or Pydantic validation raised an
             # error. Build concise error message with parameter names only (not values).
-            parsed_args = parse_tool_call_arguments(tool_call.arguments)
-            keys = list(parsed_args.keys()) if isinstance(parsed_args, dict) else None
+            # Try to extract keys for the error message, but gracefully handle
+            # truly unparseable JSON by showing "unparseable JSON" instead.
+            try:
+                parsed_args = parse_tool_call_arguments(tool_call.arguments)
+                keys = (
+                    list(parsed_args.keys()) if isinstance(parsed_args, dict) else None
+                )
+            except (ValueError, json.JSONDecodeError):
+                parsed_args = None
+                keys = None
             params = (
                 f"Parameters provided: {keys}"
                 if keys is not None
