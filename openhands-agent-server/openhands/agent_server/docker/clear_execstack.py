@@ -208,9 +208,7 @@ def _main(argv: list[str]) -> int:
         return 1
     for path in modified:
         print(f"  [execstack] cleared PF_X on {path}")
-    print(
-        f"clear_execstack: sanitized {len(modified)} shared object(s) under {target}"
-    )
+    print(f"clear_execstack: sanitized {len(modified)} shared object(s) under {target}")
     return 0
 
 

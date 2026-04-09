@@ -242,9 +242,7 @@ def test_clears_pf_x_on_pt_gnu_stack_rwx(tmp_path: Path, bits: int, endian: str)
 
 
 @pytest.mark.parametrize("bits,endian", _MATRIX)
-def test_noop_when_pt_gnu_stack_already_clean(
-    tmp_path: Path, bits: int, endian: str
-):
+def test_noop_when_pt_gnu_stack_already_clean(tmp_path: Path, bits: int, endian: str):
     elf = _build_elf(
         bits=bits,
         endian=endian,
@@ -295,9 +293,7 @@ def test_walks_tree_and_reports_modified_files(tmp_path: Path):
     dirty = _build_elf(
         bits=64, endian="<", phdrs=[(_PT_GNU_STACK, _PF_R | _PF_W | _PF_X)]
     )
-    clean = _build_elf(
-        bits=64, endian="<", phdrs=[(_PT_GNU_STACK, _PF_R | _PF_W)]
-    )
+    clean = _build_elf(bits=64, endian="<", phdrs=[(_PT_GNU_STACK, _PF_R | _PF_W)])
 
     (tmp_path / "bin").mkdir()
     (tmp_path / "lib").mkdir()
