@@ -849,16 +849,20 @@ class Agent(CriticMixin, AgentBase):
 
         NOTE: state will be mutated in-place.
         """
+        # Track the originally-requested tool name (before normalization) for
+        # error messages when the tool is not found or validation fails.
         requested_tool_name = tool_call.name
         tool: ToolDefinition | None = None
+        # Store the normalized tool call to persist correct name/args in events.
         normalized_tool_call = tool_call
 
-        # Validate arguments
+        # Parse arguments outside the try block so we can reuse them in the
+        # except handler without calling parse_tool_call_arguments twice.
+        arguments = parse_tool_call_arguments(tool_call.arguments)
+
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            # Parse and normalize tool call (handles aliasing, terminal fallback,
-            # and argument sanitization)
-            arguments = parse_tool_call_arguments(tool_call.arguments)
+            # Normalize tool call (handles aliasing, terminal fallback, etc.)
             tool_name, arguments = normalize_tool_call(
                 requested_tool_name,
                 arguments,
@@ -905,18 +909,11 @@ class Agent(CriticMixin, AgentBase):
             action: Action = tool.action_from_arguments(arguments)
 
         except (ValueError, json.JSONDecodeError, ValidationError) as e:
-            # normalize_tool_call or json.loads or Pydantic validation raised an
-            # error. Build concise error message with parameter names only (not values).
+            # normalize_tool_call or Pydantic validation raised an error.
+            # Build concise error message with parameter names only (not values).
             # Try to extract keys for the error message, but gracefully handle
             # truly unparseable JSON by showing "unparseable JSON" instead.
-            try:
-                parsed_args = parse_tool_call_arguments(tool_call.arguments)
-                keys = (
-                    list(parsed_args.keys()) if isinstance(parsed_args, dict) else None
-                )
-            except (ValueError, json.JSONDecodeError):
-                parsed_args = None
-                keys = None
+            keys = list(arguments.keys()) if isinstance(arguments, dict) else None
             params = (
                 f"Parameters provided: {keys}"
                 if keys is not None
