@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills import (
     InstalledSkillsMetadata,
     disable_skill,
@@ -20,6 +19,7 @@ from openhands.sdk.skills import (
     uninstall_skill,
     update_skill,
 )
+from openhands.sdk.skills.exceptions import SkillValidationError
 
 
 def _create_skill_dir(

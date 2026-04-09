@@ -4,12 +4,12 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
 )
-from openhands.sdk.llm import Message, TextContent
-from openhands.sdk.secret import LookupSecret, StaticSecret
 
 
 class TestAgentContext:

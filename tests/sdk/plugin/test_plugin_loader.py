@@ -8,7 +8,6 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
-from openhands.sdk.skills import Skill
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
 from openhands.sdk.plugin import (
@@ -16,6 +15,7 @@ from openhands.sdk.plugin import (
     PluginSource,
     load_plugins,
 )
+from openhands.sdk.skills import Skill
 
 
 @pytest.fixture

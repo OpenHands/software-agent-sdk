@@ -3,8 +3,8 @@
 import pytest
 
 from openhands.sdk.context import AgentContext
-from openhands.sdk.skills import Skill
 from openhands.sdk.plugin import Plugin, PluginManifest
+from openhands.sdk.skills import Skill
 
 
 class TestPluginAddSkillsTo:
