@@ -1081,7 +1081,7 @@ def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_
     rather than the output limit. Without capping, this could request output
     that exceeds the context window.
 
-    See: https://github.com/OpenHands/software-agent-sdk/issues/XXX
+    See: https://github.com/OpenHands/software-agent-sdk/pull/2264
     """
     from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
@@ -1159,6 +1159,73 @@ def test_explicit_max_output_tokens_not_overridden():
 
     # Should respect the explicit value
     assert llm.max_output_tokens == 32768
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_equal_to_context_window(
+    mock_get_model_info,
+):
+    """max_output_tokens == context window leaves zero input headroom.
+
+    Strict providers (e.g. AWS Bedrock) reject every call when
+    max_output_tokens fills the entire context window.
+    """
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 262144,
+        "max_input_tokens": 262144,
+    }
+
+    llm = LLM(
+        model="litellm_proxy/test-model-equal-windows",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 262144 // 2
+    assert llm.max_input_tokens == 262144
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_equal_to_max_tokens(
+    mock_get_model_info,
+):
+    """max_output_tokens == max_tokens should also be halved.
+
+    Some registries only provide max_tokens (context window) without
+    max_input_tokens. The guard should still fire.
+    """
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 131072,
+        "max_tokens": 131072,
+        "max_input_tokens": None,
+    }
+
+    llm = LLM(
+        model="litellm_proxy/test-model-max-tokens-only",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 131072 // 2
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_not_capped_when_below_context_window(
+    mock_get_model_info,
+):
+    """max_output_tokens < context window should be used as-is."""
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 8192,
+        "max_input_tokens": 200000,
+    }
+
+    llm = LLM(
+        model="anthropic/claude-3-5-sonnet-latest",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 8192
 
 
 # LLM Registry Tests
