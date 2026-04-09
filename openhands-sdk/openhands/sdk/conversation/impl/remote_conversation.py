@@ -1169,7 +1169,7 @@ class RemoteConversation(BaseConversation):
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the remote conversation."""
-        payload = {"security_analyzer": analyzer.model_dump() if analyzer else analyzer}
+        payload = {"security_analyzer": analyzer.model_dump(mode="json") if analyzer else analyzer}
         _send_request(
             self._client,
             "POST",
