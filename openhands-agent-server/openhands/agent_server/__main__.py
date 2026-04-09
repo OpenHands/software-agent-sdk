@@ -110,8 +110,24 @@ def main() -> None:
         action="store_true",
         help="Check if browser functionality works and exit",
     )
+    parser.add_argument(
+        "--import-modules",
+        type=str,
+        default=None,
+        help="Comma-separated list of modules to import at startup (e.g. 'myapp.tools,myapp.plugins')",
+    )
 
     args = parser.parse_args()
+
+    # Pre-load user-specified modules (e.g. custom tool registrations)
+    if args.import_modules:
+        import importlib
+
+        for module_name in args.import_modules.split(","):
+            module_name = module_name.strip()
+            if module_name:
+                importlib.import_module(module_name)
+                logger.info("Imported module: %s", module_name)
 
     # Handle browser check
     if args.check_browser:
