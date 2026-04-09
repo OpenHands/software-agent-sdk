@@ -30,6 +30,32 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+def merge_mcp_configs(
+    base: dict[str, Any] | None,
+    overlay: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge two MCP config dicts; overlay wins on key conflicts."""
+    if base is None and overlay is None:
+        return {}
+    if base is None:
+        return dict(overlay) if overlay is not None else {}
+    if overlay is None:
+        return dict(base)
+
+    result = dict(base)
+    if "mcpServers" in overlay:
+        existing_servers = result.get("mcpServers", {})
+        result["mcpServers"] = {
+            **existing_servers,
+            **overlay["mcpServers"],
+        }
+    for key, value in overlay.items():
+        if key != "mcpServers":
+            result[key] = value
+    return result
+
+
 # Directories to check for plugin manifest
 PLUGIN_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
 PLUGIN_MANIFEST_FILE = "plugin.json"
@@ -201,36 +227,24 @@ class Plugin(BaseModel):
         if base_config is None and plugin_config is None:
             return {}
         if base_config is None:
-            return dict(plugin_config) if plugin_config else {}
+            return dict(plugin_config) if plugin_config is not None else {}
         if plugin_config is None:
             return dict(base_config)
 
-        # Shallow copy to avoid mutating inputs
-        result = dict(base_config)
-
-        # Merge mcpServers by server name (Claude Code compatible behavior)
         if "mcpServers" in plugin_config:
-            existing_servers = result.get("mcpServers", {})
+            existing_servers = base_config.get("mcpServers", {})
             for server_name in plugin_config["mcpServers"]:
                 if server_name in existing_servers:
                     logger.warning(
                         f"Plugin MCP server '{server_name}' overrides existing server"
                     )
-            result["mcpServers"] = {
-                **existing_servers,
-                **plugin_config["mcpServers"],
-            }
-
-        # Other top-level keys: plugin wins (shallow override)
         for key, value in plugin_config.items():
-            if key != "mcpServers":
-                if key in result:
-                    logger.warning(
-                        f"Plugin MCP config key '{key}' overrides existing value"
-                    )
-                result[key] = value
+            if key != "mcpServers" and key in base_config:
+                logger.warning(
+                    f"Plugin MCP config key '{key}' overrides existing value"
+                )
 
-        return result
+        return merge_mcp_configs(base_config, plugin_config)
 
     @classmethod
     def fetch(
