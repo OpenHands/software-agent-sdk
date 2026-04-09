@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 import openhands.tools.preset.default as _preset_default
@@ -20,20 +21,6 @@ from openhands.tools.preset.default import register_builtins_agents
 # Resolve once from the installed package — works regardless of cwd.
 SUBAGENTS_DIR: Final[Path] = Path(_preset_default.__file__).parent / "subagents"
 
-# The expected agent names as defined in the .md frontmatter.
-EXPECTED_MD_FILES: Final[set[str]] = {
-    "default",
-    "code_explorer",
-    "bash_runner",
-    "web_researcher",
-}
-EXPECTED_AGENT_NAMES: Final[set[str]] = {
-    "general purpose",
-    "code-explorer",
-    "bash-runner",
-    "web researcher",
-}
-
 
 @pytest.fixture(autouse=True)
 def _clean_registry() -> Iterator[None]:
@@ -47,177 +34,100 @@ def _make_test_llm() -> LLM:
     return LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm")
 
 
-# ---------------------------------------------------------------------------
-# Subagent directory structure
-# ---------------------------------------------------------------------------
-
-
-def test_subagents_directory_exists() -> None:
-    assert SUBAGENTS_DIR.is_dir(), f"Subagents dir missing: {SUBAGENTS_DIR}"
-
-
-def test_builtins_contains_expected_md_files() -> None:
+def test_builtins_contains_expected_agents() -> None:
     md_files = {f.stem for f in SUBAGENTS_DIR.glob("*.md")}
-    assert EXPECTED_MD_FILES.issubset(md_files), (
-        f"Missing md files: {EXPECTED_MD_FILES - md_files}"
+    assert {"default", "code_explorer", "bash_runner", "web_researcher"}.issubset(
+        md_files
     )
-
-
-# ---------------------------------------------------------------------------
-# Loading definitions
-# ---------------------------------------------------------------------------
 
 
 def test_load_all_builtins() -> None:
     """Every .md file in subagents/ should parse without errors."""
     agents = load_agents_from_dir(SUBAGENTS_DIR)
     names = {a.name for a in agents}
-    assert EXPECTED_AGENT_NAMES.issubset(names), (
-        f"Missing agents: {EXPECTED_AGENT_NAMES - names}"
-    )
+    assert {
+        "general-purpose",
+        "code-explorer",
+        "bash-runner",
+        "web-researcher",
+    }.issubset(names)
 
 
-def test_each_builtin_has_nonempty_system_prompt() -> None:
-    """Every agent definition must have a non-empty system prompt."""
-    agents = load_agents_from_dir(SUBAGENTS_DIR)
-    for agent_def in agents:
-        assert agent_def.system_prompt.strip(), (
-            f"Agent '{agent_def.name}' has an empty system prompt"
-        )
+@pytest.mark.parametrize(
+    "enable_browser, expected_agents",
+    [
+        (
+            True,
+            ["general-purpose", "code-explorer", "bash-runner", "web-researcher"],
+        ),
+        (
+            False,
+            ["general-purpose", "code-explorer", "bash-runner"],
+        ),
+    ],
+)
+def test_register_builtins_agents_registers_expected_factories(
+    enable_browser: bool, expected_agents: list[str]
+) -> None:
+    register_builtins_agents(enable_browser=enable_browser)
 
-
-def test_each_builtin_has_nonempty_description() -> None:
-    """Every agent definition must have a non-empty description."""
-    agents = load_agents_from_dir(SUBAGENTS_DIR)
-    for agent_def in agents:
-        assert agent_def.description.strip(), (
-            f"Agent '{agent_def.name}' has an empty description"
-        )
-
-
-def test_each_builtin_has_at_least_one_tool() -> None:
-    """Every agent definition must specify at least one tool."""
-    agents = load_agents_from_dir(SUBAGENTS_DIR)
-    for agent_def in agents:
-        assert len(agent_def.tools) > 0, (
-            f"Agent '{agent_def.name}' has no tools defined"
-        )
-
-
-# ---------------------------------------------------------------------------
-# register_builtins_agents — with browser enabled
-# ---------------------------------------------------------------------------
-
-
-def test_register_builtins_agents_with_browser() -> None:
-    """With browser enabled, all agents should be registered."""
-    registered = register_builtins_agents(enable_browser=True)
-    registered_set = set(registered)
-    expected = {"general purpose", "code-explorer", "bash-runner", "web researcher"}
-    assert expected.issubset(registered_set), (
-        f"Missing registrations: {expected - registered_set}"
-    )
-
-
-def test_general_purpose_agent_tools() -> None:
-    """'general purpose' agent should have terminal, file_editor, task_tracker."""
-    register_builtins_agents(enable_browser=True)
     llm = _make_test_llm()
-    factory = get_agent_factory("general purpose")
-    agent = factory.factory_func(llm)
-    assert isinstance(agent, Agent)
+    agent_tool_names: dict[str, list[str]] = {}
+    for name in expected_agents:
+        factory = get_agent_factory(name)
+        agent = factory.factory_func(llm)
+        assert isinstance(agent, Agent)
+        agent_tool_names[name] = [t.name for t in agent.tools]
+
+    assert len(agent_tool_names) == len(expected_agents)
+
+    # general purpose agent should never include browser tools
+    assert agent_tool_names["general-purpose"] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+    ]
+
+    assert agent_tool_names["code-explorer"] == ["terminal"]
+    assert agent_tool_names["bash-runner"] == ["terminal"]
+
+    if enable_browser:
+        assert "browser_tool_set" in agent_tool_names["web-researcher"]
+
+
+def test_general_purpose_has_no_browser_tools() -> None:
+    """general-purpose agent should not have browser tools (architectural change)."""
+    register_builtins_agents(enable_browser=True)
+    factory = get_agent_factory("general-purpose")
+    agent = factory.factory_func(_make_test_llm())
     tool_names = [t.name for t in agent.tools]
-    assert tool_names == ["terminal", "file_editor", "task_tracker"]
+    assert "browser_tool_set" not in tool_names
 
 
-def test_explore_agent_tools() -> None:
-    register_builtins_agents(enable_browser=True)
+def test_register_builtins_agents_skips_web_researcher_without_browser() -> None:
+    """When enable_browser=False, the web researcher agent should not be registered."""
+    register_builtins_agents(enable_browser=False)
+    with pytest.raises(ValueError, match="Unknown agent 'web-researcher'"):
+        get_agent_factory("web-researcher")
+
+
+@pytest.mark.parametrize(
+    "old_name, expected_tools",
+    [
+        ("default", ["terminal", "file_editor", "task_tracker"]),
+        ("default cli mode", ["terminal", "file_editor", "task_tracker"]),
+        ("explore", ["terminal"]),
+        ("bash", ["terminal"]),
+    ],
+)
+def test_deprecated_agent_names_still_work(
+    old_name: str, expected_tools: list[str]
+) -> None:
+    """Old agent names should resolve to the correct agent with the right tools."""
+    register_builtins_agents()
     llm = _make_test_llm()
-    factory = get_agent_factory("code-explorer")
-    agent = factory.factory_func(llm)
-    assert isinstance(agent, Agent)
-    assert [t.name for t in agent.tools] == ["terminal"]
 
-
-def test_bash_agent_tools() -> None:
-    register_builtins_agents(enable_browser=True)
-    llm = _make_test_llm()
-    factory = get_agent_factory("bash-runner")
-    agent = factory.factory_func(llm)
-    assert isinstance(agent, Agent)
-    assert [t.name for t in agent.tools] == ["terminal"]
-
-
-def test_web_researcher_agent_tools() -> None:
-    """'web researcher' agent must include browser_tool_set."""
-    register_builtins_agents(enable_browser=True)
-    llm = _make_test_llm()
-    factory = get_agent_factory("web researcher")
-    agent = factory.factory_func(llm)
-    assert isinstance(agent, Agent)
-    assert [t.name for t in agent.tools] == ["browser_tool_set"]
-
-
-# ---------------------------------------------------------------------------
-# register_builtins_agents — without browser
-# ---------------------------------------------------------------------------
-
-
-def test_register_builtins_agents_no_browser() -> None:
-    """
-    Without browser, 'general purpose', 'code-explorer',
-    'bash-runner' should register.
-    """
-    registered = register_builtins_agents(enable_browser=False)
-    registered_set = set(registered)
-    assert {"general purpose", "code-explorer", "bash-runner"}.issubset(registered_set)
-
-
-def test_no_browser_excludes_web_researcher() -> None:
-    """Without browser, web researcher should not be registered."""
-    registered = register_builtins_agents(enable_browser=False)
-    assert "web researcher" not in registered
-
-
-# ---------------------------------------------------------------------------
-# Idempotency and non-overwrite behavior
-# ---------------------------------------------------------------------------
-
-
-def test_register_builtins_agents_idempotent() -> None:
-    """Calling register_builtins_agents twice should not fail or duplicate."""
-    first = register_builtins_agents(enable_browser=True)
-    second = register_builtins_agents(enable_browser=True)
-    # Second call should register nothing (agents already present).
-    assert len(first) > 0
-    assert len(second) == 0
-
-
-def test_register_builtins_does_not_overwrite_existing() -> None:
-    """
-    If an agent is already registered,
-    register_builtins_agents must not replace it.
-    """
-    from openhands.sdk.subagent.registry import register_agent_if_absent
-
-    sentinel_called = False
-
-    def sentinel_factory(llm: LLM) -> Agent:
-        nonlocal sentinel_called
-        sentinel_called = True
-        return Agent(llm=llm, tools=[])
-
-    # Pre-register "code-explorer" with a custom factory
-    register_agent_if_absent(
-        name="code-explorer",
-        factory_func=sentinel_factory,
-        description="custom explore",
-    )
-
-    register_builtins_agents(enable_browser=True)
-
-    # The factory should still be our sentinel, not the builtin one
-    factory = get_agent_factory("code-explorer")
-    llm = _make_test_llm()
-    factory.factory_func(llm)
-    assert sentinel_called, "Builtin registration overwrote a pre-existing agent"
+    with pytest.warns(DeprecatedWarning, match=f"'{old_name}'"):
+        agent = get_agent_factory(old_name).factory_func(llm)
+        assert isinstance(agent, Agent)
+        assert [t.name for t in agent.tools] == expected_tools

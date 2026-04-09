@@ -558,3 +558,36 @@ def test_nemotron_3_super_120b_a12b_config():
         == "litellm_proxy/nvidia/nemotron-3-super-120b-a12b"
     )
     assert model["llm_config"]["temperature"] == 0.0
+
+
+def test_converse_nemotron_super_3_120b_config():
+    """Test that converse-nemotron-super-3-120b has correct configuration."""
+    model = MODELS["converse-nemotron-super-3-120b"]
+
+    assert model["id"] == "converse-nemotron-super-3-120b"
+    assert model["display_name"] == "NVIDIA Converse Nemotron Super 3 120B"
+    assert (
+        model["llm_config"]["model"] == "litellm_proxy/converse-nemotron-super-3-120b"
+    )
+    assert model["llm_config"]["temperature"] == 0.0
+
+
+def test_qwen3_6_plus_config():
+    """Test that qwen3.6-plus has correct configuration."""
+    model = MODELS["qwen3.6-plus"]
+
+    assert model["id"] == "qwen3.6-plus"
+    assert model["display_name"] == "Qwen3.6 Plus"
+    assert model["llm_config"]["model"] == "litellm_proxy/dashscope/qwen3.6-plus"
+    assert model["llm_config"]["temperature"] == 0.0
+
+
+def test_trinity_large_thinking_config():
+    """Test that trinity-large-thinking has correct configuration."""
+    model = MODELS["trinity-large-thinking"]
+
+    assert model["id"] == "trinity-large-thinking"
+    assert model["display_name"] == "Trinity Large Thinking"
+    assert model["llm_config"]["model"] == "litellm_proxy/trinity-large-thinking"
+    assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["top_p"] == 0.95

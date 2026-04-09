@@ -1,6 +1,7 @@
 """String replace editor tool implementation."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, PrivateAttr
@@ -13,6 +14,7 @@ from rich.text import Text
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -190,6 +192,18 @@ Remember: when making multiple file edits in a row to the same file, you should 
 
 class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
     """A ToolDefinition subclass that automatically initializes a FileEditorExecutor."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        """Declare file resources accessed by this action.
+
+        All commands — including read-only ``view`` — lock on the target
+        file path.  This ensures a view never reads partially-written
+        content during a concurrent write.  Modifications or accesses to
+        *different* files run in parallel.
+        """
+        assert isinstance(action, FileEditorAction)
+        normalized_path = Path(action.path).resolve()
+        return DeclaredResources(keys=(f"file:{normalized_path}",), declared=True)
 
     @classmethod
     def create(

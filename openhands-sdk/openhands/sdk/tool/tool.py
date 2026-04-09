@@ -528,8 +528,16 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
         if action_type_with_risk:
             return action_type_with_risk
 
+        # Re-use a WithRisk class that already exists in the hierarchy
+        # but whose cache entry was lost (fixes #2642).
+        target_name = f"{action_type.__name__}WithRisk"
+        for sub in action_type.__subclasses__():
+            if sub.__name__ == target_name:
+                _action_types_with_risk[action_type] = sub
+                return sub
+
         action_type_with_risk = type(
-            f"{action_type.__name__}WithRisk",
+            target_name,
             (action_type,),
             {
                 "security_risk": Field(
@@ -550,19 +558,37 @@ def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
     This dynamically adds a 'summary' field to the action schema, allowing
     the LLM to provide a brief explanation of what each action does.
 
+    If the action_type already declares ``summary`` in its own schema
+    (e.g. an MCP tool like Jira whose ``summary`` is the ticket title),
+    the original type is returned unchanged to avoid shadowing the real
+    parameter.
+
     Args:
         action_type: The original action type to enhance
 
     Returns:
-        A new type that includes the summary field
+        A new type that includes the summary field, or the original type
+        if it already declares ``summary``.
     """
+    # Don't shadow a tool's own "summary" parameter with the meta-field.
+    if "summary" in action_type.model_fields:
+        return action_type
+
     with _action_type_lock:
         action_type_with_summary = _action_types_with_summary.get(action_type)
         if action_type_with_summary:
             return action_type_with_summary
 
+        # Re-use a WithSummary class that already exists in the hierarchy
+        # but whose cache entry was lost (fixes #2642).
+        target_name = f"{action_type.__name__}WithSummary"
+        for sub in action_type.__subclasses__():
+            if sub.__name__ == target_name:
+                _action_types_with_summary[action_type] = sub
+                return sub
+
         action_type_with_summary = type(
-            f"{action_type.__name__}WithSummary",
+            target_name,
             (action_type,),
             {
                 "summary": Field(

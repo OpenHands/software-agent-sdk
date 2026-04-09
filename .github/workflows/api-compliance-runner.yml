@@ -18,7 +18,7 @@ on:
 
 env:
     # Default models to test (matches DEFAULT_MODELS in run_compliance.py)
-    DEFAULT_MODELS: claude-sonnet-4-5,gpt-5.2,gemini-3-pro
+    DEFAULT_MODELS: claude-sonnet-4-5,gpt-5.2,gemini-3.1-pro
 
 jobs:
     run-compliance-tests:
@@ -32,7 +32,7 @@ jobs:
             pull-requests: write
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
                   ref: ${{ github.event.pull_request.head.sha || github.ref }}

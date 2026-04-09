@@ -27,7 +27,7 @@ jobs:
             GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Get version from release or input
               id: get_version
@@ -337,7 +337,7 @@ jobs:
                   echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
 
             - name: Notify Slack
-              uses: slackapi/slack-github-action@v2.1.1
+              uses: slackapi/slack-github-action@v3.0.1
               with:
                   method: chat.postMessage
                   token: ${{ secrets.SLACK_BOT_TOKEN }}
