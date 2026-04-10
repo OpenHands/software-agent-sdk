@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -913,13 +914,23 @@ class Agent(CriticMixin, AgentBase):
             # Build concise error message with parameter names only (not values).
             # Try to extract keys for the error message, but gracefully handle
             # truly unparseable JSON by showing "unparseable JSON" instead.
+
+            # When normalize_tool_call raises about file_editor "Cannot infer",
+            # the error message contains the alias target (e.g. "file_editor"),
+            # not the original tool name. Extract it so error messages match.
+            err_str = str(e)
+            display_tool_name = requested_tool_name
+            if "Cannot infer" in err_str:
+                match = re.search(r"for tool '([^']+)'", err_str)
+                if match:
+                    display_tool_name = match.group(1)
+
             keys = list(arguments.keys()) if isinstance(arguments, dict) else None
             params = (
                 f"Parameters provided: {keys}"
                 if keys is not None
                 else "Arguments: unparseable JSON"
             )
-            display_tool_name = tool.name if tool is not None else requested_tool_name
             err = f"Error validating tool '{display_tool_name}': {e}. {params}"
             self._emit_tool_error(
                 error=err,
