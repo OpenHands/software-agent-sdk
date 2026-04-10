@@ -225,11 +225,9 @@ def _default_llm_settings() -> LLM:
     return LLM(model=model)
 
 
-# Canonical persisted AgentSettings payload contract:
-# - v1 (legacy): flat dotted OpenHands mapping or unversioned nested payload
-# - v2 (current): standard AgentSettings JSON including `schema_version`
+# Persisted settings payloads currently use schema_version 1.
 _LEGACY_AGENT_SETTINGS_VERSION = 1
-_CURRENT_AGENT_SETTINGS_VERSION = 2
+_CURRENT_AGENT_SETTINGS_VERSION = 1
 _PERSISTED_AGENT_SETTINGS_VERSION_KEY = "schema_version"
 _LEGACY_WRAPPED_SETTINGS_VERSION_KEY = "version"
 _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY = "settings"
@@ -469,38 +467,6 @@ class ConversationSettings(BaseModel):
         """Export a structured schema describing configurable conversation settings."""
         return export_settings_schema(cls)
 
-    @classmethod
-    def migrate_persisted_payload(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Return the latest canonical persisted ConversationSettings payload."""
-        return _migrate_persisted_conversation_settings_payload(payload)
-
-    @classmethod
-    def from_persisted(cls, payload: Mapping[str, Any]) -> ConversationSettings:
-        """Load persisted ConversationSettings after applying SDK-owned migrations."""
-        return cls.model_validate(cls.migrate_persisted_payload(payload))
-
-    def patch(self, payload: Mapping[str, Any]) -> ConversationSettings:
-        """Return a new settings object with a persisted patch applied."""
-        base_payload = self.model_dump(mode="json")
-        merged_payload = _merge_patch_payload(
-            base_payload, _normalize_patch_payload(payload)
-        )
-        merged_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
-            self.CURRENT_PERSISTED_VERSION
-        )
-        return type(self).from_persisted(merged_payload)
-
-    def diff(self, target: ConversationSettings | Mapping[str, Any]) -> dict[str, Any]:
-        """Return the minimal persisted patch from these settings to ``target``."""
-        target_settings = (
-            target
-            if isinstance(target, ConversationSettings)
-            else type(self).from_persisted(target)
-        )
-        base_payload = self.model_dump(mode="json")
-        target_payload = target_settings.model_dump(mode="json")
-        return _diff_payload(base_payload, target_payload)
-
     def build_confirmation_policy(self):
         from openhands.sdk.security.confirmation_policy import (
             AlwaysConfirm,
@@ -619,44 +585,6 @@ class AgentSettings(BaseModel):
     def export_schema(cls) -> SettingsSchema:
         """Export a structured schema describing configurable agent settings."""
         return export_settings_schema(cls)
-
-    @classmethod
-    def migrate_persisted_payload(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Return the latest canonical persisted AgentSettings payload."""
-        return _migrate_persisted_agent_settings_payload(payload)
-
-    @classmethod
-    def from_persisted(cls, payload: Mapping[str, Any]) -> AgentSettings:
-        """Load persisted AgentSettings after applying SDK-owned migrations."""
-        return cls.model_validate(cls.migrate_persisted_payload(payload))
-
-    def patch(self, payload: Mapping[str, Any]) -> AgentSettings:
-        """Return a new settings object with a persisted patch applied.
-
-        The patch payload may be sparse and may use either the current nested
-        representation or the legacy flat dotted representation.
-        """
-        base_payload = self.model_dump(mode="json", context={"expose_secrets": True})
-        merged_payload = _merge_patch_payload(
-            base_payload, _normalize_patch_payload(payload)
-        )
-        merged_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
-            self.CURRENT_PERSISTED_VERSION
-        )
-        return type(self).from_persisted(merged_payload)
-
-    def diff(self, target: AgentSettings | Mapping[str, Any]) -> dict[str, Any]:
-        """Return the minimal persisted patch from these settings to ``target``."""
-        target_settings = (
-            target
-            if isinstance(target, AgentSettings)
-            else type(self).from_persisted(target)
-        )
-        base_payload = self.model_dump(mode="json", context={"expose_secrets": True})
-        target_payload = target_settings.model_dump(
-            mode="json", context={"expose_secrets": True}
-        )
-        return _diff_payload(base_payload, target_payload)
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.

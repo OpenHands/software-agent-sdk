@@ -18,7 +18,7 @@ def _get_conversation_settings_schema() -> SettingsSchema:
     return ConversationSettings.export_schema()
 
 
-@settings_router.get("/schema", response_model=SettingsSchema)
+@settings_router.get("/agent-schema", response_model=SettingsSchema)
 async def get_agent_settings_schema() -> SettingsSchema:
     """Return the schema used to render AgentSettings-based settings forms."""
     return _get_agent_settings_schema()

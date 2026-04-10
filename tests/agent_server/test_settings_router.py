@@ -7,7 +7,7 @@ from openhands.agent_server.config import Config
 def test_get_agent_settings_schema():
     client = TestClient(create_app(Config(static_files_path=None, session_api_keys=[])))
 
-    response = client.get("/api/settings/schema")
+    response = client.get("/api/settings/agent-schema")
 
     assert response.status_code == 200
     body = response.json()

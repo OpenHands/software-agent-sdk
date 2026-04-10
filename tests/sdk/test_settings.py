@@ -114,7 +114,6 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert "verification.security_analyzer" not in v_fields
 
 
-
 def test_conversation_settings_export_schema_groups_sections() -> None:
     schema = ConversationSettings.export_schema()
 
@@ -140,36 +139,25 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     )
     assert verification_fields["verification.security_analyzer"].default == "llm"
     assert (
-        verification_fields["verification.security_analyzer"].choices[0].value
-        == "llm"
+        verification_fields["verification.security_analyzer"].choices[0].value == "llm"
     )
     assert verification_fields["verification.security_analyzer"].depends_on == [
         "verification.confirmation_mode"
     ]
 
 
-def test_conversation_settings_patch_and_diff_roundtrip() -> None:
-    defaults = ConversationSettings()
-    updated = defaults.patch(
-        {
-            "max_iterations": 42,
-            "verification": {
-                "confirmation_mode": True,
-                "security_analyzer": "none",
-            },
-        }
+def test_conversation_settings_model_dump_roundtrip() -> None:
+    settings = ConversationSettings(
+        max_iterations=42,
+        verification=ConversationVerificationSettings(
+            confirmation_mode=True,
+            security_analyzer="none",
+        ),
     )
 
-    patch = defaults.diff(updated)
+    restored = ConversationSettings.model_validate(settings.model_dump(mode="json"))
 
-    assert patch == {
-        "max_iterations": 42,
-        "verification": {
-            "confirmation_mode": True,
-            "security_analyzer": "none",
-        },
-    }
-    assert defaults.patch(patch) == updated
+    assert restored == settings
 
 
 def test_conversation_settings_builds_runtime_helpers() -> None:
@@ -187,8 +175,12 @@ def test_conversation_settings_builds_runtime_helpers() -> None:
     assert isinstance(request_kwargs["confirmation_policy"], ConfirmRisky)
     assert isinstance(request_kwargs["security_analyzer"], LLMSecurityAnalyzer)
 
-    fallback_settings = settings.patch(
-        {"verification": {"security_analyzer": "none"}}
+    fallback_settings = ConversationSettings(
+        max_iterations=settings.max_iterations,
+        verification=ConversationVerificationSettings(
+            confirmation_mode=True,
+            security_analyzer="none",
+        ),
     )
     fallback_request_kwargs = fallback_settings.to_start_request_kwargs()
 
@@ -331,78 +323,44 @@ def test_roundtrip_preserves_llm_model() -> None:
     assert restored.llm.model == "test-model"
 
 
-def test_from_persisted_agent_settings_migrates_legacy_flat_payload() -> None:
-    legacy_payload = {
-        "schema_version": 1,
-        "llm.model": "legacy-model",
-        "llm.api_key": "secret-key",
-        "verification.critic_enabled": True,
-    }
-
-    settings = AgentSettings.from_persisted(legacy_payload)
+def test_agent_settings_model_validate_accepts_nested_payload() -> None:
+    settings = AgentSettings.model_validate(
+        {
+            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
+            "llm": {
+                "model": "test-model",
+                "api_key": "secret-key",
+            },
+            "verification": {"critic_enabled": True},
+        }
+    )
 
     assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
-    assert settings.llm.model == "legacy-model"
+    assert settings.llm.model == "test-model"
     assert isinstance(settings.llm.api_key, SecretStr)
     assert settings.llm.api_key.get_secret_value() == "secret-key"
     assert settings.verification.critic_enabled is True
 
 
-def test_from_persisted_agent_settings_accepts_current_payload() -> None:
-    current_payload = {
-        "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
-        "llm": {"model": "test-model"},
-    }
-
-    settings = AgentSettings.from_persisted(current_payload)
-
-    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
-    assert settings.llm.model == "test-model"
-
-
-def test_from_persisted_agent_settings_accepts_legacy_wrapped_payload() -> None:
-    wrapped_payload = {
-        "version": 2,
-        "settings": {
-            "llm": {"model": "wrapped-model"},
-        },
-    }
-
-    settings = AgentSettings.from_persisted(wrapped_payload)
-
-    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
-    assert settings.llm.model == "wrapped-model"
-
-
-def test_agent_settings_patch_accepts_sparse_nested_payload() -> None:
-    settings = AgentSettings.from_persisted(
+def test_agent_settings_model_dump_roundtrip_preserves_sparse_updates() -> None:
+    settings = AgentSettings.model_validate(
         {
             "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
             "llm": {"model": "base-model", "base_url": "https://example.com"},
         }
     )
 
-    patched = settings.patch({"llm": {"base_url": None}})
-
-    assert patched.llm.model == "base-model"
-    assert patched.llm.base_url is None
-    assert patched.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
-
-
-def test_agent_settings_diff_returns_sparse_persisted_patch() -> None:
-    org_settings = AgentSettings.from_persisted(
-        {
-            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
-            "llm": {"model": "base-model", "base_url": "https://example.com"},
+    updated = settings.model_copy(
+        update={
+            "llm": settings.llm.model_copy(
+                update={"model": "personal-model", "base_url": None}
+            )
         }
     )
-    personal_settings = org_settings.patch(
-        {"llm": {"model": "personal-model", "base_url": None}}
+    restored = AgentSettings.model_validate(
+        updated.model_dump(mode="json", context={"expose_secrets": True})
     )
 
-    member_patch = org_settings.diff(personal_settings)
-
-    assert member_patch == {"llm": {"base_url": None, "model": "personal-model"}}
-    assert org_settings.patch(member_patch).model_dump(
-        mode="json", context={"expose_secrets": True}
-    ) == personal_settings.model_dump(mode="json", context={"expose_secrets": True})
+    assert restored.llm.model == "personal-model"
+    assert restored.llm.base_url is None
+    assert restored.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
