@@ -10,6 +10,7 @@ from litellm.types.responses.main import (
 )
 from litellm.types.utils import Message as LiteLLMMessage
 from openai.types.responses.response_output_message import ResponseOutputMessage
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
@@ -686,25 +687,27 @@ class Message(BaseModel):
                 )
                 tool_calls.append(tc)
             elif item_type == "reasoning":
-                # Parse Responses "reasoning" output item from typed
-                # Pydantic objects or generic litellm base objects.
-                rid = _get(item, "id")
-                summaries = _get(item, "summary") or []
-                contents = _get(item, "content") or []
-                enc = _get(item, "encrypted_content")
-                status = _get(item, "status")
-
-                summary_list: list[str] = [_get(s, "text", "") for s in summaries]
-                content_texts: list[str] = [_get(c, "text", "") for c in contents]
-                content_list: list[str] | None = content_texts or None
-
-                responses_reasoning_item = ReasoningItemModel(
-                    id=rid,
-                    summary=summary_list,
-                    content=content_list,
-                    encrypted_content=enc,
-                    status=status,
-                )
+                if isinstance(item, ResponseReasoningItem):
+                    # Typed path: preserves type narrowing for standard API
+                    responses_reasoning_item = ReasoningItemModel(
+                        id=item.id,
+                        summary=[s.text for s in (item.summary or [])],
+                        content=[c.text for c in (item.content or [])] or None,
+                        encrypted_content=item.encrypted_content,
+                        status=item.status,
+                    )
+                else:
+                    # Generic fallback for BaseLiteLLMOpenAIResponseObject
+                    # or dicts (e.g., streaming items from Codex subscription)
+                    summaries = _get(item, "summary") or []
+                    contents = _get(item, "content") or []
+                    responses_reasoning_item = ReasoningItemModel(
+                        id=_get(item, "id"),
+                        summary=[_get(s, "text", "") for s in summaries],
+                        content=[_get(c, "text", "") for c in contents] or None,
+                        encrypted_content=_get(item, "encrypted_content"),
+                        status=_get(item, "status"),
+                    )
 
         assistant_text = "\n".join(assistant_text_parts).strip()
         return Message(
