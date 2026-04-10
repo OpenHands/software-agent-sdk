@@ -144,20 +144,6 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
 
 
-def test_verification_settings_legacy_controls_are_excluded_from_dump() -> None:
-    settings = VerificationSettings(
-        confirmation_mode=True,
-        security_analyzer="llm",
-    )
-
-    assert settings.confirmation_mode is True
-    assert settings.security_analyzer == "llm"
-
-    dumped = settings.model_dump(mode="json")
-    assert "confirmation_mode" not in dumped
-    assert "security_analyzer" not in dumped
-
-
 def test_conversation_settings_model_dump_roundtrip() -> None:
     settings = ConversationSettings(
         max_iterations=42,

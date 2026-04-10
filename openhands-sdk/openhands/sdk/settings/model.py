@@ -12,7 +12,6 @@ from pydantic import (
     SecretStr,
     field_serializer,
     field_validator,
-    model_serializer,
 )
 from pydantic.fields import FieldInfo
 
@@ -197,37 +196,6 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
-
-    # -- Security --
-    confirmation_mode: bool = Field(
-        default=False,
-        description="Require user confirmation before executing risky actions.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Confirmation mode",
-                prominence=SettingProminence.MAJOR,
-            ).model_dump()
-        },
-    )
-    security_analyzer: SecurityAnalyzerType | None = Field(
-        default=None,
-        description="Security analyzer that evaluates actions before execution.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Security analyzer",
-                prominence=SettingProminence.MAJOR,
-                depends_on=("confirmation_mode",),
-            ).model_dump()
-        },
-    )
-
-    @model_serializer(mode="wrap")
-    def _serialize(self, handler):
-        payload = handler(self)
-        if isinstance(payload, dict):
-            payload.pop("confirmation_mode", None)
-            payload.pop("security_analyzer", None)
-        return payload
 
 
 def _default_llm_settings() -> LLM:
@@ -528,19 +496,6 @@ _GENERAL_SECTION_METADATA = SettingsSectionMetadata(
 )
 
 
-_HIDDEN_SETTINGS_SCHEMA_FIELDS: dict[type[BaseModel], set[str]] = {
-    VerificationSettings: {"confirmation_mode", "security_analyzer"},
-}
-
-
-def _is_hidden_settings_schema_field(
-    model: type[BaseModel], field_name: str, field: FieldInfo
-) -> bool:
-    if field.exclude:
-        return True
-    return field_name in _HIDDEN_SETTINGS_SCHEMA_FIELDS.get(model, set())
-
-
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     """Export a structured settings schema for a Pydantic settings model.
 
@@ -574,9 +529,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
             section_default = field.get_default(call_default_factory=True)
             section = ensure_section(explicit_section_metadata)
             for nested_key, nested_field in nested_model.model_fields.items():
-                if _is_hidden_settings_schema_field(
-                    nested_model, nested_key, nested_field
-                ):
+                if nested_field.exclude:
                     continue
                 metadata = settings_metadata(nested_field)
                 default_value = None
