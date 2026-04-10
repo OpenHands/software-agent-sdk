@@ -1,24 +1,11 @@
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
-from openhands.sdk import (
-    LLM,
-    Agent,
-    AgentSettings,
-    ConversationSettings,
-    SettingProminence,
-    Tool,
-)
+from openhands.sdk import LLM, Agent, AgentSettings, SettingProminence, Tool
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
-from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.settings import (
-    CondenserSettings,
-    ConversationVerificationSettings,
-    VerificationSettings,
-)
+from openhands.sdk.settings import CondenserSettings, VerificationSettings
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
@@ -92,7 +79,7 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert condenser_fields["condenser.max_size"].depends_on == ["condenser.enabled"]
     assert condenser_fields["condenser.max_size"].prominence is SettingProminence.MINOR
 
-    # -- verification section (critic settings only) --
+    # -- verification section (critic + security combined) --
     v_fields = {f.key: f for f in sections["verification"].fields}
     assert v_fields["verification.critic_mode"].value_type == "string"
     assert [c.value for c in v_fields["verification.critic_mode"].choices] == [
@@ -110,90 +97,15 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert (
         v_fields["verification.critic_threshold"].prominence is SettingProminence.MINOR
     )
-    assert "verification.confirmation_mode" not in v_fields
-    assert "verification.security_analyzer" not in v_fields
-
-
-
-def test_conversation_settings_export_schema_groups_sections() -> None:
-    schema = ConversationSettings.export_schema()
-
-    assert schema.model_name == "ConversationSettings"
-    section_keys = [section.key for section in schema.sections]
-    assert section_keys == ["general", "verification"]
-
-    sections = {s.key: s for s in schema.sections}
-    general_fields = {f.key: f for f in sections["general"].fields}
-    assert set(general_fields) == {"max_iterations"}
-    assert general_fields["max_iterations"].default == 500
-    assert general_fields["max_iterations"].prominence is SettingProminence.MAJOR
-
-    verification_fields = {f.key: f for f in sections["verification"].fields}
-    assert set(verification_fields) == {
-        "verification.confirmation_mode",
-        "verification.security_analyzer",
-    }
-    assert verification_fields["verification.confirmation_mode"].default is False
+    assert v_fields["verification.confirmation_mode"].value_type == "boolean"
+    assert v_fields["verification.confirmation_mode"].default is False
     assert (
-        verification_fields["verification.confirmation_mode"].prominence
-        is SettingProminence.MAJOR
+        v_fields["verification.confirmation_mode"].prominence is SettingProminence.MAJOR
     )
-    assert verification_fields["verification.security_analyzer"].default == "llm"
-    assert (
-        verification_fields["verification.security_analyzer"].choices[0].value
-        == "llm"
-    )
-    assert verification_fields["verification.security_analyzer"].depends_on == [
+    assert v_fields["verification.security_analyzer"].choices[0].value == "llm"
+    assert v_fields["verification.security_analyzer"].depends_on == [
         "verification.confirmation_mode"
     ]
-
-
-def test_conversation_settings_patch_and_diff_roundtrip() -> None:
-    defaults = ConversationSettings()
-    updated = defaults.patch(
-        {
-            "max_iterations": 42,
-            "verification": {
-                "confirmation_mode": True,
-                "security_analyzer": "none",
-            },
-        }
-    )
-
-    patch = defaults.diff(updated)
-
-    assert patch == {
-        "max_iterations": 42,
-        "verification": {
-            "confirmation_mode": True,
-            "security_analyzer": "none",
-        },
-    }
-    assert defaults.patch(patch) == updated
-
-
-def test_conversation_settings_builds_runtime_helpers() -> None:
-    settings = ConversationSettings(
-        max_iterations=77,
-        verification=ConversationVerificationSettings(
-            confirmation_mode=True,
-            security_analyzer="llm",
-        ),
-    )
-
-    request_kwargs = settings.to_start_request_kwargs()
-
-    assert request_kwargs["max_iterations"] == 77
-    assert isinstance(request_kwargs["confirmation_policy"], ConfirmRisky)
-    assert isinstance(request_kwargs["security_analyzer"], LLMSecurityAnalyzer)
-
-    fallback_settings = settings.patch(
-        {"verification": {"security_analyzer": "none"}}
-    )
-    fallback_request_kwargs = fallback_settings.to_start_request_kwargs()
-
-    assert isinstance(fallback_request_kwargs["confirmation_policy"], AlwaysConfirm)
-    assert fallback_request_kwargs["security_analyzer"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -331,78 +243,31 @@ def test_roundtrip_preserves_llm_model() -> None:
     assert restored.llm.model == "test-model"
 
 
-def test_from_persisted_agent_settings_migrates_legacy_flat_payload() -> None:
+def test_load_persisted_agent_settings_migrates_legacy_payload() -> None:
     legacy_payload = {
-        "schema_version": 1,
-        "llm.model": "legacy-model",
-        "llm.api_key": "secret-key",
-        "verification.critic_enabled": True,
+        "llm": {"model": "legacy-model", "api_key": "secret-key"},
+        "verification": {"critic_enabled": True},
     }
 
-    settings = AgentSettings.from_persisted(legacy_payload)
+    settings = AgentSettings.load_persisted(legacy_payload)
 
-    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
     assert settings.llm.model == "legacy-model"
     assert isinstance(settings.llm.api_key, SecretStr)
     assert settings.llm.api_key.get_secret_value() == "secret-key"
     assert settings.verification.critic_enabled is True
+    assert settings.dump_persisted() == {
+        "version": AgentSettings.CURRENT_PERSISTED_VERSION,
+        "settings": legacy_payload,
+    }
 
 
-def test_from_persisted_agent_settings_accepts_current_payload() -> None:
+def test_load_persisted_agent_settings_accepts_current_payload() -> None:
     current_payload = {
-        "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
-        "llm": {"model": "test-model"},
+        "version": AgentSettings.CURRENT_PERSISTED_VERSION,
+        "settings": {"llm": {"model": "test-model"}},
     }
 
-    settings = AgentSettings.from_persisted(current_payload)
+    settings = AgentSettings.load_persisted(current_payload)
 
-    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
     assert settings.llm.model == "test-model"
-
-
-def test_from_persisted_agent_settings_accepts_legacy_wrapped_payload() -> None:
-    wrapped_payload = {
-        "version": 2,
-        "settings": {
-            "llm": {"model": "wrapped-model"},
-        },
-    }
-
-    settings = AgentSettings.from_persisted(wrapped_payload)
-
-    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
-    assert settings.llm.model == "wrapped-model"
-
-
-def test_agent_settings_patch_accepts_sparse_nested_payload() -> None:
-    settings = AgentSettings.from_persisted(
-        {
-            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
-            "llm": {"model": "base-model", "base_url": "https://example.com"},
-        }
-    )
-
-    patched = settings.patch({"llm": {"base_url": None}})
-
-    assert patched.llm.model == "base-model"
-    assert patched.llm.base_url is None
-    assert patched.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
-
-
-def test_agent_settings_diff_returns_sparse_persisted_patch() -> None:
-    org_settings = AgentSettings.from_persisted(
-        {
-            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
-            "llm": {"model": "base-model", "base_url": "https://example.com"},
-        }
-    )
-    personal_settings = org_settings.patch(
-        {"llm": {"model": "personal-model", "base_url": None}}
-    )
-
-    member_patch = org_settings.diff(personal_settings)
-
-    assert member_patch == {"llm": {"base_url": None, "model": "personal-model"}}
-    assert org_settings.patch(member_patch).model_dump(
-        mode="json", context={"expose_secrets": True}
-    ) == personal_settings.model_dump(mode="json", context={"expose_secrets": True})
+    assert settings.dump_persisted() == current_payload

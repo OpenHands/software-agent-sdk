@@ -498,8 +498,8 @@ class EventService:
             tags=self.stored.tags,
         )
 
+        # Set confirmation mode if enabled
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
-        conversation.set_security_analyzer(self.stored.security_analyzer)
         self._conversation = conversation
 
         # Register state change callback to automatically publish updates

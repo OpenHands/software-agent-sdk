@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
@@ -100,7 +99,7 @@ class CondenserSettings(BaseModel):
 
 
 class VerificationSettings(BaseModel):
-    """Critic and iterative-refinement settings for the agent."""
+    """Combined critic and security settings."""
 
     # -- Critic --
     critic_enabled: bool = Field(
@@ -192,10 +191,7 @@ class VerificationSettings(BaseModel):
         },
     )
 
-
-class ConversationVerificationSettings(BaseModel):
-    """Conversation-level confirmation and security settings."""
-
+    # -- Security --
     confirmation_mode: bool = Field(
         default=False,
         description="Require user confirmation before executing risky actions.",
@@ -207,7 +203,7 @@ class ConversationVerificationSettings(BaseModel):
         },
     )
     security_analyzer: SecurityAnalyzerType | None = Field(
-        default="llm",
+        default=None,
         description="Security analyzer that evaluates actions before execution.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
@@ -226,86 +222,52 @@ def _default_llm_settings() -> LLM:
 
 
 # Canonical persisted AgentSettings payload contract:
-# - v1 (legacy): flat dotted OpenHands mapping or unversioned nested payload
-# - v2 (current): standard AgentSettings JSON including `schema_version`
+# - v1 (legacy): raw, unversioned AgentSettings mapping
+# - v2 (current): {"version": 2, "settings": <partial AgentSettings mapping>}
 _LEGACY_AGENT_SETTINGS_VERSION = 1
 _CURRENT_AGENT_SETTINGS_VERSION = 2
-_PERSISTED_AGENT_SETTINGS_VERSION_KEY = "schema_version"
-_LEGACY_WRAPPED_SETTINGS_VERSION_KEY = "version"
-_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY = "settings"
+_PERSISTED_AGENT_SETTINGS_VERSION_KEY = "version"
+_PERSISTED_AGENT_SETTINGS_SETTINGS_KEY = "settings"
 
 
-_MISSING = object()
+def _migrate_agent_settings_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    return payload
 
 
-def _assign_dotted_value(target: dict[str, Any], dotted_key: str, value: Any) -> None:
-    current = target
-    parts = dotted_key.split(".")
-    for part in parts[:-1]:
-        current = current.setdefault(part, {})
-    current[parts[-1]] = deepcopy(value)
-
-
-def _normalize_legacy_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    normalized: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key == _PERSISTED_AGENT_SETTINGS_VERSION_KEY:
-            continue
-        if "." in key:
-            _assign_dotted_value(normalized, key, value)
-            continue
-        normalized[key] = deepcopy(value)
-    return normalized
-
-
-def _migrate_agent_settings_v1_to_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
-    migrated = _normalize_legacy_payload(payload)
-    migrated[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = _CURRENT_AGENT_SETTINGS_VERSION
-    return migrated
-
-
-_AGENT_SETTINGS_MIGRATIONS: dict[int, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
+_AGENT_SETTINGS_MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {
     _LEGACY_AGENT_SETTINGS_VERSION: _migrate_agent_settings_v1_to_v2,
 }
 
 
 def _coerce_persisted_agent_settings_payload(
     payload: Mapping[str, Any],
-) -> dict[str, Any]:
+) -> tuple[int, dict[str, Any]]:
     if (
-        _LEGACY_WRAPPED_SETTINGS_VERSION_KEY in payload
-        or _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY in payload
+        _PERSISTED_AGENT_SETTINGS_VERSION_KEY in payload
+        or _PERSISTED_AGENT_SETTINGS_SETTINGS_KEY in payload
     ):
-        settings_payload = payload.get(_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY)
-        if not isinstance(settings_payload, Mapping):
-            raise TypeError(
-                "Persisted AgentSettings settings payload must be a mapping."
-            )
-        version = payload.get(_LEGACY_WRAPPED_SETTINGS_VERSION_KEY)
-        if version is None:
-            return dict(settings_payload)
+        version = payload.get(_PERSISTED_AGENT_SETTINGS_VERSION_KEY)
         if not isinstance(version, int) or isinstance(version, bool):
             raise TypeError(
                 "Persisted AgentSettings version must be an integer when provided."
             )
-        migrated_payload = dict(settings_payload)
-        migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = version
-        return migrated_payload
+        if version < _LEGACY_AGENT_SETTINGS_VERSION:
+            raise ValueError(f"Unsupported persisted AgentSettings version {version}.")
+        settings_payload = payload.get(_PERSISTED_AGENT_SETTINGS_SETTINGS_KEY)
+        if not isinstance(settings_payload, Mapping):
+            raise TypeError(
+                "Persisted AgentSettings settings payload must be a mapping."
+            )
+        return version, dict(settings_payload)
 
-    return dict(payload)
+    return _LEGACY_AGENT_SETTINGS_VERSION, dict(payload)
 
 
 def _migrate_persisted_agent_settings_payload(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
-    migrated_payload = _coerce_persisted_agent_settings_payload(payload)
-    version = migrated_payload.get(
-        _PERSISTED_AGENT_SETTINGS_VERSION_KEY, _LEGACY_AGENT_SETTINGS_VERSION
-    )
-    if not isinstance(version, int) or isinstance(version, bool):
-        raise TypeError("Persisted AgentSettings schema_version must be an integer.")
-    if version < _LEGACY_AGENT_SETTINGS_VERSION:
-        raise ValueError(f"Unsupported persisted AgentSettings version {version}.")
+    version, settings_payload = _coerce_persisted_agent_settings_payload(payload)
+
     if version > _CURRENT_AGENT_SETTINGS_VERSION:
         raise ValueError(
             "Persisted AgentSettings version is newer than this SDK supports."
@@ -315,228 +277,29 @@ def _migrate_persisted_agent_settings_payload(
         migrator = _AGENT_SETTINGS_MIGRATIONS.get(version)
         if migrator is None:
             raise ValueError(f"Missing AgentSettings migrator for version {version}.")
-        migrated_payload = migrator(migrated_payload)
-        version = migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY]
+        settings_payload = migrator(settings_payload)
+        version += 1
 
-    return migrated_payload
-
-
-def _normalize_patch_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if (
-        _LEGACY_WRAPPED_SETTINGS_VERSION_KEY in payload
-        or _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY in payload
-    ):
-        wrapped_payload = payload.get(_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY)
-        if not isinstance(wrapped_payload, Mapping):
-            raise TypeError("AgentSettings patch payload must be a mapping.")
-        payload = wrapped_payload
-
-    normalized: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key == _PERSISTED_AGENT_SETTINGS_VERSION_KEY:
-            continue
-        if "." in key:
-            _assign_dotted_value(normalized, key, value)
-            continue
-        normalized[key] = deepcopy(value)
-    return normalized
+    return {
+        _PERSISTED_AGENT_SETTINGS_VERSION_KEY: version,
+        _PERSISTED_AGENT_SETTINGS_SETTINGS_KEY: settings_payload,
+    }
 
 
-def _merge_patch_payload(
-    base: Mapping[str, Any], patch: Mapping[str, Any]
-) -> dict[str, Any]:
-    merged = deepcopy(dict(base))
-    for key, value in patch.items():
-        base_value = merged.get(key)
-        if isinstance(base_value, dict) and isinstance(value, Mapping):
-            merged[key] = _merge_patch_payload(base_value, value)
-        else:
-            merged[key] = deepcopy(value)
-    return merged
-
-
-def _diff_payload(base: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str, Any]:
-    diff: dict[str, Any] = {}
-    for key in sorted(set(base) | set(target)):
-        if key == _PERSISTED_AGENT_SETTINGS_VERSION_KEY:
-            continue
-        base_value = base.get(key, _MISSING)
-        target_value = target.get(key, _MISSING)
-
-        if target_value is _MISSING:
-            continue
-        if base_value is _MISSING:
-            diff[key] = deepcopy(target_value)
-            continue
-        if isinstance(base_value, Mapping) and isinstance(target_value, Mapping):
-            nested_diff = _diff_payload(base_value, target_value)
-            if nested_diff:
-                diff[key] = nested_diff
-            continue
-        if base_value != target_value:
-            diff[key] = deepcopy(target_value)
-    return diff
-
-
-_LEGACY_CONVERSATION_SETTINGS_VERSION = 1
-_CURRENT_CONVERSATION_SETTINGS_VERSION = 1
-
-
-def _coerce_persisted_conversation_settings_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    if (
-        _LEGACY_WRAPPED_SETTINGS_VERSION_KEY in payload
-        or _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY in payload
-    ):
-        settings_payload = payload.get(_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY)
-        if not isinstance(settings_payload, Mapping):
-            raise TypeError(
-                "Persisted ConversationSettings settings payload must be a mapping."
-            )
-        version = payload.get(_LEGACY_WRAPPED_SETTINGS_VERSION_KEY)
-        if version is None:
-            return dict(settings_payload)
-        if not isinstance(version, int) or isinstance(version, bool):
-            raise TypeError(
-                "Persisted ConversationSettings version must be an integer"
-                " when provided."
-            )
-        migrated_payload = dict(settings_payload)
-        migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = version
-        return migrated_payload
-
-    return dict(payload)
-
-
-def _migrate_persisted_conversation_settings_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    migrated_payload = _coerce_persisted_conversation_settings_payload(payload)
-    version = migrated_payload.get(
-        _PERSISTED_AGENT_SETTINGS_VERSION_KEY,
-        _LEGACY_CONVERSATION_SETTINGS_VERSION,
-    )
-    if not isinstance(version, int) or isinstance(version, bool):
-        raise TypeError(
-            "Persisted ConversationSettings schema_version must be an integer."
-        )
-    if version < _LEGACY_CONVERSATION_SETTINGS_VERSION:
-        raise ValueError(
-            f"Unsupported persisted ConversationSettings version {version}."
-        )
-    if version > _CURRENT_CONVERSATION_SETTINGS_VERSION:
-        raise ValueError(
-            "Persisted ConversationSettings version is newer than this SDK supports."
-        )
-
-    migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
-        _CURRENT_CONVERSATION_SETTINGS_VERSION
-    )
-    return migrated_payload
-
-
-class ConversationSettings(BaseModel):
-    CURRENT_PERSISTED_VERSION: ClassVar[int] = _CURRENT_CONVERSATION_SETTINGS_VERSION
-
-    schema_version: int = Field(default=_CURRENT_CONVERSATION_SETTINGS_VERSION, ge=1)
-    max_iterations: int = Field(
-        default=500,
-        ge=1,
-        description=(
-            "Maximum number of iterations the conversation will run before stopping."
+def _dump_persisted_agent_settings_payload(settings: AgentSettings) -> dict[str, Any]:
+    return {
+        _PERSISTED_AGENT_SETTINGS_VERSION_KEY: settings.CURRENT_PERSISTED_VERSION,
+        _PERSISTED_AGENT_SETTINGS_SETTINGS_KEY: settings.model_dump(
+            mode="json",
+            exclude_unset=True,
+            context={"expose_secrets": True},
         ),
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Max iterations",
-                prominence=SettingProminence.MAJOR,
-            ).model_dump()
-        },
-    )
-    verification: ConversationVerificationSettings = Field(
-        default_factory=ConversationVerificationSettings,
-        description="Conversation confirmation and security settings.",
-        json_schema_extra={
-            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
-                key="verification",
-                label="Verification",
-            ).model_dump()
-        },
-    )
-
-    @classmethod
-    def export_schema(cls) -> SettingsSchema:
-        """Export a structured schema describing configurable conversation settings."""
-        return export_settings_schema(cls)
-
-    @classmethod
-    def migrate_persisted_payload(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Return the latest canonical persisted ConversationSettings payload."""
-        return _migrate_persisted_conversation_settings_payload(payload)
-
-    @classmethod
-    def from_persisted(cls, payload: Mapping[str, Any]) -> ConversationSettings:
-        """Load persisted ConversationSettings after applying SDK-owned migrations."""
-        return cls.model_validate(cls.migrate_persisted_payload(payload))
-
-    def patch(self, payload: Mapping[str, Any]) -> ConversationSettings:
-        """Return a new settings object with a persisted patch applied."""
-        base_payload = self.model_dump(mode="json")
-        merged_payload = _merge_patch_payload(
-            base_payload, _normalize_patch_payload(payload)
-        )
-        merged_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
-            self.CURRENT_PERSISTED_VERSION
-        )
-        return type(self).from_persisted(merged_payload)
-
-    def diff(self, target: ConversationSettings | Mapping[str, Any]) -> dict[str, Any]:
-        """Return the minimal persisted patch from these settings to ``target``."""
-        target_settings = (
-            target
-            if isinstance(target, ConversationSettings)
-            else type(self).from_persisted(target)
-        )
-        base_payload = self.model_dump(mode="json")
-        target_payload = target_settings.model_dump(mode="json")
-        return _diff_payload(base_payload, target_payload)
-
-    def build_confirmation_policy(self):
-        from openhands.sdk.security.confirmation_policy import (
-            AlwaysConfirm,
-            ConfirmRisky,
-            NeverConfirm,
-        )
-
-        if not self.verification.confirmation_mode:
-            return NeverConfirm()
-        if (self.verification.security_analyzer or "").lower() == "llm":
-            return ConfirmRisky()
-        return AlwaysConfirm()
-
-    def build_security_analyzer(self):
-        analyzer_kind = (self.verification.security_analyzer or "").lower()
-        if not analyzer_kind or analyzer_kind == "none":
-            return None
-        if analyzer_kind == "llm":
-            from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-
-            return LLMSecurityAnalyzer()
-        return None
-
-    def to_start_request_kwargs(self) -> dict[str, Any]:
-        """Return StartConversationRequest-compatible kwargs for these settings."""
-        return {
-            "confirmation_policy": self.build_confirmation_policy(),
-            "security_analyzer": self.build_security_analyzer(),
-            "max_iterations": self.max_iterations,
-        }
+    }
 
 
 class AgentSettings(BaseModel):
     CURRENT_PERSISTED_VERSION: ClassVar[int] = _CURRENT_AGENT_SETTINGS_VERSION
 
-    schema_version: int = Field(default=_CURRENT_AGENT_SETTINGS_VERSION, ge=1)
     agent: str = Field(
         default="CodeActAgent",
         description="Agent class to use.",
@@ -622,41 +385,25 @@ class AgentSettings(BaseModel):
 
     @classmethod
     def migrate_persisted_payload(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Return the latest canonical persisted AgentSettings payload."""
+        """Return the latest canonical persisted AgentSettings payload.
+
+        Legacy v1 payloads were stored as the raw, unversioned AgentSettings
+        mapping. The current canonical v2 payload stores that mapping under a
+        top-level ``settings`` key alongside an integer ``version``.
+        """
         return _migrate_persisted_agent_settings_payload(payload)
 
     @classmethod
-    def from_persisted(cls, payload: Mapping[str, Any]) -> AgentSettings:
+    def load_persisted(cls, payload: Mapping[str, Any]) -> AgentSettings:
         """Load persisted AgentSettings after applying SDK-owned migrations."""
-        return cls.model_validate(cls.migrate_persisted_payload(payload))
+        migrated_payload = cls.migrate_persisted_payload(payload)
+        settings_payload = migrated_payload[_PERSISTED_AGENT_SETTINGS_SETTINGS_KEY]
+        assert isinstance(settings_payload, dict)
+        return cls.model_validate(settings_payload)
 
-    def patch(self, payload: Mapping[str, Any]) -> AgentSettings:
-        """Return a new settings object with a persisted patch applied.
-
-        The patch payload may be sparse and may use either the current nested
-        representation or the legacy flat dotted representation.
-        """
-        base_payload = self.model_dump(mode="json", context={"expose_secrets": True})
-        merged_payload = _merge_patch_payload(
-            base_payload, _normalize_patch_payload(payload)
-        )
-        merged_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
-            self.CURRENT_PERSISTED_VERSION
-        )
-        return type(self).from_persisted(merged_payload)
-
-    def diff(self, target: AgentSettings | Mapping[str, Any]) -> dict[str, Any]:
-        """Return the minimal persisted patch from these settings to ``target``."""
-        target_settings = (
-            target
-            if isinstance(target, AgentSettings)
-            else type(self).from_persisted(target)
-        )
-        base_payload = self.model_dump(mode="json", context={"expose_secrets": True})
-        target_payload = target_settings.model_dump(
-            mode="json", context={"expose_secrets": True}
-        )
-        return _diff_payload(base_payload, target_payload)
+    def dump_persisted(self) -> dict[str, Any]:
+        """Dump AgentSettings in the latest canonical persisted payload format."""
+        return _dump_persisted_agent_settings_payload(self)
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.

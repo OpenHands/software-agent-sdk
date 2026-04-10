@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from .model import (
         AgentSettings,
         CondenserSettings,
-        ConversationSettings,
-        ConversationVerificationSettings,
         SettingsChoice,
         SettingsFieldSchema,
         SettingsSchema,
@@ -29,8 +27,6 @@ if TYPE_CHECKING:
 _MODEL_EXPORTS = {
     "AgentSettings",
     "CondenserSettings",
-    "ConversationSettings",
-    "ConversationVerificationSettings",
     "SettingsChoice",
     "SettingsFieldSchema",
     "SettingsSchema",
@@ -42,8 +38,6 @@ _MODEL_EXPORTS = {
 __all__ = [
     "AgentSettings",
     "CondenserSettings",
-    "ConversationSettings",
-    "ConversationVerificationSettings",
     "SETTINGS_METADATA_KEY",
     "SETTINGS_SECTION_METADATA_KEY",
     "SettingProminence",

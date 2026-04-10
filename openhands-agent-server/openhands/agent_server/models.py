@@ -7,14 +7,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
-from openhands.sdk import (
-    LLM,
-    Agent,
-    ConversationSettings,
-    ImageContent,
-    Message,
-    TextContent,
-)
+from openhands.sdk import LLM, Agent, ImageContent, Message, TextContent
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -112,10 +105,6 @@ class _StartConversationRequestBase(BaseModel):
         description="Controls when the conversation will prompt the user before "
         "continuing. Defaults to never.",
     )
-    security_analyzer: SecurityAnalyzerBase | None = Field(
-        default=None,
-        description="Optional security analyzer to evaluate action risks.",
-    )
     initial_message: SendMessageRequest | None = Field(
         default=None, description="Initial message to pass to the LLM"
     )
@@ -192,41 +181,11 @@ class StartConversationRequest(_StartConversationRequestBase):
 
     agent: Agent
 
-    @classmethod
-    def from_settings(
-        cls,
-        *,
-        agent: Agent,
-        workspace: LocalWorkspace,
-        conversation_settings: ConversationSettings | None = None,
-        **kwargs: Any,
-    ) -> "StartConversationRequest":
-        payload = dict(kwargs)
-        if conversation_settings is not None:
-            for key, value in conversation_settings.to_start_request_kwargs().items():
-                payload.setdefault(key, value)
-        return cls(agent=agent, workspace=workspace, **payload)
-
 
 class StartACPConversationRequest(_StartConversationRequestBase):
     """Payload to create a conversation with ACP-capable agent support."""
 
     agent: ACPEnabledAgent
-
-    @classmethod
-    def from_settings(
-        cls,
-        *,
-        agent: ACPEnabledAgent,
-        workspace: LocalWorkspace,
-        conversation_settings: ConversationSettings | None = None,
-        **kwargs: Any,
-    ) -> "StartACPConversationRequest":
-        payload = dict(kwargs)
-        if conversation_settings is not None:
-            for key, value in conversation_settings.to_start_request_kwargs().items():
-                payload.setdefault(key, value)
-        return cls(agent=agent, workspace=workspace, **payload)
 
 
 class StoredConversation(StartACPConversationRequest):
