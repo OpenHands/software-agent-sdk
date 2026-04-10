@@ -19,6 +19,13 @@ class ExtensionFetchError(Exception):
 
 
 class SourceType(str, Enum):
+    """Classification of an extension source.
+
+    LOCAL   -- a filesystem path (absolute, home-relative, or dot-relative).
+    GIT     -- any git-clonable URL (HTTPS, SSH, git://, etc.).
+    GITHUB  -- the ``github:owner/repo`` shorthand, expanded to an HTTPS URL.
+    """
+
     LOCAL = "local"
     GIT = "git"
     GITHUB = "github"
@@ -28,7 +35,7 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
     """Parse extension source into (SourceType, url).
 
     Args:
-        source: Plugin source string. Can be:
+        source: Extension source string. Can be:
             - "github:owner/repo" - GitHub repository shorthand
             - "https://github.com/owner/repo.git" - Full git URL
             - "git@github.com:owner/repo.git" - SSH git URL
@@ -36,17 +43,17 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
 
     Returns:
         Tuple of (source_type, normalized_url) where source_type is one of:
-        - "github": GitHub repository
-        - "git": Any git URL
-        - "local": Local filesystem path
+        - SourceType.GITHUB: GitHub repository
+        - SourceType.GIT: Any git URL
+        - SourceType.LOCAL: Local filesystem path
 
     Examples:
-        >>> parse_plugin_source("github:owner/repo")
-        ("github", "https://github.com/owner/repo.git")
-        >>> parse_plugin_source("https://gitlab.com/org/repo.git")
-        ("git", "https://gitlab.com/org/repo.git")
-        >>> parse_plugin_source("/local/path")
-        ("local", "/local/path")
+        >>> parse_extension_source("github:owner/repo")
+        (SourceType.GITHUB, "https://github.com/owner/repo.git")
+        >>> parse_extension_source("https://gitlab.com/org/repo.git")
+        (SourceType.GIT, "https://gitlab.com/org/repo.git")
+        >>> parse_extension_source("/local/path")
+        (SourceType.LOCAL, "/local/path")
     """
     source = source.strip()
 
@@ -106,7 +113,7 @@ def _apply_subpath(base_path: Path, subpath: str | None, context: str) -> Path:
     Args:
         base_path: The root path.
         subpath: Optional subdirectory path (may have leading/trailing slashes).
-        context: Description for error messages (e.g., "plugin repository").
+        context: Description for error messages (e.g., "extension repository").
 
     Returns:
         The final path (base_path if no subpath, otherwise base_path/subpath).
@@ -193,10 +200,10 @@ def fetch_with_resolution(
 
     git = git_helper if git_helper is not None else GitHelper()
 
-    plugin_path, resolved_ref = _fetch_remote_source_with_resolution(
+    ext_path, resolved_ref = _fetch_remote_source_with_resolution(
         url, cache_dir, ref, update, repo_path, git, source
     )
-    return plugin_path, resolved_ref
+    return ext_path, resolved_ref
 
 
 def get_cache_path(source: str, cache_dir: Path) -> Path:
@@ -205,11 +212,11 @@ def get_cache_path(source: str, cache_dir: Path) -> Path:
     Creates a deterministic path based on a hash of the source URL.
 
     Args:
-        source: The plugin source (URL or path).
+        source: The extension source (URL or path).
         cache_dir: Base cache directory.
 
     Returns:
-        Path where the plugin should be cached.
+        Path where the extension should be cached.
     """
     # Create a hash of the source for the directory name
     source_hash = hashlib.sha256(source.encode()).hexdigest()[:16]
