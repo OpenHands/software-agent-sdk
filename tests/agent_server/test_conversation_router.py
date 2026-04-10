@@ -1703,3 +1703,29 @@ def test_switch_conversation_profile_nonexistent_profile(
         mock_conversation.switch_profile.assert_called_once_with("missing")
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_profile_corrupted_profile(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test switch_conversation_profile when the profile is corrupted or invalid."""
+    mock_conversation = MagicMock()
+    mock_conversation.switch_profile.side_effect = ValueError("Invalid profile format")
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_profile",
+            json={"profile_name": "corrupted"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid profile format" in response.json()["detail"]
+        mock_conversation.switch_profile.assert_called_once_with("corrupted")
+    finally:
+        client.app.dependency_overrides.clear()

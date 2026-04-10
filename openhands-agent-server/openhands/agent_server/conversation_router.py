@@ -290,7 +290,10 @@ async def set_conversation_security_analyzer(
 
 @conversation_router.post(
     "/{conversation_id}/switch_profile",
-    responses={404: {"description": "Conversation not found"}},
+    responses={
+        400: {"description": "Invalid or corrupted profile"},
+        404: {"description": "Conversation or profile not found"},
+    },
 )
 async def switch_conversation_profile(
     conversation_id: UUID,
