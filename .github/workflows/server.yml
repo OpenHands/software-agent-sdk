@@ -210,8 +210,9 @@ jobs:
             ARCH: ${{ matrix.arch }}
             TARGET: binary
             PLATFORM: ${{ matrix.platform }}
-            # Use PR head SHA for pull requests to match the image tag expected by run-examples.yml
-            GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+            # Use SDK_SHA for PR head SHA - GITHUB_SHA is a built-in that gets overwritten by checkout
+            # build.py checks SDK_SHA before GITHUB_SHA (see _git_info priority order)
+            SDK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
             GITHUB_REF: ${{ github.ref }}
             CI: 'true'
 
@@ -240,8 +241,8 @@ jobs:
               run: |
                   uv sync --frozen
 
-                  # Debug: Print GITHUB_SHA to verify it's available
-                  echo "DEBUG: GITHUB_SHA env = $GITHUB_SHA"
+                  # Debug: Print SDK_SHA to verify it's available
+                  echo "DEBUG: SDK_SHA env = $SDK_SHA"
                   echo "DEBUG: git rev-parse HEAD = $(git rev-parse HEAD)"
 
                   # Generate build context and tags with arch suffix
@@ -258,8 +259,8 @@ jobs:
                   echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
                   # Extract short SHA for consolidation
-                  # Use GITHUB_SHA env var (set above to PR head SHA for PRs)
-                  SHORT_SHA=$(echo $GITHUB_SHA | cut -c1-7)
+                  # Use SDK_SHA env var (set above to PR head SHA for PRs)
+                  SHORT_SHA=$(echo $SDK_SHA | cut -c1-7)
                   echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
                   # Extract versioned tags CSV for consolidation
