@@ -7,14 +7,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
-from openhands.sdk import (
-    LLM,
-    Agent,
-    ConversationSettings,
-    ImageContent,
-    Message,
-    TextContent,
-)
+from openhands.sdk import LLM, Agent, ImageContent, Message, TextContent
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -184,20 +177,6 @@ class _StartConversationRequestBase(BaseModel):
     )
 
 
-def _start_request_payload_from_settings(
-    *,
-    workspace: LocalWorkspace,
-    conversation_settings: ConversationSettings | None = None,
-    **kwargs: Any,
-) -> dict[str, Any]:
-    payload = dict(kwargs)
-    if conversation_settings is not None:
-        for key, value in conversation_settings.to_start_request_kwargs().items():
-            payload.setdefault(key, value)
-    payload["workspace"] = workspace
-    return payload
-
-
 class StartConversationRequest(_StartConversationRequestBase):
     """Payload to create a new conversation.
 
@@ -206,47 +185,11 @@ class StartConversationRequest(_StartConversationRequestBase):
 
     agent: Agent
 
-    @classmethod
-    def from_settings(
-        cls,
-        *,
-        agent: Agent,
-        workspace: LocalWorkspace,
-        conversation_settings: ConversationSettings | None = None,
-        **kwargs: Any,
-    ) -> "StartConversationRequest":
-        return cls(
-            agent=agent,
-            **_start_request_payload_from_settings(
-                workspace=workspace,
-                conversation_settings=conversation_settings,
-                **kwargs,
-            ),
-        )
-
 
 class StartACPConversationRequest(_StartConversationRequestBase):
     """Payload to create a conversation with ACP-capable agent support."""
 
     agent: ACPEnabledAgent
-
-    @classmethod
-    def from_settings(
-        cls,
-        *,
-        agent: ACPEnabledAgent,
-        workspace: LocalWorkspace,
-        conversation_settings: ConversationSettings | None = None,
-        **kwargs: Any,
-    ) -> "StartACPConversationRequest":
-        return cls(
-            agent=agent,
-            **_start_request_payload_from_settings(
-                workspace=workspace,
-                conversation_settings=conversation_settings,
-                **kwargs,
-            ),
-        )
 
 
 class StoredConversation(StartACPConversationRequest):

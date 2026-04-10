@@ -1,6 +1,10 @@
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
+from openhands.agent_server.models import (
+    StartACPConversationRequest,
+    StartConversationRequest,
+)
 from openhands.sdk import (
     LLM,
     Agent,
@@ -9,12 +13,14 @@ from openhands.sdk import (
     SettingProminence,
     Tool,
 )
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import CondenserSettings, VerificationSettings
+from openhands.sdk.workspace import LocalWorkspace
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
@@ -150,28 +156,61 @@ def test_conversation_settings_model_dump_roundtrip() -> None:
     assert restored == settings
 
 
-def test_conversation_settings_builds_runtime_helpers() -> None:
+def test_conversation_settings_create_request() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
         security_analyzer="llm",
     )
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = AgentSettings(llm=LLM(model="test-model")).create_agent()
 
-    request_kwargs = settings.to_start_request_kwargs()
+    request = settings.create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+    )
 
-    assert request_kwargs["max_iterations"] == 77
-    assert isinstance(request_kwargs["confirmation_policy"], ConfirmRisky)
-    assert isinstance(request_kwargs["security_analyzer"], LLMSecurityAnalyzer)
+    assert isinstance(request, StartConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, ConfirmRisky)
+    assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
 
-    fallback_settings = ConversationSettings(
-        max_iterations=settings.max_iterations,
+    overridden_request = settings.create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+        max_iterations=5,
+        confirmation_policy=AlwaysConfirm(),
+        security_analyzer=None,
+    )
+
+    assert overridden_request.max_iterations == 5
+    assert isinstance(overridden_request.confirmation_policy, AlwaysConfirm)
+    assert overridden_request.security_analyzer is None
+
+
+def test_conversation_settings_create_request_for_acp() -> None:
+    settings = ConversationSettings(
+        max_iterations=77,
         confirmation_mode=True,
         security_analyzer="none",
     )
-    fallback_request_kwargs = fallback_settings.to_start_request_kwargs()
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = ACPAgent(acp_command=["echo", "test"])
 
-    assert isinstance(fallback_request_kwargs["confirmation_policy"], AlwaysConfirm)
-    assert fallback_request_kwargs["security_analyzer"] is None
+    request = settings.create_request(
+        StartACPConversationRequest,
+        agent=agent,
+        workspace=workspace,
+    )
+
+    assert isinstance(request, StartACPConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, AlwaysConfirm)
+    assert request.security_analyzer is None
 
 
 # ---------------------------------------------------------------------------

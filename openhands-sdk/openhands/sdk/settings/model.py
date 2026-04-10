@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, get_args, get_origin
 
 from fastmcp.mcp_config import MCPConfig
 from pydantic import (
@@ -203,6 +204,8 @@ def _default_llm_settings() -> LLM:
     return LLM(model=model)
 
 
+_RequestT = TypeVar("_RequestT")
+
 _AGENT_SETTINGS_SCHEMA_VERSION = 1
 _CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
@@ -259,7 +262,7 @@ class ConversationSettings(BaseModel):
         """Export a structured schema describing configurable conversation settings."""
         return export_settings_schema(cls)
 
-    def build_confirmation_policy(self):
+    def _build_confirmation_policy(self):
         from openhands.sdk.security.confirmation_policy import (
             AlwaysConfirm,
             ConfirmRisky,
@@ -272,7 +275,7 @@ class ConversationSettings(BaseModel):
             return ConfirmRisky()
         return AlwaysConfirm()
 
-    def build_security_analyzer(self):
+    def _build_security_analyzer(self):
         analyzer_kind = (self.security_analyzer or "").lower()
         if not analyzer_kind or analyzer_kind == "none":
             return None
@@ -282,13 +285,20 @@ class ConversationSettings(BaseModel):
             return LLMSecurityAnalyzer()
         return None
 
-    def to_start_request_kwargs(self) -> dict[str, Any]:
-        """Return StartConversationRequest-compatible kwargs for these settings."""
-        return {
-            "confirmation_policy": self.build_confirmation_policy(),
-            "security_analyzer": self.build_security_analyzer(),
-            "max_iterations": self.max_iterations,
-        }
+    def _start_request_kwargs(self, **kwargs: Any) -> dict[str, Any]:
+        payload = dict(kwargs)
+        payload.setdefault("confirmation_policy", self._build_confirmation_policy())
+        payload.setdefault("security_analyzer", self._build_security_analyzer())
+        payload.setdefault("max_iterations", self.max_iterations)
+        return payload
+
+    def create_request(
+        self,
+        request_type: Callable[..., _RequestT],
+        /,
+        **kwargs: Any,
+    ) -> _RequestT:
+        return request_type(**self._start_request_kwargs(**kwargs))
 
 
 class AgentSettings(BaseModel):
