@@ -1,11 +1,19 @@
-"""Skill fetching utilities for AgentSkills sources."""
+"""Skill fetching utilities for AgentSkills sources.
+
+Delegates to :mod:`openhands.sdk.extensions.fetch` for the actual fetch logic
+and re-raises errors as :class:`SkillFetchError` to preserve the existing
+public interface.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from openhands.sdk.extensions.fetch import (
+    ExtensionFetchError,
+    fetch_with_resolution as _ext_fetch_with_resolution,
+)
 from openhands.sdk.git.cached_repo import GitHelper
-from openhands.sdk.plugin.fetch import PluginFetchError, fetch_plugin_with_resolution
 
 
 DEFAULT_CACHE_DIR = Path.home() / ".openhands" / "cache" / "skills"
@@ -74,7 +82,7 @@ def fetch_skill_with_resolution(
     """
     resolved_cache_dir = cache_dir if cache_dir is not None else DEFAULT_CACHE_DIR
     try:
-        return fetch_plugin_with_resolution(
+        return _ext_fetch_with_resolution(
             source=source,
             cache_dir=resolved_cache_dir,
             ref=ref,
@@ -82,5 +90,5 @@ def fetch_skill_with_resolution(
             repo_path=repo_path,
             git_helper=git_helper,
         )
-    except PluginFetchError as exc:
+    except ExtensionFetchError as exc:
         raise SkillFetchError(str(exc)) from exc
