@@ -11,14 +11,15 @@ import yaml
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
-from openhands.sdk.context.skills.execute import render_content_with_commands
-from openhands.sdk.context.skills.trigger import (
+from openhands.sdk.logger import get_logger
+from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
+from openhands.sdk.skills.execute import render_content_with_commands
+from openhands.sdk.skills.trigger import (
     KeywordTrigger,
     TaskTrigger,
 )
-from openhands.sdk.context.skills.types import InputMetadata
-from openhands.sdk.context.skills.utils import (
+from openhands.sdk.skills.types import InputMetadata
+from openhands.sdk.skills.utils import (
     discover_skill_resources,
     find_mcp_config,
     find_regular_md_files,
@@ -30,7 +31,6 @@ from openhands.sdk.context.skills.utils import (
     update_skills_repository,
     validate_skill_name,
 )
-from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
 
 
@@ -913,7 +913,7 @@ def load_marketplace_skill_names(
     Returns:
         Set of skill names to load, or None if marketplace file not found or invalid.
     """
-    from openhands.sdk.plugin import Marketplace
+    from openhands.sdk.marketplace import Marketplace
 
     marketplace_file = repo_path / marketplace_path
     if not marketplace_file.exists():
@@ -981,7 +981,7 @@ def load_public_skills(
 
     Example:
         >>> from openhands.sdk.context import AgentContext
-        >>> from openhands.sdk.context.skills import load_public_skills
+        >>> from openhands.sdk.skills import load_public_skills
         >>>
         >>> # Load public skills
         >>> public_skills = load_public_skills()
