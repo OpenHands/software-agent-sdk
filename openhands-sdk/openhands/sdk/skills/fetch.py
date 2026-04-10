@@ -91,4 +91,4 @@ def fetch_skill_with_resolution(
             git_helper=git_helper,
         )
     except ExtensionFetchError as exc:
-        raise SkillFetchError(str(exc)) from exc
+        raise SkillFetchError("Failed to fetch skill") from exc
