@@ -9,6 +9,7 @@ from fastmcp.mcp_config import MCPConfig
 from pydantic import (
     BaseModel,
     Field,
+    PrivateAttr,
     SecretStr,
     field_serializer,
     field_validator,
@@ -18,6 +19,7 @@ from pydantic.fields import FieldInfo
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 from .metadata import (
     SETTINGS_METADATA_KEY,
@@ -106,6 +108,9 @@ class CondenserSettings(BaseModel):
 
 class VerificationSettings(BaseModel):
     """Critic and iterative-refinement settings for the agent."""
+
+    _deprecated_confirmation_mode: bool = PrivateAttr(default=False)
+    _deprecated_security_analyzer: str | None = PrivateAttr(default=None)
 
     # -- Critic --
     critic_enabled: bool = Field(
@@ -196,6 +201,64 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
+
+    @property
+    def confirmation_mode(self) -> bool:
+        warn_deprecated(
+            "VerificationSettings.confirmation_mode",
+            deprecated_in="1.16.1",
+            removed_in="1.18.0",
+            details=(
+                "Use ConversationSettings.confirmation_mode; "
+                "verification settings no longer serialize "
+                "conversation approval controls."
+            ),
+        )
+        return self._deprecated_confirmation_mode
+
+    @confirmation_mode.setter
+    def confirmation_mode(self, value: bool) -> None:
+        warn_deprecated(
+            "VerificationSettings.confirmation_mode",
+            deprecated_in="1.16.1",
+            removed_in="1.18.0",
+            details=(
+                "Use ConversationSettings.confirmation_mode; "
+                "verification settings no longer serialize "
+                "conversation approval controls."
+            ),
+            stacklevel=3,
+        )
+        self._deprecated_confirmation_mode = value
+
+    @property
+    def security_analyzer(self) -> str | None:
+        warn_deprecated(
+            "VerificationSettings.security_analyzer",
+            deprecated_in="1.16.1",
+            removed_in="1.18.0",
+            details=(
+                "Use ConversationSettings.security_analyzer; "
+                "verification settings no longer serialize "
+                "conversation security controls."
+            ),
+        )
+        return self._deprecated_security_analyzer
+
+    @security_analyzer.setter
+    def security_analyzer(self, value: str | None) -> None:
+        warn_deprecated(
+            "VerificationSettings.security_analyzer",
+            deprecated_in="1.16.1",
+            removed_in="1.18.0",
+            details=(
+                "Use ConversationSettings.security_analyzer; "
+                "verification settings no longer serialize "
+                "conversation security controls."
+            ),
+            stacklevel=3,
+        )
+        self._deprecated_security_analyzer = value
 
 
 def _default_llm_settings() -> LLM:

@@ -1,3 +1,4 @@
+import pytest
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
@@ -142,6 +143,28 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert verification_fields["security_analyzer"].default == "llm"
     assert verification_fields["security_analyzer"].choices[0].value == "llm"
     assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
+
+
+def test_verification_settings_legacy_controls_remain_deprecated_accessors() -> None:
+    settings = VerificationSettings()
+
+    with pytest.deprecated_call():
+        assert settings.confirmation_mode is False
+    with pytest.deprecated_call():
+        settings.confirmation_mode = True
+    with pytest.deprecated_call():
+        assert settings.confirmation_mode is True
+
+    with pytest.deprecated_call():
+        assert settings.security_analyzer is None
+    with pytest.deprecated_call():
+        settings.security_analyzer = "llm"
+    with pytest.deprecated_call():
+        assert settings.security_analyzer == "llm"
+
+    dumped = settings.model_dump(mode="json")
+    assert "confirmation_mode" not in dumped
+    assert "security_analyzer" not in dumped
 
 
 def test_conversation_settings_model_dump_roundtrip() -> None:
