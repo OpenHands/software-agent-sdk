@@ -14,11 +14,7 @@ from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.settings import (
-    CondenserSettings,
-    ConversationVerificationSettings,
-    VerificationSettings,
-)
+from openhands.sdk.settings import CondenserSettings, VerificationSettings
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
@@ -110,8 +106,8 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert (
         v_fields["verification.critic_threshold"].prominence is SettingProminence.MINOR
     )
-    assert "verification.confirmation_mode" not in v_fields
-    assert "verification.security_analyzer" not in v_fields
+    assert "confirmation_mode" not in v_fields
+    assert "security_analyzer" not in v_fields
 
 
 def test_conversation_settings_export_schema_groups_sections() -> None:
@@ -130,65 +126,23 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert len(sections["verification"].fields) == 2
     verification_fields = {f.key: f for f in sections["verification"].fields}
     assert set(verification_fields) == {
-        "verification.confirmation_mode",
-        "verification.security_analyzer",
+        "confirmation_mode",
+        "security_analyzer",
     }
-    assert verification_fields["verification.confirmation_mode"].default is False
+    assert verification_fields["confirmation_mode"].default is False
     assert (
-        verification_fields["verification.confirmation_mode"].prominence
-        is SettingProminence.MAJOR
+        verification_fields["confirmation_mode"].prominence is SettingProminence.MAJOR
     )
-    assert verification_fields["verification.security_analyzer"].default == "llm"
-    assert (
-        verification_fields["verification.security_analyzer"].choices[0].value == "llm"
-    )
-    assert verification_fields["verification.security_analyzer"].depends_on == [
-        "verification.confirmation_mode"
-    ]
-
-
-def test_verification_settings_accepts_legacy_conversation_fields() -> None:
-    settings = VerificationSettings.model_validate(
-        {
-            "critic_enabled": True,
-            "confirmation_mode": True,
-            "security_analyzer": "none",
-        }
-    )
-
-    assert settings.critic_enabled is True
-    assert settings.confirmation_mode is True
-    assert settings.security_analyzer == "none"
-
-    dumped = settings.model_dump()
-    assert dumped["critic_enabled"] is True
-    assert dumped["confirmation_mode"] is True
-    assert dumped["security_analyzer"] == "none"
-
-
-def test_conversation_settings_flattens_verification_fields() -> None:
-    settings = ConversationSettings.model_validate(
-        {
-            "verification": {
-                "confirmation_mode": True,
-                "security_analyzer": "none",
-            }
-        }
-    )
-
-    assert settings.confirmation_mode is True
-    assert settings.security_analyzer == "none"
-    assert settings.verification.confirmation_mode is True
-    assert settings.verification.security_analyzer == "none"
+    assert verification_fields["security_analyzer"].default == "llm"
+    assert verification_fields["security_analyzer"].choices[0].value == "llm"
+    assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
 
 
 def test_conversation_settings_model_dump_roundtrip() -> None:
     settings = ConversationSettings(
         max_iterations=42,
-        verification=ConversationVerificationSettings(
-            confirmation_mode=True,
-            security_analyzer="none",
-        ),
+        confirmation_mode=True,
+        security_analyzer="none",
     )
 
     restored = ConversationSettings.model_validate(settings.model_dump(mode="json"))
@@ -199,10 +153,8 @@ def test_conversation_settings_model_dump_roundtrip() -> None:
 def test_conversation_settings_builds_runtime_helpers() -> None:
     settings = ConversationSettings(
         max_iterations=77,
-        verification=ConversationVerificationSettings(
-            confirmation_mode=True,
-            security_analyzer="llm",
-        ),
+        confirmation_mode=True,
+        security_analyzer="llm",
     )
 
     request_kwargs = settings.to_start_request_kwargs()
@@ -213,10 +165,8 @@ def test_conversation_settings_builds_runtime_helpers() -> None:
 
     fallback_settings = ConversationSettings(
         max_iterations=settings.max_iterations,
-        verification=ConversationVerificationSettings(
-            confirmation_mode=True,
-            security_analyzer="none",
-        ),
+        confirmation_mode=True,
+        security_analyzer="none",
     )
     fallback_request_kwargs = fallback_settings.to_start_request_kwargs()
 

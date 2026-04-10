@@ -23,8 +23,8 @@ def test_get_agent_settings_schema():
     )
     verification_field_keys = {field["key"] for field in verification_section["fields"]}
     assert "verification.critic_enabled" in verification_field_keys
-    assert "verification.confirmation_mode" not in verification_field_keys
-    assert "verification.security_analyzer" not in verification_field_keys
+    assert "confirmation_mode" not in verification_field_keys
+    assert "security_analyzer" not in verification_field_keys
 
 
 def test_get_conversation_settings_schema():
@@ -43,5 +43,5 @@ def test_get_conversation_settings_schema():
         section for section in body["sections"] if section["key"] == "verification"
     )
     verification_field_keys = {field["key"] for field in verification_section["fields"]}
-    assert "verification.confirmation_mode" in verification_field_keys
-    assert "verification.security_analyzer" in verification_field_keys
+    assert "confirmation_mode" in verification_field_keys
+    assert "security_analyzer" in verification_field_keys

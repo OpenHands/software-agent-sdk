@@ -13,7 +13,6 @@ from pydantic import (
     SecretStr,
     field_serializer,
     field_validator,
-    model_validator,
 )
 from pydantic.fields import FieldInfo
 
@@ -195,61 +194,6 @@ class VerificationSettings(BaseModel):
                 label="Critic model name",
                 prominence=SettingProminence.MINOR,
                 depends_on=("critic_enabled",),
-            ).model_dump()
-        },
-    )
-
-    # Keep these legacy fields on the public SDK model for backward compatibility,
-    # but hide them from the exported AgentSettings schema now that conversation-
-    # level verification lives on ConversationSettings.
-    _SCHEMA_EXCLUDED_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"confirmation_mode", "security_analyzer"}
-    )
-
-    confirmation_mode: bool = Field(
-        default=False,
-        description="Require user confirmation before executing risky actions.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Confirmation mode",
-                prominence=SettingProminence.MAJOR,
-            ).model_dump()
-        },
-    )
-    security_analyzer: SecurityAnalyzerType | None = Field(
-        default=None,
-        description="Security analyzer that evaluates actions before execution.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Security analyzer",
-                prominence=SettingProminence.MAJOR,
-                depends_on=("confirmation_mode",),
-            ).model_dump()
-        },
-    )
-
-
-class ConversationVerificationSettings(BaseModel):
-    """Conversation-level confirmation and security settings."""
-
-    confirmation_mode: bool = Field(
-        default=False,
-        description="Require user confirmation before executing risky actions.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Confirmation mode",
-                prominence=SettingProminence.MAJOR,
-            ).model_dump()
-        },
-    )
-    security_analyzer: SecurityAnalyzerType | None = Field(
-        default="llm",
-        description="Security analyzer that evaluates actions before execution.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Security analyzer",
-                prominence=SettingProminence.MAJOR,
-                depends_on=("confirmation_mode",),
             ).model_dump()
         },
     )
@@ -516,54 +460,6 @@ class ConversationSettings(BaseModel):
             ).model_dump(),
         },
     )
-    verification: ConversationVerificationSettings = Field(
-        default_factory=ConversationVerificationSettings,
-        description="Conversation confirmation and security settings.",
-        json_schema_extra={
-            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
-                key="verification",
-                label="Verification",
-            ).model_dump(),
-            "openhands_settings_schema_hidden": True,
-        },
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _flatten_verification_fields(cls, data: Any) -> Any:
-        if not isinstance(data, Mapping):
-            return data
-
-        normalized = dict(data)
-        verification = normalized.get("verification")
-        if isinstance(verification, BaseModel):
-            verification = verification.model_dump(mode="python")
-        if not isinstance(verification, Mapping):
-            return normalized
-
-        if (
-            "confirmation_mode" not in normalized
-            and "confirmation_mode" in verification
-        ):
-            normalized["confirmation_mode"] = deepcopy(
-                verification["confirmation_mode"]
-            )
-        if (
-            "security_analyzer" not in normalized
-            and "security_analyzer" in verification
-        ):
-            normalized["security_analyzer"] = deepcopy(
-                verification["security_analyzer"]
-            )
-        return normalized
-
-    @model_validator(mode="after")
-    def _sync_verification_compatibility_view(self) -> ConversationSettings:
-        self.verification = ConversationVerificationSettings(
-            confirmation_mode=self.confirmation_mode,
-            security_analyzer=self.security_analyzer,
-        )
-        return self
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:
@@ -784,16 +680,8 @@ def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
     return SettingsFieldMetadata.model_validate(metadata)
 
 
-_SETTINGS_SCHEMA_HIDDEN_KEY = "openhands_settings_schema_hidden"
 _GENERAL_SECTION_KEY = "general"
 _GENERAL_SECTION_LABEL = "General"
-
-
-def settings_schema_hidden(field: FieldInfo) -> bool:
-    extra = field.json_schema_extra
-    if not isinstance(extra, dict):
-        return False
-    return bool(extra.get(_SETTINGS_SCHEMA_HIDDEN_KEY, False))
 
 
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
@@ -817,9 +705,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
         return section
 
     for field_name, field in model.model_fields.items():
-        if settings_schema_hidden(field):
-            continue
-
         section_metadata = settings_section_metadata(field)
         nested_model = _nested_model_type(field.annotation)
 
@@ -830,15 +715,8 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 section_metadata.key
             )
             section = ensure_section(section_metadata.key, section_label)
-            schema_excluded_fields = getattr(
-                nested_model, "_SCHEMA_EXCLUDED_FIELDS", frozenset()
-            )
             for nested_key, nested_field in nested_model.model_fields.items():
-                if (
-                    nested_field.exclude
-                    or nested_key in schema_excluded_fields
-                    or settings_schema_hidden(nested_field)
-                ):
+                if nested_field.exclude:
                     continue
                 metadata = settings_metadata(nested_field)
                 default_value = None
@@ -905,7 +783,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
         section = ensure_section(section_metadata.key, section_label)
         section.fields.append(
             SettingsFieldSchema(
-                key=f"{section_metadata.key}.{field_name}",
+                key=field_name,
                 label=(
                     metadata.label
                     if metadata.label is not None
@@ -917,12 +795,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 value_type=_infer_value_type(field.annotation),
                 default=_normalize_default(default_value),
                 prominence=metadata.prominence,
-                depends_on=[
-                    dependency
-                    if "." in dependency
-                    else f"{section_metadata.key}.{dependency}"
-                    for dependency in metadata.depends_on
-                ],
+                depends_on=list(metadata.depends_on),
                 secret=_contains_secret(field.annotation),
                 choices=_extract_choices(field.annotation),
             )
