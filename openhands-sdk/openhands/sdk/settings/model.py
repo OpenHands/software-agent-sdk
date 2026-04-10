@@ -100,7 +100,7 @@ class CondenserSettings(BaseModel):
 
 
 class VerificationSettings(BaseModel):
-    """Combined critic and security settings."""
+    """Critic and iterative-refinement settings for the agent."""
 
     # -- Critic --
     critic_enabled: bool = Field(
@@ -192,7 +192,10 @@ class VerificationSettings(BaseModel):
         },
     )
 
-    # -- Security --
+
+class ConversationVerificationSettings(BaseModel):
+    """Conversation-level confirmation and security settings."""
+
     confirmation_mode: bool = Field(
         default=False,
         description="Require user confirmation before executing risky actions.",
@@ -204,7 +207,7 @@ class VerificationSettings(BaseModel):
         },
     )
     security_analyzer: SecurityAnalyzerType | None = Field(
-        default=None,
+        default="llm",
         description="Security analyzer that evaluates actions before execution.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
@@ -373,6 +376,161 @@ def _diff_payload(base: Mapping[str, Any], target: Mapping[str, Any]) -> dict[st
         if base_value != target_value:
             diff[key] = deepcopy(target_value)
     return diff
+
+
+_LEGACY_CONVERSATION_SETTINGS_VERSION = 1
+_CURRENT_CONVERSATION_SETTINGS_VERSION = 1
+
+
+def _coerce_persisted_conversation_settings_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    if (
+        _LEGACY_WRAPPED_SETTINGS_VERSION_KEY in payload
+        or _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY in payload
+    ):
+        settings_payload = payload.get(_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY)
+        if not isinstance(settings_payload, Mapping):
+            raise TypeError(
+                "Persisted ConversationSettings settings payload must be a mapping."
+            )
+        version = payload.get(_LEGACY_WRAPPED_SETTINGS_VERSION_KEY)
+        if version is None:
+            return dict(settings_payload)
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise TypeError(
+                "Persisted ConversationSettings version must be an integer"
+                " when provided."
+            )
+        migrated_payload = dict(settings_payload)
+        migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = version
+        return migrated_payload
+
+    return dict(payload)
+
+
+def _migrate_persisted_conversation_settings_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    migrated_payload = _coerce_persisted_conversation_settings_payload(payload)
+    version = migrated_payload.get(
+        _PERSISTED_AGENT_SETTINGS_VERSION_KEY,
+        _LEGACY_CONVERSATION_SETTINGS_VERSION,
+    )
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise TypeError(
+            "Persisted ConversationSettings schema_version must be an integer."
+        )
+    if version < _LEGACY_CONVERSATION_SETTINGS_VERSION:
+        raise ValueError(
+            f"Unsupported persisted ConversationSettings version {version}."
+        )
+    if version > _CURRENT_CONVERSATION_SETTINGS_VERSION:
+        raise ValueError(
+            "Persisted ConversationSettings version is newer than this SDK supports."
+        )
+
+    migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
+        _CURRENT_CONVERSATION_SETTINGS_VERSION
+    )
+    return migrated_payload
+
+
+class ConversationSettings(BaseModel):
+    CURRENT_PERSISTED_VERSION: ClassVar[int] = _CURRENT_CONVERSATION_SETTINGS_VERSION
+
+    schema_version: int = Field(default=_CURRENT_CONVERSATION_SETTINGS_VERSION, ge=1)
+    max_iterations: int = Field(
+        default=500,
+        ge=1,
+        description=(
+            "Maximum number of iterations the conversation will run before stopping."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Max iterations",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
+    )
+    verification: ConversationVerificationSettings = Field(
+        default_factory=ConversationVerificationSettings,
+        description="Conversation confirmation and security settings.",
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="verification",
+                label="Verification",
+            ).model_dump()
+        },
+    )
+
+    @classmethod
+    def export_schema(cls) -> SettingsSchema:
+        """Export a structured schema describing configurable conversation settings."""
+        return export_settings_schema(cls)
+
+    @classmethod
+    def migrate_persisted_payload(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Return the latest canonical persisted ConversationSettings payload."""
+        return _migrate_persisted_conversation_settings_payload(payload)
+
+    @classmethod
+    def from_persisted(cls, payload: Mapping[str, Any]) -> ConversationSettings:
+        """Load persisted ConversationSettings after applying SDK-owned migrations."""
+        return cls.model_validate(cls.migrate_persisted_payload(payload))
+
+    def patch(self, payload: Mapping[str, Any]) -> ConversationSettings:
+        """Return a new settings object with a persisted patch applied."""
+        base_payload = self.model_dump(mode="json")
+        merged_payload = _merge_patch_payload(
+            base_payload, _normalize_patch_payload(payload)
+        )
+        merged_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
+            self.CURRENT_PERSISTED_VERSION
+        )
+        return type(self).from_persisted(merged_payload)
+
+    def diff(self, target: ConversationSettings | Mapping[str, Any]) -> dict[str, Any]:
+        """Return the minimal persisted patch from these settings to ``target``."""
+        target_settings = (
+            target
+            if isinstance(target, ConversationSettings)
+            else type(self).from_persisted(target)
+        )
+        base_payload = self.model_dump(mode="json")
+        target_payload = target_settings.model_dump(mode="json")
+        return _diff_payload(base_payload, target_payload)
+
+    def build_confirmation_policy(self):
+        from openhands.sdk.security.confirmation_policy import (
+            AlwaysConfirm,
+            ConfirmRisky,
+            NeverConfirm,
+        )
+
+        if not self.verification.confirmation_mode:
+            return NeverConfirm()
+        if (self.verification.security_analyzer or "").lower() == "llm":
+            return ConfirmRisky()
+        return AlwaysConfirm()
+
+    def build_security_analyzer(self):
+        analyzer_kind = (self.verification.security_analyzer or "").lower()
+        if not analyzer_kind or analyzer_kind == "none":
+            return None
+        if analyzer_kind == "llm":
+            from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+
+            return LLMSecurityAnalyzer()
+        return None
+
+    def to_start_request_kwargs(self) -> dict[str, Any]:
+        """Return StartConversationRequest-compatible kwargs for these settings."""
+        return {
+            "confirmation_policy": self.build_confirmation_policy(),
+            "security_analyzer": self.build_security_analyzer(),
+            "max_iterations": self.max_iterations,
+        }
 
 
 class AgentSettings(BaseModel):
