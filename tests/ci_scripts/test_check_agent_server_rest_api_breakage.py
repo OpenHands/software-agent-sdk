@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -372,6 +373,78 @@ def test_main_allows_scheduled_removal_when_baseline_matches_current(
 
     captured = capsys.readouterr()
     assert "scheduled removal versions have been reached" in captured.out
+
+
+def test_main_rejects_breakage_against_pr_base_ref(monkeypatch, capsys):
+    monkeypatch.setenv(_prod.BASE_REF_ENV, "main")
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.16.1")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.16.1"
+    )
+    monkeypatch.setattr(_prod, "_resolve_git_ref", lambda ref: f"origin/{ref}")
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+
+    base_schema = _schema_with_operation("/foo", "get", {"responses": {}})
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda ref: base_schema if ref == "origin/main" else {"paths": {}},
+    )
+
+    def _fake_run(prev_spec, _cur_spec):
+        prev_schema = json.loads(Path(prev_spec).read_text())
+        if "/foo" in prev_schema.get("paths", {}):
+            return (
+                [
+                    {
+                        "id": "removed-operation",
+                        "details": {
+                            "path": "/foo",
+                            "method": "get",
+                            "deprecated": False,
+                        },
+                        "text": "removed GET /foo",
+                    }
+                ],
+                1,
+            )
+        return [], 0
+
+    monkeypatch.setattr(_prod, "_run_oasdiff_breakage_check", _fake_run)
+
+    assert _prod.main() == 1
+
+    captured = capsys.readouterr()
+    assert "PR base ref origin/main" in captured.out
+    assert "Removed GET /foo without prior deprecation" in captured.out
+
+
+def test_main_warns_when_pr_base_ref_cannot_be_resolved(monkeypatch, capsys):
+    monkeypatch.setenv(_prod.BASE_REF_ENV, "main")
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.16.1")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.16.1"
+    )
+    monkeypatch.setattr(_prod, "_resolve_git_ref", lambda _ref: None)
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(
+        _prod, "_run_oasdiff_breakage_check", lambda _prev, _cur: ([], 0)
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Unable to resolve base ref 'main'" in captured.out
+    assert (
+        "No breaking changes detected against baseline release v1.16.1." in captured.out
+    )
 
 
 def test_main_rejects_non_removal_breakage_even_with_newer_version(monkeypatch, capsys):

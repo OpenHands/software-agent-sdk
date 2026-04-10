@@ -39,14 +39,21 @@ Policies enforced:
      minor releases of runway, so incompatible replacements must ship additively or
      behind a versioned contract until the scheduled removal version.
 
-If the baseline release schema can't be generated (e.g., missing tag / repo issues),
-the script emits a warning and exits successfully to avoid flaky CI.
+5) Pull requests are also checked against their base branch when available
+   - This catches unreleased endpoint removals or incompatible contract edits that
+     may not appear in the latest published baseline yet.
+   - The release-baseline comparison still runs so published compatibility policy
+     remains enforced.
+
+If a comparison schema can't be generated (e.g., missing tag / repo issues),
+the script emits a warning and continues with the remaining checks to avoid flaky CI.
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -61,6 +68,7 @@ from packaging import version as pkg_version
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_SERVER_PYPROJECT = REPO_ROOT / "openhands-agent-server" / "pyproject.toml"
 PYPI_DISTRIBUTION = "openhands-agent-server"
+BASE_REF_ENV = "REST_API_BREAKAGE_BASE_REF"
 # Keep this in sync with REST_ROUTE_DEPRECATION_RE in check_deprecations.py so
 # the REST breakage and deprecation checks recognize the same wording.
 REST_ROUTE_DEPRECATION_RE = re.compile(
@@ -199,6 +207,34 @@ def _generate_openapi_for_git_ref(git_ref: str) -> dict | None:
             return None
 
         return _generate_openapi_from_source_tree(source_tree, git_ref)
+
+
+def _get_base_ref() -> str | None:
+    base_ref = (
+        os.environ.get(BASE_REF_ENV) or os.environ.get("GITHUB_BASE_REF") or ""
+    ).strip()
+    return base_ref or None
+
+
+def _resolve_git_ref(ref: str) -> str | None:
+    for candidate in (f"origin/{ref}", ref):
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(REPO_ROOT),
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                candidate,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return candidate
+    return None
 
 
 def _dotted_name(node: ast.AST) -> str | None:
@@ -551,37 +587,19 @@ def _run_oasdiff_breakage_check(
     return breaking_changes, result.returncode
 
 
-def main() -> int:
-    current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
-    baseline_version = _get_baseline_version(PYPI_DISTRIBUTION, current_version)
+def _normalized_openapi_copy(schema: dict) -> dict:
+    return _normalize_openapi_for_oasdiff(json.loads(json.dumps(schema)))
 
-    if baseline_version is None:
-        print(
-            f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to find baseline "
-            f"version for {current_version}; skipping breakage checks."
-        )
-        return 0
 
-    baseline_git_ref = f"v{baseline_version}"
-
-    static_policy_errors = _find_sdk_deprecated_fastapi_routes(REPO_ROOT)
-    for error in static_policy_errors:
-        print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
-
-    current_schema = _generate_current_openapi()
-    if current_schema is None:
-        return 1
-
-    deprecation_policy_errors = _find_deprecation_policy_errors(current_schema)
-    for error in deprecation_policy_errors:
-        print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
-
-    prev_schema = _generate_openapi_for_git_ref(baseline_git_ref)
-    if prev_schema is None:
-        return 0 if not (static_policy_errors or deprecation_policy_errors) else 1
-
-    prev_schema = _normalize_openapi_for_oasdiff(prev_schema)
-    current_schema = _normalize_openapi_for_oasdiff(current_schema)
+def _check_breaking_changes(
+    *,
+    prev_schema: dict,
+    current_schema: dict,
+    current_version: str,
+    comparison_label: str,
+) -> list[str]:
+    prev_schema = _normalized_openapi_copy(prev_schema)
+    current_schema = _normalized_openapi_copy(current_schema)
 
     with tempfile.TemporaryDirectory(prefix="oasdiff-specs-") as tmp:
         tmp_path = Path(tmp)
@@ -597,62 +615,136 @@ def main() -> int:
 
     if not breaking_changes:
         if exit_code == 0:
-            print("No breaking changes detected.")
+            print(f"No breaking changes detected against {comparison_label}.")
         else:
             print(
                 f"oasdiff returned exit code {exit_code} but no breaking changes "
-                "in JSON format. There may be warnings only."
+                f"in JSON format while checking {comparison_label}. There may be "
+                "warnings only."
             )
-    else:
-        (
-            removed_operations,
-            additive_response_oneof,
-            other_breaking_changes,
-        ) = _split_breaking_changes(breaking_changes)
-        removal_errors = _validate_removed_operations(
+        return []
+
+    removed_operations, additive_response_oneof, other_breaking_changes = (
+        _split_breaking_changes(breaking_changes)
+    )
+    errors = [
+        f"{comparison_label}: {error}"
+        for error in _validate_removed_operations(
             removed_operations,
             prev_schema,
             current_version,
         )
+    ]
 
-        for error in removal_errors:
-            print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
+    if additive_response_oneof:
+        print(
+            f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+            f"Additive oneOf/anyOf expansion detected in response schemas against "
+            f"{comparison_label}. This is expected for extensible "
+            "discriminated-union APIs and does not break backward compatibility."
+        )
+        for item in additive_response_oneof:
+            print(f"  - {item.get('text', str(item))}")
 
-        if additive_response_oneof:
+    if other_breaking_changes:
+        errors.append(
+            f"{comparison_label}: Detected breaking REST API changes other than "
+            "removing previously-deprecated operations or additive response "
+            "oneOf expansions. REST contract changes must preserve compatibility "
+            "for 5 minor releases; keep the old contract available until its "
+            "scheduled removal version."
+        )
+
+    print(f"\nBreaking REST API changes detected against {comparison_label}:")
+    for text in breaking_changes:
+        print(f"- {text.get('text', str(text))}")
+
+    if not errors:
+        print(
+            "Breaking changes are limited to previously-deprecated operations "
+            "whose scheduled removal versions have been reached, and/or additive "
+            "response oneOf expansions."
+        )
+
+    return errors
+
+
+def main() -> int:
+    current_version = _read_version_from_pyproject(AGENT_SERVER_PYPROJECT)
+
+    static_policy_errors = _find_sdk_deprecated_fastapi_routes(REPO_ROOT)
+    for error in static_policy_errors:
+        print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
+
+    current_schema = _generate_current_openapi()
+    if current_schema is None:
+        return 1
+
+    deprecation_policy_errors = _find_deprecation_policy_errors(current_schema)
+    for error in deprecation_policy_errors:
+        print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
+
+    comparison_errors: list[str] = []
+
+    base_ref = _get_base_ref()
+    if base_ref is not None:
+        resolved_base_ref = _resolve_git_ref(base_ref)
+        if resolved_base_ref is None:
             print(
-                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
-                "Additive oneOf/anyOf expansion detected in response schemas. "
-                "This is expected for extensible discriminated-union APIs and "
-                "does not break backward compatibility."
-            )
-            for item in additive_response_oneof:
-                print(f"  - {item.get('text', str(item))}")
-
-        if other_breaking_changes:
-            print(
-                "::error "
-                f"title={PYPI_DISTRIBUTION} REST API::Detected breaking REST API "
-                "changes other than removing previously-deprecated operations "
-                "or additive response oneOf expansions. "
-                "REST contract changes must preserve compatibility for 5 minor "
-                "releases; keep the old contract available until its scheduled "
-                "removal version."
-            )
-
-        print("\nBreaking REST API changes detected compared to baseline release:")
-        for text in breaking_changes:
-            print(f"- {text.get('text', str(text))}")
-
-        if not (removal_errors or other_breaking_changes):
-            print(
-                "Breaking changes are limited to previously-deprecated operations "
-                "whose scheduled removal versions have been reached, and/or "
-                "additive response oneOf expansions."
+                f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to resolve "
+                f"base ref {base_ref!r}; skipping PR-base OpenAPI comparison."
             )
         else:
-            return 1
+            base_schema = _generate_openapi_for_git_ref(resolved_base_ref)
+            if base_schema is None:
+                print(
+                    f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to "
+                    f"generate OpenAPI schema for base ref {resolved_base_ref}; "
+                    "skipping PR-base comparison."
+                )
+            else:
+                comparison_errors.extend(
+                    _check_breaking_changes(
+                        prev_schema=base_schema,
+                        current_schema=current_schema,
+                        current_version=current_version,
+                        comparison_label=f"PR base ref {resolved_base_ref}",
+                    )
+                )
 
-    return 1 if (static_policy_errors or deprecation_policy_errors) else 0
+    baseline_version = _get_baseline_version(PYPI_DISTRIBUTION, current_version)
+    if baseline_version is None:
+        print(
+            f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to find baseline "
+            f"version for {current_version}; skipping release-baseline checks."
+        )
+    else:
+        baseline_git_ref = f"v{baseline_version}"
+        prev_schema = _generate_openapi_for_git_ref(baseline_git_ref)
+        if prev_schema is None:
+            print(
+                f"::warning title={PYPI_DISTRIBUTION} REST API::Unable to generate "
+                f"OpenAPI schema for baseline {baseline_git_ref}; skipping "
+                "release-baseline comparison."
+            )
+        else:
+            comparison_errors.extend(
+                _check_breaking_changes(
+                    prev_schema=prev_schema,
+                    current_schema=current_schema,
+                    current_version=current_version,
+                    comparison_label=f"baseline release {baseline_git_ref}",
+                )
+            )
+
+    for error in comparison_errors:
+        print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
+
+    return (
+        1
+        if (static_policy_errors or deprecation_policy_errors or comparison_errors)
+        else 0
+    )
 
 
 if __name__ == "__main__":
