@@ -39,6 +39,7 @@ from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
+from openhands.agent_server.ssh_service import get_ssh_service
 from openhands.sdk.logger import DEBUG, get_logger
 
 
@@ -51,6 +52,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
     tool_preload_service = get_tool_preload_service()
+    ssh_service = get_ssh_service()
 
     # Define async functions for starting each service
     async def start_vscode_service():
@@ -87,11 +89,22 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         else:
             logger.info("Tool preload service is disabled")
 
+    async def start_ssh_service():
+        if ssh_service is not None:
+            ssh_started = await ssh_service.start()
+            if ssh_started:
+                logger.info("SSH service started successfully")
+            else:
+                logger.warning("SSH service failed to start, continuing without SSH")
+        else:
+            logger.info("SSH service is disabled")
+
     # Start all services concurrently
     results = await asyncio.gather(
         start_vscode_service(),
         start_desktop_service(),
         start_tool_preload_service(),
+        start_ssh_service(),
         return_exceptions=True,
     )
 

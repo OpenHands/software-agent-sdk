@@ -152,6 +152,16 @@ class Config(BaseModel):
         default=False,
         description="Whether to enable VNC desktop functionality",
     )
+    enable_ssh: bool = Field(
+        default=True,
+        description="Whether to enable SSH server functionality for local VSCode Remote-SSH access",
+    )
+    ssh_port: int = Field(
+        default=2222,
+        ge=1,
+        le=65535,
+        description="Port on which SSH server should run",
+    )
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",
