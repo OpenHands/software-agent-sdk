@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
@@ -205,48 +203,8 @@ def _default_llm_settings() -> LLM:
     return LLM(model=model)
 
 
-_SCHEMA_VERSION_KEY = "schema_version"
 _AGENT_SETTINGS_SCHEMA_VERSION = 1
 _CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
-
-
-_MISSING = object()
-
-
-def _merge_patch_payload(
-    base: Mapping[str, Any], patch: Mapping[str, Any]
-) -> dict[str, Any]:
-    merged = deepcopy(dict(base))
-    for key, value in patch.items():
-        base_value = merged.get(key)
-        if isinstance(base_value, dict) and isinstance(value, Mapping):
-            merged[key] = _merge_patch_payload(base_value, value)
-        else:
-            merged[key] = deepcopy(value)
-    return merged
-
-
-def _diff_payload(base: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str, Any]:
-    diff: dict[str, Any] = {}
-    for key in sorted(set(base) | set(target)):
-        if key == _SCHEMA_VERSION_KEY:
-            continue
-        base_value = base.get(key, _MISSING)
-        target_value = target.get(key, _MISSING)
-
-        if target_value is _MISSING:
-            continue
-        if base_value is _MISSING:
-            diff[key] = deepcopy(target_value)
-            continue
-        if isinstance(base_value, Mapping) and isinstance(target_value, Mapping):
-            nested_diff = _diff_payload(base_value, target_value)
-            if nested_diff:
-                diff[key] = nested_diff
-            continue
-        if base_value != target_value:
-            diff[key] = deepcopy(target_value)
-    return diff
 
 
 class ConversationSettings(BaseModel):
@@ -393,7 +351,7 @@ class AgentSettings(BaseModel):
     )
     verification: VerificationSettings = Field(
         default_factory=VerificationSettings,
-        description="Verification settings (critic + security) for the agent.",
+        description="Verification settings for the agent critic.",
         json_schema_extra={
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",

@@ -184,6 +184,20 @@ class _StartConversationRequestBase(BaseModel):
     )
 
 
+def _start_request_payload_from_settings(
+    *,
+    workspace: LocalWorkspace,
+    conversation_settings: ConversationSettings | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    payload = dict(kwargs)
+    if conversation_settings is not None:
+        for key, value in conversation_settings.to_start_request_kwargs().items():
+            payload.setdefault(key, value)
+    payload["workspace"] = workspace
+    return payload
+
+
 class StartConversationRequest(_StartConversationRequestBase):
     """Payload to create a new conversation.
 
@@ -201,11 +215,14 @@ class StartConversationRequest(_StartConversationRequestBase):
         conversation_settings: ConversationSettings | None = None,
         **kwargs: Any,
     ) -> "StartConversationRequest":
-        payload = dict(kwargs)
-        if conversation_settings is not None:
-            for key, value in conversation_settings.to_start_request_kwargs().items():
-                payload.setdefault(key, value)
-        return cls(agent=agent, workspace=workspace, **payload)
+        return cls(
+            agent=agent,
+            **_start_request_payload_from_settings(
+                workspace=workspace,
+                conversation_settings=conversation_settings,
+                **kwargs,
+            ),
+        )
 
 
 class StartACPConversationRequest(_StartConversationRequestBase):
@@ -222,11 +239,14 @@ class StartACPConversationRequest(_StartConversationRequestBase):
         conversation_settings: ConversationSettings | None = None,
         **kwargs: Any,
     ) -> "StartACPConversationRequest":
-        payload = dict(kwargs)
-        if conversation_settings is not None:
-            for key, value in conversation_settings.to_start_request_kwargs().items():
-                payload.setdefault(key, value)
-        return cls(agent=agent, workspace=workspace, **payload)
+        return cls(
+            agent=agent,
+            **_start_request_payload_from_settings(
+                workspace=workspace,
+                conversation_settings=conversation_settings,
+                **kwargs,
+            ),
+        )
 
 
 class StoredConversation(StartACPConversationRequest):
