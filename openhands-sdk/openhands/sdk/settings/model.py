@@ -457,9 +457,7 @@ class AgentSettings(BaseModel):
         )
 
 
-def _explicit_settings_section_metadata(
-    field: FieldInfo,
-) -> SettingsSectionMetadata | None:
+def settings_section_metadata(field: FieldInfo) -> SettingsSectionMetadata | None:
     extra = field.json_schema_extra
     if not isinstance(extra, dict):
         return None
@@ -468,13 +466,6 @@ def _explicit_settings_section_metadata(
     if metadata is None:
         return None
     return SettingsSectionMetadata.model_validate(metadata)
-
-
-def settings_section_metadata(field: FieldInfo) -> SettingsSectionMetadata:
-    metadata = _explicit_settings_section_metadata(field)
-    if metadata is not None:
-        return metadata
-    return _GENERAL_SECTION_METADATA
 
 
 def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
@@ -520,9 +511,9 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
         return section
 
     for field_name, field in model.model_fields.items():
-        section_metadata = settings_section_metadata(field)
+        explicit_section_metadata = settings_section_metadata(field)
+        section_metadata = explicit_section_metadata or _GENERAL_SECTION_METADATA
         nested_model = _nested_model_type(field.annotation)
-        explicit_section_metadata = _explicit_settings_section_metadata(field)
 
         # Nested section (e.g., llm, condenser, critic)
         if explicit_section_metadata is not None and nested_model is not None:
