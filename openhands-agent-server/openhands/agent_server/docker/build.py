@@ -298,7 +298,10 @@ def _git_info() -> tuple[str, str]:
     3. git symbolic-ref HEAD - Local development
     """
     sdk_root = _default_sdk_project_root()
-    git_sha = os.environ.get("SDK_SHA") or os.environ.get("GITHUB_SHA")
+    sdk_sha_env = os.environ.get("SDK_SHA")
+    github_sha_env = os.environ.get("GITHUB_SHA")
+    logger.info(f"[_git_info] SDK_SHA={sdk_sha_env!r}, GITHUB_SHA={github_sha_env!r}")
+    git_sha = sdk_sha_env or github_sha_env
     if not git_sha:
         try:
             git_sha = _run(
@@ -317,6 +320,7 @@ def _git_info() -> tuple[str, str]:
             ).stdout.strip()
         except subprocess.CalledProcessError:
             git_ref = "unknown"
+    logger.info(f"[_git_info] Resolved: git_ref={git_ref!r}, git_sha={git_sha!r}")
     return git_ref, git_sha
 
 
