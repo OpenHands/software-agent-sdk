@@ -12,8 +12,6 @@ from pathlib import Path
 from openhands.sdk.extensions.fetch import (
     ExtensionFetchError,
     fetch_with_resolution as _ext_fetch_with_resolution,
-    get_cache_path as _ext_get_cache_path,
-    parse_extension_source,
 )
 from openhands.sdk.git.cached_repo import GitHelper
 
@@ -23,54 +21,6 @@ DEFAULT_CACHE_DIR = Path.home() / ".openhands" / "cache" / "plugins"
 
 class PluginFetchError(Exception):
     """Raised when fetching a plugin fails."""
-
-
-def parse_plugin_source(source: str) -> tuple[str, str]:
-    """Parse plugin source into (type, url).
-
-    Args:
-        source: Plugin source string. Can be:
-            - "github:owner/repo" - GitHub repository shorthand
-            - "https://github.com/owner/repo.git" - Full git URL
-            - "git@github.com:owner/repo.git" - SSH git URL
-            - "/local/path" - Local path
-
-    Returns:
-        Tuple of (source_type, normalized_url) where source_type is one of:
-        - "github": GitHub repository
-        - "git": Any git URL
-        - "local": Local filesystem path
-
-    Examples:
-        >>> parse_plugin_source("github:owner/repo")
-        ("github", "https://github.com/owner/repo.git")
-        >>> parse_plugin_source("https://gitlab.com/org/repo.git")
-        ("git", "https://gitlab.com/org/repo.git")
-        >>> parse_plugin_source("/local/path")
-        ("local", "/local/path")
-    """
-    try:
-        source_type, url = parse_extension_source(source)
-    except ExtensionFetchError as exc:
-        raise PluginFetchError(str(exc).replace("extension", "plugin")) from exc
-    return (source_type.value, url)
-
-
-def get_cache_path(source: str, cache_dir: Path | None = None) -> Path:
-    """Get the cache path for a plugin source.
-
-    Creates a deterministic path based on a hash of the source URL.
-
-    Args:
-        source: The plugin source (URL or path).
-        cache_dir: Base cache directory. Defaults to ~/.openhands/cache/plugins/
-
-    Returns:
-        Path where the plugin should be cached.
-    """
-    return _ext_get_cache_path(
-        source, cache_dir if cache_dir is not None else DEFAULT_CACHE_DIR
-    )
 
 
 def fetch_plugin(
