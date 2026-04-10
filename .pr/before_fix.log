@@ -1,0 +1,72 @@
+================================================================================
+BEFORE FIX: Codex subscription mode — empty responses loop
+================================================================================
+Command: python scratch.py
+Model: openai/gpt-5.2-codex (subscription mode via LLM.subscription_login)
+Date: 2026-04-10
+
+scratch.py contents:
+  llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+  agent = Agent(llm=llm, tools=[Terminal, FileEditor, TaskTracker])
+  conversation.send_message("Write 3 facts about the current project into FACTS.txt.")
+  conversation.run()
+
+================================================================================
+
+Message from User ──────────────────────────────────────────────────────────────
+
+Write 3 facts about the current project into FACTS.txt.
+
+Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
+
+Message from Agent ─────────────────────────────────────────────────────────────
+
+[no text content]
+
+Tokens: ↑ input 6.49K • cache hit 98.60% • ↓ output 72 • $ 0.0033
+
+Message from User ──────────────────────────────────────────────────────────────
+
+Your last response did not include a function call or a message. Please use a
+tool to proceed with the task.
+
+Message from Agent ─────────────────────────────────────────────────────────────
+
+[no text content]
+
+Tokens: ↑ input 13.01K • cache hit 98.39% • ↓ output 69 • $ 0.0044
+
+Message from User ──────────────────────────────────────────────────────────────
+
+Your last response did not include a function call or a message. Please use a
+tool to proceed with the task.
+
+Message from Agent ─────────────────────────────────────────────────────────────
+
+[no text content]
+
+Tokens: ↑ input 19.55K • cache hit 98.19% • ↓ output 53 • $ 0.0067
+
+Message from User ──────────────────────────────────────────────────────────────
+
+Your last response did not include a function call or a message. Please use a
+tool to proceed with the task.
+
+Message from Agent ─────────────────────────────────────────────────────────────
+
+[no text content]
+
+Tokens: ↑ input 26.13K • cache hit 97.99% • ↓ output 65 • $ 0.0089
+
+Message from User ──────────────────────────────────────────────────────────────
+
+Your last response did not include a function call or a message. Please use a
+tool to proceed with the task.
+
+Message from Agent ─────────────────────────────────────────────────────────────
+
+[no text content]
+
+Tokens: ↑ input 32.73K • cache hit 98.18% • ↓ output 70 • $ 0.0110
+
+... (loops indefinitely with [no text content])
