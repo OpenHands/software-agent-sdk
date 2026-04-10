@@ -206,12 +206,12 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-_AGENT_SETTINGS_SCHEMA_VERSION = 1
-_CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
+AGENT_SETTINGS_SCHEMA_VERSION = 1
+CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
 class ConversationSettings(BaseModel):
-    schema_version: int = Field(default=_CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
+    schema_version: int = Field(default=CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
     max_iterations: int = Field(
         default=500,
         ge=1,
@@ -300,7 +300,7 @@ class ConversationSettings(BaseModel):
 
 
 class AgentSettings(BaseModel):
-    schema_version: int = Field(default=_AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
+    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent: str = Field(
         default="CodeActAgent",
         description="Agent class to use.",

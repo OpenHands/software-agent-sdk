@@ -14,6 +14,8 @@ from .metadata import (
 
 if TYPE_CHECKING:
     from .model import (
+        AGENT_SETTINGS_SCHEMA_VERSION,
+        CONVERSATION_SETTINGS_SCHEMA_VERSION,
         AgentSettings,
         CondenserSettings,
         ConversationSettings,
@@ -26,6 +28,8 @@ if TYPE_CHECKING:
     )
 
 _MODEL_EXPORTS = {
+    "AGENT_SETTINGS_SCHEMA_VERSION",
+    "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "AgentSettings",
     "CondenserSettings",
     "ConversationSettings",
@@ -38,6 +42,8 @@ _MODEL_EXPORTS = {
 }
 
 __all__ = [
+    "AGENT_SETTINGS_SCHEMA_VERSION",
+    "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "AgentSettings",
     "CondenserSettings",
     "ConversationSettings",
