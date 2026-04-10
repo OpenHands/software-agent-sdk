@@ -146,6 +146,25 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     ]
 
 
+def test_verification_settings_accepts_legacy_conversation_fields() -> None:
+    settings = VerificationSettings.model_validate(
+        {
+            "critic_enabled": True,
+            "confirmation_mode": True,
+            "security_analyzer": "none",
+        }
+    )
+
+    assert settings.critic_enabled is True
+    assert settings.confirmation_mode is True
+    assert settings.security_analyzer == "none"
+
+    dumped = settings.model_dump()
+    assert dumped["critic_enabled"] is True
+    assert dumped["confirmation_mode"] is True
+    assert dumped["security_analyzer"] == "none"
+
+
 def test_conversation_settings_model_dump_roundtrip() -> None:
     settings = ConversationSettings(
         max_iterations=42,

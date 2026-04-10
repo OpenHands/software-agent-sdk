@@ -192,6 +192,35 @@ class VerificationSettings(BaseModel):
         },
     )
 
+    # Keep these legacy fields on the public SDK model for backward compatibility,
+    # but hide them from the exported AgentSettings schema now that conversation-
+    # level verification lives on ConversationSettings.
+    _SCHEMA_EXCLUDED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"confirmation_mode", "security_analyzer"}
+    )
+
+    confirmation_mode: bool = Field(
+        default=False,
+        description="Require user confirmation before executing risky actions.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Confirmation mode",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
+    )
+    security_analyzer: SecurityAnalyzerType | None = Field(
+        default=None,
+        description="Security analyzer that evaluates actions before execution.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Security analyzer",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("confirmation_mode",),
+            ).model_dump()
+        },
+    )
+
 
 class ConversationVerificationSettings(BaseModel):
     """Conversation-level confirmation and security settings."""
@@ -713,8 +742,11 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 label=section_label,
                 fields=[],
             )
+            schema_excluded_fields = getattr(
+                nested_model, "_SCHEMA_EXCLUDED_FIELDS", frozenset()
+            )
             for nested_key, nested_field in nested_model.model_fields.items():
-                if nested_field.exclude:
+                if nested_field.exclude or nested_key in schema_excluded_fields:
                     continue
                 metadata = settings_metadata(nested_field)
                 default_value = None
