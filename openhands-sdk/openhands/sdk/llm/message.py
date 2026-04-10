@@ -10,7 +10,6 @@ from litellm.types.responses.main import (
 )
 from litellm.types.utils import Message as LiteLLMMessage
 from openai.types.responses.response_output_message import ResponseOutputMessage
-from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
@@ -650,31 +649,53 @@ class Message(BaseModel):
         tool_calls: list[MessageToolCall] = []
         responses_reasoning_item: ReasoningItemModel | None = None
 
+        # Helper to access fields from typed Pydantic objects, generic
+        # litellm base objects (BaseLiteLLMOpenAIResponseObject), or dicts.
+        def _get(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
         for item in output or []:
+            item_type = _get(item, "type")
+
             if (
-                isinstance(item, GenericResponseOutputItem)
-                or isinstance(item, ResponseOutputMessage)
-            ) and item.type == "message":
-                for part in item.content or []:
-                    if part.type == "output_text" and part.text:
-                        assistant_text_parts.append(part.text)
+                isinstance(item, (GenericResponseOutputItem, ResponseOutputMessage))
+                or item_type == "message"
+            ) and item_type == "message":
+                content = _get(item, "content")
+                for part in content or []:
+                    part_type = _get(part, "type")
+                    part_text = _get(part, "text")
+                    if part_type == "output_text" and part_text:
+                        assistant_text_parts.append(part_text)
             elif (
                 isinstance(item, (OutputFunctionToolCall, ResponseFunctionToolCall))
-                and item.type == "function_call"
+                and item_type == "function_call"
             ):
                 tc = MessageToolCall.from_responses_function_call(item)
                 tool_calls.append(tc)
-            elif isinstance(item, ResponseReasoningItem) and item.type == "reasoning":
-                # Parse OpenAI typed Responses "reasoning" output item
-                # (Pydantic BaseModel)
-                rid = item.id
-                summaries = item.summary or []
-                contents = item.content or []
-                enc = item.encrypted_content
-                status = item.status
+            elif item_type == "function_call":
+                # Handle generic objects (e.g., BaseLiteLLMOpenAIResponseObject
+                # from streaming) or dicts with function_call type
+                tc = MessageToolCall(
+                    id=_get(item, "call_id") or _get(item, "id", ""),
+                    name=_get(item, "name", ""),
+                    arguments=_get(item, "arguments", ""),
+                    origin="responses",
+                )
+                tool_calls.append(tc)
+            elif item_type == "reasoning":
+                # Parse Responses "reasoning" output item from typed
+                # Pydantic objects or generic litellm base objects.
+                rid = _get(item, "id")
+                summaries = _get(item, "summary") or []
+                contents = _get(item, "content") or []
+                enc = _get(item, "encrypted_content")
+                status = _get(item, "status")
 
-                summary_list: list[str] = [s.text for s in summaries]
-                content_texts: list[str] = [c.text for c in contents]
+                summary_list: list[str] = [_get(s, "text", "") for s in summaries]
+                content_texts: list[str] = [_get(c, "text", "") for c in contents]
                 content_list: list[str] | None = content_texts or None
 
                 responses_reasoning_item = ReasoningItemModel(
