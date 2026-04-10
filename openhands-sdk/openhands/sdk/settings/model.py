@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, get_args, get_origin
 
 from fastmcp.mcp_config import MCPConfig
 from pydantic import (
@@ -243,8 +243,6 @@ _CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
 class ConversationSettings(BaseModel):
-    CURRENT_PERSISTED_VERSION: ClassVar[int] = _CONVERSATION_SETTINGS_SCHEMA_VERSION
-
     schema_version: int = Field(default=_CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
     max_iterations: int = Field(
         default=500,
@@ -334,8 +332,6 @@ class ConversationSettings(BaseModel):
 
 
 class AgentSettings(BaseModel):
-    CURRENT_PERSISTED_VERSION: ClassVar[int] = _AGENT_SETTINGS_SCHEMA_VERSION
-
     schema_version: int = Field(default=_AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent: str = Field(
         default="CodeActAgent",
@@ -493,7 +489,9 @@ class AgentSettings(BaseModel):
         )
 
 
-def settings_section_metadata(field: FieldInfo) -> SettingsSectionMetadata | None:
+def _explicit_settings_section_metadata(
+    field: FieldInfo,
+) -> SettingsSectionMetadata | None:
     extra = field.json_schema_extra
     if not isinstance(extra, dict):
         return None
@@ -502,6 +500,13 @@ def settings_section_metadata(field: FieldInfo) -> SettingsSectionMetadata | Non
     if metadata is None:
         return None
     return SettingsSectionMetadata.model_validate(metadata)
+
+
+def settings_section_metadata(field: FieldInfo) -> SettingsSectionMetadata:
+    metadata = _explicit_settings_section_metadata(field)
+    if metadata is not None:
+        return metadata
+    return _GENERAL_SECTION_METADATA
 
 
 def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
@@ -517,6 +522,10 @@ def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
 
 _GENERAL_SECTION_KEY = "general"
 _GENERAL_SECTION_LABEL = "General"
+_GENERAL_SECTION_METADATA = SettingsSectionMetadata(
+    key=_GENERAL_SECTION_KEY,
+    label=_GENERAL_SECTION_LABEL,
+)
 
 
 _HIDDEN_SETTINGS_SCHEMA_FIELDS: dict[type[BaseModel], set[str]] = {
@@ -541,28 +550,29 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     """
     sections: list[SettingsSectionSchema] = []
     sections_by_key: dict[str, SettingsSectionSchema] = {}
-    general_fields: list[SettingsFieldSchema] = []
 
-    def ensure_section(key: str, label: str) -> SettingsSectionSchema:
-        section = sections_by_key.get(key)
+    def ensure_section(metadata: SettingsSectionMetadata) -> SettingsSectionSchema:
+        section = sections_by_key.get(metadata.key)
         if section is not None:
             return section
-        section = SettingsSectionSchema(key=key, label=label, fields=[])
-        sections_by_key[key] = section
+        section = SettingsSectionSchema(
+            key=metadata.key,
+            label=metadata.label or _humanize_name(metadata.key),
+            fields=[],
+        )
+        sections_by_key[metadata.key] = section
         sections.append(section)
         return section
 
     for field_name, field in model.model_fields.items():
         section_metadata = settings_section_metadata(field)
         nested_model = _nested_model_type(field.annotation)
+        explicit_section_metadata = _explicit_settings_section_metadata(field)
 
         # Nested section (e.g., llm, condenser, critic)
-        if section_metadata is not None and nested_model is not None:
+        if explicit_section_metadata is not None and nested_model is not None:
             section_default = field.get_default(call_default_factory=True)
-            section_label = section_metadata.label or _humanize_name(
-                section_metadata.key
-            )
-            section = ensure_section(section_metadata.key, section_label)
+            section = ensure_section(explicit_section_metadata)
             for nested_key, nested_field in nested_model.model_fields.items():
                 if _is_hidden_settings_schema_field(
                     nested_model, nested_key, nested_field
@@ -574,15 +584,15 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                     default_value = getattr(section_default, nested_key)
                 section.fields.append(
                     SettingsFieldSchema(
-                        key=f"{section_metadata.key}.{nested_key}",
+                        key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
                             metadata.label
                             if metadata is not None and metadata.label is not None
                             else _humanize_name(nested_key)
                         ),
                         description=nested_field.description,
-                        section=section_metadata.key,
-                        section_label=section_label,
+                        section=section.key,
+                        section_label=section.label,
                         value_type=_infer_value_type(nested_field.annotation),
                         default=_normalize_default(default_value),
                         prominence=(
@@ -591,7 +601,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                             else SettingProminence.MINOR
                         ),
                         depends_on=[
-                            f"{section_metadata.key}.{dependency}"
+                            f"{explicit_section_metadata.key}.{dependency}"
                             for dependency in (
                                 metadata.depends_on if metadata is not None else ()
                             )
@@ -607,30 +617,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
             continue
 
         default_value = field.get_default(call_default_factory=True)
-        if section_metadata is None:
-            general_fields.append(
-                SettingsFieldSchema(
-                    key=field_name,
-                    label=(
-                        metadata.label
-                        if metadata.label is not None
-                        else _humanize_name(field_name)
-                    ),
-                    description=field.description,
-                    section=_GENERAL_SECTION_KEY,
-                    section_label=_GENERAL_SECTION_LABEL,
-                    value_type=_infer_value_type(field.annotation),
-                    default=_normalize_default(default_value),
-                    prominence=metadata.prominence,
-                    depends_on=list(metadata.depends_on),
-                    secret=_contains_secret(field.annotation),
-                    choices=_extract_choices(field.annotation),
-                )
-            )
-            continue
-
-        section_label = section_metadata.label or _humanize_name(section_metadata.key)
-        section = ensure_section(section_metadata.key, section_label)
+        section = ensure_section(section_metadata)
         section.fields.append(
             SettingsFieldSchema(
                 key=field_name,
@@ -640,8 +627,8 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                     else _humanize_name(field_name)
                 ),
                 description=field.description,
-                section=section_metadata.key,
-                section_label=section_label,
+                section=section.key,
+                section_label=section.label,
                 value_type=_infer_value_type(field.annotation),
                 default=_normalize_default(default_value),
                 prominence=metadata.prominence,
@@ -649,16 +636,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 secret=_contains_secret(field.annotation),
                 choices=_extract_choices(field.annotation),
             )
-        )
-
-    if general_fields:
-        sections.insert(
-            0,
-            SettingsSectionSchema(
-                key=_GENERAL_SECTION_KEY,
-                label=_GENERAL_SECTION_LABEL,
-                fields=general_fields,
-            ),
         )
 
     return SettingsSchema(model_name=model.__name__, sections=sections)

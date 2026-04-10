@@ -365,7 +365,7 @@ def test_roundtrip_preserves_llm_model() -> None:
 def test_agent_settings_model_validate_accepts_nested_payload() -> None:
     settings = AgentSettings.model_validate(
         {
-            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
+            "schema_version": 1,
             "llm": {
                 "model": "test-model",
                 "api_key": "secret-key",
@@ -374,7 +374,7 @@ def test_agent_settings_model_validate_accepts_nested_payload() -> None:
         }
     )
 
-    assert settings.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
+    assert settings.schema_version == 1
     assert settings.llm.model == "test-model"
     assert isinstance(settings.llm.api_key, SecretStr)
     assert settings.llm.api_key.get_secret_value() == "secret-key"
@@ -384,7 +384,7 @@ def test_agent_settings_model_validate_accepts_nested_payload() -> None:
 def test_agent_settings_model_dump_roundtrip_preserves_sparse_updates() -> None:
     settings = AgentSettings.model_validate(
         {
-            "schema_version": AgentSettings.CURRENT_PERSISTED_VERSION,
+            "schema_version": 1,
             "llm": {"model": "base-model", "base_url": "https://example.com"},
         }
     )
@@ -402,4 +402,4 @@ def test_agent_settings_model_dump_roundtrip_preserves_sparse_updates() -> None:
 
     assert restored.llm.model == "personal-model"
     assert restored.llm.base_url is None
-    assert restored.schema_version == AgentSettings.CURRENT_PERSISTED_VERSION
+    assert restored.schema_version == 1
