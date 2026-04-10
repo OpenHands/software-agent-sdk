@@ -107,4 +107,5 @@ def fetch_plugin_with_resolution(
             git_helper=git_helper,
         )
     except ExtensionFetchError as exc:
-        raise PluginFetchError("Failed to fetch plugin") from exc
+        msg = str(exc).replace("extension", "plugin")
+        raise PluginFetchError(msg) from exc
