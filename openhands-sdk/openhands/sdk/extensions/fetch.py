@@ -200,7 +200,7 @@ def fetch_with_resolution(
 
 
 def get_cache_path(source: str, cache_dir: Path) -> Path:
-    """Get the cache path for a plugin source.
+    """Get the cache path for an extension source.
 
     Creates a deterministic path based on a hash of the source URL.
 
