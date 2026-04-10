@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
 from enum import Enum
 from pathlib import Path
@@ -205,119 +205,12 @@ def _default_llm_settings() -> LLM:
     return LLM(model=model)
 
 
-# Persisted settings payloads currently use schema_version 1.
-_LEGACY_AGENT_SETTINGS_VERSION = 1
-_CURRENT_AGENT_SETTINGS_VERSION = 1
-_PERSISTED_AGENT_SETTINGS_VERSION_KEY = "schema_version"
-_LEGACY_WRAPPED_SETTINGS_VERSION_KEY = "version"
-_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY = "settings"
+_SCHEMA_VERSION_KEY = "schema_version"
+_AGENT_SETTINGS_SCHEMA_VERSION = 1
+_CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
 _MISSING = object()
-
-
-def _assign_dotted_value(target: dict[str, Any], dotted_key: str, value: Any) -> None:
-    current = target
-    parts = dotted_key.split(".")
-    for part in parts[:-1]:
-        current = current.setdefault(part, {})
-    current[parts[-1]] = deepcopy(value)
-
-
-def _normalize_legacy_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    normalized: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key == _PERSISTED_AGENT_SETTINGS_VERSION_KEY:
-            continue
-        if "." in key:
-            _assign_dotted_value(normalized, key, value)
-            continue
-        normalized[key] = deepcopy(value)
-    return normalized
-
-
-def _migrate_agent_settings_v1_to_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
-    migrated = _normalize_legacy_payload(payload)
-    migrated[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = _CURRENT_AGENT_SETTINGS_VERSION
-    return migrated
-
-
-_AGENT_SETTINGS_MIGRATIONS: dict[int, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
-    _LEGACY_AGENT_SETTINGS_VERSION: _migrate_agent_settings_v1_to_v2,
-}
-
-
-def _coerce_persisted_agent_settings_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    if (
-        _LEGACY_WRAPPED_SETTINGS_VERSION_KEY in payload
-        or _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY in payload
-    ):
-        settings_payload = payload.get(_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY)
-        if not isinstance(settings_payload, Mapping):
-            raise TypeError(
-                "Persisted AgentSettings settings payload must be a mapping."
-            )
-        version = payload.get(_LEGACY_WRAPPED_SETTINGS_VERSION_KEY)
-        if version is None:
-            return dict(settings_payload)
-        if not isinstance(version, int) or isinstance(version, bool):
-            raise TypeError(
-                "Persisted AgentSettings version must be an integer when provided."
-            )
-        migrated_payload = dict(settings_payload)
-        migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = version
-        return migrated_payload
-
-    return dict(payload)
-
-
-def _migrate_persisted_agent_settings_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    migrated_payload = _coerce_persisted_agent_settings_payload(payload)
-    version = migrated_payload.get(
-        _PERSISTED_AGENT_SETTINGS_VERSION_KEY, _LEGACY_AGENT_SETTINGS_VERSION
-    )
-    if not isinstance(version, int) or isinstance(version, bool):
-        raise TypeError("Persisted AgentSettings schema_version must be an integer.")
-    if version < _LEGACY_AGENT_SETTINGS_VERSION:
-        raise ValueError(f"Unsupported persisted AgentSettings version {version}.")
-    if version > _CURRENT_AGENT_SETTINGS_VERSION:
-        raise ValueError(
-            "Persisted AgentSettings version is newer than this SDK supports."
-        )
-
-    while version < _CURRENT_AGENT_SETTINGS_VERSION:
-        migrator = _AGENT_SETTINGS_MIGRATIONS.get(version)
-        if migrator is None:
-            raise ValueError(f"Missing AgentSettings migrator for version {version}.")
-        migrated_payload = migrator(migrated_payload)
-        version = migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY]
-
-    return migrated_payload
-
-
-def _normalize_patch_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if (
-        _LEGACY_WRAPPED_SETTINGS_VERSION_KEY in payload
-        or _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY in payload
-    ):
-        wrapped_payload = payload.get(_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY)
-        if not isinstance(wrapped_payload, Mapping):
-            raise TypeError("AgentSettings patch payload must be a mapping.")
-        payload = wrapped_payload
-
-    normalized: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key == _PERSISTED_AGENT_SETTINGS_VERSION_KEY:
-            continue
-        if "." in key:
-            _assign_dotted_value(normalized, key, value)
-            continue
-        normalized[key] = deepcopy(value)
-    return normalized
 
 
 def _merge_patch_payload(
@@ -336,7 +229,7 @@ def _merge_patch_payload(
 def _diff_payload(base: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str, Any]:
     diff: dict[str, Any] = {}
     for key in sorted(set(base) | set(target)):
-        if key == _PERSISTED_AGENT_SETTINGS_VERSION_KEY:
+        if key == _SCHEMA_VERSION_KEY:
             continue
         base_value = base.get(key, _MISSING)
         target_value = target.get(key, _MISSING)
@@ -356,68 +249,10 @@ def _diff_payload(base: Mapping[str, Any], target: Mapping[str, Any]) -> dict[st
     return diff
 
 
-_LEGACY_CONVERSATION_SETTINGS_VERSION = 1
-_CURRENT_CONVERSATION_SETTINGS_VERSION = 1
-
-
-def _coerce_persisted_conversation_settings_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    if (
-        _LEGACY_WRAPPED_SETTINGS_VERSION_KEY in payload
-        or _LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY in payload
-    ):
-        settings_payload = payload.get(_LEGACY_WRAPPED_SETTINGS_SETTINGS_KEY)
-        if not isinstance(settings_payload, Mapping):
-            raise TypeError(
-                "Persisted ConversationSettings settings payload must be a mapping."
-            )
-        version = payload.get(_LEGACY_WRAPPED_SETTINGS_VERSION_KEY)
-        if version is None:
-            return dict(settings_payload)
-        if not isinstance(version, int) or isinstance(version, bool):
-            raise TypeError(
-                "Persisted ConversationSettings version must be an integer"
-                " when provided."
-            )
-        migrated_payload = dict(settings_payload)
-        migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = version
-        return migrated_payload
-
-    return dict(payload)
-
-
-def _migrate_persisted_conversation_settings_payload(
-    payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    migrated_payload = _coerce_persisted_conversation_settings_payload(payload)
-    version = migrated_payload.get(
-        _PERSISTED_AGENT_SETTINGS_VERSION_KEY,
-        _LEGACY_CONVERSATION_SETTINGS_VERSION,
-    )
-    if not isinstance(version, int) or isinstance(version, bool):
-        raise TypeError(
-            "Persisted ConversationSettings schema_version must be an integer."
-        )
-    if version < _LEGACY_CONVERSATION_SETTINGS_VERSION:
-        raise ValueError(
-            f"Unsupported persisted ConversationSettings version {version}."
-        )
-    if version > _CURRENT_CONVERSATION_SETTINGS_VERSION:
-        raise ValueError(
-            "Persisted ConversationSettings version is newer than this SDK supports."
-        )
-
-    migrated_payload[_PERSISTED_AGENT_SETTINGS_VERSION_KEY] = (
-        _CURRENT_CONVERSATION_SETTINGS_VERSION
-    )
-    return migrated_payload
-
-
 class ConversationSettings(BaseModel):
-    CURRENT_PERSISTED_VERSION: ClassVar[int] = _CURRENT_CONVERSATION_SETTINGS_VERSION
+    CURRENT_PERSISTED_VERSION: ClassVar[int] = _CONVERSATION_SETTINGS_SCHEMA_VERSION
 
-    schema_version: int = Field(default=_CURRENT_CONVERSATION_SETTINGS_VERSION, ge=1)
+    schema_version: int = Field(default=_CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
     max_iterations: int = Field(
         default=500,
         ge=1,
@@ -499,9 +334,9 @@ class ConversationSettings(BaseModel):
 
 
 class AgentSettings(BaseModel):
-    CURRENT_PERSISTED_VERSION: ClassVar[int] = _CURRENT_AGENT_SETTINGS_VERSION
+    CURRENT_PERSISTED_VERSION: ClassVar[int] = _AGENT_SETTINGS_SCHEMA_VERSION
 
-    schema_version: int = Field(default=_CURRENT_AGENT_SETTINGS_VERSION, ge=1)
+    schema_version: int = Field(default=_AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent: str = Field(
         default="CodeActAgent",
         description="Agent class to use.",
