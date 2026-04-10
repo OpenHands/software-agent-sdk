@@ -13,6 +13,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -655,7 +656,8 @@ class EventService:
         await self._pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._conversation.close)
+            await loop.run_in_executor(None, self._conversation.close)
+            self._conversation = None
 
     async def generate_title(
         self, llm: "LLM | None" = None, max_length: int = 50
@@ -704,6 +706,28 @@ class EventService:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
+
+    def _get_agent_final_response_sync(self) -> str:
+        """Extract the agent's final response from the conversation events.
+
+        Reads directly from the EventLog without acquiring the state lock.
+        EventLog reads are safe without the FIFOLock because events are
+        append-only and immutable once written.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        return get_agent_final_response(self._conversation._state.events)
+
+    async def get_agent_final_response(self) -> str:
+        """Extract the agent's final response from the conversation events.
+
+        Returns the text from the last FinishAction or agent MessageEvent,
+        or empty string if no final response is found.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_agent_final_response_sync)
 
     async def get_state(self) -> ConversationState:
         if not self._conversation:

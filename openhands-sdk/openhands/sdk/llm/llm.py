@@ -658,6 +658,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+        # Keep telemetry in sync so post-resume LLM calls record into
+        # the restored metrics object, not the stale one from __init__.
+        if self._telemetry is not None:
+            self._telemetry.metrics = metrics
 
     def reset_metrics(self) -> None:
         """Reset metrics and telemetry to fresh instances.
@@ -1211,6 +1215,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             elif self._model_info is not None:
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
+                    # Guard: if max_output_tokens >= the context window,
+                    # requesting that many output tokens would leave zero
+                    # room for input and strict providers (e.g. AWS Bedrock)
+                    # will reject every call. Halve it so input has
+                    # headroom. We check both max_input_tokens and
+                    # max_tokens since either may represent the context
+                    # window depending on the provider.
+                    context_window = self.max_input_tokens or self._model_info.get(
+                        "max_tokens"
+                    )
+                    if (
+                        context_window is not None
+                        and self.max_output_tokens is not None
+                        and self.max_output_tokens >= context_window
+                    ):
+                        capped = self.max_output_tokens // 2
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s "
+                            "for %s (max_output_tokens >= context "
+                            "window %s)",
+                            self.max_output_tokens,
+                            capped,
+                            self.model,
+                            context_window,
+                        )
+                        self.max_output_tokens = capped
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting

@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
     load_public_skills,
 )
-from openhands.sdk.context.skills.skill import load_marketplace_skill_names
-from openhands.sdk.context.skills.utils import update_skills_repository
+from openhands.sdk.skills.skill import load_marketplace_skill_names
+from openhands.sdk.skills.utils import update_skills_repository
 
 
 @pytest.fixture
@@ -148,11 +148,11 @@ def test_load_public_skills_success(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -179,11 +179,11 @@ def test_load_public_skills_repo_update_fails(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -202,11 +202,11 @@ def test_load_public_skills_no_skills_directory(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -236,11 +236,11 @@ def test_load_public_skills_with_invalid_skill(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -371,11 +371,11 @@ def test_agent_context_loads_public_skills(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -396,11 +396,11 @@ def test_agent_context_uses_custom_marketplace_path(
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -434,11 +434,11 @@ def test_agent_context_merges_explicit_and_public_skills(mock_repo_dir, tmp_path
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -464,11 +464,11 @@ def test_agent_context_explicit_skill_takes_precedence(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -489,11 +489,11 @@ def test_load_public_skills_custom_repo(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -512,11 +512,11 @@ def test_load_public_skills_custom_branch(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -549,11 +549,11 @@ def test_load_public_skills_excludes_reference_markdown_in_agentskills_folders(
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -727,11 +727,11 @@ def test_load_public_skills_filters_by_marketplace(
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -753,11 +753,11 @@ def test_load_public_skills_uses_custom_marketplace_path(
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -776,11 +776,11 @@ def test_load_public_skills_returns_empty_for_invalid_custom_marketplace_path(
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -812,11 +812,11 @@ def test_load_public_skills_loads_all_when_no_marketplace(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -865,11 +865,11 @@ def test_load_public_skills_handles_legacy_md_files_with_marketplace(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill.update_skills_repository",
+            "openhands.sdk.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
+            "openhands.sdk.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):

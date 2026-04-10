@@ -5,12 +5,7 @@ from openhands.sdk.agent import (
     AgentBase,
 )
 from openhands.sdk.banner import _print_banner
-from openhands.sdk.context import (
-    AgentContext,
-    load_project_skills,
-    load_skills_from_dir,
-    load_user_skills,
-)
+from openhands.sdk.context import AgentContext
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -64,6 +59,11 @@ from openhands.sdk.settings.metadata import (
     SettingsFieldMetadata,
     SettingsSectionMetadata,
     field_meta,
+)
+from openhands.sdk.skills import (
+    load_project_skills,
+    load_skills_from_dir,
+    load_user_skills,
 )
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
