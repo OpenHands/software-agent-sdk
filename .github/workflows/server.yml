@@ -241,10 +241,6 @@ jobs:
               run: |
                   uv sync --frozen
 
-                  # Debug: Print SDK_SHA to verify it's available
-                  echo "DEBUG: SDK_SHA env = $SDK_SHA"
-                  echo "DEBUG: git rev-parse HEAD = $(git rev-parse HEAD)"
-
                   # Generate build context and tags with arch suffix
                   # build.py now handles architecture tagging internally via --arch flag
                   # Add --versioned-tag when triggered by a git tag (e.g., v1.0.0)
