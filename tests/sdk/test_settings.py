@@ -127,6 +127,7 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert general_fields["max_iterations"].default == 500
     assert general_fields["max_iterations"].prominence is SettingProminence.MAJOR
 
+    assert len(sections["verification"].fields) == 2
     verification_fields = {f.key: f for f in sections["verification"].fields}
     assert set(verification_fields) == {
         "verification.confirmation_mode",
@@ -163,6 +164,22 @@ def test_verification_settings_accepts_legacy_conversation_fields() -> None:
     assert dumped["critic_enabled"] is True
     assert dumped["confirmation_mode"] is True
     assert dumped["security_analyzer"] == "none"
+
+
+def test_conversation_settings_flattens_verification_fields() -> None:
+    settings = ConversationSettings.model_validate(
+        {
+            "verification": {
+                "confirmation_mode": True,
+                "security_analyzer": "none",
+            }
+        }
+    )
+
+    assert settings.confirmation_mode is True
+    assert settings.security_analyzer == "none"
+    assert settings.verification.confirmation_mode is True
+    assert settings.verification.security_analyzer == "none"
 
 
 def test_conversation_settings_model_dump_roundtrip() -> None:

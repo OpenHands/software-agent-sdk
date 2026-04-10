@@ -7,7 +7,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 from fastmcp.mcp_config import MCPConfig
-from pydantic import BaseModel, Field, SecretStr, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SecretStr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
@@ -480,6 +487,35 @@ class ConversationSettings(BaseModel):
             ).model_dump()
         },
     )
+    confirmation_mode: bool = Field(
+        default=False,
+        description="Require user confirmation before executing risky actions.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Confirmation mode",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="verification",
+                label="Verification",
+            ).model_dump(),
+        },
+    )
+    security_analyzer: SecurityAnalyzerType | None = Field(
+        default="llm",
+        description="Security analyzer that evaluates actions before execution.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Security analyzer",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("confirmation_mode",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="verification",
+                label="Verification",
+            ).model_dump(),
+        },
+    )
     verification: ConversationVerificationSettings = Field(
         default_factory=ConversationVerificationSettings,
         description="Conversation confirmation and security settings.",
@@ -487,9 +523,47 @@ class ConversationSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",
                 label="Verification",
-            ).model_dump()
+            ).model_dump(),
+            "openhands_settings_schema_hidden": True,
         },
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_verification_fields(cls, data: Any) -> Any:
+        if not isinstance(data, Mapping):
+            return data
+
+        normalized = dict(data)
+        verification = normalized.get("verification")
+        if isinstance(verification, BaseModel):
+            verification = verification.model_dump(mode="python")
+        if not isinstance(verification, Mapping):
+            return normalized
+
+        if (
+            "confirmation_mode" not in normalized
+            and "confirmation_mode" in verification
+        ):
+            normalized["confirmation_mode"] = deepcopy(
+                verification["confirmation_mode"]
+            )
+        if (
+            "security_analyzer" not in normalized
+            and "security_analyzer" in verification
+        ):
+            normalized["security_analyzer"] = deepcopy(
+                verification["security_analyzer"]
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _sync_verification_compatibility_view(self) -> ConversationSettings:
+        self.verification = ConversationVerificationSettings(
+            confirmation_mode=self.confirmation_mode,
+            security_analyzer=self.security_analyzer,
+        )
+        return self
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:
@@ -503,14 +577,14 @@ class ConversationSettings(BaseModel):
             NeverConfirm,
         )
 
-        if not self.verification.confirmation_mode:
+        if not self.confirmation_mode:
             return NeverConfirm()
-        if (self.verification.security_analyzer or "").lower() == "llm":
+        if (self.security_analyzer or "").lower() == "llm":
             return ConfirmRisky()
         return AlwaysConfirm()
 
     def build_security_analyzer(self):
-        analyzer_kind = (self.verification.security_analyzer or "").lower()
+        analyzer_kind = (self.security_analyzer or "").lower()
         if not analyzer_kind or analyzer_kind == "none":
             return None
         if analyzer_kind == "llm":
@@ -710,8 +784,16 @@ def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
     return SettingsFieldMetadata.model_validate(metadata)
 
 
+_SETTINGS_SCHEMA_HIDDEN_KEY = "openhands_settings_schema_hidden"
 _GENERAL_SECTION_KEY = "general"
 _GENERAL_SECTION_LABEL = "General"
+
+
+def settings_schema_hidden(field: FieldInfo) -> bool:
+    extra = field.json_schema_extra
+    if not isinstance(extra, dict):
+        return False
+    return bool(extra.get(_SETTINGS_SCHEMA_HIDDEN_KEY, False))
 
 
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
@@ -722,31 +804,41 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     whether the value should be treated as secret input.
     """
     sections: list[SettingsSectionSchema] = []
+    sections_by_key: dict[str, SettingsSectionSchema] = {}
     general_fields: list[SettingsFieldSchema] = []
 
+    def ensure_section(key: str, label: str) -> SettingsSectionSchema:
+        section = sections_by_key.get(key)
+        if section is not None:
+            return section
+        section = SettingsSectionSchema(key=key, label=label, fields=[])
+        sections_by_key[key] = section
+        sections.append(section)
+        return section
+
     for field_name, field in model.model_fields.items():
+        if settings_schema_hidden(field):
+            continue
+
         section_metadata = settings_section_metadata(field)
+        nested_model = _nested_model_type(field.annotation)
 
-        # Nested section (e.g., llm, condenser, critic, security)
-        if section_metadata is not None:
-            nested_model = _nested_model_type(field.annotation)
-            if nested_model is None:
-                continue
-
+        # Nested section (e.g., llm, condenser, critic)
+        if section_metadata is not None and nested_model is not None:
             section_default = field.get_default(call_default_factory=True)
             section_label = section_metadata.label or _humanize_name(
                 section_metadata.key
             )
-            section = SettingsSectionSchema(
-                key=section_metadata.key,
-                label=section_label,
-                fields=[],
-            )
+            section = ensure_section(section_metadata.key, section_label)
             schema_excluded_fields = getattr(
                 nested_model, "_SCHEMA_EXCLUDED_FIELDS", frozenset()
             )
             for nested_key, nested_field in nested_model.model_fields.items():
-                if nested_field.exclude or nested_key in schema_excluded_fields:
+                if (
+                    nested_field.exclude
+                    or nested_key in schema_excluded_fields
+                    or settings_schema_hidden(nested_field)
+                ):
                     continue
                 metadata = settings_metadata(nested_field)
                 default_value = None
@@ -780,30 +872,57 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         choices=_extract_choices(nested_field.annotation),
                     )
                 )
-            sections.append(section)
             continue
 
-        # Top-level scalar field with settings metadata (e.g., agent)
         metadata = settings_metadata(field)
         if metadata is None:
             continue
 
         default_value = field.get_default(call_default_factory=True)
-        general_fields.append(
+        if section_metadata is None:
+            general_fields.append(
+                SettingsFieldSchema(
+                    key=field_name,
+                    label=(
+                        metadata.label
+                        if metadata.label is not None
+                        else _humanize_name(field_name)
+                    ),
+                    description=field.description,
+                    section=_GENERAL_SECTION_KEY,
+                    section_label=_GENERAL_SECTION_LABEL,
+                    value_type=_infer_value_type(field.annotation),
+                    default=_normalize_default(default_value),
+                    prominence=metadata.prominence,
+                    depends_on=list(metadata.depends_on),
+                    secret=_contains_secret(field.annotation),
+                    choices=_extract_choices(field.annotation),
+                )
+            )
+            continue
+
+        section_label = section_metadata.label or _humanize_name(section_metadata.key)
+        section = ensure_section(section_metadata.key, section_label)
+        section.fields.append(
             SettingsFieldSchema(
-                key=field_name,
+                key=f"{section_metadata.key}.{field_name}",
                 label=(
                     metadata.label
                     if metadata.label is not None
                     else _humanize_name(field_name)
                 ),
                 description=field.description,
-                section=_GENERAL_SECTION_KEY,
-                section_label=_GENERAL_SECTION_LABEL,
+                section=section_metadata.key,
+                section_label=section_label,
                 value_type=_infer_value_type(field.annotation),
                 default=_normalize_default(default_value),
                 prominence=metadata.prominence,
-                depends_on=list(metadata.depends_on),
+                depends_on=[
+                    dependency
+                    if "." in dependency
+                    else f"{section_metadata.key}.{dependency}"
+                    for dependency in metadata.depends_on
+                ],
                 secret=_contains_secret(field.annotation),
                 choices=_extract_choices(field.annotation),
             )
