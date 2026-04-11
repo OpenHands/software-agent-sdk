@@ -10,7 +10,10 @@ from openhands.sdk.extensions.installation.interface import (
     ExtensionProtocol,
     InstallationInterface,
 )
-from openhands.sdk.extensions.installation.metadata import InstallationMetadata
+from openhands.sdk.extensions.installation.metadata import (
+    InstallationMetadata,
+    MetadataSession,
+)
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
 
@@ -34,6 +37,13 @@ class InstallationManager[T: ExtensionProtocol]:
 
     installation_dir: Path
     installation_interface: InstallationInterface[T]
+
+    @property
+    def metadata_session(self) -> MetadataSession:
+        """Open a metadata session bound to this manager's dir and interface."""
+        return InstallationMetadata.open(
+            self.installation_dir, interface=self.installation_interface
+        )
 
     def install(
         self,
@@ -68,40 +78,33 @@ class InstallationManager[T: ExtensionProtocol]:
         if isinstance(source, Path):
             source = str(source)
 
-        # Fetch the extension (downloads to cache if remote)
         logger.info(f"Fetching extension from {source}")
         fetched_path, resolved_ref = fetch_with_resolution(
             source=source,
-            cache_dir=self.installation_dir
-            / ".cache",  # TODO: check this cache value works
+            cache_dir=self.installation_dir / ".cache",
             ref=ref,
             repo_path=repo_path,
             update=True,
         )
 
-        # Load the extension to get its metadata
         extension = self.installation_interface.load_from_dir(fetched_path)
         validate_extension_name(extension.name)
 
-        # Check if already installed
         install_path = self.installation_dir / extension.name
         if install_path.exists() and not force:
             raise FileExistsError(
-                f"Extension '{extension.name}' is already installed at {install_path}. "
-                f"Use force=True to overwrite."
+                f"Extension '{extension.name}' is already installed"
+                f" at {install_path}. Use force=True to overwrite."
             )
 
-        # Remove existing installation if force=True
         if install_path.exists():
             logger.info(f"Removing existing installation of '{extension.name}'")
             shutil.rmtree(install_path)
 
-        # Copy plugin to installed directory
         logger.info(f"Installing extension '{extension.name}' to {install_path}")
         self.installation_dir.mkdir(parents=True, exist_ok=True)
         shutil.copytree(fetched_path, install_path)
 
-        # Create installation info
         info = InstallationInfo.from_extension(
             extension,
             source=source,
@@ -110,13 +113,11 @@ class InstallationManager[T: ExtensionProtocol]:
             repo_path=repo_path,
         )
 
-        # Update metadata
-        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
-        existing_info = metadata.extensions.get(extension.name)
-        if existing_info is not None:
-            info.enabled = existing_info.enabled
-        metadata.extensions[extension.name] = info
-        metadata.save_to_dir(self.installation_dir)
+        with self.metadata_session as session:
+            existing = session.extensions.get(extension.name)
+            if existing is not None:
+                info.enabled = existing.enabled
+            session.extensions[extension.name] = info
 
         logger.info(
             f"Successfully installed extension '{extension.name}' v{info.version}"
@@ -142,22 +143,21 @@ class InstallationManager[T: ExtensionProtocol]:
         """
         validate_extension_name(name)
 
-        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
-        if name not in metadata.extensions:
-            logger.warning(f"Plugin '{name}' is not installed")
-            return False
+        with self.metadata_session as session:
+            if name not in session.extensions:
+                logger.warning(f"Extension '{name}' is not installed")
+                return False
 
-        extension_path = self.installation_dir / name
-        if extension_path.exists():
-            logger.info(f"Uninstalling extension '{name}' from {extension_path}")
-            shutil.rmtree(extension_path)
-        else:
-            logger.warning(
-                f"Extension '{name}' was tracked but {extension_path} is missing"
-            )
+            extension_path = self.installation_dir / name
+            if extension_path.exists():
+                logger.info(f"Uninstalling extension '{name}' from {extension_path}")
+                shutil.rmtree(extension_path)
+            else:
+                logger.warning(
+                    f"Extension '{name}' was tracked but {extension_path} is missing"
+                )
 
-        del metadata.extensions[name]
-        metadata.save_to_dir(self.installation_dir)
+            del session.extensions[name]
 
         logger.info(f"Successfully uninstalled extension '{name}'")
         return True
@@ -170,9 +170,8 @@ class InstallationManager[T: ExtensionProtocol]:
         """Set the enabled state of an installed extension.
 
         Syncs metadata before checking, so stale or untracked entries are
-        reconciled first.  Returns False without saving if the extension is
-        not installed, its directory is missing, or it already has the
-        requested state.
+        reconciled first.  Returns False if the extension is not installed
+        or its directory is missing.
         """
         validate_extension_name(name)
 
@@ -182,27 +181,26 @@ class InstallationManager[T: ExtensionProtocol]:
             )
             return False
 
-        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
-        metadata.sync_installed(self.installation_dir, self.installation_interface)
+        with self.metadata_session as session:
+            session.sync()
 
-        info = metadata.extensions.get(name)
-        if info is None:
-            logger.warning(f"Extension '{name}' is not installed")
-            return False
+            info = session.extensions.get(name)
+            if info is None:
+                logger.warning(f"Extension '{name}' is not installed")
+                return False
 
-        extension_path = self.installation_dir / name
-        if not extension_path.exists():
-            logger.warning(
-                f"Extension '{name}' was tracked but {extension_path} is missing"
-            )
-            return False
+            extension_path = self.installation_dir / name
+            if not extension_path.exists():
+                logger.warning(
+                    f"Extension '{name}' was tracked but {extension_path} is missing"
+                )
+                return False
 
-        if info.enabled == enabled:
-            return True
+            if info.enabled == enabled:
+                return True
 
-        info.enabled = enabled
-        metadata.extensions[name] = info
-        metadata.save_to_dir(self.installation_dir)
+            info.enabled = enabled
+            session.extensions[name] = info
 
         state = "enabled" if enabled else "disabled"
         logger.info(f"Successfully {state} extension '{name}'")
@@ -229,11 +227,8 @@ class InstallationManager[T: ExtensionProtocol]:
         if not self.installation_dir.exists():
             return []
 
-        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
-        info = metadata.sync_installed(
-            self.installation_dir, self.installation_interface
-        )
-        return info
+        with self.metadata_session as session:
+            return session.sync()
 
     def load_installed(self) -> list[T]:
         """Load all enabled extensions as ``T`` objects.
@@ -281,7 +276,6 @@ class InstallationManager[T: ExtensionProtocol]:
         metadata = InstallationMetadata.load_from_dir(self.installation_dir)
         info = metadata.extensions.get(name)
 
-        # Verify the extension directory still exists
         if info is not None:
             extension_path = self.installation_dir / name
             if not extension_path.exists():
@@ -310,17 +304,15 @@ class InstallationManager[T: ExtensionProtocol]:
         """
         validate_extension_name(name)
 
-        # Get the current installation info
         current_info = self.get(name)
         if current_info is None:
             logger.warning(f"Extension {name} not installed")
             return None
 
-        # Re-install from the original source
         logger.info(f"Updating extension {name} from {current_info.source}")
         return self.install(
             source=current_info.source,
-            ref=None,  # Get the latest (don't use pinned ref)
+            ref=None,
             repo_path=current_info.repo_path,
             force=True,
         )

@@ -11,6 +11,16 @@ and an `InstallationInterface[T]` that knows how to load `T` from a directory.
 Everything else — fetching, copying, metadata bookkeeping, enable/disable
 state — is handled generically.
 
+### Module layout
+
+| File | Purpose |
+|---|---|
+| `interface.py` | `ExtensionProtocol` (structural typing contract) and `InstallationInterface[T]` (abstract loader) |
+| `info.py` | `InstallationInfo` — Pydantic model stored per-extension in the metadata file |
+| `metadata.py` | `InstallationMetadata` — persistence of `.installed.json`; `MetadataSession` — context manager that auto-saves on exit |
+| `manager.py` | `InstallationManager[T]` — high-level API for install / uninstall / enable / disable / update |
+| `utils.py` | `validate_extension_name` — kebab-case enforcement to prevent path traversal |
+
 ## Usage
 
 ### 1. Define your extension type and loader

@@ -83,6 +83,51 @@ def test_load_from_dir_invalid_json(tmp_path: Path):
 
 
 # ============================================================================
+# open() Context Manager Tests
+# ============================================================================
+
+
+def test_open_saves_on_clean_exit(tmp_path: Path):
+    """Test that the context manager auto-saves on a clean exit."""
+    installation_dir = tmp_path / "installed"
+    installation_dir.mkdir()
+
+    info = InstallationInfo(
+        name="test-ext",
+        source="local",
+        install_path=installation_dir / "test-ext",
+    )
+
+    with InstallationMetadata.open(installation_dir) as session:
+        session.extensions["test-ext"] = info
+
+    loaded = InstallationMetadata.load_from_dir(installation_dir)
+    assert "test-ext" in loaded.extensions
+
+
+def test_open_does_not_save_on_exception(tmp_path: Path):
+    """Test that the context manager does not save when an exception occurs."""
+    installation_dir = tmp_path / "installed"
+    installation_dir.mkdir()
+
+    info = InstallationInfo(
+        name="test-ext",
+        source="local",
+        install_path=installation_dir / "test-ext",
+    )
+
+    try:
+        with InstallationMetadata.open(installation_dir) as session:
+            session.extensions["test-ext"] = info
+            raise RuntimeError("simulated failure")
+    except RuntimeError:
+        pass
+
+    loaded = InstallationMetadata.load_from_dir(installation_dir)
+    assert loaded.extensions == {}
+
+
+# ============================================================================
 # validate_tracked Tests
 # ============================================================================
 
@@ -108,9 +153,8 @@ def test_validate_tracked_prunes_invalid_names(tmp_path: Path):
         extensions={"Bad_Name": bad_info, "good-ext": good_info}
     )
 
-    valid, changed = metadata.validate_tracked(installation_dir)
+    valid = metadata.validate_tracked(installation_dir)
 
-    assert changed is True
     assert len(valid) == 1
     assert valid[0].name == "good-ext"
     assert "Bad_Name" not in metadata.extensions
@@ -122,18 +166,16 @@ def test_validate_tracked_prunes_invalid_names(tmp_path: Path):
 
 
 def test_discover_untracked_skips_mismatched_manifest_name(tmp_path: Path):
-    """Test that discover skips dirs where manifest name doesn't match dir name."""
+    """Test that discover skips dirs where manifest name doesn't match."""
     installation_dir = tmp_path / "installed"
     installation_dir.mkdir()
 
-    # Create a dir named "some-ext" but manifest says "other-name"
     _write_mock_extension(installation_dir / "some-ext", name="other-name")
 
     metadata = InstallationMetadata()
     interface = MockExtensionInstallationInterface()
 
-    discovered, changed = metadata.discover_untracked(installation_dir, interface)
+    discovered = metadata.discover_untracked(installation_dir, interface)
 
     assert discovered == []
-    assert changed is False
     assert "some-ext" not in metadata.extensions

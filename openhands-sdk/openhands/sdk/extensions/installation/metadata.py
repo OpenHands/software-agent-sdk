@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import TracebackType
 from typing import ClassVar
 
 from pydantic import BaseModel, Field
@@ -17,8 +18,76 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
+class MetadataSession:
+    """Context manager that binds ``InstallationMetadata`` to its directory.
+
+    On a clean exit (no exception), the metadata is automatically saved.
+    This eliminates the need for callers to manually pair ``load_from_dir``
+    and ``save_to_dir``, and guarantees that mutations are persisted.
+
+    Use via ``InstallationMetadata.open(installed_dir)``.
+    """
+
+    def __init__(
+        self,
+        installed_dir: Path,
+        metadata: InstallationMetadata,
+        interface: InstallationInterface | None = None,
+    ) -> None:
+        self.installed_dir = installed_dir
+        self.metadata = metadata
+        self.interface = interface
+
+    @property
+    def extensions(self) -> dict[str, InstallationInfo]:
+        return self.metadata.extensions
+
+    def sync(self) -> list[InstallationInfo]:
+        """Reconcile metadata with what is actually on disk.
+
+        Prunes stale tracked entries whose directories are missing and
+        discovers untracked extension directories.  Does **not** save —
+        the enclosing ``with`` block handles persistence on exit.
+
+        Requires that an ``InstallationInterface`` was provided when the
+        session was created (via ``InstallationMetadata.open(..., interface=...)``).
+
+        Returns:
+            Combined list of valid tracked and newly discovered extensions.
+        """
+        assert self.interface is not None, (
+            "sync() requires an InstallationInterface; "
+            "pass interface= to InstallationMetadata.open()"
+        )
+        valid = self.metadata.validate_tracked(self.installed_dir)
+        discovered = self.metadata.discover_untracked(
+            self.installed_dir, self.interface
+        )
+        return valid + discovered
+
+    def __enter__(self) -> MetadataSession:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        if exc_type is None:
+            self.metadata.save_to_dir(self.installed_dir)
+
+
 class InstallationMetadata(BaseModel):
-    """Metadata file for tracking installed extensions."""
+    """Metadata file for tracking installed extensions.
+
+    Typically used via the ``open()`` context manager, which loads the
+    metadata, yields a ``MetadataSession``, and auto-saves on exit::
+
+        with InstallationMetadata.open(installed_dir) as session:
+            session.extensions["my-ext"] = info
+        # saved automatically
+    """
 
     extensions: dict[str, InstallationInfo] = Field(
         default_factory=dict,
@@ -26,6 +95,24 @@ class InstallationMetadata(BaseModel):
     )
 
     metadata_filename: ClassVar[str] = ".installed.json"
+
+    @classmethod
+    def open(
+        cls,
+        installed_dir: Path,
+        *,
+        interface: InstallationInterface | None = None,
+    ) -> MetadataSession:
+        """Load metadata and return a session that auto-saves on exit.
+
+        Args:
+            installed_dir: Root directory where extensions are installed.
+            interface: Optional installation interface, required if the
+                session will call ``sync()``.
+        """
+        return MetadataSession(
+            installed_dir, cls.load_from_dir(installed_dir), interface
+        )
 
     @classmethod
     def get_metadata_path(cls, installed_dir: Path) -> Path:
@@ -55,23 +142,19 @@ class InstallationMetadata(BaseModel):
         with metadata_path.open("w") as f:
             json.dump(self.model_dump_json(), f, indent=2)
 
-    def validate_tracked(
-        self, installed_dir: Path
-    ) -> tuple[list[InstallationInfo], bool]:
+    def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.
 
-        Removes any extension with an invalid name or missing directory.
+        Removes entries with invalid names or missing directories from
+        ``self.extensions`` in place.
 
         Returns:
-            Tuple of (valid extensions list, whether metadata was modified).
+            List of extensions that are still valid.
         """
         valid_extensions: list[InstallationInfo] = []
-        changed = False
 
-        # We cannot iterate directly over the extensions because we'll be removing
-        # invalid extensions as we go.
+        # Iterate over a snapshot because we mutate during the loop.
         for name, info in list(self.extensions.items()):
-            # Check the extension name
             try:
                 validate_extension_name(name)
             except ValueError as e:
@@ -79,10 +162,8 @@ class InstallationMetadata(BaseModel):
                     f"Invalid tracked extension name {name!r}, removing: {e}"
                 )
                 del self.extensions[name]
-                changed = True
                 continue
 
-            # Check the extension installation
             extension_path = installed_dir / name
             if extension_path.exists():
                 valid_extensions.append(info)
@@ -91,37 +172,36 @@ class InstallationMetadata(BaseModel):
                     f"Extension {name} directory missing, removing from metadata"
                 )
                 del self.extensions[name]
-                changed = True
 
-        return valid_extensions, changed
+        return valid_extensions
 
     def discover_untracked(
-        self, installed_dir: Path, installation_interface: InstallationInterface
-    ) -> tuple[list[InstallationInfo], bool]:
+        self,
+        installed_dir: Path,
+        installation_interface: InstallationInterface,
+    ) -> list[InstallationInfo]:
         """Discover extension directories not tracked by the metadata.
 
+        Adds newly found extensions to ``self.extensions`` in place.
+
         Returns:
-            Tuple of (discovered extensions list, whether metadata was modified).
+            List of newly discovered extensions.
         """
         discovered: list[InstallationInfo] = []
-        changed = False
 
         for item in installed_dir.iterdir():
-            # Focus only on non-hidden directories
             if not item.is_dir() or item.name.startswith("."):
                 continue
 
-            # Ignore already-tracked extensions
             if item.name in self.extensions:
                 continue
 
-            # Ignore directories with the wrong naming scheme
             try:
                 validate_extension_name(item.name)
             except ValueError:
                 logger.debug(f"Skipping directory with invalid extension name: {item}")
+                continue
 
-            # Try to load the directory as the indicated extension
             try:
                 extension = installation_interface.load_from_dir(item)
             except Exception as e:
@@ -130,8 +210,9 @@ class InstallationMetadata(BaseModel):
 
             if extension.name != item.name:
                 logger.warning(
-                    "Skipping extension directory because manifest name doesn't match "
-                    f"directory name: dir={item.name!r}, manifest={extension.name!r}"
+                    "Skipping extension directory because manifest name"
+                    " doesn't match directory name:"
+                    f" dir={item.name!r}, manifest={extension.name!r}"
                 )
                 continue
 
@@ -141,29 +222,6 @@ class InstallationMetadata(BaseModel):
 
             discovered.append(info)
             self.extensions[item.name] = info
-            changed = True
             logger.info(f"Discovered untracked extension: {extension.name}")
 
-        return discovered, changed
-
-    def sync_installed(
-        self, installed_dir: Path, installation_interface: InstallationInterface
-    ) -> list[InstallationInfo]:
-        """Reconcile metadata with what is actually on disk.
-
-        Runs ``validate_tracked`` (prunes stale entries) then
-        ``discover_untracked`` (adds new entries), and persists the metadata
-        file if either step made changes.
-
-        Returns:
-            Combined list of valid tracked and newly discovered extensions.
-        """
-        valid_extensions, tracked_changed = self.validate_tracked(installed_dir)
-        discovered, discovered_changed = self.discover_untracked(
-            installed_dir, installation_interface
-        )
-
-        if tracked_changed or discovered_changed:
-            self.save_to_dir(installed_dir)
-
-        return valid_extensions + discovered
+        return discovered
