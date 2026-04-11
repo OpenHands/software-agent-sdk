@@ -104,7 +104,14 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
             >>> for info in list_installed():
             ...     print(f"{info.name} v{info.version}")
         """
-        raise NotImplementedError()
+        if not self.installation_dir.exists():
+            return []
+
+        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        info = metadata.sync_installed(
+            self.installation_dir, self.installation_interface
+        )
+        return info
 
     def load_installed(self) -> list[T]:
         """Load all installed extensions.
@@ -120,7 +127,21 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
             >>> for ext in extensions:
             ...     print(f"Loaded {ext}")
         """
-        raise NotImplementedError()
+        if not self.installation_dir.exists():
+            return []
+
+        extensions: list[T] = []
+
+        for info in self.list_installed():
+            if not info.enabled:
+                continue
+
+            extension_path = self.installation_dir / info.name
+            if extension_path.exists():
+                extension = self.installation_interface.load_from_dir(extension_path)
+                extensions.append(extension)
+
+        return extensions
 
     def get(self, name: str) -> InstalledExtensionInfo | None:
         """Get information about a specific installed extension.
