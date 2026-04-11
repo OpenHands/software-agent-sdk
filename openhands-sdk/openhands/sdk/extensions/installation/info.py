@@ -9,9 +9,10 @@ from openhands.sdk.extensions.installation.interface import ExtensionProtocol
 
 
 class InstallationInfo(BaseModel):
-    """Information about an installed extension.
+    """Metadata record for a single installed extension.
 
-    Linked to extensions by the installed extension metadata.
+    Stored (keyed by name) inside ``InstallationMetadata`` and persisted to
+    the ``.installed.json`` file in the installation directory.
     """
 
     name: str = Field(description="Extension name")
@@ -43,11 +44,14 @@ class InstallationInfo(BaseModel):
         resolved_ref: str | None = None,
         repo_path: str | None = None,
     ) -> InstallationInfo:
-        """Construct an InstallationInfo object from an extension, plus relevant
-        installation information.
+        """Create an InstallationInfo from an extension and its install context.
 
         Args:
-            extension: Any installable extension object.
+            extension: Any object satisfying ``ExtensionProtocol``.
+            source: Original source string (e.g. ``"github:owner/repo"``).
+            install_path: Filesystem path the extension was copied to.
+            resolved_ref: Resolved git commit SHA, if applicable.
+            repo_path: Subdirectory within a monorepo, if applicable.
         """
         return InstallationInfo(
             name=extension.name,

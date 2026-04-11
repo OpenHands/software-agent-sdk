@@ -149,8 +149,15 @@ class InstallationMetadata(BaseModel):
     def sync_installed(
         self, installed_dir: Path, installation_interface: InstallationInterface
     ) -> list[InstallationInfo]:
-        # TODO: Doc-string
-        # TODO: add context manager for this class that loads, syncs, then forces a save
+        """Reconcile metadata with what is actually on disk.
+
+        Runs ``validate_tracked`` (prunes stale entries) then
+        ``discover_untracked`` (adds new entries), and persists the metadata
+        file if either step made changes.
+
+        Returns:
+            Combined list of valid tracked and newly discovered extensions.
+        """
         valid_extensions, tracked_changed = self.validate_tracked(installed_dir)
         discovered, discovered_changed = self.discover_untracked(
             installed_dir, installation_interface

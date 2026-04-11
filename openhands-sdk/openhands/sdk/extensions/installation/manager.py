@@ -20,7 +20,17 @@ logger = get_logger(__name__)
 
 @dataclass
 class InstallationManager[T: ExtensionProtocol]:
-    """Manages installed extensions."""
+    """Generic manager for installing, tracking, and loading extensions.
+
+    Parameterised by any type ``T`` that satisfies ``ExtensionProtocol``.
+    The companion ``InstallationInterface[T]`` tells the manager how to
+    load ``T`` from a directory on disk; everything else (fetching, copying,
+    metadata bookkeeping) is handled generically.
+
+    Attributes:
+        installation_dir: Root directory where extensions are installed.
+        installation_interface: Knows how to load ``T`` from a directory.
+    """
 
     installation_dir: Path
     installation_interface: InstallationInterface[T]
@@ -34,31 +44,26 @@ class InstallationManager[T: ExtensionProtocol]:
     ) -> InstallationInfo:
         """Install an extension from a source.
 
-        Fetches the extensionFrom the source, copies it to the installed extensions
-        directory, and records the installation metadata.
+        Fetches the extension from the source, copies it to the installation
+        directory, and records installation metadata.  When ``force=True``
+        overwrites an existing installation, the previous ``enabled`` state is
+        preserved.
 
         Args:
-            source: Extension source - can be:
-                - "github:owner/repo" - GitHub shorthand
-                - Any git URL (GitHub, GitLab, Bitbucket, etc.)
-                - Local path (for development/testing)
+            source: Extension source — can be a ``"github:owner/repo"``
+                shorthand, any git URL, or a local filesystem path.
             ref: Optional branch, tag, or commit to install.
             repo_path: Subdirectory path within the repository (for monorepos).
-            force: If True, overwrite existing installation. If False, raise error
-                if extension is already installed.
+            force: If True, overwrite existing installation.  If False, raise
+                an error if the extension is already installed.
 
         Returns:
-            InstalledExtensionInfoBaseClass[T] instance with details about the
-                installation.
+            InstallationInfo with details about the installation.
 
         Raises:
             ExtensionFetchError: If fetching the extension fails.
             FileExistsError: If extension is already installed and force=False.
-            ValueError: If the extension manifest is invalid.
-
-        Example:
-            >>> info = install("github:owner/my-extension", ref="v1.0.0")
-            >>> print(f"Installed {info.name} from {info.source}")
+            ValueError: If the extension name is invalid.
         """
         if isinstance(source, Path):
             source = str(source)
@@ -121,21 +126,19 @@ class InstallationManager[T: ExtensionProtocol]:
     def uninstall(self, name: str) -> bool:
         """Uninstall an extension by name.
 
-        Only extensions tracked in the installed extensions metadata file can be
-        uninstalled. This avoids deleting arbitrary directories in the installed
-        extensions directory.
+        Only extensions tracked in the metadata can be uninstalled.  This
+        prevents accidentally deleting arbitrary directories that happen to
+        exist inside the installation directory.  If the extension's directory
+        has already been removed, the metadata entry is still cleaned up.
 
         Args:
             name: Name of the extension to uninstall.
 
         Returns:
-            True if the extension was uninstalled, False if it wasn't installed.
+            True if the extension was uninstalled, False if it wasn't tracked.
 
-        Example:
-            >>> if uninstall("my-extension"):
-            ...     print("Extension uninstalled")
-            ... else:
-            ...     print("Extension was not installed")
+        Raises:
+            ValueError: If *name* is not valid kebab-case.
         """
         validate_extension_name(name)
 
@@ -164,6 +167,13 @@ class InstallationManager[T: ExtensionProtocol]:
         name: str,
         enabled: bool,
     ) -> bool:
+        """Set the enabled state of an installed extension.
+
+        Syncs metadata before checking, so stale or untracked entries are
+        reconciled first.  Returns False without saving if the extension is
+        not installed, its directory is missing, or it already has the
+        requested state.
+        """
         validate_extension_name(name)
 
         if not self.installation_dir.exists():
@@ -209,16 +219,12 @@ class InstallationManager[T: ExtensionProtocol]:
     def list_installed(self) -> list[InstallationInfo]:
         """List all installed extensions.
 
-        This function is self-healing: it may update the installed extensions metadata
-        file to remove entries whose directories were deleted, and to add entries for
-        extension directories that were manually copied into the installed dir.
+        Self-healing: the metadata file is updated to remove entries whose
+        directories have been deleted and to add entries for extension
+        directories that were manually copied into the installation directory.
 
         Returns:
-            List of InstalledExtensionInfoBaseClass[T] for each installed extension.
-
-        Example:
-            >>> for info in list_installed():
-            ...     print(f"{info.name} v{info.version}")
+            List of InstallationInfo for each installed extension.
         """
         if not self.installation_dir.exists():
             return []
@@ -230,18 +236,14 @@ class InstallationManager[T: ExtensionProtocol]:
         return info
 
     def load_installed(self) -> list[T]:
-        """Load all installed extensions.
+        """Load all enabled extensions as ``T`` objects.
 
-        Loads extension objects for all extensions in the installed extensions
-        directory. This is useful for integrating installed extensions into an agent.
+        Calls ``list_installed()`` first (which syncs metadata), then loads
+        each enabled extension via the installation interface.  Disabled
+        extensions are skipped.
 
         Returns:
-            List of loaded extension objects.
-
-        Example:
-            >>> extension = load_installed()
-            >>> for ext in extensions:
-            ...     print(f"Loaded {ext}")
+            List of loaded extension objects of type ``T``.
         """
         if not self.installation_dir.exists():
             return []
@@ -262,18 +264,17 @@ class InstallationManager[T: ExtensionProtocol]:
     def get(self, name: str) -> InstallationInfo | None:
         """Get information about a specific installed extension.
 
+        Returns ``None`` if the extension is not tracked in metadata or if
+        its directory no longer exists on disk.
+
         Args:
             name: Name of the extension to look up.
-            installed_dir: Directory for installed extensions.
 
         Returns:
-            InstalledExtensionInfoBaseClass[T] if the extension is installed, None
-                otherwise.
+            InstallationInfo if the extension is installed, None otherwise.
 
-        Example:
-            >>> info = get("my-extension")
-            >>> if info:
-            ...     print(f"Installed from {info.source} at {info.installed_at}")
+        Raises:
+            ValueError: If *name* is not valid kebab-case.
         """
         validate_extension_name(name)
 
@@ -291,27 +292,21 @@ class InstallationManager[T: ExtensionProtocol]:
     def update(self, name: str) -> InstallationInfo | None:
         """Update an installed extension to the latest version.
 
-        Re-fetches the extension from its original source and reinstalls it.
-
-        This always updates to the latest version available from the original source
-        (i.e., it does not preserve a pinned ref).
+        Re-fetches the extension from its original source with ``ref=None``
+        (i.e. the latest available) and force-reinstalls it.  The previous
+        ``enabled`` state is preserved because ``install(force=True)``
+        carries it over.
 
         Args:
             name: Name of the extension to update.
-            installed_dir: Directory for installed extensions. Defaults to the
-                installed_dir instance variable.
 
         Returns:
-            Updated InstalledExtensionInfoBaseClass[T] if successful, None if extension
-                not installed.
+            Updated InstallationInfo if successful, None if the extension is
+            not installed.
 
         Raises:
             ExtensionFetchError: If fetching the updated extension fails.
-
-        Example:
-            >>> info = update("my-extension")
-            >>> if info:
-            ...     print(f"Updated to v{info.version}")
+            ValueError: If *name* is not valid kebab-case.
         """
         validate_extension_name(name)
 
