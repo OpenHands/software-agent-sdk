@@ -2,10 +2,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Protocol
 
-from openhands.sdk.extensions.installation.info import InstallationInfo
-
 
 class ExtensionProtocol(Protocol):
+    """Protocol defining the expected fields needed for an extension.
+
+    These fields are necessary to construct the InstallationInfo object fully, and are
+    usually guaranteed by the relevant Anthropic standards.
+    """
+
     name: str
     version: str
     description: str
@@ -15,9 +19,3 @@ class InstallationInterface[T: ExtensionProtocol](ABC):
     @staticmethod
     @abstractmethod
     def load_from_dir(extension_dir: Path) -> T: ...
-
-    @staticmethod
-    @abstractmethod
-    def installation_info(extension: T) -> InstallationInfo:
-        ...
-        # TODO: there's no way this signature is all we need

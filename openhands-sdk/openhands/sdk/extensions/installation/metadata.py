@@ -140,10 +140,9 @@ class InstalledExtensionMetadata(BaseModel):
                 )
                 continue
 
-            info = installation_interface.installation_info(extension)
-            info.source = "local"
-            info.installed_at = datetime.now(UTC).isoformat()
-            info.install_path = str(item)
+            info = InstallationInfo.from_extension(
+                extension, source="local", install_path=item
+            )
 
             discovered.append(info)
             self.extensions[item.name] = info

@@ -94,11 +94,13 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
         shutil.copytree(fetched_path, install_path)
 
         # Create installation info
-        info = self.installation_interface.installation_info(extension)
-        info.source = source
-        info.resolved_ref = resolved_ref
-        info.repo_path = repo_path
-        info.install_path = str(install_path)  # TODO: convert info field to path
+        info = InstallationInfo.from_extension(
+            extension,
+            source=source,
+            install_path=install_path,
+            resolved_ref=resolved_ref,
+            repo_path=repo_path,
+        )
 
         # Update metadata
         metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
