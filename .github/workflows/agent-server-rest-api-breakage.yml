@@ -37,8 +37,6 @@ jobs:
               id: api_breakage
               # Let this step fail so CI is visibly red on breakage.
               # Later reporting steps still run because they use if: always().
-              env:
-                  REST_API_BREAKAGE_BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || '' }}
               run: |
                   uv run --with packaging python .github/scripts/check_agent_server_rest_api_breakage.py 2>&1 | tee api-breakage.log
                   exit_code=${PIPESTATUS[0]}
