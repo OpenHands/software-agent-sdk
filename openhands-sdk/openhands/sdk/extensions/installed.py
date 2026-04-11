@@ -72,7 +72,10 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
             json.dump(self.model_dump(), f, indent=2)
 
 
-class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass[T]]:
+# Cannot precisely specify the relationship between T and InfoT without running into
+# higher-kinded types (not supported by any version of Python).
+
+class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass]:
     def install(
         self,
         source: str,
