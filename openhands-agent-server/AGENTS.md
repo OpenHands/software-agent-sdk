@@ -14,6 +14,16 @@ This package lives in the monorepo root. Typical commands (run from repo root):
 When adding non-Python files (JS, templates, etc.) loaded at runtime, add them to `openhands-agent-server/openhands/agent_server/agent-server.spec` using `collect_data_files`.
 
 
+## Live server integration tests
+
+Small endpoint additions or changes to server behaviour should be covered by a
+test in `tests/cross/test_remote_conversation_live_server.py`.  These tests spin
+up a real FastAPI server with a patched LLM and exercise the full HTTP / WebSocket
+stack end-to-end.  Add or extend a test there whenever the change is localised
+enough that a single new test function (or a few assertions added to an existing
+test) captures the expected behaviour.
+
+
 ## Concurrency / async safety
 
 - `ConversationState` uses a synchronous `FIFOLock`. In async agent-server code, never do `with conversation._state` directly on the event loop when the conversation may be running.

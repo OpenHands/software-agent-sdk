@@ -280,7 +280,7 @@ Review the specified code and provide feedback.
 
     def test_command_to_skill_conversion(self, tmp_path: Path):
         """Test converting a command to a keyword-triggered skill."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "city-weather"
         plugin_dir.mkdir()
@@ -327,7 +327,7 @@ Fetch and display the current weather for the specified city.
 
     def test_get_all_skills_with_commands(self, tmp_path: Path):
         """Test get_all_skills returns both skills and command-derived skills."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "test-plugin"
         plugin_dir.mkdir()
