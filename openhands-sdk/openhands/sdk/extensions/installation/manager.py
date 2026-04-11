@@ -6,6 +6,7 @@ from pathlib import Path
 from openhands.sdk.extensions.installation.info import InstalledExtensionInfo
 from openhands.sdk.extensions.installation.interface import (
     InstallableExtensionInterface,
+    InstallableExtensionProtocol,
 )
 from openhands.sdk.extensions.installation.metadata import InstalledExtensionMetadata
 from openhands.sdk.extensions.installation.utils import validate_extension_name
@@ -16,11 +17,11 @@ logger = get_logger(__name__)
 
 
 @dataclass
-class InstalledExtensionManager[T]:
+class InstalledExtensionManager[T: InstallableExtensionProtocol]:
     """Manages installed extensions."""
 
     installation_dir: Path
-    installation_interface: InstallableExtensionInterface
+    installation_interface: InstallableExtensionInterface[T]
 
     def install(
         self,
