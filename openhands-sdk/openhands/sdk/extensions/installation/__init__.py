@@ -1,7 +1,7 @@
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
-    InstallableExtensionInterface,
-    InstallableExtensionProtocol,
+    ExtensionProtocol,
+    InstallationInterface,
 )
 from openhands.sdk.extensions.installation.manager import InstalledExtensionManager
 from openhands.sdk.extensions.installation.metadata import InstalledExtensionMetadata
@@ -9,8 +9,8 @@ from openhands.sdk.extensions.installation.metadata import InstalledExtensionMet
 
 __all__ = [
     "InstallationInfo",
-    "InstallableExtensionInterface",
-    "InstallableExtensionProtocol",
+    "InstallationInterface",
+    "ExtensionProtocol",
     "InstalledExtensionManager",
     "InstalledExtensionMetadata",
 ]

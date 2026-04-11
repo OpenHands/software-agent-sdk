@@ -5,11 +5,13 @@ from typing import Protocol
 from openhands.sdk.extensions.installation.info import InstallationInfo
 
 
-class InstallableExtensionProtocol(Protocol):
+class ExtensionProtocol(Protocol):
     name: str
+    version: str
+    description: str
 
 
-class InstallableExtensionInterface[T: InstallableExtensionProtocol](ABC):
+class InstallationInterface[T: ExtensionProtocol](ABC):
     @staticmethod
     @abstractmethod
     def load_from_dir(extension_dir: Path) -> T: ...

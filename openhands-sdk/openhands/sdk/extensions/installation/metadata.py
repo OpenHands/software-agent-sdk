@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
-    InstallableExtensionInterface,
+    InstallationInterface,
 )
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
@@ -101,7 +101,7 @@ class InstalledExtensionMetadata(BaseModel):
         return valid_extensions, changed
 
     def discover_untracked(
-        self, installed_dir: Path, installation_interface: InstallableExtensionInterface
+        self, installed_dir: Path, installation_interface: InstallationInterface
     ) -> tuple[list[InstallationInfo], bool]:
         """Discover extension directories not tracked by the metadata.
 
@@ -153,7 +153,7 @@ class InstalledExtensionMetadata(BaseModel):
         return discovered, changed
 
     def sync_installed(
-        self, installed_dir: Path, installation_interface: InstallableExtensionInterface
+        self, installed_dir: Path, installation_interface: InstallationInterface
     ) -> list[InstallationInfo]:
         # TODO: Doc-string
         # TODO: add context manager for this class that loads, syncs, then forces a save
