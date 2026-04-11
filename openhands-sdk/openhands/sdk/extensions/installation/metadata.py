@@ -7,7 +7,7 @@ from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.extensions.installation.info import InstalledExtensionInfo
+from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
     InstallableExtensionInterface,
 )
@@ -25,7 +25,7 @@ class ExtensionProtocol(Protocol):
 class InstalledExtensionMetadata(BaseModel):
     """Metadata file for tracking installed extensions."""
 
-    extensions: dict[str, InstalledExtensionInfo] = Field(
+    extensions: dict[str, InstallationInfo] = Field(
         default_factory=dict,
         description="Map from extension name to extension installation info",
     )
@@ -62,7 +62,7 @@ class InstalledExtensionMetadata(BaseModel):
 
     def validate_tracked(
         self, installed_dir: Path
-    ) -> tuple[list[InstalledExtensionInfo], bool]:
+    ) -> tuple[list[InstallationInfo], bool]:
         """Validate tracked extensions exist on disk.
 
         Removes any extension with an invalid name or missing directory.
@@ -70,7 +70,7 @@ class InstalledExtensionMetadata(BaseModel):
         Returns:
             Tuple of (valid extensions list, whether metadata was modified).
         """
-        valid_extensions: list[InstalledExtensionInfo] = []
+        valid_extensions: list[InstallationInfo] = []
         changed = False
 
         # We cannot iterate directly over the extensions because we'll be removing
@@ -102,13 +102,13 @@ class InstalledExtensionMetadata(BaseModel):
 
     def discover_untracked(
         self, installed_dir: Path, installation_interface: InstallableExtensionInterface
-    ) -> tuple[list[InstalledExtensionInfo], bool]:
+    ) -> tuple[list[InstallationInfo], bool]:
         """Discover extension directories not tracked by the metadata.
 
         Returns:
             Tuple of (discovered extensions list, whether metadata was modified).
         """
-        discovered: list[InstalledExtensionInfo] = []
+        discovered: list[InstallationInfo] = []
         changed = False
 
         for item in installed_dir.iterdir():
@@ -154,7 +154,7 @@ class InstalledExtensionMetadata(BaseModel):
 
     def sync_installed(
         self, installed_dir: Path, installation_interface: InstallableExtensionInterface
-    ) -> list[InstalledExtensionInfo]:
+    ) -> list[InstallationInfo]:
         # TODO: Doc-string
         # TODO: add context manager for this class that loads, syncs, then forces a save
         valid_extensions, tracked_changed = self.validate_tracked(installed_dir)

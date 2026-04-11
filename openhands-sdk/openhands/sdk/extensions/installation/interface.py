@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Protocol
 
-from openhands.sdk.extensions.installation.info import InstalledExtensionInfo
+from openhands.sdk.extensions.installation.info import InstallationInfo
 
 
 class InstallableExtensionProtocol(Protocol):
@@ -16,6 +16,6 @@ class InstallableExtensionInterface[T: InstallableExtensionProtocol](ABC):
 
     @staticmethod
     @abstractmethod
-    def installation_info(extension: T) -> InstalledExtensionInfo:
+    def installation_info(extension: T) -> InstallationInfo:
         ...
         # TODO: there's no way this signature is all we need

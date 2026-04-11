@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openhands.sdk.extensions.fetch import fetch_with_resolution
-from openhands.sdk.extensions.installation.info import InstalledExtensionInfo
+from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
     InstallableExtensionInterface,
     InstallableExtensionProtocol,
@@ -31,7 +31,7 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
         ref: str | None = None,
         repo_path: str | None = None,
         force: bool = False,
-    ) -> InstalledExtensionInfo:
+    ) -> InstallationInfo:
         """Install an extension from a source.
 
         Fetches the extensionFrom the source, copies it to the installed extensions
@@ -201,7 +201,7 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
         """Disable an installed extension by name."""
         return self._set_enabled(name, False)
 
-    def list_installed(self) -> list[InstalledExtensionInfo]:
+    def list_installed(self) -> list[InstallationInfo]:
         """List all installed extensions.
 
         This function is self-healing: it may update the installed extensions metadata
@@ -254,7 +254,7 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
 
         return extensions
 
-    def get(self, name: str) -> InstalledExtensionInfo | None:
+    def get(self, name: str) -> InstallationInfo | None:
         """Get information about a specific installed extension.
 
         Args:
@@ -283,7 +283,7 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
 
         return info
 
-    def update(self, name: str) -> InstalledExtensionInfo | None:
+    def update(self, name: str) -> InstallationInfo | None:
         """Update an installed extension to the latest version.
 
         Re-fetches the extension from its original source and reinstalls it.

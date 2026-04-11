@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
-class InstalledExtensionInfo(BaseModel):
+class InstallationInfo(BaseModel):
     """Information about an installed extension.
 
     Linked to extensions by the installed extension metadata.
