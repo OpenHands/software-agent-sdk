@@ -7,6 +7,7 @@ from typing import ClassVar, Self
 
 from pydantic import BaseModel, Field
 
+from openhands.sdk.extensions.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
 
 
@@ -209,7 +210,18 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
             >>> if info:
             ...     print(f"Installed from {info.source} at {info.installed_at}")
         """
-        raise NotImplementedError()
+        validate_extension_name(name)
+
+        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        info = metadata.extensions.get(name)
+
+        # Verify the extension directory still exists
+        if info is not None:
+            extension_path = self.installation_dir / name
+            if not extension_path.exists():
+                return None
+
+        return info
 
     def update(self, name: str) -> InfoT | None:
         """Update an installed extension to the latest version.
@@ -236,4 +248,19 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
             >>> if info:
             ...     print(f"Updated to v{info.version}")
         """
-        raise NotImplementedError()
+        validate_extension_name(name)
+
+        # Get the current installation info
+        current_info = self.get(name)
+        if current_info is None:
+            logger.warning(f"Extension {name} not installed")
+            return None
+
+        # Re-install from the original source
+        logger.info(f"Updating extension {name} from {current_info.source}")
+        return self.install(
+            source=current_info.source,
+            ref=None,  # Get the latest (don't use pinned ref)
+            repo_path=current_info.repo_path,
+            force=True,
+        )
