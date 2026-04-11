@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, Field
-
-from openhands.sdk.extensions.installation.info import InstalledExtensionInfoBaseClass
+from openhands.sdk.extensions.installation.info import InstalledExtensionInfo
+from openhands.sdk.extensions.installation.interface import (
+    InstallableExtensionInterface,
+)
 from openhands.sdk.extensions.installation.metadata import InstalledExtensionMetadata
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
@@ -13,10 +15,12 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
-class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseModel):
+@dataclass
+class InstalledExtensionManager[T]:
     """Manages installed extensions."""
 
-    installation_dir: Path = Field(description="Directory for installed extensions.")
+    installation_dir: Path
+    installation_interface: InstallableExtensionInterface
 
     def install(
         self,
@@ -24,7 +28,7 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
         ref: str | None = None,
         repo_path: str | None = None,
         force: bool = False,
-    ) -> InfoT:
+    ) -> InstalledExtensionInfo:
         """Install an extension from a source.
 
         Fetches the extensionFrom the source, copies it to the installed extensions
@@ -85,7 +89,7 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
         """Disable an installed extension by name."""
         raise NotImplementedError()
 
-    def list_installed(self) -> list[InfoT]:
+    def list_installed(self) -> list[InstalledExtensionInfo]:
         """List all installed extensions.
 
         This function is self-healing: it may update the installed extensions metadata
@@ -117,7 +121,7 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
         """
         raise NotImplementedError()
 
-    def get(self, name: str) -> InfoT | None:
+    def get(self, name: str) -> InstalledExtensionInfo | None:
         """Get information about a specific installed extension.
 
         Args:
@@ -146,7 +150,7 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
 
         return info
 
-    def update(self, name: str) -> InfoT | None:
+    def update(self, name: str) -> InstalledExtensionInfo | None:
         """Update an installed extension to the latest version.
 
         Re-fetches the extension from its original source and reinstalls it.

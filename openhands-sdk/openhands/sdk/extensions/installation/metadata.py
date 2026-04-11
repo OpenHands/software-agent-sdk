@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.extensions.installation.info import InstalledExtensionInfoBaseClass
+from openhands.sdk.extensions.installation.info import InstalledExtensionInfo
+from openhands.sdk.extensions.installation.interface import (
+    InstallableExtensionInterface,
+)
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
 
@@ -20,10 +22,10 @@ class ExtensionProtocol(Protocol):
     name: str
 
 
-class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseModel):
+class InstalledExtensionMetadata(BaseModel):
     """Metadata file for tracking installed extensions."""
 
-    extensions: dict[str, InfoT] = Field(
+    extensions: dict[str, InstalledExtensionInfo] = Field(
         default_factory=dict,
         description="Map from extension name to extension installation info",
     )
@@ -36,7 +38,7 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
         return installed_dir / cls.metadata_filename
 
     @classmethod
-    def load_from_dir(cls, installed_dir: Path) -> InstalledExtensionMetadata[InfoT]:
+    def load_from_dir(cls, installed_dir: Path) -> InstalledExtensionMetadata:
         """Load metadata from the installed extensions directory."""
         metadata_path = cls.get_metadata_path(installed_dir)
         if not metadata_path.exists():
@@ -58,7 +60,9 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
         with metadata_path.open("w") as f:
             json.dump(self.model_dump(), f, indent=2)
 
-    def validate_tracked(self, installed_dir: Path) -> tuple[list[InfoT], bool]:
+    def validate_tracked(
+        self, installed_dir: Path
+    ) -> tuple[list[InstalledExtensionInfo], bool]:
         """Validate tracked extensions exist on disk.
 
         Removes any extension with an invalid name or missing directory.
@@ -66,7 +70,7 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
         Returns:
             Tuple of (valid extensions list, whether metadata was modified).
         """
-        valid_extensions: list[InfoT] = []
+        valid_extensions: list[InstalledExtensionInfo] = []
         changed = False
 
         # We cannot iterate directly over the extensions because we'll be removing
@@ -96,18 +100,15 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
 
         return valid_extensions, changed
 
-    def discover_untracked[T: ExtensionProtocol](
-        self,
-        installed_dir: Path,
-        extension_loader: Callable[[Path], T],
-        info_extractor: Callable[[T], InfoT],
-    ) -> tuple[list[InfoT], bool]:
+    def discover_untracked(
+        self, installed_dir: Path, installation_interface: InstallableExtensionInterface
+    ) -> tuple[list[InstalledExtensionInfo], bool]:
         """Discover extension directories not tracked by the metadata.
 
         Returns:
             Tuple of (discovered extensions list, whether metadata was modified).
         """
-        discovered: list[InfoT] = []
+        discovered: list[InstalledExtensionInfo] = []
         changed = False
 
         for item in installed_dir.iterdir():
@@ -127,7 +128,7 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
 
             # Try to load the directory as the indicated extension
             try:
-                extension = extension_loader(item)
+                extension = installation_interface.load_from_dir(item)
             except Exception as e:
                 logger.debug(f"Skipping directory {item}: {e}")
                 continue
@@ -139,7 +140,7 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
                 )
                 continue
 
-            info = info_extractor(extension)
+            info = installation_interface.installation_info(extension)
             info.source = "local"
             info.installed_at = datetime.now(UTC).isoformat()
             info.install_path = str(item)
@@ -151,15 +152,12 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
 
         return discovered, changed
 
-    def sync_installed[T: ExtensionProtocol](
-        self,
-        installed_dir: Path,
-        extension_loader: Callable[[Path], T],
-        info_extractor: Callable[[T], InfoT],
-    ) -> list[InfoT]:
+    def sync_installed(
+        self, installed_dir: Path, installation_interface: InstallableExtensionInterface
+    ) -> list[InstalledExtensionInfo]:
         valid_extensions, tracked_changed = self.validate_tracked(installed_dir)
         discovered, discovered_changed = self.discover_untracked(
-            installed_dir, extension_loader, info_extractor
+            installed_dir, installation_interface
         )
 
         if tracked_changed or discovered_changed:
