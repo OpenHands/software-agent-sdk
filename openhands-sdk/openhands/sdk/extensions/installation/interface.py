@@ -16,4 +16,6 @@ class InstallableExtensionInterface[T: InstallableExtensionProtocol](ABC):
 
     @staticmethod
     @abstractmethod
-    def installation_info(extension: T) -> InstalledExtensionInfo: ...
+    def installation_info(extension: T) -> InstalledExtensionInfo:
+        ...
+        # TODO: there's no way this signature is all we need

@@ -155,6 +155,8 @@ class InstalledExtensionMetadata(BaseModel):
     def sync_installed(
         self, installed_dir: Path, installation_interface: InstallableExtensionInterface
     ) -> list[InstalledExtensionInfo]:
+        # TODO: Doc-string
+        # TODO: add context manager for this class that loads, syncs, then forces a save
         valid_extensions, tracked_changed = self.validate_tracked(installed_dir)
         discovered, discovered_changed = self.discover_untracked(
             installed_dir, installation_interface

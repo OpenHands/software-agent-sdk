@@ -64,7 +64,8 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
         logger.info(f"Fetching extension from {source}")
         fetched_path, resolved_ref = fetch_with_resolution(
             source=source,
-            cache_dir=self.installation_dir / ".cache",
+            cache_dir=self.installation_dir
+            / ".cache",  # TODO: check this cache value works
             ref=ref,
             repo_path=repo_path,
             update=True,
