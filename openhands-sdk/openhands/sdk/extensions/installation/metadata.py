@@ -17,7 +17,7 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
-class InstalledExtensionMetadata(BaseModel):
+class InstallationMetadata(BaseModel):
     """Metadata file for tracking installed extensions."""
 
     extensions: dict[str, InstallationInfo] = Field(
@@ -33,7 +33,7 @@ class InstalledExtensionMetadata(BaseModel):
         return installed_dir / cls.metadata_filename
 
     @classmethod
-    def load_from_dir(cls, installed_dir: Path) -> InstalledExtensionMetadata:
+    def load_from_dir(cls, installed_dir: Path) -> InstallationMetadata:
         """Load metadata from the installed extensions directory."""
         metadata_path = cls.get_metadata_path(installed_dir)
         if not metadata_path.exists():
@@ -42,7 +42,7 @@ class InstalledExtensionMetadata(BaseModel):
         try:
             with metadata_path.open() as f:
                 data = json.load(f)
-            return cls.model_validate(data)
+            return cls.model_validate_json(data)
 
         except Exception as e:
             logger.warning(f"Failed to load installed extension metadata: {e}")
@@ -53,7 +53,7 @@ class InstalledExtensionMetadata(BaseModel):
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         with metadata_path.open("w") as f:
-            json.dump(self.model_dump(), f, indent=2)
+            json.dump(self.model_dump_json(), f, indent=2)
 
     def validate_tracked(
         self, installed_dir: Path

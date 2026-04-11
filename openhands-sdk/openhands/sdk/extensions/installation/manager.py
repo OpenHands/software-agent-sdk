@@ -10,7 +10,7 @@ from openhands.sdk.extensions.installation.interface import (
     ExtensionProtocol,
     InstallationInterface,
 )
-from openhands.sdk.extensions.installation.metadata import InstalledExtensionMetadata
+from openhands.sdk.extensions.installation.metadata import InstallationMetadata
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
 
@@ -103,7 +103,7 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
         )
 
         # Update metadata
-        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
         existing_info = metadata.extensions.get(extension.name)
         if existing_info is not None:
             info.enabled = existing_info.enabled
@@ -136,7 +136,7 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
         """
         validate_extension_name(name)
 
-        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
         if name not in metadata.extensions:
             logger.warning(f"Plugin '{name}' is not installed")
             return False
@@ -169,7 +169,7 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
             )
             return False
 
-        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
         metadata.sync_installed(self.installation_dir, self.installation_interface)
 
         info = metadata.extensions.get(name)
@@ -220,7 +220,7 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
         if not self.installation_dir.exists():
             return []
 
-        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
         info = metadata.sync_installed(
             self.installation_dir, self.installation_interface
         )
@@ -274,7 +274,7 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
         """
         validate_extension_name(name)
 
-        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        metadata = InstallationMetadata.load_from_dir(self.installation_dir)
         info = metadata.extensions.get(name)
 
         # Verify the extension directory still exists
