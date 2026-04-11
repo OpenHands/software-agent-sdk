@@ -19,6 +19,23 @@ class InstalledExtensionInfoBaseClass[T](ABC, BaseModel):
     Linked to extensions by the installed extension metadata.
     """
 
+    name: str = Field(description="Extension name")
+    version: str = Field(default="1.0.0", description="Extension version")
+
+    enabled: bool = Field(default=True, description="Whether the extension is enabled")
+
+    source: str = Field(description="Original source (e.g., 'github:owner/repo')")
+    resolved_ref: str | None = Field(
+        default=None, description="Resolved git commit SHA (for version pinning)"
+    )
+    repo_path: str | None = Field(
+        default=None,
+        description="Subdirectory path within the repository (for monorepos)",
+    )
+
+    installed_at: str = Field(description="ISO 8601 timestamp of installation")
+    install_path: str = Field(description="Path where the extension is installed")
+
     @classmethod
     @abstractmethod
     def from_extension(
@@ -72,10 +89,15 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
             json.dump(self.model_dump(), f, indent=2)
 
 
-# Cannot precisely specify the relationship between T and InfoT without running into
-# higher-kinded types (not supported by any version of Python).
+class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseModel):
+    """Manages installed extensions."""
 
-class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass]:
+    installed_dir: Path = Field(description="Directory for installed extensions.")
+
+    def _resolved_installed_dir(self, installed_dir: Path | None = None) -> Path:
+        """Returns installed_dir, or the default if None."""
+        return installed_dir if installed_dir is not None else self.installed_dir
+
     def install(
         self,
         source: str,
@@ -84,25 +106,150 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass]:
         installed_dir: Path | None = None,
         force: bool = False,
     ) -> InfoT:
+        """Install an extension from a source.
+
+        Fetches the extensionFrom the source, copies it to the installed extensions
+        directory, and records the installation metadata.
+
+        Args:
+            source: Extension source - can be:
+                - "github:owner/repo" - GitHub shorthand
+                - Any git URL (GitHub, GitLab, Bitbucket, etc.)
+                - Local path (for development/testing)
+            ref: Optional branch, tag, or commit to install.
+            repo_path: Subdirectory path within the repository (for monorepos).
+            installed_dir: Optional directory for installed extensions. Defaults to the
+                installed_dir instance variable.
+            force: If True, overwrite existing installation. If False, raise error
+                if extension is already installed.
+
+        Returns:
+            InstalledExtensionInfoBaseClass[T] instance with details about the
+                installation.
+
+        Raises:
+            ExtensionFetchError: If fetching the extension fails.
+            FileExistsError: If extension is already installed and force=False.
+            ValueError: If the extension manifest is invalid.
+
+        Example:
+            >>> info = install("github:owner/my-extension", ref="v1.0.0")
+            >>> print(f"Installed {info.name} from {info.source}")
+        """
+
         raise NotImplementedError()
 
     def uninstall(self, name: str, installed_dir: Path | None = None) -> bool:
+        """Uninstall an extension by name.
+
+        Only extensions tracked in the installed extensions metadata file can be
+        uninstalled. This avoids deleting arbitrary directories in the installed
+        extensions directory.
+
+        Args:
+            name: Name of the extension to uninstall.
+            installed_dir: Optional directory for installed extensions. Defaults to the
+                installed_dir instance variable.
+
+        Returns:
+            True if the extension was uninstalled, False if it wasn't installed.
+
+        Example:
+            >>> if uninstall("my-extension"):
+            ...     print("Extension uninstalled")
+            ... else:
+            ...     print("Extension was not installed")
+        """
         raise NotImplementedError()
 
     def enable(self, name: str, installed_dir: Path | None = None) -> bool:
+        """Enable an installed extension by name."""
         raise NotImplementedError()
 
     def disable(self, name: str, installed_dir: Path | None = None) -> bool:
+        """Disable an installed extension by name."""
         raise NotImplementedError()
 
     def list_installed(self, installed_dir: Path | None = None) -> list[InfoT]:
+        """List all installed extensions.
+
+        This function is self-healing: it may update the installed extensions metadata
+        file to remove entries whose directories were deleted, and to add entries for
+        extension directories that were manually copied into the installed dir.
+
+        Args:
+            installed_dir: Directory for installed extensions. Defaults to the
+                installed_dir instance variable.
+
+        Returns:
+            List of InstalledExtensionInfoBaseClass[T] for each installed extension.
+
+        Example:
+            >>> for info in list_installed():
+            ...     print(f"{info.name} v{info.version}")
+        """
         raise NotImplementedError()
 
     def load_installed(self, installed_dir: Path | None = None) -> list[T]:
+        """Load all installed extensions.
+
+        Loads extension objects for all extensions in the installed extensions
+        directory. This is useful for integrating installed extensions into an agent.
+
+        Args:
+            installed_dir: Directory for installed extension.
+
+        Returns:
+            List of loaded extension objects.
+
+        Example:
+            >>> extension = load_installed()
+            >>> for ext in extensions:
+            ...     print(f"Loaded {ext}")
+        """
         raise NotImplementedError()
 
     def get(self, name: str, installed_dir: Path | None = None) -> InfoT | None:
+        """Get information about a specific installed extension.
+
+        Args:
+            name: Name of the extension to look up.
+            installed_dir: Directory for installed extensions.
+
+        Returns:
+            InstalledExtensionInfoBaseClass[T] if the extension is installed, None
+                otherwise.
+
+        Example:
+            >>> info = get("my-extension")
+            >>> if info:
+            ...     print(f"Installed from {info.source} at {info.installed_at}")
+        """
         raise NotImplementedError()
 
     def update(self, name: str, installed_dir: Path | None = None) -> InfoT | None:
+        """Update an installed extension to the latest version.
+
+        Re-fetches the extension from its original source and reinstalls it.
+
+        This always updates to the latest version available from the original source
+        (i.e., it does not preserve a pinned ref).
+
+        Args:
+            name: Name of the extension to update.
+            installed_dir: Directory for installed extensions. Defaults to the
+                installed_dir instance variable.
+
+        Returns:
+            Updated InstalledExtensionInfoBaseClass[T] if successful, None if extension
+                not installed.
+
+        Raises:
+            ExtensionFetchError: If fetching the updated extension fails.
+
+        Example:
+            >>> info = update("my-extension")
+            >>> if info:
+            ...     print(f"Updated to v{info.version}")
+        """
         raise NotImplementedError()
