@@ -82,13 +82,52 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
         """
         raise NotImplementedError()
 
+    def _set_enabled(
+        self,
+        name: str,
+        enabled: bool,
+    ) -> bool:
+        validate_extension_name(name)
+
+        if not self.installation_dir.exists():
+            logger.warning(
+                f"Installation directory does not exist: {self.installation_dir}"
+            )
+            return False
+
+        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        metadata.sync_installed(self.installation_dir, self.installation_interface)
+
+        info = metadata.extensions.get(name)
+        if info is None:
+            logger.warning(f"Extension '{name}' is not installed")
+            return False
+
+        extension_path = self.installation_dir / name
+        if not extension_path.exists():
+            logger.warning(
+                f"Extension '{name}' was tracked but {extension_path} is missing"
+            )
+            return False
+
+        if info.enabled == enabled:
+            return True
+
+        info.enabled = enabled
+        metadata.extensions[name] = info
+        metadata.save_to_dir(self.installation_dir)
+
+        state = "enabled" if enabled else "disabled"
+        logger.info(f"Successfully {state} extension '{name}'")
+        return True
+
     def enable(self, name: str) -> bool:
         """Enable an installed extension by name."""
-        raise NotImplementedError()
+        return self._set_enabled(name, True)
 
     def disable(self, name: str) -> bool:
         """Disable an installed extension by name."""
-        raise NotImplementedError()
+        return self._set_enabled(name, False)
 
     def list_installed(self) -> list[InstalledExtensionInfo]:
         """List all installed extensions.
