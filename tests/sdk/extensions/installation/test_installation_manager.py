@@ -146,6 +146,19 @@ def test_install_invalid_extension_name_raises_error(
         manager.install(str(bad_dir))
 
 
+def test_install_force_preserves_enabled_state(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+):
+    """Test that force reinstall preserves the existing enabled state."""
+    manager.install(str(mock_extension_dir))
+    manager.disable("mock-extension")
+
+    info = manager.install(mock_extension_dir, force=True)
+
+    assert info.enabled is False
+
+
 # ============================================================================
 # Uninstall Tests
 # ============================================================================
@@ -194,6 +207,22 @@ def test_uninstall_untracked_extension_does_not_delete(
     assert dest.exists()
 
 
+def test_uninstall_tracked_but_directory_missing(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+    installation_dir: Path,
+):
+    """Test that uninstall succeeds when tracked but directory was already deleted."""
+    manager.install(str(mock_extension_dir))
+    shutil.rmtree(installation_dir / "mock-extension")
+
+    result = manager.uninstall("mock-extension")
+
+    assert result is True
+    metadata = InstallationMetadata.load_from_dir(installation_dir)
+    assert "mock-extension" not in metadata.extensions
+
+
 def test_uninstall_invalid_name_raises_error(
     manager: InstallationManager[MockExtension],
 ):
@@ -205,6 +234,15 @@ def test_uninstall_invalid_name_raises_error(
 # ============================================================================
 # List Installed Tests
 # ============================================================================
+
+
+def test_list_nonexistent_installation_dir(tmp_path: Path):
+    """Test listing when installation_dir doesn't exist returns empty."""
+    manager = InstallationManager(
+        installation_dir=tmp_path / "does-not-exist",
+        installation_interface=MockExtensionInstallationInterface(),
+    )
+    assert manager.list_installed() == []
 
 
 def test_list_empty_directory(
@@ -268,6 +306,15 @@ def test_list_cleans_up_missing_extensions(
 # ============================================================================
 
 
+def test_load_nonexistent_installation_dir(tmp_path: Path):
+    """Test loading when installation_dir doesn't exist returns empty."""
+    manager = InstallationManager(
+        installation_dir=tmp_path / "does-not-exist",
+        installation_interface=MockExtensionInstallationInterface(),
+    )
+    assert manager.load_installed() == []
+
+
 def test_load_empty_directory(
     manager: InstallationManager[MockExtension],
 ):
@@ -319,6 +366,20 @@ def test_enable_extension_restores_load(
     extensions = manager.load_installed()
     assert len(extensions) == 1
     assert extensions[0].name == "mock-extension"
+
+
+def test_enable_nonexistent_extension_returns_false(
+    manager: InstallationManager[MockExtension],
+):
+    """Test that enabling a nonexistent extension returns False."""
+    assert manager.enable("nonexistent") is False
+
+
+def test_disable_nonexistent_extension_returns_false(
+    manager: InstallationManager[MockExtension],
+):
+    """Test that disabling a nonexistent extension returns False."""
+    assert manager.disable("nonexistent") is False
 
 
 # ============================================================================
