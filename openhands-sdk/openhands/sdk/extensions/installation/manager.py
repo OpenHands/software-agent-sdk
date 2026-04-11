@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 
 @dataclass
-class InstalledExtensionManager[T: ExtensionProtocol]:
+class InstallationManager[T: ExtensionProtocol]:
     """Manages installed extensions."""
 
     installation_dir: Path
@@ -27,7 +27,7 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
 
     def install(
         self,
-        source: str,
+        source: str | Path,
         ref: str | None = None,
         repo_path: str | None = None,
         force: bool = False,
@@ -60,6 +60,9 @@ class InstalledExtensionManager[T: ExtensionProtocol]:
             >>> info = install("github:owner/my-extension", ref="v1.0.0")
             >>> print(f"Installed {info.name} from {info.source}")
         """
+        if isinstance(source, Path):
+            source = str(source)
+
         # Fetch the extension (downloads to cache if remote)
         logger.info(f"Fetching extension from {source}")
         fetched_path, resolved_ref = fetch_with_resolution(
