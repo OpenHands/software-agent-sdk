@@ -89,6 +89,44 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
         with metadata_path.open("w") as f:
             json.dump(self.model_dump(), f, indent=2)
 
+    def validate_tracked(self, installed_dir: Path) -> tuple[list[InfoT], bool]:
+        """Validate tracked extensions exist on disk.
+
+        Removes any extension with an invalid name or missing directory.
+
+        Returns:
+            Tuple of (valid extensions list, whether metadata was modified).
+        """
+        valid_extensions: list[InfoT] = []
+        changed = False
+
+        # We cannot iterate directly over the extensions because we'll be removing
+        # invalid extensions as we go.
+        for name, info in list(self.extensions.items()):
+            # Check the extension name
+            try:
+                validate_extension_name(name)
+            except ValueError as e:
+                logger.warning(
+                    f"Invalid tracked extension name {name!r}, removing: {e}"
+                )
+                del self.extensions[name]
+                changed = True
+                continue
+
+            # Check the extension installation
+            extension_path = installed_dir / name
+            if extension_path.exists():
+                valid_extensions.append(info)
+            else:
+                logger.warning(
+                    f"Extension {name} directory missing, removing from metadata"
+                )
+                del self.extensions[name]
+                changed = True
+
+        return valid_extensions, changed
+
 
 class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseModel):
     """Manages installed extensions."""
