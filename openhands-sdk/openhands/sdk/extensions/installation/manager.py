@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from openhands.sdk.extensions.fetch import fetch_with_resolution
 from openhands.sdk.extensions.installation.info import InstalledExtensionInfo
 from openhands.sdk.extensions.installation.interface import (
     InstallableExtensionInterface,
@@ -58,8 +60,57 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
             >>> info = install("github:owner/my-extension", ref="v1.0.0")
             >>> print(f"Installed {info.name} from {info.source}")
         """
+        # Fetch the extension (downloads to cache if remote)
+        logger.info(f"Fetching extension from {source}")
+        fetched_path, resolved_ref = fetch_with_resolution(
+            source=source,
+            cache_dir=self.installation_dir / ".cache",
+            ref=ref,
+            repo_path=repo_path,
+            update=True,
+        )
 
-        raise NotImplementedError()
+        # Load the extension to get its metadata
+        extension = self.installation_interface.load_from_dir(fetched_path)
+        validate_extension_name(extension.name)
+
+        # Check if already installed
+        install_path = self.installation_dir / extension.name
+        if install_path.exists() and not force:
+            raise FileExistsError(
+                f"Extension '{extension.name}' is already installed at {install_path}. "
+                f"Use force=True to overwrite."
+            )
+
+        # Remove existing installation if force=True
+        if install_path.exists():
+            logger.info(f"Removing existing installation of '{extension.name}'")
+            shutil.rmtree(install_path)
+
+        # Copy plugin to installed directory
+        logger.info(f"Installing extension '{extension.name}' to {install_path}")
+        self.installation_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(fetched_path, install_path)
+
+        # Create installation info
+        info = self.installation_interface.installation_info(extension)
+        info.source = source
+        info.resolved_ref = resolved_ref
+        info.repo_path = repo_path
+        info.install_path = str(install_path)  # TODO: convert info field to path
+
+        # Update metadata
+        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        existing_info = metadata.extensions.get(extension.name)
+        if existing_info is not None:
+            info.enabled = existing_info.enabled
+        metadata.extensions[extension.name] = info
+        metadata.save_to_dir(self.installation_dir)
+
+        logger.info(
+            f"Successfully installed extension '{extension.name}' v{info.version}"
+        )
+        return info
 
     def uninstall(self, name: str) -> bool:
         """Uninstall an extension by name.
@@ -80,7 +131,27 @@ class InstalledExtensionManager[T: InstallableExtensionProtocol]:
             ... else:
             ...     print("Extension was not installed")
         """
-        raise NotImplementedError()
+        validate_extension_name(name)
+
+        metadata = InstalledExtensionMetadata.load_from_dir(self.installation_dir)
+        if name not in metadata.extensions:
+            logger.warning(f"Plugin '{name}' is not installed")
+            return False
+
+        extension_path = self.installation_dir / name
+        if extension_path.exists():
+            logger.info(f"Uninstalling extension '{name}' from {extension_path}")
+            shutil.rmtree(extension_path)
+        else:
+            logger.warning(
+                f"Extension '{name}' was tracked but {extension_path} is missing"
+            )
+
+        del metadata.extensions[name]
+        metadata.save_to_dir(self.installation_dir)
+
+        logger.info(f"Successfully uninstalled extension '{name}'")
+        return True
 
     def _set_enabled(
         self,
