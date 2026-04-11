@@ -92,18 +92,13 @@ class InstalledExtensionMetadata[InfoT: InstalledExtensionInfoBaseClass](BaseMod
 class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseModel):
     """Manages installed extensions."""
 
-    installed_dir: Path = Field(description="Directory for installed extensions.")
-
-    def _resolved_installed_dir(self, installed_dir: Path | None = None) -> Path:
-        """Returns installed_dir, or the default if None."""
-        return installed_dir if installed_dir is not None else self.installed_dir
+    installation_dir: Path = Field(description="Directory for installed extensions.")
 
     def install(
         self,
         source: str,
         ref: str | None = None,
         repo_path: str | None = None,
-        installed_dir: Path | None = None,
         force: bool = False,
     ) -> InfoT:
         """Install an extension from a source.
@@ -118,8 +113,6 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
                 - Local path (for development/testing)
             ref: Optional branch, tag, or commit to install.
             repo_path: Subdirectory path within the repository (for monorepos).
-            installed_dir: Optional directory for installed extensions. Defaults to the
-                installed_dir instance variable.
             force: If True, overwrite existing installation. If False, raise error
                 if extension is already installed.
 
@@ -139,7 +132,7 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
 
         raise NotImplementedError()
 
-    def uninstall(self, name: str, installed_dir: Path | None = None) -> bool:
+    def uninstall(self, name: str) -> bool:
         """Uninstall an extension by name.
 
         Only extensions tracked in the installed extensions metadata file can be
@@ -148,8 +141,6 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
 
         Args:
             name: Name of the extension to uninstall.
-            installed_dir: Optional directory for installed extensions. Defaults to the
-                installed_dir instance variable.
 
         Returns:
             True if the extension was uninstalled, False if it wasn't installed.
@@ -162,24 +153,20 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
         """
         raise NotImplementedError()
 
-    def enable(self, name: str, installed_dir: Path | None = None) -> bool:
+    def enable(self, name: str) -> bool:
         """Enable an installed extension by name."""
         raise NotImplementedError()
 
-    def disable(self, name: str, installed_dir: Path | None = None) -> bool:
+    def disable(self, name: str) -> bool:
         """Disable an installed extension by name."""
         raise NotImplementedError()
 
-    def list_installed(self, installed_dir: Path | None = None) -> list[InfoT]:
+    def list_installed(self) -> list[InfoT]:
         """List all installed extensions.
 
         This function is self-healing: it may update the installed extensions metadata
         file to remove entries whose directories were deleted, and to add entries for
         extension directories that were manually copied into the installed dir.
-
-        Args:
-            installed_dir: Directory for installed extensions. Defaults to the
-                installed_dir instance variable.
 
         Returns:
             List of InstalledExtensionInfoBaseClass[T] for each installed extension.
@@ -190,14 +177,11 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
         """
         raise NotImplementedError()
 
-    def load_installed(self, installed_dir: Path | None = None) -> list[T]:
+    def load_installed(self) -> list[T]:
         """Load all installed extensions.
 
         Loads extension objects for all extensions in the installed extensions
         directory. This is useful for integrating installed extensions into an agent.
-
-        Args:
-            installed_dir: Directory for installed extension.
 
         Returns:
             List of loaded extension objects.
@@ -209,7 +193,7 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
         """
         raise NotImplementedError()
 
-    def get(self, name: str, installed_dir: Path | None = None) -> InfoT | None:
+    def get(self, name: str) -> InfoT | None:
         """Get information about a specific installed extension.
 
         Args:
@@ -227,7 +211,7 @@ class InstalledExtensionManager[T, InfoT: InstalledExtensionInfoBaseClass](BaseM
         """
         raise NotImplementedError()
 
-    def update(self, name: str, installed_dir: Path | None = None) -> InfoT | None:
+    def update(self, name: str) -> InfoT | None:
         """Update an installed extension to the latest version.
 
         Re-fetches the extension from its original source and reinstalls it.
