@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, Protocol
+from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -16,10 +15,6 @@ from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
-
-
-class ExtensionProtocol(Protocol):
-    name: str
 
 
 class InstalledExtensionMetadata(BaseModel):
