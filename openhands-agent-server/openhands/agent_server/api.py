@@ -49,8 +49,50 @@ from openhands.sdk.utils.redact import sanitize_dict
 logger = get_logger(__name__)
 
 
+async def cleanup_stale_tmux_sessions() -> None:
+    """Clean up any stale tmux sessions on server startup.
+
+    Tmux sessions live in a separate process that survives agent-server restarts.
+    This function kills all existing sessions on the openhands socket to prevent
+    accumulation of orphaned sessions. Reconnecting conversations will create
+    fresh sessions as needed.
+    """
+    try:
+        import libtmux
+
+        # Connect to the dedicated OpenHands tmux server
+        server = libtmux.Server(socket_name="openhands")
+
+        # Get all sessions on this server
+        sessions = server.sessions
+        if not sessions:
+            logger.debug("No tmux sessions found on openhands socket")
+            return
+
+        logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
+
+        # Kill all sessions - they're all stale since we're starting up
+        for session in sessions:
+            try:
+                logger.debug("Killing tmux session: %s", session.name)
+                session.kill()
+            except Exception as e:
+                logger.warning("Failed to kill tmux session %s: %s", session.name, e)
+
+        logger.info("Tmux cleanup completed")
+
+    except ImportError:
+        logger.debug("libtmux not available, skipping tmux cleanup")
+    except Exception as e:
+        # Don't let tmux cleanup failures prevent server startup
+        logger.warning("Failed to cleanup tmux sessions: %s", e)
+
+
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
+    # Clean up stale tmux sessions from previous server runs
+    await cleanup_stale_tmux_sessions()
+
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
