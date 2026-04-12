@@ -30,6 +30,7 @@ def _load_prod_module():
 
 _prod = _load_prod_module()
 PackageConfig = _prod.PackageConfig
+DeprecationMetadata = _prod.DeprecationMetadata
 DeprecatedSymbols = _prod.DeprecatedSymbols
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
@@ -354,6 +355,91 @@ def test_find_deprecated_symbols_ignores_syntax_errors(tmp_path):
     result = _find_deprecated_symbols(tmp_path)
     assert result.top_level == {"ok"}
     assert result.qualified == {"ok"}
+
+
+def test_find_deprecated_symbols_records_metadata(tmp_path):
+    (tmp_path / "mod.py").write_text(
+        "@deprecated(deprecated_in='1.2.0', removed_in='1.7.0')\n"
+        "class Foo:\n"
+        "    pass\n"
+        "\n"
+        "class Bar:\n"
+        "    def baz(self):\n"
+        "        warn_deprecated(\n"
+        "            'Bar.baz', deprecated_in='1.3.0', removed_in='1.8.0'\n"
+        "        )\n"
+    )
+
+    result = _find_deprecated_symbols(tmp_path)
+
+    assert result.metadata["Foo"] == DeprecationMetadata(
+        deprecated_in="1.2.0",
+        removed_in="1.7.0",
+    )
+    assert result.metadata["Bar.baz"] == DeprecationMetadata(
+        deprecated_in="1.3.0",
+        removed_in="1.8.0",
+    )
+
+
+def test_removed_public_method_requires_removal_target_to_be_reached(tmp_path):
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Foo"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\n\nclass Foo:\n"
+        + "    @deprecated(deprecated_in='1.0.0', removed_in='1.5.0')\n"
+        + "    def bar(self) -> int:\n"
+        + "        return 1\n"
+    )
+    new_init.write_text(new_init.read_text() + "\n\nclass Foo:\n    pass\n")
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, removal_policy_errors = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+        current_version="1.4.0",
+    )
+
+    assert total_breaks > 0
+    assert removal_policy_errors == 1
+
+
+def test_removed_public_method_requires_five_minor_release_runway(tmp_path):
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Foo"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Foo"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\n\nclass Foo:\n"
+        + "    @deprecated(deprecated_in='1.0.0', removed_in='1.3.0')\n"
+        + "    def bar(self) -> int:\n"
+        + "        return 1\n"
+    )
+    new_init.write_text(new_init.read_text() + "\n\nclass Foo:\n    pass\n")
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, removal_policy_errors = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+        current_version="1.5.0",
+    )
+
+    assert total_breaks > 0
+    assert removal_policy_errors == 1
 
 
 def test_workspace_removed_export_is_breaking(tmp_path):

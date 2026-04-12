@@ -129,7 +129,8 @@ consult each relevant package-level AGENTS.md.
 
 - For SDK Python API deprecation/removal policy, read
   [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
-  Public API removals require deprecation before removal, and breaking SDK API
+  Public API removals require deprecation metadata with a removal target at
+  least **5 minor releases** after `deprecated_in`, and breaking SDK API
   changes require at least a **MINOR** SemVer bump.
 - The SDK API breakage checker should treat metadata-only changes to
   Pydantic `Field(...)` declarations as non-breaking, including adding,
