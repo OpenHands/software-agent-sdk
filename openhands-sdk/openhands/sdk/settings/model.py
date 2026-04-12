@@ -197,6 +197,44 @@ class VerificationSettings(BaseModel):
         },
     )
 
+    # -- Deprecated (moved to ConversationSettings) --
+    confirmation_mode: bool = Field(
+        default=False,
+        exclude=True,
+    )
+    security_analyzer: SecurityAnalyzerType | None = Field(
+        default=None,
+        exclude=True,
+    )
+
+    @field_validator("confirmation_mode", mode="before")
+    @classmethod
+    def _warn_confirmation_mode(cls, v: Any) -> Any:
+        if v:
+            from openhands.sdk.utils.deprecation import warn_deprecated
+
+            warn_deprecated(
+                "VerificationSettings.confirmation_mode",
+                deprecated_in="1.17.0",
+                removed_in="1.22.0",
+                details="Use ConversationSettings.confirmation_mode instead.",
+            )
+        return v
+
+    @field_validator("security_analyzer", mode="before")
+    @classmethod
+    def _warn_security_analyzer(cls, v: Any) -> Any:
+        if v is not None:
+            from openhands.sdk.utils.deprecation import warn_deprecated
+
+            warn_deprecated(
+                "VerificationSettings.security_analyzer",
+                deprecated_in="1.17.0",
+                removed_in="1.22.0",
+                details="Use ConversationSettings.security_analyzer instead.",
+            )
+        return v
+
 
 def _default_llm_settings() -> LLM:
     model = LLM.model_fields["model"].get_default()
