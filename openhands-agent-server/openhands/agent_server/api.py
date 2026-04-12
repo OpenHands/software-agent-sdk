@@ -44,34 +44,30 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.utils.redact import sanitize_dict
+from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
 
 logger = get_logger(__name__)
 
 
-async def cleanup_stale_tmux_sessions() -> None:
+def cleanup_stale_tmux_sessions() -> None:
     """Clean up any stale tmux sessions on server startup.
 
     Tmux sessions live in a separate process that survives agent-server restarts.
-    This function kills all existing sessions on the openhands socket to prevent
-    accumulation of orphaned sessions. Reconnecting conversations will create
-    fresh sessions as needed.
+    This function kills all existing sessions on the shared OpenHands tmux socket
+    to prevent accumulation of orphaned sessions.
     """
     try:
         import libtmux
 
-        # Connect to the dedicated OpenHands tmux server
-        server = libtmux.Server(socket_name="openhands")
-
-        # Get all sessions on this server
+        server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
         sessions = server.sessions
         if not sessions:
-            logger.debug("No tmux sessions found on openhands socket")
+            logger.debug("No tmux sessions found on %s socket", TMUX_SOCKET_NAME)
             return
 
         logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
 
-        # Kill all sessions - they're all stale since we're starting up
         for session in sessions:
             try:
                 logger.debug("Killing tmux session: %s", session.name)
@@ -91,7 +87,7 @@ async def cleanup_stale_tmux_sessions() -> None:
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     # Clean up stale tmux sessions from previous server runs
-    await cleanup_stale_tmux_sessions()
+    cleanup_stale_tmux_sessions()
 
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
