@@ -200,11 +200,32 @@ class VerificationSettings(BaseModel):
     # -- Deprecated (moved to ConversationSettings) --
     confirmation_mode: bool = Field(
         default=False,
-        exclude=True,
+        description="Require user confirmation before executing risky actions.",
+        deprecated=(
+            "Deprecated in 1.17.0; use ConversationSettings.confirmation_mode "
+            "instead. Will be removed in 1.22.0."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Confirmation mode",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
     )
     security_analyzer: SecurityAnalyzerType | None = Field(
         default=None,
-        exclude=True,
+        description=("Security analyzer that evaluates actions before execution."),
+        deprecated=(
+            "Deprecated in 1.17.0; use ConversationSettings.security_analyzer "
+            "instead. Will be removed in 1.22.0."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Security analyzer",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("confirmation_mode",),
+            ).model_dump()
+        },
     )
 
     @field_validator("confirmation_mode", mode="before")
