@@ -178,6 +178,14 @@ class Plugin(BaseModel):
     ) -> dict[str, Any]:
         """Add this plugin's MCP servers to an MCP config.
 
+        .. deprecated:: 1.17.0
+            Use :func:`openhands.sdk.mcp.merge_mcp_configs` instead::
+
+                from openhands.sdk.mcp import merge_mcp_configs
+                merged = merge_mcp_configs(existing_config, plugin.mcp_config)
+
+            Will be removed in 1.22.0.
+
         Plugin MCP servers override existing servers with the same name.
 
         Merge semantics (Claude Code compatible):
@@ -189,48 +197,19 @@ class Plugin(BaseModel):
 
         Returns:
             New MCP config dict with this plugin's servers added
-
-        Example:
-            >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
-            >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
-            >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
         """
-        base_config = mcp_config
-        plugin_config = self.mcp_config
+        from openhands.sdk.mcp.utils import merge_mcp_configs
+        from openhands.sdk.utils.deprecation import warn_deprecated
 
-        if base_config is None and plugin_config is None:
-            return {}
-        if base_config is None:
-            return dict(plugin_config) if plugin_config else {}
-        if plugin_config is None:
-            return dict(base_config)
-
-        # Shallow copy to avoid mutating inputs
-        result = dict(base_config)
-
-        # Merge mcpServers by server name (Claude Code compatible behavior)
-        if "mcpServers" in plugin_config:
-            existing_servers = result.get("mcpServers", {})
-            for server_name in plugin_config["mcpServers"]:
-                if server_name in existing_servers:
-                    logger.warning(
-                        f"Plugin MCP server '{server_name}' overrides existing server"
-                    )
-            result["mcpServers"] = {
-                **existing_servers,
-                **plugin_config["mcpServers"],
-            }
-
-        # Other top-level keys: plugin wins (shallow override)
-        for key, value in plugin_config.items():
-            if key != "mcpServers":
-                if key in result:
-                    logger.warning(
-                        f"Plugin MCP config key '{key}' overrides existing value"
-                    )
-                result[key] = value
-
-        return result
+        warn_deprecated(
+            "Plugin.add_mcp_config_to",
+            deprecated_in="1.17.0",
+            removed_in="1.22.0",
+            details=(
+                "Use openhands.sdk.mcp.merge_mcp_configs(base, override) instead."
+            ),
+        )
+        return merge_mcp_configs(mcp_config, self.mcp_config)
 
     @classmethod
     def fetch(

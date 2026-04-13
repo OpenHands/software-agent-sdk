@@ -41,6 +41,7 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.utils import merge_mcp_configs
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -358,7 +359,7 @@ class LocalConversation(BaseConversation):
 
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
-                merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+                merged_mcp = merge_mcp_configs(merged_mcp, plugin.mcp_config)
 
                 # Collect hooks
                 if plugin.hooks and not plugin.hooks.is_empty():

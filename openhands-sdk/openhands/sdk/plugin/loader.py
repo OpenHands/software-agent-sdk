@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.utils import merge_mcp_configs
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
 
@@ -91,7 +92,7 @@ def load_plugins(
 
         # Merge skills and MCP config separately
         merged_context = plugin.add_skills_to(merged_context, max_skills=max_skills)
-        merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+        merged_mcp = merge_mcp_configs(merged_mcp, plugin.mcp_config)
 
         # Collect hooks for later combination
         if plugin.hooks and not plugin.hooks.is_empty():
