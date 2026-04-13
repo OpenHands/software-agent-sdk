@@ -4,16 +4,19 @@ from typing import Protocol
 
 
 class ExtensionProtocol(Protocol):
-    """Structural protocol for installable extensions.
+    """Minimal structural protocol for installable extensions.
 
-    Any object with these three attributes can be managed by the
-    installation system.  The fields map directly to
-    ``InstallationInfo.name``, ``.version``, and ``.description``.
+    Only ``name`` is required.  ``version`` and ``description`` are read
+    via ``getattr`` in ``InstallationInfo.from_extension`` so that
+    extension types that don't carry those fields (e.g. skills) still
+    work without adapter wrappers.
+
+    ``name`` is declared as a read-only property so that both plain
+    attributes and ``@property`` accessors satisfy the protocol.
     """
 
-    name: str
-    version: str
-    description: str
+    @property
+    def name(self) -> str: ...
 
 
 class InstallationInterface[T: ExtensionProtocol](ABC):
