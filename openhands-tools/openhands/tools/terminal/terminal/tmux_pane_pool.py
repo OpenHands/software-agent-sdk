@@ -23,6 +23,7 @@ from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
+    TMUX_SOCKET_NAME,
 )
 from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
@@ -112,7 +113,7 @@ class TmuxPanePool:
             return
 
         env = sanitized_env()
-        self._server = libtmux.Server(socket_name="openhands", environment=env)
+        self._server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
         session_name = f"openhands-pool-{self.username}-{uuid.uuid4()}"
         self._session = self._server.new_session(
             session_name=session_name,
