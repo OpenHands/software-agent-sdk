@@ -20,21 +20,21 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from openhands.sdk.context.skills import (
+from openhands.sdk.logger import get_logger
+from openhands.sdk.skills import (
     Skill,
     load_available_skills,
 )
-from openhands.sdk.context.skills.skill import (
+from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
     PUBLIC_SKILLS_BRANCH,
     PUBLIC_SKILLS_REPO,
     load_skills_from_dir,
 )
-from openhands.sdk.context.skills.utils import (
+from openhands.sdk.skills.utils import (
     get_skills_cache_dir,
     update_skills_repository,
 )
-from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
 
 

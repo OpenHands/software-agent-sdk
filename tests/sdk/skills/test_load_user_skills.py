@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
     load_user_skills,
@@ -46,7 +46,7 @@ def temp_microagents_dir():
 def test_load_user_skills_no_directories(tmp_path):
     """Test load_user_skills when no user skills directories exist."""
     # Point USER_SKILLS_DIRS to non-existent directories
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -70,7 +70,7 @@ def test_load_user_skills_with_agents_directory(temp_user_skills_dir):
         "---\nname: agent_skill\ntriggers:\n  - agent\n---\nAgent skill content."
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -94,7 +94,7 @@ def test_load_user_skills_with_skills_directory(temp_user_skills_dir):
         "---\nname: test_skill\ntriggers:\n  - test\n---\nThis is a test skill."
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -123,7 +123,7 @@ def test_load_user_skills_with_microagents_directory(temp_microagents_dir):
         "This is a legacy microagent skill."
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -155,7 +155,7 @@ def test_load_user_skills_priority_order(tmp_path):
         "---\nname: duplicate\n---\nFrom .openhands/microagents."
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -187,7 +187,7 @@ def test_load_user_skills_merges_all_directories(tmp_path):
         "---\nname: skill2\n---\nSkill 2 content."
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -213,7 +213,7 @@ def test_load_user_skills_handles_errors_gracefully(temp_user_skills_dir):
         "Invalid skill."
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -233,7 +233,7 @@ def test_agent_context_loads_user_skills_by_default(temp_user_skills_dir):
     skill_file = skills_dir / "auto_skill.md"
     skill_file.write_text("---\nname: auto_skill\n---\nAutomatically loaded skill.")
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -266,7 +266,7 @@ def test_agent_context_merges_explicit_and_user_skills(temp_user_skills_dir):
         trigger=None,
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:
@@ -295,7 +295,7 @@ def test_agent_context_explicit_skill_takes_precedence(temp_user_skills_dir):
         trigger=None,
     )
 
-    from openhands.sdk.context.skills import skill
+    from openhands.sdk.skills import skill
 
     original_dirs = skill.USER_SKILLS_DIRS
     try:

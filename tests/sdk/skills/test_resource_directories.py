@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     RESOURCE_DIRECTORIES,
     Skill,
     SkillResources,

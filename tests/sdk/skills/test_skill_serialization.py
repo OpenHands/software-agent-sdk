@@ -4,12 +4,12 @@ import json
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
     TaskTrigger,
 )
-from openhands.sdk.context.skills.types import InputMetadata
+from openhands.sdk.skills.types import InputMetadata
 from openhands.sdk.utils.models import OpenHandsModel
 
 
