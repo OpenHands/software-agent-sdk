@@ -1,9 +1,7 @@
 """Fetching utilities for extensions."""
 
-from __future__ import annotations
-
 import hashlib
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
@@ -18,7 +16,7 @@ class ExtensionFetchError(Exception):
     """Raised when fetching an extension fails."""
 
 
-class SourceType(str, Enum):
+class SourceType(StrEnum):
     """Classification of an extension source.
 
     LOCAL   -- a filesystem path (absolute, home-relative, or dot-relative).

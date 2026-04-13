@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
+import libtmux
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -44,13 +45,47 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.utils.redact import sanitize_dict
+from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
 
 logger = get_logger(__name__)
 
 
+def _cleanup_stale_tmux_sessions() -> None:
+    """Clean up any stale tmux sessions on server startup.
+
+    Tmux sessions live in a separate process that survives agent-server restarts.
+    This function kills all existing sessions on the shared OpenHands tmux socket
+    to prevent accumulation of orphaned sessions.
+    """
+    try:
+        server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
+        sessions = server.sessions
+        if not sessions:
+            logger.debug("No tmux sessions found on %s socket", TMUX_SOCKET_NAME)
+            return
+
+        logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
+
+        for session in sessions:
+            try:
+                logger.debug("Killing tmux session: %s", session.name)
+                session.kill()
+            except Exception as e:
+                logger.warning("Failed to kill tmux session %s: %s", session.name, e)
+
+        logger.info("Tmux cleanup completed")
+
+    except Exception as e:
+        # Don't let tmux cleanup failures prevent server startup
+        logger.warning("Failed to cleanup tmux sessions: %s", e)
+
+
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
+    # Clean up stale tmux sessions from previous server runs
+    _cleanup_stale_tmux_sessions()
+
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
