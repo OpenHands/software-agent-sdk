@@ -5,6 +5,7 @@ from openhands.sdk.mcp.config import (
     expand_mcp_variables,
     find_mcp_config,
     load_mcp_config,
+    merge_mcp_configs,
 )
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
@@ -12,10 +13,7 @@ from openhands.sdk.mcp.tool import (
     MCPToolDefinition,
     MCPToolExecutor,
 )
-from openhands.sdk.mcp.utils import (
-    create_mcp_tools,
-    merge_mcp_configs,
-)
+from openhands.sdk.mcp.utils import create_mcp_tools
 
 
 __all__ = [

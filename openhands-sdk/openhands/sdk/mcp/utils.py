@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import mcp.types
 from fastmcp.client.logging import LogMessage
@@ -11,6 +10,10 @@ from fastmcp.mcp_config import MCPConfig
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
+
+# Re-export from canonical location — callers of mcp.utils.merge_mcp_configs
+# continue to work without changes.
+from openhands.sdk.mcp.config import merge_mcp_configs as merge_mcp_configs
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -92,52 +95,3 @@ def create_mcp_tools(
 
     logger.info(f"Created {len(client.tools)} MCP tools: {[t.name for t in client]}")
     return client
-
-
-def merge_mcp_configs(
-    base: dict[str, Any] | None,
-    override: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Merge two MCP configuration dicts with last-wins semantics.
-
-    Merge rules (Claude Code compatible):
-    - ``mcpServers``: deep-merge by server name (override wins per server)
-    - Other top-level keys: shallow override (override wins)
-
-    Neither input dict is mutated.
-
-    Args:
-        base: Existing MCP config (may be ``None`` or empty).
-        override: MCP config to layer on top (may be ``None`` or empty).
-
-    Returns:
-        A new merged dict.  Empty dict if both inputs are ``None``.
-    """
-    if base is None and override is None:
-        return {}
-    if base is None:
-        return dict(override) if override else {}
-    if override is None:
-        return dict(base)
-
-    result = dict(base)
-
-    # Merge mcpServers by server name
-    if "mcpServers" in override:
-        existing_servers = result.get("mcpServers", {})
-        for server_name in override["mcpServers"]:
-            if server_name in existing_servers:
-                logger.warning("MCP server '%s' overridden during merge", server_name)
-        result["mcpServers"] = {
-            **existing_servers,
-            **override["mcpServers"],
-        }
-
-    # Other top-level keys: override wins
-    for key, value in override.items():
-        if key != "mcpServers":
-            if key in result:
-                logger.warning("MCP config key '%s' overridden during merge", key)
-            result[key] = value
-
-    return result

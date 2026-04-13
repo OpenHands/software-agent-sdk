@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import (
-    expand_mcp_variables as expand_mcp_variables,
-    find_mcp_config as find_mcp_config,
-    load_mcp_config as _load_mcp_config_canonical,
-)
 from openhands.sdk.skills.exceptions import SkillValidationError
 
 
@@ -49,22 +44,74 @@ def find_skill_md(skill_dir: Path) -> Path | None:
     return None
 
 
+def find_mcp_config(directory: Path) -> Path | None:
+    """Find ``.mcp.json`` in *directory*.
+
+    .. deprecated:: 1.17.0
+        Import from :mod:`openhands.sdk.mcp.config` instead.
+        Will be removed in 1.22.0.
+    """
+    from openhands.sdk.mcp.config import find_mcp_config as _canonical
+    from openhands.sdk.utils.deprecation import warn_deprecated
+
+    warn_deprecated(
+        "Importing find_mcp_config from openhands.sdk.skills.utils",
+        deprecated_in="1.17.0",
+        removed_in="1.22.0",
+        details="Import from openhands.sdk.mcp.config instead.",
+        stacklevel=2,
+    )
+    return _canonical(directory)
+
+
+def expand_mcp_variables(
+    config: dict[str, Any],
+    variables: dict[str, str],
+) -> dict[str, Any]:
+    """Expand ``${VAR}`` placeholders in MCP config.
+
+    .. deprecated:: 1.17.0
+        Import from :mod:`openhands.sdk.mcp.config` instead.
+        Will be removed in 1.22.0.
+    """
+    from openhands.sdk.mcp.config import expand_mcp_variables as _canonical
+    from openhands.sdk.utils.deprecation import warn_deprecated
+
+    warn_deprecated(
+        "Importing expand_mcp_variables from openhands.sdk.skills.utils",
+        deprecated_in="1.17.0",
+        removed_in="1.22.0",
+        details="Import from openhands.sdk.mcp.config instead.",
+        stacklevel=2,
+    )
+    return _canonical(config, variables)
+
+
 def load_mcp_config(
     mcp_json_path: Path,
     skill_root: Path | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Load and parse .mcp.json with variable expansion.
 
     .. deprecated:: 1.17.0
-        Use :func:`openhands.sdk.mcp.config.load_mcp_config` instead.
+        Import from :mod:`openhands.sdk.mcp.config` instead.
         Will be removed in 1.22.0.
 
-    This wrapper converts :class:`ValueError` from the canonical
-    implementation to :class:`SkillValidationError` for backward
-    compatibility.
+    Wraps :class:`ValueError` from the canonical implementation as
+    :class:`SkillValidationError` for backward compatibility.
     """
+    from openhands.sdk.mcp.config import load_mcp_config as _canonical
+    from openhands.sdk.utils.deprecation import warn_deprecated
+
+    warn_deprecated(
+        "Importing load_mcp_config from openhands.sdk.skills.utils",
+        deprecated_in="1.17.0",
+        removed_in="1.22.0",
+        details="Import from openhands.sdk.mcp.config instead.",
+        stacklevel=2,
+    )
     try:
-        return _load_mcp_config_canonical(mcp_json_path, root_dir=skill_root)
+        return _canonical(mcp_json_path, root_dir=skill_root)
     except ValueError as e:
         raise SkillValidationError(str(e)) from e
 

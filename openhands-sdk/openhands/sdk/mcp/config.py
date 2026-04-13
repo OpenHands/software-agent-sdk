@@ -104,3 +104,52 @@ def load_mcp_config(
         raise ValueError(f"Invalid MCP configuration: {e}") from e
 
     return config
+
+
+def merge_mcp_configs(
+    base: dict[str, Any] | None,
+    override: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge two MCP configuration dicts with last-wins semantics.
+
+    Merge rules (Claude Code compatible):
+    - ``mcpServers``: deep-merge by server name (override wins per server)
+    - Other top-level keys: shallow override (override wins)
+
+    Neither input dict is mutated.
+
+    Args:
+        base: Existing MCP config (may be ``None`` or empty).
+        override: MCP config to layer on top (may be ``None`` or empty).
+
+    Returns:
+        A new merged dict.  Empty dict if both inputs are ``None``.
+    """
+    if base is None and override is None:
+        return {}
+    if base is None:
+        return dict(override) if override else {}
+    if override is None:
+        return dict(base)
+
+    result = dict(base)
+
+    # Merge mcpServers by server name
+    if "mcpServers" in override:
+        existing_servers = result.get("mcpServers", {})
+        for server_name in override["mcpServers"]:
+            if server_name in existing_servers:
+                logger.warning("MCP server '%s' overridden during merge", server_name)
+        result["mcpServers"] = {
+            **existing_servers,
+            **override["mcpServers"],
+        }
+
+    # Other top-level keys: override wins
+    for key, value in override.items():
+        if key != "mcpServers":
+            if key in result:
+                logger.warning("MCP config key '%s' overridden during merge", key)
+            result[key] = value
+
+    return result
