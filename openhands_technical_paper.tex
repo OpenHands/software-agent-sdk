@@ -1,0 +1,373 @@
+\section{Architecture}
+\label{sec:architecture}
+
+% OpenHands V1’s architecture emerged from both the operational challenges we encountered in V0 and the ecosystem trade-offs analyzed in \sref{sec:sdk-comparison}. OpenHands V1 is a \emph{broader ecosystem} with application like CLI and GUI. Its foundation is the \textbf{OpenHands Software Agent SDK}---a standalone developer framework that defines the agent core, the event-sourced state model, a typed tool system, and environment-agnostic execution. This section focuses on describing the \emph{SDK architecture} rather than the full product, and explains how the same abstractions support both local prototyping and production deployments.
+
+OpenHands V1’s architecture emerged from both the operational challenges we encountered in V0 analyzed in \sref{sec:challenges}. OpenHands V1 is a \emph{broader ecosystem} with applications like CLI and GUI. Its foundation is the \textbf{OpenHands Software Agent SDK}—a standalone developer framework comprising nine interlocking components: Event-Sourced State Management (\sref{sec:event-sourcing}), LLM (\sref{sec:llm}), Tool System (\sref{sec:tool}), Agent (\sref{sec:agent}), Context Window Management (\sref{sec:context}), Local Conversation (\sref{sec:local-conversation}), Secret Registry (\sref{sec:secret-registry}), Security and Confirmation (\sref{sec:security-confirmation}), and deployment architecture (\sref{sec:deployment}) with local and remote workspace support (\sref{sec:workspace}).
+% \vccomment{time-permitting, still would like to have more prose (1-2 sentences) about how these components fit together}
+% 
+This section focuses on describing the \emph{SDK architecture} rather than the full application and explains how these components collectively support both local and production deployments.
+
+% \input{figures/sdk-ecosystem}
+
+
+\subsection{Modular Four-Package Design}
+\label{sec:overview}
+
+The OpenHands Software Agent SDK is organized into four Python packages that compose together based on deployment needs. 
+% 
+\fref{fig:sdk-ecosystem} shows how these packages interact:
+\begin{itemize}[noitemsep,topsep=0pt,parsep=0pt,partopsep=0pt,leftmargin=8pt]
+  \item \texttt{openhands.sdk}: Core abstractions (Agent, Conversation, LLM, Tool, MCP, etc) and the event system.
+  \item \texttt{openhands.tools}: Concrete tool implementations based on abstractions defined in \texttt{openhands.sdk}.
+  \item \texttt{openhands.workspace}: Execution environments (e.g., Docker, hosted API) that extend SDK base classes.
+  \item \texttt{openhands.agent\_server}: A web server exposing REST/WebSocket APIs for remote execution.
+\end{itemize}
+
+The separation addresses key production concerns that slowed down development, QA, and release in OpenHands V0: (1) \texttt{sdk} stays lightweight for diverse integration scenarios; (2) \texttt{tools} isolates slow-running tool tests from core SDK changes, speeding up development; (3) \texttt{workspace} provides optional sandboxing implementations without bloating the core; and (4) \texttt{agent\_server} offers a generic API server usable with or without containers.
+This modularity enables independent testing, selective dependency management, and incremental release cycles—critical for production deployments where monolithic repositories create QA bottlenecks.
+
+% \begin{figure}[t]
+% \begin{minted}[fontsize=\scriptsize, breaklines, linenos]{python}
+% from openhands.sdk import LLM, Agent, Conversation
+% from openhands.sdk.tool import Tool, register_tool
+% from openhands.tools.execute_bash import BashTool
+
+% register_tool(BashTool.name, BashTool)
+% llm = LLM(model="anthropic/claude-sonnet-4.5", api_key=api_key)
+% agent = Agent(llm=llm, tools=[Tool(name=BashTool.name)])
+% conversation = Conversation(agent=agent, workspace="./workspace")
+
+% # Send message and run agent loop
+% conversation.send_message("Write 3 facts about the project into FACTS.txt.")
+% conversation.run()
+% \end{minted}
+% \caption{Minimal agent example.}
+% \label{fig:hello-world}
+% \end{figure}
+
+
+\subsection{Event-Sourced State Management}
+\label{sec:event-sourcing}
+
+At V1's core lies an event-sourcing pattern treating all interactions as immutable events appended to a log.
+
+\textbf{Event Hierarchy.}
+The event system uses a multi-level hierarchy shown in Table~\ref{tab:event-hierarchy}. At the base, \texttt{Event} provides immutable structure (ID, timestamp, source) with type-safe serialization via discriminated unions \citep{pydantic_discriminated_unions}. \texttt{LLMConvertibleEvent} adds \texttt{to\_llm\_message()} for converting events into LLM format. The action-observation loop uses \texttt{ActionEvent} for tool calls and \texttt{ObservationBaseEvent} subclasses for results -- all these are subclasses of \texttt{LLMConvertibleEvent}. Internal events (condensation, state updates, etc) inherit directly from \texttt{Event} for bookkeeping without LLM exposure.
+
+\begin{table}[!h]
+\centering
+\caption{Event hierarchy organized by parent-child relationships. LLM-convertible events can be sent to the LLM, while internal events handle state management and control flow.}
+\label{tab:event-hierarchy}
+\resizebox{\columnwidth}{!}{%
+% \begin{tabular}{@{}ll@{}}
+% \begin{tabular}{@{}p{4cm}p{6cm}@{}}
+\begin{tabular}{@{}p{6cm}p{12cm}@{}}
+\toprule
+\textbf{Parent Class} & \textbf{Child Classes \& Purpose} \\
+\midrule
+\texttt{Event} & \textit{Base:} Immutable structure, type-safe serialization \\
+\midrule
+\multicolumn{2}{@{}c@{}}{\textit{LLM-Convertible Events (visible to LLM)}} \\
+\texttt{LLMConvertibleEvent} & \texttt{MessageEvent}: User/assistant text messages \\
+  $\hookrightarrow$ \texttt{Event} & \texttt{ActionEvent}: Agent tool calls with thought \& reasoning \\
+                                   & \texttt{SystemPromptEvent}: System prompt with tool schemas \\
+                                   & \texttt{CondensationSummaryEvent}: Summary of forgotten events \\
+                                   & \texttt{ObservationBaseEvent}: Base for tool responses \\
+\midrule
+\texttt{ObservationBaseEvent} & \texttt{ObservationEvent}: Successful tool execution results \\
+  $\hookrightarrow$ \texttt{LLMConvertibleEvent} & \texttt{UserRejectObservation}: User rejected action \\
+                                   & \texttt{AgentErrorEvent}: Agent/scaffold errors \\
+\midrule
+\multicolumn{2}{@{}c@{}}{\textit{Internal Events (not visible to LLM)}} \\
+\texttt{Event} & \texttt{ConversationStateUpdateEvent}: State field changes \\
+               & \texttt{CondensationRequest}: Trigger history compression \\
+               & \texttt{Condensation}: Compression result with forgotten events \\
+               & \texttt{PauseEvent}: User-requested pause \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{ConversationState: Single Source of Truth.}
+By design, components like \texttt{Agent}, \texttt{Tool}, and \texttt{LLM} are immutable and serializable—all changing variables live in \texttt{ConversationState}, making it the \textit{only} stateful component. This class maintains two types of state: (1) mutable metadata fields (e.g., \texttt{agent\_status}, \texttt{stats}, \texttt{confirmation\_policy}) stored directly in the Pydantic model, and (2) an append-only \texttt{EventLog} recording all agent interactions. A FIFO lock ensures thread-safe updates through a two-path pattern: state-only updates for metadata changes, and event-based updates that append to the log.
+
+When persistence is configured, \texttt{ConversationState} selectively writes changes to disk. Metadata fields serialize to a single \texttt{base\_state.json} file on each modification, while \texttt{EventStore} persists events as individual JSON files to the corresponding directory. This dual-path design enables efficient incremental persistence—only new events write to disk, avoiding rewrites of large histories. Conversations resume by loading \texttt{base\_state.json} and replaying events from the directory, with agents automatically detecting incomplete conversations and continuing from the last processed event.
+
+\textbf{Systems Overhead.}
+To quantify the I/O cost of event sourcing, we replay real payloads from 433 SWE-Bench Verified conversations (39,870 events) through the production \texttt{LocalFileStore} path (Table~\ref{tab:event-sourcing-overhead}). All persist and recovery latencies are negligible relative to LLM round-trip times, storage grows linearly, and crash recovery completes in under 20\,ms even for the longest observed conversation.
+
+\begin{table}[!h]
+\centering
+\caption{Event-sourcing systems overhead measured on SWE-Bench Verified traces (433 conversations, 39,870 events).}
+\label{tab:event-sourcing-overhead}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Metric} & \textbf{Median} & \textbf{P95} & \textbf{At max (358 events)} \\
+\midrule
+Per-event persist latency & 0.17\,ms & 0.27\,ms & --- \\
+Action cycle persist (Action+Obs) & 0.36\,ms & --- & --- \\
+Full state replay & 2.3\,ms & --- & $<$10\,ms \\
+Crash recovery (replay + unmatched-action scan) & $\sim$5\,ms & --- & $<$20\,ms \\
+Storage per conversation & 380\,KB & --- & 3.4\,MB \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\subsection{LLM Abstraction Layer}
+\label{sec:llm}
+The \texttt{LLM} class provides a unified interface to language models. Through LiteLLM, it supports 100+ providers with two APIs: the standard Chat Completions API for broad compatibility and the newer OpenAI Responses API for latest reasoning models.
+
+\textbf{Native Support for Reasoning / Extended Thinking.}
+The SDK captures and processes advanced native reasoning fields from frontier models, such as \texttt{ThinkingBlock} for Anthropic's extended thinking, and \texttt{ReasoningItemModel} for OpenAI's reasoning. The SDK supports the OpenAI Responses API transparently for the agent, enabling client developers to use the agent with advanced reasoning models like GPT-5-Codex that are only available on the recently released Responses API.
+
+\textbf{Built-in Support for Non-function-calling Models.}
+For models without native function calling support, the SDK implements a \texttt{NonNativeToolCallingMixin}, which converts tool schemas to text-based prompt instructions and parses tool calls from model outputs using structured prompts and regex-based extraction. This enables models that do not support function calling to be used for agentic tasks, dramatically expanding the set of usable models.
+
+\textbf{Multi-LLM Routing Support.}
+SDK features \texttt{RouterLLM}, a subclass of \texttt{LLM} that enables the agent to use different models for different LLM requests.
+% 
+Custom implementations can extend \texttt{RouterLLM} and implement \texttt{select\_llm()} to choose a different model based on different LLM inputs.
+Please refer to \fref{fig:llm-router} for a pseudo-code example.
+
+\begin{figure}[t]
+% \begin{minted}[fontsize=\tiny, breaklines, linenos]{python}
+\begin{minted}[fontsize=\scriptsize, breaklines, linenos]{python}
+class RouterLLM(LLM):
+    llms_for_routing: dict[str, LLM]  # Available models
+    
+    @abstractmethod
+    def select_llm(self, messages: list[Message]) -> str:
+        """Return key of LLM to use from llms_for_routing."""
+
+    def completion(
+        self, messages: list[Message], ... **kwargs,
+    ) -> LLMResponse:
+        # Select appropriate LLM
+        selected_model = self.select_llm(messages)
+        self.active_llm = self.llms_for_routing[selected_model]
+        return self.active_llm.completion(...)
+
+class MultimodalRouter(RouterLLM):
+    def select_llm(self, messages: list[Message]) -> str:
+        has_images = any(m.contains_image for m in messages)
+        return "primary" if has_images else "secondary"
+
+# Usage: route text to cheaper model, images to multimodal model
+router = MultimodalRouter(llms_for_routing={
+    "primary": LLM(model="claude-sonnet-4-5"),
+    "secondary": LLM(model="devstral-small")})
+agent = Agent(llm=router, tools=tools)
+\end{minted}
+% \vspace{-17pt}
+\caption{Multi-LLM routing example. Routers inherit from LLM to maintain a unified interface while delegating to selected models.}
+\label{fig:llm-router}
+\end{figure}
+
+% \paragraph{Built-in Conversation Cost \& Token Tracking}
+% SDK's \texttt{Metrics} class automatically tracks token usage, latency, cost, and error rates for all LLM invocations. 
+% This provides visibility into agent performance and helps identify optimization opportunities without requiring external observability infrastructure.\en{This paragraph is correct, but it seems like a very common feature in agent applications/SDKs?} \xw{agree - let's remove it for now for the sake of space}
+
+\subsection{Tool System}
+\label{sec:tool}
+
+The V1 tool system provides a type-safe and extensible framework grounded in an \textbf{Action–Execution–Observation} pattern. As illustrated in \fref{fig:tool-definition}, tool usage follows a strict contract: the LLM proposes JSON tool calls, which are validated and parsed into \texttt{Action}; these are \texttt{executed} and the results are returned as \texttt{Observation}.
+% 
+This abstraction unifies how the SDK supports both custom tools and MCP tools, providing a single standard interface for defining, invoking, and managing tools.
+
+\textbf{Action–Execution–Observation Pattern.}
+Each tool is defined by three well-separated components:
+\begin{itemize}[itemsep=2pt,topsep=0pt,parsep=0pt,partopsep=0pt,leftmargin=8pt]
+    \item \textbf{Action} — Specifies the input schema for a tool call. LLM-generated arguments are validated against a Pydantic model before execution, ensuring type safety and preventing malformed requests.
+    \item \textbf{Execution} — Implements the tool’s actual logic via the \texttt{ToolExecutor}, which receives a validated \texttt{Action} and performs the underlying execution.
+    \item \textbf{Observation} — Captures the output of the execution, defining a structured return schema, and converting results (or errors) into a LLM-compatible format.
+\end{itemize}
+
+\begin{figure}[!ht]
+% \begin{minted}[fontsize=\tiny, breaklines, linenos]{python}
+\begin{minted}[fontsize=\scriptsize, breaklines, linenos]{python}
+class Schema(BaseModel):
+    @classmethod
+    def to_mcp_schema(cls) -> dict[str, Any]
+    @classmethod
+    def from_mcp_schema(cls: type[S], model_name: str, schema: dict[str, Any]) -> type["S"]
+
+class Action(Schema):
+    """Tool input with schema validation."""
+    def visualize(self) -> str  # For UI display
+
+class Observation(Schema):
+    """Tool output with LLM conversion."""
+    def to_llm_content(self) -> str  # For LLM context
+
+class ToolDefinition[ActionT, ObservationT](BaseModel):
+    action_type: type[Action]
+    observation_type: type[Observation]
+    executor: ToolExecutor
+    def to_mcp_tool(self, ...) -> dict
+    def to_openai_tool(self) -> dict  # ChatCompletions API format
+    def to_responses_tool(self) -> dict  # Responses API format
+
+class ToolExecutor[ActionT, ObservationT](ABC):
+    """Executor function type for a Tool."""
+    def __call__(self, action: ActionT) -> ObservationT
+\end{minted}
+% \vspace{-20pt}
+\caption{Tool system structure. Actions validate inputs, executors run logic, and observations format outputs for LLMs.}
+\label{fig:tool-definition}
+\end{figure}
+
+
+\textbf{MCP Integration.}
+The same abstraction additionally enables seamless support for the MCP. MCP tools are treated as first-class SDK tools: their JSON Schemas are automatically translated into \texttt{Action} models, and their results are surfaced as structured \texttt{Observation}. 
+% 
+\texttt{MCPToolDefinition} extends the standard \texttt{ToolDefinition} interface, while \texttt{MCPToolExecutor} delegates execution to FastMCP’s \texttt{MCPClient}, which manages server communication and transport details. As a result, external MCP tools behave identically to native tools—validated on input, type-safe at runtime, and serialized for LLM consumption—highlighting the flexibility and extensibility of the core tool abstraction.
+% No custom logic or protocol-specific API surface is needed in tool authorship.
+
+\textbf{Tool Registry and Distributed Execution.}
+SDK supports distributed agent architectures by decoupling \emph{tool specifications} from \emph{implementations} using a registry-based resolution mechanism. Because Python executors are non-serializable, tools are represented as lightweight \texttt{Tool} specification objects containing only a registered name and JSON-serializable parameters. Through \texttt{register\_tool(name, ToolDefinition)}, each identifier is bound to a resolver that reconstructs the full definition—including its executor—at runtime based on conversation context. This allows tool specs to \textit{cross process or network boundaries} as pure JSON, enables lazy instantiation with environment-specific state (e.g., workspace paths), and ensures a uniform interface for local and remote execution.
+% The approach preserves type safety while supporting scalable, distributed agent deployments where clients declare tools and remote servers reconstruct and execute them.
+
+\subsection{Agent: Stateless Event Processor}
+\label{sec:agent}
+
+The agent abstraction separates \emph{configuration} from \emph{execution state}. Agents are defined as stateless, immutable specifications, including LLM settings, tool specifications, security policies, and agent content, that can be serialized and transmitted across process boundaries.
+
+\textbf{Event-Driven Execution.}
+Agents execute through an event-driven loop that processes conversation state step-by-step. Rather than directly returning results, agents emit structured events (e.g., messages, actions, observations) through callbacks, i.e. \texttt{on\_event(event: Event) -> None}, separating event generation from execution control. This design enables: (1) \textbf{security interleaving}—actions can be reviewed or blocked before execution based on risk analysis (\sref{sec:security-confirmation}); (2) \textbf{incremental execution}—the agent advances one step at a time, supporting pause/resume, recovery from context overflows, and condensation for long conversations; and (3) \textbf{event streaming}—intermediate results (e.g., observations and reasoning traces) are emitted in real time for UI updates and monitoring. 
+% Each cycle integrates condensation, LLM reasoning, action validation, policy evaluation, and tool execution, updating the conversation state through emitted events.
+
+
+\textbf{Customizing Agent Context with Skills and Prompts.}
+\texttt{AgentContext} centralizes all inputs that shape LLM behavior, including prefixes/suffixes for system/user messages and user-defined \texttt{Skill} objects. 
+Skills can be defined programmatically or loaded from markdown files (e.g., \texttt{.openhands/skills/}, or compatible formats like \texttt{.cursorrules}, \texttt{agents.md}). 
+Each skill may always be active (\texttt{trigger=None}) to persistently augment the system prompt, or conditionally activated via keyword matching based on user input; skills may also include MCP tools. 
+This design enables rich contextual and behavioral customization without modifying agent logic.
+
+\textbf{Sub-Agent Delegation.}
+The SDK supports hierarchical agent coordination through a delegation tool that demonstrates the extensibility of the tool abstraction. 
+Sub-agents operate as independent conversations that inherit the parent’s model configuration and workspace context, enabling structured parallelism and isolation without any changes to the core SDK. 
+The current implementation provides blocking parallel execution, implemented as a standard tool in the \texttt{openhands.tools} package, where the parent agent spawns and monitors sub-agents until all tasks complete. 
+This pattern exemplifies how complex coordination behaviors—such as asynchronous delegation, dynamic scheduling, or fault-tolerant recovery—can be implemented entirely as user-defined tools, reinforcing the SDK’s design principle for extensibility that advanced agent orchestration requires no modification to the core framework.
+
+\subsection{Context Window Management}
+\label{sec:context}
+
+To ensure the ever-growing history fits inside the LLM's context, the \texttt{Condenser} system drops events and replaces them with summaries whenever the history grows too large. 
+
+The results of any given condensation are stored in the event log as a \texttt{CondensationEvent}. Before sending the event history to the LLM, the agent \emph{applies} these condensation events by removing forgotten events and inserting summaries. This strategy lets the SDK preserve the entirety of the event log, regardless of condensation, while also keeping the condenser implementations stateless.
+
+Condensers enable long-running conversations and, as a mechanism for constraining the tokens consumed per step, can reduce the overall cost of a conversation. \texttt{LLMSummarizingCondenser} (the default condenser) has been shown to reduce API costs by up to $2 \times$ with no degradation in agent performance \citep{smith2025-openhands-context-condensensation}.
+
+\subsection{Local Conversation}
+\label{sec:local-conversation}
+
+\texttt{LocalConversation} provides the simplest and most direct execution mode of the SDK, designed for rapid iteration and debuggability. It runs the full agent loop—LLM calls, tool invocation, event callbacks, and state updates—entirely in-process without network or container overhead. The core API offers intuitive control: developers can initialize a conversation with \texttt{Conversation(agent, workspace)}, send inputs using \texttt{send\_message()}, start execution via \texttt{run()}, pause and resume with \texttt{pause()} and \texttt{run()} respectively, inspect results through event callbacks or direct access of \texttt{.state} attribute.
+% 
+Pausing automatically persists state and emits a \texttt{PauseEvent}, allowing agents to resume from the same point later. 
+
+
+\subsection{Secret Registry}
+\label{sec:secret-registry}
+
+\texttt{SecretRegistry} provides secure, late-bound, and remotely manageable credentials for tool execution. Each conversation maintains its own instance, ensuring strict per-session isolation. Tools access secrets only at execution time, and all secret values appearing in outputs are masked to prevent leakage. For example, the Bash Tool scans commands for secret keys, exports the referenced ones as environment variables, and replaces their occurrences in results with a constant mask (\texttt{<secret-hidden>}). Secrets may be static values or callables (e.g., token refreshers) and can originate from local stores or HTTP-based sources with secret-aware header handling. New custom sources can be easily added to integrate with external secret stores. All secrets are redacted during serialization and can be encrypted with a configurable cipher. They can also be updated mid-conversation—locally or through the agent server API—supporting live rotation without restarting agents.
+
+
+\subsection{Security and Confirmation}
+\label{sec:security-confirmation}
+
+AI agents can perform risky actions, making security especially important when they run on a user’s machine. To address this, SDK treats security as a first-class concern within the agent’s control loop. Two abstractions form the core of this design: the \texttt{SecurityAnalyzer}, which rates each tool call as low, medium, high, or unknown risk, and the \texttt{ConfirmationPolicy}, which determines whether user approval is required before execution based on the action’s details and assessed risk.
+
+When approval is required, the agent pauses in a special \texttt{WAITING\_FOR\_CONFIRMATION} state until the user explicitly approves or rejects the action. Upon rejection, it may retry with safer alternatives. The confirmation policy can be updated dynamically during a session, enabling adaptive trust—such as relaxing restrictions for safe, read-only operations like grep.
+
+This architecture separates risk assessment from enforcement, allowing developers define custom \texttt{SecurityAnalyzer} and \texttt{ConfirmationPolicy} without touching tool executors or core logic. The SDK includes a built-in pair: \texttt{LLMSecurityAnalyzer}, which appends a \texttt{security\_risk} field to tool calls, and \texttt{ConfirmRisky} policy, which blocks actions exceeding a configurable risk threshold (default: high). 
+% All analyses, approvals, and rejections are recorded in the event log for complete auditability.
+
+\subsection{Deployment Architecture: Local to Remote}
+\label{sec:deployment}
+
+OpenHands Agent SDK's key innovation is seamless transition from local prototyping to remote production with minimal code changes. 
+This is enabled by the agent API server and the abstraction of \texttt{Conversation} and \texttt{Workspace}.
+
+\textbf{Conversation Factory: Local \& Remote Conversation.}
+The \texttt{Conversation} class serves as a factory entry point that abstracts over local and remote execution. When instantiated with a string path or \texttt{LocalWorkspace}, it returns a \texttt{LocalConversation} that executes the full agent loop in-process, directly invoking tools and updating state synchronously (\sref{sec:local-conversation}).
+% 
+When provided a \texttt{RemoteWorkspace}, the same call transparently constructs a \texttt{RemoteConversation}, which serializes the agent configuration and delegates execution to an agent server over HTTP and WebSocket. 
+% 
+Both implementations share an identical API allowing seamless migration from local prototyping to containerized multi-user deployments without code changes. This factory pattern encapsulates all environment-specific logic behind a unified interface, achieving the SDK’s goal of “local-first, deploy-anywhere” development: the same agent code that runs interactively in a notebook can scale to distributed production simply by swapping the workspace type.
+
+
+\begin{figure}[!h]
+\centering
+\begin{minted}[fontsize=\scriptsize, breaklines, linenos]{diff}
+--- local.py
++++ remote.py
+@@
+ from openhands.sdk import LLM, Conversation
+ from openhands.sdk.preset.default import get_default_agent
+ llm = LLM(model="anthropic/claude-sonnet-4.1", ...)
+ agent = get_default_agent(llm=llm)
+-conversation = Conversation(agent=agent)
+-conversation.send_message("Create hello.py")
+-conversation.run()
++from openhands.workspace import DockerWorkspace
++with DockerWorkspace(...) as workspace:
++  conversation = Conversation(agent=agent, workspace=workspace)
++  conversation.send_message("Create hello.py")
++  conversation.run()
+\end{minted}
+% \vspace{-18pt}
+\caption{Local-to-remote transition requires only importing and instantiating \texttt{DockerWorkspace}. All other code (agent configuration, LLM setup, message handling) remains unchanged.}
+\label{fig:local-remote-code}
+\end{figure}
+
+
+\textbf{Agent Server.}
+The \texttt{agent\_server} module implements an API server for remote agent execution (\fref{fig:agent-server-arch}). It exposes REST endpoints for conversation control (e.g., \texttt{POST /conversations}, \texttt{GET /conversations/{id}}) and WebSocket for event streaming. When a \texttt{RemoteConversation} starts, it serializes agent configuration—including LLM settings, tools, and context—into JSON and submits it to \texttt{/conversations}. The server reconstructs the agent, launches a local execution loop, and streams structured events back in real time, enabling responsive UIs without polling overhead.
+
+\input{figures/agent-server-arch}
+
+% \textbf{Containerized Deployment.}
+To support scalable and isolated execution, we provide official Docker images that bundle the full agent-server stack—including the API server, VSCode Web, VNC desktop, and Chromium browser. Each agent instance runs in an independent container with a dedicated file system, environment, and resource. This containerized design simplifies deployment and enables SaaS-style multi-tenancy while preserving workspace isolation.
+
+\begin{figure}[!h]
+% \begin{minted}[fontsize=\tiny, breaklines, linenos]{python}
+\begin{minted}[fontsize=\scriptsize, breaklines, linenos]{python}
+class BaseWorkspace(ABC):
+    def __enter__(self) -> "BaseWorkspace"
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None
+    def execute_command(self, command: str) -> CommandOutput:
+        """Run shell command in workspace environment."""
+    def file_upload(self, path: str, content: bytes) -> None:
+        """Write file to workspace filesystem."""
+    def file_download(self, path: str) -> bytes:
+        """Read file from workspace filesystem."""
+
+class LocalWorkspace(BaseWorkspace):
+    def execute_command(self, cmd: str) -> CommandOutput:
+        return subprocess.run(cmd, shell=True, capture_output=True)
+
+class RemoteWorkspace(BaseWorkspace):
+    def execute_command(self, cmd: str) -> CommandOutput:
+        return self._api_client.post("/execute", json={"command": cmd})
+
+# Workspace factor class
+class Workspace:
+    def __new__(cls, *, host=None, working_dir="workspace/project", api_key=None):
+        if host is provided:
+            return RemoteWorkspace(working_dir, host, api_key)
+        else:
+            return LocalWorkspace(working_dir)
+\end{minted}
+% \vspace{-20pt}
+\caption{Workspace interface. Implementations handle environment details.}
+\label{fig:workspace-interface}
+\end{figure}
+
+\textbf{Workspace.}
+\label{sec:workspace}
+The \texttt{BaseWorkspace} abstract class enables sandboxes for agents.
+\textbf{Local Workspace} executes in-process against the host filesystem and shell; it is effectively a thin, no-op wrapper that forwards file/command/git operations directly, enabling fast prototyping without network hops. 
+\textbf{Remote Workspace} preserves the same interface but delegates all operations over HTTP to an Agent Server (see \fref{fig:workspace-interface}), with concrete sponsors including a containerized server (\texttt{DockerWorkspace}) or a API-managed runtime (\texttt{APIRemoteWorkspace}). The factory \texttt{Workspace(\ldots)} resolves to local when only \texttt{working\_dir} is provided and to remote when \texttt{host}/runtime parameters are present, ensuring the agent code remains unchanged across environments.

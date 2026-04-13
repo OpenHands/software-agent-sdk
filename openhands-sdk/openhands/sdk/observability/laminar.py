@@ -32,8 +32,13 @@ def _get_int_env(key: str) -> int | None:
     return None
 
 
-def maybe_init_laminar():
-    """Initialize Laminar if the environment variables are set.
+def maybe_init_laminar(api_key: str | None = None):
+    """Initialize Laminar if the environment variables are set or api_key is provided.
+
+    Args:
+        api_key: Optional Laminar API key. If provided, used instead of reading from
+            environment variables. This allows secure credential injection without
+            exposing secrets in environment variables.
 
     Example configuration:
 
@@ -53,8 +58,13 @@ def maybe_init_laminar():
     LMNR_HTTP_PORT=8000
     LMNR_GRPC_PORT=8001
     """
-    if should_enable_observability():
-        if _is_otel_backend_laminar():
+    if should_enable_observability(api_key=api_key):
+        if _is_otel_backend_laminar(api_key=api_key):
+            # If api_key is provided, set it in environment for Laminar initialization
+            if api_key:
+                import os
+                os.environ["LMNR_PROJECT_API_KEY"] = api_key
+
             Laminar.initialize(
                 http_port=_get_int_env("LMNR_HTTP_PORT"),
                 grpc_port=_get_int_env("LMNR_GRPC_PORT"),
@@ -112,7 +122,18 @@ def observe[**P, R](
     return decorator
 
 
-def should_enable_observability():
+def should_enable_observability(api_key: str | None = None):
+    """Check if observability/tracing should be enabled.
+
+    Args:
+        api_key: Optional Laminar API key. If provided, enables observability
+            even if no environment variables are set.
+
+    Returns:
+        True if observability should be enabled, False otherwise.
+    """
+    if api_key:
+        return True
     keys = [
         "LMNR_PROJECT_API_KEY",
         "OTEL_ENDPOINT",
@@ -126,12 +147,18 @@ def should_enable_observability():
     return False
 
 
-def _is_otel_backend_laminar():
+def _is_otel_backend_laminar(api_key: str | None = None):
     """Simple heuristic to check if the OTEL backend is Laminar.
+
     Caveat: This will still be True if another backend uses the same
     authentication scheme, and the user uses LMNR_PROJECT_API_KEY
     instead of OTEL_HEADERS to authenticate.
+
+    Args:
+        api_key: Optional Laminar API key. If provided, backend is Laminar.
     """
+    if api_key:
+        return True
     key = get_env("LMNR_PROJECT_API_KEY")
     return key is not None and key != ""
 

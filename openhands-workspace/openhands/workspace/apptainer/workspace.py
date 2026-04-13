@@ -75,6 +75,12 @@ class ApptainerWorkspace(RemoteWorkspace):
         default_factory=lambda: ["DEBUG"],
         description="Environment variables to forward to the container.",
     )
+    laminar_api_key: str | None = Field(
+        default=None,
+        description="Laminar API key for observability tracing. "
+        "When provided, injected as LMNR_PROJECT_API_KEY in the container. "
+        "Should NOT be included in forward_env to avoid logging leaks.",
+    )
     mount_dir: str | None = Field(
         default=None,
         description="Optional host directory to mount into the container.",
@@ -243,7 +249,21 @@ class ApptainerWorkspace(RemoteWorkspace):
         env_args: list[str] = []
         for key in self.forward_env:
             if key in os.environ:
+                # Skip LMNR_PROJECT_API_KEY if it's in forward_env to avoid log leaks
+                # Use laminar_api_key field instead
+                if key == "LMNR_PROJECT_API_KEY":
+                    logger.warning(
+                        "LMNR_PROJECT_API_KEY is in forward_env list. "
+                        "This may cause credential leaks in logs. "
+                        "Use the 'laminar_api_key' field instead."
+                    )
+                    continue
                 env_args += ["--env", f"{key}={os.environ[key]}"]
+
+        # Inject Laminar API key directly (not via environment variable)
+        # This ensures credentials don't appear in logged payloads
+        if self.laminar_api_key:
+            env_args += ["--env", f"LMNR_PROJECT_API_KEY={self.laminar_api_key}"]
 
         # Prepare bind mounts
         bind_args: list[str] = []
