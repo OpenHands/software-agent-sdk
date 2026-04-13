@@ -90,6 +90,12 @@ class APIRemoteWorkspace(RemoteWorkspace):
         "When provided, injected as LMNR_PROJECT_API_KEY in the runtime environment. "
         "Should NOT be included in forward_env to avoid logging leaks.",
     )
+    laminar_span_context: str | None = Field(
+        default=None,
+        description="Laminar span context for trace continuity. "
+        "When provided, injected as LMNR_SPAN_CONTEXT in the runtime environment. "
+        "Should NOT be included in forward_env to avoid logging leaks.",
+    )
 
     _runtime_id: str | None = PrivateAttr(default=None)
     _runtime_url: str | None = PrivateAttr(default=None)
@@ -213,6 +219,10 @@ class APIRemoteWorkspace(RemoteWorkspace):
         # This ensures credentials don't appear in logged payloads
         if self.laminar_api_key:
             environment["LMNR_PROJECT_API_KEY"] = self.laminar_api_key
+
+        # Inject Laminar span context for trace continuity
+        if self.laminar_span_context:
+            environment["LMNR_SPAN_CONTEXT"] = self.laminar_span_context
 
         # For binary target, use the standalone binary
         payload: dict[str, Any] = {

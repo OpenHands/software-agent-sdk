@@ -81,6 +81,12 @@ class ApptainerWorkspace(RemoteWorkspace):
         "When provided, injected as LMNR_PROJECT_API_KEY in the container. "
         "Should NOT be included in forward_env to avoid logging leaks.",
     )
+    laminar_span_context: str | None = Field(
+        default=None,
+        description="Laminar span context for trace continuity. "
+        "When provided, injected as LMNR_SPAN_CONTEXT in the container. "
+        "Should NOT be included in forward_env to avoid logging leaks.",
+    )
     mount_dir: str | None = Field(
         default=None,
         description="Optional host directory to mount into the container.",
@@ -264,6 +270,10 @@ class ApptainerWorkspace(RemoteWorkspace):
         # This ensures credentials don't appear in logged payloads
         if self.laminar_api_key:
             env_args += ["--env", f"LMNR_PROJECT_API_KEY={self.laminar_api_key}"]
+
+        # Inject Laminar span context for trace continuity
+        if self.laminar_span_context:
+            env_args += ["--env", f"LMNR_SPAN_CONTEXT={self.laminar_span_context}"]
 
         # Prepare bind mounts
         bind_args: list[str] = []
