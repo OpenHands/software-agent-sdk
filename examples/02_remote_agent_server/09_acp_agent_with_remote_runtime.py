@@ -41,9 +41,9 @@ os.environ["ANTHROPIC_API_KEY"] = llm_api_key
 runtime_api_key = os.getenv("RUNTIME_API_KEY")
 assert runtime_api_key, "RUNTIME_API_KEY required"
 
-# If GITHUB_SHA is set (e.g. running in CI of a PR), use that to ensure consistency
-# Otherwise, use the latest image from main
-server_image_sha = os.getenv("GITHUB_SHA") or "main"
+# AGENT_SERVER_SHA is set by CI to the PR head commit SHA
+# This avoids conflict with GitHub's default GITHUB_SHA (merge commit)
+server_image_sha = os.getenv("AGENT_SERVER_SHA") or "main"
 server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-amd64"
 logger.info(f"Using server image: {server_image}")
 
