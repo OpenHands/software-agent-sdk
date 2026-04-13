@@ -27,7 +27,7 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
-from openhands.sdk.context.skills import (
+from openhands.sdk.skills import (
     discover_skill_resources,
     load_skills_from_dir,
 )

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from openhands.sdk.context.skills import Skill, SkillValidationError
+from openhands.sdk.skills import Skill, SkillValidationError
 
 
 def test_skill_with_agentskills_fields(tmp_path) -> None:

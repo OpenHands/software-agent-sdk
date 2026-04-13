@@ -6,6 +6,7 @@ import threading
 from collections.abc import Mapping
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
@@ -61,11 +62,14 @@ def execute_command(
     if isinstance(cmd, str):
         cmd_to_run = cmd
         use_shell = True
-        logger.info("$ %s", cmd)
+        cmd_str = cmd
     else:
         cmd_to_run = cmd
         use_shell = False
-        logger.info("$ %s", " ".join(shlex.quote(c) for c in cmd))
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+
+    # Log the command with sensitive values redacted
+    logger.info("$ %s", redact_text_secrets(cmd_str))
 
     proc = subprocess.Popen(
         cmd_to_run,

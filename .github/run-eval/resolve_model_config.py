@@ -242,6 +242,16 @@ MODELS = {
             "disable_vision": True,
         },
     },
+    "glm-5.1": {
+        "id": "glm-5.1",
+        "display_name": "GLM-5.1",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5.1",
+            "temperature": 0.0,
+            # OpenRouter glm-5.1 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
+    },
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",
         "display_name": "Qwen3 Coder Next",
@@ -280,6 +290,15 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/converse-nemotron-super-3-120b",
             "temperature": 0.0,
+        },
+    },
+    "trinity-large-thinking": {
+        "id": "trinity-large-thinking",
+        "display_name": "Trinity Large Thinking",
+        "llm_config": {
+            "model": "litellm_proxy/trinity-large-thinking",
+            "temperature": 1.0,
+            "top_p": 0.95,
         },
     },
 }

@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from openhands.sdk.context.skills import Skill
-from openhands.sdk.context.skills.execute import (
+from openhands.sdk.skills import Skill
+from openhands.sdk.skills.execute import (
     MAX_OUTPUT_SIZE,
     _execute_inline_command,
     render_content_with_commands,

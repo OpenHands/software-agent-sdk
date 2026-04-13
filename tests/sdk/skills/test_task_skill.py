@@ -1,5 +1,5 @@
-from openhands.sdk.context.skills import Skill, TaskTrigger
-from openhands.sdk.context.skills.types import InputMetadata
+from openhands.sdk.skills import Skill, TaskTrigger
+from openhands.sdk.skills.types import InputMetadata
 
 
 def test_task_skill_prompt_appending():
