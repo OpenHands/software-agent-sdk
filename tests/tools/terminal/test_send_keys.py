@@ -54,6 +54,23 @@ def test_supported_special_keys_contains_essentials() -> None:
         assert key in SUPPORTED_SPECIAL_KEYS
 
 
+def test_subprocess_specials_match_contract() -> None:
+    """Backend specials dicts must stay in sync with SUPPORTED_SPECIAL_KEYS."""
+    from openhands.tools.terminal.terminal.subprocess_terminal import (
+        _SUBPROCESS_SPECIALS,
+    )
+
+    assert set(_SUBPROCESS_SPECIALS.keys()) == SUPPORTED_SPECIAL_KEYS
+
+
+def test_tmux_specials_match_contract() -> None:
+    from openhands.tools.terminal.terminal.tmux_terminal import (
+        _TMUX_SPECIALS,
+    )
+
+    assert set(_TMUX_SPECIALS.keys()) == SUPPORTED_SPECIAL_KEYS
+
+
 # ── SubprocessTerminal.send_keys ────────────────────────────────────
 
 
@@ -88,6 +105,14 @@ def test_subprocess_send_keys_ctrl_variants(subprocess_terminal) -> None:
     """CTRL-x and CTRL+x forms should work."""
     subprocess_terminal.send_keys("CTRL-a")
     subprocess_terminal.send_keys("CTRL+e")
+
+
+def test_subprocess_send_keys_echo(subprocess_terminal) -> None:
+    """Verify data actually flows through the PTY dispatch path."""
+    subprocess_terminal.send_keys("echo hello_subprocess")
+    time.sleep(0.5)
+    screen = subprocess_terminal.read_screen()
+    assert "hello_subprocess" in screen
 
 
 # ── TmuxTerminal.send_keys ─────────────────────────────────────────

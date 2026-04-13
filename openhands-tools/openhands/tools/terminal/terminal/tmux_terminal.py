@@ -20,6 +20,25 @@ from openhands.tools.terminal.terminal.interface import parse_ctrl_key
 
 logger = get_logger(__name__)
 
+# Map normalized special key names to tmux key names.
+_TMUX_SPECIALS: dict[str, str] = {
+    "ENTER": "Enter",
+    "TAB": "Tab",
+    "BS": "BSpace",
+    "ESC": "Escape",
+    "UP": "Up",
+    "DOWN": "Down",
+    "LEFT": "Left",
+    "RIGHT": "Right",
+    "HOME": "Home",
+    "END": "End",
+    "PGUP": "PPage",
+    "PGDN": "NPage",
+    "C-L": "C-l",
+    "C-D": "C-d",
+    "C-C": "C-c",
+}
+
 
 class TmuxTerminal(TerminalInterface):
     """Tmux-based terminal backend.
@@ -130,24 +149,6 @@ class TmuxTerminal(TerminalInterface):
             raise RuntimeError("Tmux terminal is not initialized")
 
         # Map normalized names to tmux key names
-        _TMUX_SPECIALS = {
-            "ENTER": "Enter",
-            "TAB": "Tab",
-            "BS": "BSpace",
-            "ESC": "Escape",
-            "UP": "Up",
-            "DOWN": "Down",
-            "LEFT": "Left",
-            "RIGHT": "Right",
-            "HOME": "Home",
-            "END": "End",
-            "PGUP": "PPage",
-            "PGDN": "NPage",
-            "C-L": "C-l",
-            "C-D": "C-d",
-            "C-C": "C-c",
-        }
-
         upper = text.strip().upper()
 
         # 1) Named specials

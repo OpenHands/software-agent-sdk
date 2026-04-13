@@ -37,6 +37,25 @@ logger = get_logger(__name__)
 
 ENTER = b"\n"
 
+# Map normalized special key names to ANSI escape bytes for PTY.
+_SUBPROCESS_SPECIALS: dict[str, bytes] = {
+    "ENTER": ENTER,
+    "TAB": b"\t",
+    "BS": b"\x7f",  # Backspace (DEL)
+    "ESC": b"\x1b",
+    "UP": b"\x1b[A",
+    "DOWN": b"\x1b[B",
+    "RIGHT": b"\x1b[C",
+    "LEFT": b"\x1b[D",
+    "HOME": b"\x1b[H",
+    "END": b"\x1b[F",
+    "PGUP": b"\x1b[5~",
+    "PGDN": b"\x1b[6~",
+    "C-L": b"\x0c",  # Ctrl+L
+    "C-D": b"\x04",  # Ctrl+D (EOF)
+    "C-C": b"\x03",  # Ctrl+C (SIGINT)
+}
+
 
 def _normalize_eols(raw: bytes) -> bytes:
     # CRLF/LF/CR -> CR, so each logical line is terminated with \r for the TTY
@@ -351,36 +370,16 @@ class SubprocessTerminal(TerminalInterface):
         if not self._initialized:
             raise RuntimeError("PTY terminal is not initialized")
 
-        specials = {
-            "ENTER": ENTER,
-            "TAB": b"\t",
-            "BS": b"\x7f",  # Backspace (DEL)
-            "ESC": b"\x1b",
-            "UP": b"\x1b[A",
-            "DOWN": b"\x1b[B",
-            "RIGHT": b"\x1b[C",
-            "LEFT": b"\x1b[D",
-            "HOME": b"\x1b[H",
-            "END": b"\x1b[F",
-            "PGUP": b"\x1b[5~",
-            "PGDN": b"\x1b[6~",
-            "C-L": b"\x0c",  # Ctrl+L
-            "C-D": b"\x04",  # Ctrl+D (EOF)
-            "C-C": b"\x03",  # Ctrl+C (SIGINT)
-        }
-
         upper = text.upper().strip()
         payload: bytes | None = None
 
         # Named specials
-        if upper in specials:
-            payload = specials[upper]
+        if upper in _SUBPROCESS_SPECIALS:
+            payload = _SUBPROCESS_SPECIALS[upper]
             # Do NOT auto-append another EOL; special already includes it when needed.
             append_eol = False
         # Generic Ctrl-<letter>
-        elif parse_ctrl_key(text) is not None:
-            ctrl = parse_ctrl_key(text)
-            assert ctrl is not None
+        elif (ctrl := parse_ctrl_key(text)) is not None:
             # ctrl is "C-x" — extract the letter
             key_char = ctrl[-1].upper()
             payload = bytes([ord(key_char) & 0x1F])
