@@ -12,6 +12,7 @@ from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import find_mcp_config, load_mcp_config
 from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.execute import render_content_with_commands
 from openhands.sdk.skills.trigger import (
@@ -21,13 +22,11 @@ from openhands.sdk.skills.trigger import (
 from openhands.sdk.skills.types import InputMetadata
 from openhands.sdk.skills.utils import (
     discover_skill_resources,
-    find_mcp_config,
     find_regular_md_files,
     find_skill_md_directories,
     find_third_party_files,
     get_skills_cache_dir,
     load_and_categorize,
-    load_mcp_config,
     update_skills_repository,
     validate_skill_name,
 )
@@ -326,7 +325,10 @@ class Skill(BaseModel):
         mcp_tools: dict | None = None
         mcp_json_path = find_mcp_config(skill_root)
         if mcp_json_path:
-            mcp_tools = load_mcp_config(mcp_json_path, skill_root)
+            try:
+                mcp_tools = load_mcp_config(mcp_json_path, root_dir=skill_root)
+            except ValueError as e:
+                raise SkillValidationError(str(e)) from e
 
         # Discover resource directories
         resources: SkillResources | None = None

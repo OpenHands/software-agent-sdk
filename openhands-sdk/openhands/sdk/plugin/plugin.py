@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import load_mcp_config
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -20,7 +21,6 @@ from openhands.sdk.skills.skill import Skill
 from openhands.sdk.skills.utils import (
     discover_skill_resources,
     find_skill_md,
-    load_mcp_config,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 
@@ -442,7 +442,7 @@ def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
         return None
 
     try:
-        config = load_mcp_config(mcp_json, skill_root=plugin_dir)
+        config = load_mcp_config(mcp_json, root_dir=plugin_dir)
         if config and "mcpServers" in config:
             server_names = list(config["mcpServers"].keys())
             logger.info(
