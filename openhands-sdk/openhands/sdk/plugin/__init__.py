@@ -16,6 +16,14 @@ importing them from here will emit a deprecation warning.
 
 from typing import Any
 
+from openhands.sdk.extensions.source import (
+    GitHubURLComponents as _GitHubURLComponents,
+    is_local_path as _is_local_path,
+    parse_github_url as _parse_github_url,
+    resolve_source_path as _resolve_source_path,
+    validate_source_path as _validate_source_path,
+)
+
 # Import marketplace classes from new location for internal use
 # (no deprecation warning since we're importing from the canonical location)
 from openhands.sdk.marketplace import (
@@ -44,13 +52,6 @@ from openhands.sdk.plugin.installed import (
 )
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
-from openhands.sdk.plugin.source import (
-    GitHubURLComponents,
-    is_local_path,
-    parse_github_url,
-    resolve_source_path,
-    validate_source_path,
-)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
@@ -70,9 +71,18 @@ _DEPRECATED_MARKETPLACE_NAMES = {
     "MarketplacePluginSource": _MarketplacePluginSource,
 }
 
+# Source-path utilities moved to openhands.sdk.extensions.source
+_DEPRECATED_SOURCE_NAMES = {
+    "GitHubURLComponents": _GitHubURLComponents,
+    "is_local_path": _is_local_path,
+    "parse_github_url": _parse_github_url,
+    "resolve_source_path": _resolve_source_path,
+    "validate_source_path": _validate_source_path,
+}
+
 
 def __getattr__(name: str) -> Any:
-    """Provide deprecated marketplace names with warnings."""
+    """Provide deprecated names with warnings."""
     if name in _DEPRECATED_MARKETPLACE_NAMES:
         from openhands.sdk.utils.deprecation import warn_deprecated
 
@@ -84,6 +94,19 @@ def __getattr__(name: str) -> Any:
             stacklevel=3,
         )
         return _DEPRECATED_MARKETPLACE_NAMES[name]
+
+    if name in _DEPRECATED_SOURCE_NAMES:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            f"Importing {name} from openhands.sdk.plugin",
+            deprecated_in="1.17.0",
+            removed_in="1.22.0",
+            details="Import from openhands.sdk.extensions.source instead.",
+            stacklevel=3,
+        )
+        return _DEPRECATED_SOURCE_NAMES[name]
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -106,7 +129,7 @@ __all__ = [
     "MarketplacePluginEntry",
     "MarketplacePluginSource",
     "MarketplaceMetadata",
-    # Source path utilities
+    # Source path utilities (deprecated - import from openhands.sdk.extensions.source)
     "GitHubURLComponents",
     "parse_github_url",
     "is_local_path",
