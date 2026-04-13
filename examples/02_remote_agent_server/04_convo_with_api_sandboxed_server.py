@@ -45,9 +45,9 @@ if not runtime_api_key:
     exit(1)
 
 
-# If GITHUB_SHA is set (e.g. running in CI of a PR), use that to ensure consistency
-# Otherwise, use the latest image from main
-server_image_sha = os.getenv("GITHUB_SHA") or "main"
+# SDK_SHA is the canonical commit SHA set by CI workflows (avoids the
+# built-in GITHUB_SHA which resolves to the merge-commit on PRs).
+server_image_sha = os.getenv("SDK_SHA") or os.getenv("GITHUB_SHA") or "main"
 server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-amd64"
 logger.info(f"Using server image: {server_image}")
 
