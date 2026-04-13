@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, SecretStr, field_serializer, field_valida
 from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.critic.refinement import DEFAULT_ISSUE_THRESHOLD
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool
 
@@ -24,7 +25,7 @@ from .metadata import (
 if TYPE_CHECKING:
     from openhands.sdk.agent import Agent
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
-    from openhands.sdk.critic.base import CriticBase
+    from openhands.sdk.critic.base import CriticBase, IterativeRefinementConfig
 
 
 SettingsValueType = Literal[
@@ -147,6 +148,22 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
+    issue_threshold: float = Field(
+        default=DEFAULT_ISSUE_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Trigger iterative refinement when a critic-detected agent issue "
+            "exceeds this probability threshold."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Issue threshold",
+                prominence=SettingProminence.MINOR,
+                depends_on=("critic_enabled", "enable_iterative_refinement"),
+            ).model_dump()
+        },
+    )
     max_refinement_iterations: int = Field(
         default=3,
         ge=1,
@@ -212,6 +229,21 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
+
+    def build_iterative_refinement_config(
+        self,
+    ) -> IterativeRefinementConfig | None:
+        """Build runtime iterative refinement policy from verification settings."""
+        if not self.enable_iterative_refinement:
+            return None
+
+        from openhands.sdk.critic.base import IterativeRefinementConfig
+
+        return IterativeRefinementConfig(
+            success_threshold=self.critic_threshold,
+            issue_threshold=self.issue_threshold,
+            max_iterations=self.max_refinement_iterations,
+        )
 
 
 def _default_llm_settings() -> LLM:
@@ -353,15 +385,9 @@ class AgentSettings(BaseModel):
         if api_key is None:
             return None
 
-        from openhands.sdk.critic.base import IterativeRefinementConfig
         from openhands.sdk.critic.impl.api import APIBasedCritic
 
-        iterative_refinement = None
-        if self.verification.enable_iterative_refinement:
-            iterative_refinement = IterativeRefinementConfig(
-                success_threshold=self.verification.critic_threshold,
-                max_iterations=self.verification.max_refinement_iterations,
-            )
+        iterative_refinement = self.verification.build_iterative_refinement_config()
 
         overrides: dict[str, Any] = {}
         if self.verification.critic_server_url is not None:
