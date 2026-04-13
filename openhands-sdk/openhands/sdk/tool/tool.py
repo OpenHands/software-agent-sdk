@@ -363,6 +363,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     def parse_response(self, action: Action) -> BaseModel:
         """Validate ``action`` against ``response_schema`` and return the model.
 
+        The return type is declared as ``BaseModel`` because ``ToolDefinition``
+        is not generic over the schema; cast at the call site for type safety::
+
+            result = cast(MySchema, tool.parse_response(action))
+
         Raises ``ValueError`` if no ``response_schema`` is configured.
         """
         if self.response_schema is None:
