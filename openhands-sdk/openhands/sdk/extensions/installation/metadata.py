@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import TracebackType
 from typing import ClassVar
@@ -127,10 +126,7 @@ class InstallationMetadata(BaseModel):
             return cls()
 
         try:
-            with metadata_path.open() as f:
-            return cls.model_validate(data)
-            return cls.model_validate_json(data)
-
+            return cls.model_validate_json(metadata_path.read_text())
         except Exception as e:
             logger.warning(f"Failed to load installed extension metadata: {e}")
             return cls()
@@ -139,8 +135,7 @@ class InstallationMetadata(BaseModel):
         """Save metadata to the installed extensions directory."""
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        with metadata_path.open("w") as f:
-            json.dump(self.model_dump_json(), f, indent=2)
+        metadata_path.write_text(self.model_dump_json(indent=2))
 
     def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.
