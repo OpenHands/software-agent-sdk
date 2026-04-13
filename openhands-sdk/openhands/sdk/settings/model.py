@@ -4,6 +4,7 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, get_args, get_origin
+from uuid import UUID
 
 from fastmcp.mcp_config import MCPConfig
 from pydantic import (
@@ -16,8 +17,13 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
+from openhands.sdk.plugin import PluginSource
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.workspace import LocalWorkspace
 
 from .metadata import (
     SETTINGS_METADATA_KEY,
@@ -271,6 +277,59 @@ CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 class ConversationSettings(BaseModel):
     schema_version: int = Field(default=CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
+
+    # --- runtime fields (populated on-the-fly, not persisted) ---------------
+    agent_settings: AgentSettings | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Agent settings used to build the Agent for the conversation. "
+            "When set, create_request() will automatically build the agent "
+            "and populate secrets from agent_context."
+        ),
+    )
+    workspace: LocalWorkspace | None = Field(
+        default=None,
+        exclude=True,
+        description="Working directory for the conversation.",
+    )
+    conversation_id: UUID | None = Field(
+        default=None,
+        exclude=True,
+        description="Conversation UUID. Auto-generated if not set.",
+    )
+    initial_message: SendMessageRequest | None = Field(
+        default=None,
+        exclude=True,
+        description="Initial message to send to the agent.",
+    )
+    tool_module_qualnames: dict[str, str] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="Mapping of tool names to module qualnames.",
+    )
+    agent_definitions: list[AgentDefinition] = Field(
+        default_factory=list,
+        exclude=True,
+        description="Agent definitions for DelegateTool / TaskSetTool.",
+    )
+    plugins: list[PluginSource] | None = Field(
+        default=None,
+        exclude=True,
+        description="Plugin sources to load for this conversation.",
+    )
+    hook_config: HookConfig | None = Field(
+        default=None,
+        exclude=True,
+        description="Hook configuration for lifecycle events.",
+    )
+    selected_repository: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Repository selected for the conversation.",
+    )
+
+    # --- persisted fields ---------------------------------------------------
     max_iterations: int = Field(
         default=500,
         ge=1,
@@ -344,6 +403,35 @@ class ConversationSettings(BaseModel):
 
     def _start_request_kwargs(self, **kwargs: Any) -> dict[str, Any]:
         payload = dict(kwargs)
+
+        # --- agent (from agent_settings) ------------------------------------
+        if "agent" not in payload and self.agent_settings is not None:
+            payload["agent"] = self.agent_settings.create_agent()
+
+        # --- secrets (from agent's context) ---------------------------------
+        agent = payload.get("agent")
+        if "secrets" not in payload and agent is not None:
+            ctx = getattr(agent, "agent_context", None)
+            if ctx is not None and getattr(ctx, "secrets", None):
+                payload["secrets"] = ctx.secrets
+
+        # --- runtime fields -------------------------------------------------
+        if self.workspace is not None:
+            payload.setdefault("workspace", self.workspace)
+        if self.conversation_id is not None:
+            payload.setdefault("conversation_id", self.conversation_id)
+        if self.initial_message is not None:
+            payload.setdefault("initial_message", self.initial_message)
+        if self.tool_module_qualnames:
+            payload.setdefault("tool_module_qualnames", self.tool_module_qualnames)
+        if self.agent_definitions:
+            payload.setdefault("agent_definitions", self.agent_definitions)
+        if self.plugins is not None:
+            payload.setdefault("plugins", self.plugins)
+        if self.hook_config is not None:
+            payload.setdefault("hook_config", self.hook_config)
+
+        # --- persisted defaults ---------------------------------------------
         payload.setdefault("confirmation_policy", self._build_confirmation_policy())
         payload.setdefault("security_analyzer", self._build_security_analyzer())
         payload.setdefault("max_iterations", self.max_iterations)
@@ -355,6 +443,11 @@ class ConversationSettings(BaseModel):
         /,
         **kwargs: Any,
     ) -> _RequestT:
+        """Build a request from these settings.
+
+        Every field on ``ConversationSettings`` is used as a default.
+        Explicit *kwargs* override any setting.
+        """
         return request_type(**self._start_request_kwargs(**kwargs))
 
 

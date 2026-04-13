@@ -1,6 +1,7 @@
 """Utility functions for the OpenHands SDK."""
 
 from .command import sanitized_env
+from .datetime import OpenHandsUUID, utc_now
 from .deprecation import (
     deprecated,
     warn_deprecated,
@@ -17,8 +18,10 @@ from .truncate import (
 __all__ = [
     "DEFAULT_TEXT_CONTENT_LIMIT",
     "DEFAULT_TRUNCATE_NOTICE",
+    "OpenHandsUUID",
     "maybe_truncate",
     "deprecated",
+    "utc_now",
     "warn_deprecated",
     "sanitize_openhands_mentions",
     "page_iterator",
