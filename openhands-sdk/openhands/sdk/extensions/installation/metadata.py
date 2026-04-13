@@ -128,7 +128,7 @@ class InstallationMetadata(BaseModel):
 
         try:
             with metadata_path.open() as f:
-                data = json.load(f)
+            return cls.model_validate(data)
             return cls.model_validate_json(data)
 
         except Exception as e:
