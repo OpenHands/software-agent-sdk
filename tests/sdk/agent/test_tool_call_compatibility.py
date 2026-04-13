@@ -470,3 +470,143 @@ def test_explicitly_registered_tool_not_hijacked_by_alias():
         "str_replace", {"old_str": "x", "new_str": "y"}, available_tools
     )
     assert tool_name == "file_editor", "str_replace alias should map to file_editor"
+
+
+def test_malformed_tool_name_str_replace_xml_tag(tmp_path):
+    """Test that malformed tool names like 'str_replace </parameter' are fixed.
+
+    This addresses errors where LLMs emit XML/HTML tag fragments in tool names.
+    The fix extracts the first valid identifier and maps it to the correct tool.
+    """
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace </parameter",  # Malformed: XML tag appended
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "str_replace"
+    assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_malformed_tool_name_str_replace_function_tag(tmp_path):
+    """Test that malformed tool names like 'str_replace</function>' are fixed."""
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace</function>",  # Malformed: XML tag appended
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_malformed_tool_name_str_replace_editor_xml_tag(tmp_path):
+    """Test that malformed 'str_replace_editor </tool_call>' names are fixed."""
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace_editor </tool_call>",  # Malformed
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_malformed_tool_name_bash_xml_tag(tmp_path):
+    """Test that malformed tool names like 'bash </request>' are fixed."""
+    test_file = tmp_path / "hello.txt"
+    test_file.write_text("hello\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="bash </request>",  # Malformed: XML tag appended
+        arguments={"command": "cat hello.txt"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    observation_event = next(e for e in events if isinstance(e, ObservationEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert "hello" in observation_event.observation.text
+
+
+def test_malformed_tool_name_no_fix_when_no_match(tmp_path):
+    """Test that truly malformed names that don't match any alias return original."""
+    from openhands.sdk.agent.utils import normalize_tool_call
+
+    available_tools = {"terminal", "file_editor"}
+
+    # "straight" doesn't match any alias or tool, so it should remain unchanged
+    tool_name, args = normalize_tool_call("straight", {}, available_tools)
+    assert tool_name == "straight", "Unknown malformed name should remain unchanged"
+
+    # "xyz123 </invalid>" doesn't match any known alias
+    tool_name, args = normalize_tool_call("xyz123 </invalid>", {}, available_tools)
+    assert tool_name == "xyz123 </invalid>", (
+        "Non-matching malformed name should remain unchanged"
+    )
+
+
+def test_malformed_tool_name_alias_precedence(tmp_path):
+    """Test that aliases are correctly resolved from malformed names.
+
+    When a malformed name like 'str_replace </parameter' is fixed to 'str_replace',
+    it should then be mapped to 'file_editor' via the alias.
+    """
+    from openhands.sdk.agent.utils import normalize_tool_call
+
+    available_tools = {"terminal", "file_editor"}
+
+    # 'str_replace </parameter' fixed to 'str_replace', then aliased to 'file_editor'
+    tool_name, args = normalize_tool_call(
+        "str_replace </parameter",
+        {"path": "/tmp/test", "old_str": "a", "new_str": "b"},
+        available_tools,
+    )
+    assert tool_name == "file_editor", (
+        "Malformed str_replace should map to file_editor via alias"
+    )
