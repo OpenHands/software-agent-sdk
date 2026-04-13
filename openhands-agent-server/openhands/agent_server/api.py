@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
+import libtmux
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -50,7 +51,7 @@ from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 logger = get_logger(__name__)
 
 
-def cleanup_stale_tmux_sessions() -> None:
+def _cleanup_stale_tmux_sessions() -> None:
     """Clean up any stale tmux sessions on server startup.
 
     Tmux sessions live in a separate process that survives agent-server restarts.
@@ -58,8 +59,6 @@ def cleanup_stale_tmux_sessions() -> None:
     to prevent accumulation of orphaned sessions.
     """
     try:
-        import libtmux
-
         server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
         sessions = server.sessions
         if not sessions:
@@ -77,8 +76,6 @@ def cleanup_stale_tmux_sessions() -> None:
 
         logger.info("Tmux cleanup completed")
 
-    except ImportError:
-        logger.debug("libtmux not available, skipping tmux cleanup")
     except Exception as e:
         # Don't let tmux cleanup failures prevent server startup
         logger.warning("Failed to cleanup tmux sessions: %s", e)
@@ -87,7 +84,7 @@ def cleanup_stale_tmux_sessions() -> None:
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     # Clean up stale tmux sessions from previous server runs
-    cleanup_stale_tmux_sessions()
+    _cleanup_stale_tmux_sessions()
 
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
