@@ -37,7 +37,9 @@ class CommandRationale(BaseModel):
 
 
 class ProjectFacts(BaseModel):
-    summary: str = Field(description="One-paragraph summary of the project.")
+    # NOTE: avoid the field name ``summary`` — the SDK already injects a
+    # meta ``summary`` field on every action schema for explainability.
+    description: str = Field(description="One-paragraph description of the project.")
     facts: list[str] = Field(description="Three concise, distinct facts.")
 
 
@@ -100,7 +102,7 @@ for event in events:
 facts = cast(ProjectFacts | None, finish_tool.parse_last_response(events))
 if facts:
     print("\n[Finish]")
-    print(f"  summary: {facts.summary}")
+    print(f"  description: {facts.description}")
     for fact in facts.facts:
         print(f"  - {fact}")
 
