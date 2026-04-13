@@ -242,10 +242,18 @@ start and injects it into a `<MEMORY_CONTEXT>` section in the system prompt
 suffix. This section is separate from `<REPO_CONTEXT>` (skills) and
 `<available_skills>`.
 
-Load order (lower priority → higher priority):
+Load order and merge strategy:
 
 1. **User global memory** (`~/.openhands/memory/MEMORY.md` or Cloud API)
 2. **Project memory** (`<workspace>/MEMORY.md` or Cloud API)
+
+**Merge**: Both files are concatenated in order (user first, project second)
+with a scope header for each: `### User Memory` / `### Project Memory`.
+Project memory appears later in the prompt, giving it higher effective weight
+in the LLM's attention. There is no deduplication across scopes — entries
+are independent. If the combined size exceeds the budget (6K chars), FIFO
+truncation applies to the user-level memory first (since project memory is
+more specific and actionable).
 
 The `MemoryLoader` is integrated into `AgentContext` as a new optional field
 (`memory_store`) that is orthogonal to the skills fields.
@@ -342,10 +350,16 @@ Update the `<MEMORY>` section in `system_prompt.j2`:
 
 Key differences from the original proposal:
 
-- **End-of-task writing, not autonomous mid-session**: Reduces spam and
-  ensures entries reflect completed understanding, not intermediate confusion.
-- **Explicit quality bar**: "Only record insights that would be genuinely
-  useful" + negative examples prevent low-value entries.
+- **End-of-task writing, not autonomous mid-session**: The agent writes memory
+  when it calls the `finish` tool (or equivalent task-completion signal).
+  In the SDK, this is detectable: `finish()` already marks conversation end.
+  The system prompt instruction ("at the END of a task") is guidance for the
+  LLM; the actual enforcement is that the memory write happens as part of
+  the agent's completion flow, not via a timer or background process.
+- **Explicit quality bar**: Negative examples ("do NOT record obvious facts")
+  are the primary filter. The subjective "genuinely useful" phrasing is
+  intentional — LLMs respond well to intent-level instructions and poorly to
+  rigid rules here. The 500-char per-entry cap provides a hard backup.
 - **Dated entries**: Enables staleness detection and FIFO truncation.
 
 ### 4.8 Security: Memory Content Validation
