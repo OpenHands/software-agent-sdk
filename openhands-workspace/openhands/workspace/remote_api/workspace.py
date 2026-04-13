@@ -84,6 +84,12 @@ class APIRemoteWorkspace(RemoteWorkspace):
         default_factory=list,
         description="Environment variable names to forward from host to runtime.",
     )
+    laminar_api_key: str | None = Field(
+        default=None,
+        description="Laminar API key for observability tracing. "
+        "When provided, injected as LMNR_PROJECT_API_KEY in the runtime environment. "
+        "Should NOT be included in forward_env to avoid logging leaks.",
+    )
 
     _runtime_id: str | None = PrivateAttr(default=None)
     _runtime_url: str | None = PrivateAttr(default=None)
@@ -192,7 +198,21 @@ class APIRemoteWorkspace(RemoteWorkspace):
         environment: dict[str, str] = {}
         for key in self.forward_env:
             if key in os.environ:
+                # Skip LMNR_PROJECT_API_KEY if it's in forward_env to avoid log leaks
+                # Use laminar_api_key field instead
+                if key == "LMNR_PROJECT_API_KEY":
+                    logger.warning(
+                        "LMNR_PROJECT_API_KEY is in forward_env list. "
+                        "This may cause credential leaks in logs. "
+                        "Use the 'laminar_api_key' field instead."
+                    )
+                    continue
                 environment[key] = os.environ[key]
+
+        # Inject Laminar API key directly (not via environment variable)
+        # This ensures credentials don't appear in logged payloads
+        if self.laminar_api_key:
+            environment["LMNR_PROJECT_API_KEY"] = self.laminar_api_key
 
         # For binary target, use the standalone binary
         payload: dict[str, Any] = {
