@@ -17,7 +17,10 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationTags
-from openhands.sdk.llm.message import TextContent as TextContent  # re-export
+from openhands.sdk.llm.message import (  # re-export
+    ImageContent as ImageContent,
+    TextContent as TextContent,
+)
 from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
