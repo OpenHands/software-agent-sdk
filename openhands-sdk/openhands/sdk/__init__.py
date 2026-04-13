@@ -47,6 +47,7 @@ from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
     AgentSettings,
     CondenserSettings,
+    ConversationSettings,
     SettingsChoice,
     SettingsFieldSchema,
     SettingsSchema,
@@ -137,6 +138,7 @@ __all__ = [
     "AgentContext",
     "LLMSummarizingCondenser",
     "CondenserSettings",
+    "ConversationSettings",
     "VerificationSettings",
     "AgentSettings",
     "SettingsChoice",
