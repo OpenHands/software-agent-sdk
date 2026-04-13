@@ -475,7 +475,7 @@ dedicated memory path (not the skills loader).
    - New file: `openhands-sdk/openhands/sdk/memory/loader.py`
    - Reads `<workspace>/MEMORY.md` and `~/.openhands/memory/MEMORY.md`
    - Applies char-budget truncation (keep tail / most recent, 6K chars)
-   - Applies content filtering (blocklist for shell commands, URLs, oversized entries)
+   - Applies content filtering (blocklist for executable instructions, oversized entries)
    - Returns sanitized memory text for prompt injection
 
 2. **Integrate into `AgentContext`**
@@ -493,22 +493,40 @@ dedicated memory path (not the skills loader).
    - File: `openhands-sdk/openhands/sdk/context/prompts/templates/system_message_suffix.j2`
    - Add `<MEMORY_CONTEXT>` block rendering after `<REPO_CONTEXT>`
 
+5. **Tests**
+   - `tests/sdk/memory/test_loader.py` — unit tests for `MemoryLoader`:
+     - Loading from single file, two files (user + project), missing files
+     - Char-budget truncation (verify FIFO keeps most recent)
+     - Content filtering (reject bare commands, accept inline code with context)
+     - Error handling: unreadable file, malformed content, encoding issues
+   - `tests/sdk/context/test_memory_injection.py` — integration tests:
+     - Memory present → injected in `<MEMORY_CONTEXT>` block
+     - Memory absent → no block rendered
+     - Combined with skills in system message suffix
+
+6. **Documentation**: Add `MEMORY.md` to `.gitignore` guidance in project
+   template/docs. Note in README or AGENTS.md that memory is opt-in.
+
 ### Phase 2: Memory Store Abstraction
 
 **Goal**: Abstract memory I/O so CLI and Cloud can share the same loading logic.
 
-5. **Define `MemoryStore` protocol**
+7. **Define `MemoryStore` protocol**
    - New file: `openhands-sdk/openhands/sdk/memory/store.py`
    - Protocol with `read_project_memory()`, `read_user_memory()`,
      `append_project_memory()`, `append_user_memory()`
+   - Error handling: all operations return `str | None` (None = no memory
+     available). I/O errors are logged and treated as "no memory" — memory
+     is advisory, never blocking. The agent should work identically whether
+     memory is available or not.
 
-6. **Implement `LocalFileMemoryStore`**
+8. **Implement `LocalFileMemoryStore`**
    - New file: `openhands-sdk/openhands/sdk/memory/local.py`
    - Reads MEMORY.md from workspace and `~/.openhands/memory/`
    - Appends with file-level locking (`fcntl.flock` or equivalent)
    - Applies FIFO truncation when budget exceeded
 
-7. **Wire `MemoryStore` into `AgentContext`**
+9. **Wire `MemoryStore` into `AgentContext`**
    - File: `openhands-sdk/openhands/sdk/context/agent_context.py`
    - Add optional `memory_store: MemoryStore | None` field
    - `MemoryLoader` uses `MemoryStore` if provided, falls back to direct
@@ -518,19 +536,21 @@ dedicated memory path (not the skills loader).
 
 **Goal**: Memory works in OpenHands Cloud with ephemeral workspaces.
 
-8. **Implement `CloudMemoryStore`**
-   - New file: `openhands-agent-server/openhands/server/memory/cloud_store.py`
-   - Uses existing persistence infrastructure (S3/DB)
-   - Memory keyed by `(user_id, project_id/repo)`
-   - Atomic append operations to prevent concurrent write conflicts
+10. **Implement `CloudMemoryStore`**
+    - New file: `openhands-agent-server/openhands/server/memory/cloud_store.py`
+    - Uses existing persistence infrastructure (S3/DB)
+    - Memory keyed by `(user_id, project_id)` where `project_id` is the
+      repository identifier already used by the workspace persistence layer
+      (e.g., `owner/repo` for GitHub, or the Cloud project UUID)
+    - Atomic append operations to prevent concurrent write conflicts
 
-9. **Add memory API endpoints**
+11. **Add memory API endpoints**
    - `GET /api/v1/memory/project/{project_id}` — read project memory
    - `POST /api/v1/memory/project/{project_id}` — append to project memory
    - `GET /api/v1/memory/user` — read user global memory
    - `POST /api/v1/memory/user` — append to user memory
 
-10. **Session lifecycle hooks**
+12. **Session lifecycle hooks**
     - On session start: `MemoryStore.read_*()` → inject into context
     - On session end: Diff workspace MEMORY.md against start state → append
       new entries to Cloud store
@@ -538,13 +558,13 @@ dedicated memory path (not the skills loader).
 
 ### Phase 4: Advanced Features (Future)
 
-11. **Memory consolidation** — LLM-based periodic summarization of growing
+13. **Memory consolidation** — LLM-based periodic summarization of growing
     memory (reduce 50 entries to 10 key insights)
-12. **Memory deduplication** — Detect semantically similar entries at
+14. **Memory deduplication** — Detect semantically similar entries at
     append time
-13. **Semantic retrieval** — Add vector index for large memory stores
+15. **Semantic retrieval** — Add vector index for large memory stores
     (OpenClaw-style, only if file-based approach hits scaling limits)
-14. **Team memory** — Shared memory across team members for a project,
+16. **Team memory** — Shared memory across team members for a project,
     with explicit opt-in and review workflow
 
 ---
@@ -601,6 +621,14 @@ dedicated memory path (not the skills loader).
      legitimate entries like "run tests with `uv run pytest`".
    - Recommendation: Start strict, measure false positives, relax
      selectively. Log all rejected entries for tuning.
+
+5. **Recovery from corrupted/poisoned memory?**
+   - CLI: User can directly edit or delete `MEMORY.md` (it's a file).
+   - Cloud: The memory API endpoints (Phase 3) support `DELETE` to clear
+     all memory or individual entries. The UI panel (Phase 3) also provides
+     a "clear memory" button.
+   - Poisoned memory is self-limiting: the 6K budget caps the blast radius,
+     and FIFO truncation naturally ages out old entries.
 
 ---
 
