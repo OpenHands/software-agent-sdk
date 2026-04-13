@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 
 class Tool(BaseModel):
@@ -37,3 +37,11 @@ class Tool(BaseModel):
     def validate_params(cls, v: dict[str, Any] | None) -> dict[str, Any]:
         """Convert None params to empty dict."""
         return v if v is not None else {}
+
+    @field_serializer("params")
+    def _ser_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Drop non-JSON-serialisable class values (e.g. ``response_schema``
+        Pydantic classes) so the spec can be persisted as part of conversation
+        state. These runtime values are reapplied by the registry on resolve.
+        """
+        return {k: v for k, v in params.items() if not isinstance(v, type)}
