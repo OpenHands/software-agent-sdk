@@ -12,6 +12,7 @@ Demonstrated here on two tools:
 """
 
 import os
+from typing import cast
 
 from pydantic import BaseModel, Field
 
@@ -89,18 +90,18 @@ for event in events:
         and event.tool_name == TerminalTool.name
         and event.action is not None
     ):
-        rationale = terminal_tool.parse_response(event.action)
+        rationale = cast(CommandRationale, terminal_tool.parse_response(event.action))
         # action.command is the tool's own field; rationale.* came from the schema.
         print(f"  $ {getattr(event.action, 'command', '?')}")
-        print(f"    purpose:          {rationale.purpose}")  # type: ignore[attr-defined]
-        print(f"    expected_outcome: {rationale.expected_outcome}")  # type: ignore[attr-defined]
+        print(f"    purpose:          {rationale.purpose}")
+        print(f"    expected_outcome: {rationale.expected_outcome}")
 
 # And the typed final answer:
-facts = finish_tool.parse_last_response(events)
+facts = cast(ProjectFacts | None, finish_tool.parse_last_response(events))
 if facts:
     print("\n[Finish]")
-    print(f"  summary: {facts.summary}")  # type: ignore[attr-defined]
-    for fact in facts.facts:  # type: ignore[attr-defined]
+    print(f"  summary: {facts.summary}")
+    for fact in facts.facts:
         print(f"  - {fact}")
 
 # Report cost
