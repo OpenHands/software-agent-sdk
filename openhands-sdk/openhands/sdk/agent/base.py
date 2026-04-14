@@ -142,7 +142,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "Inline system prompt string.  When provided, the agent uses this "
             "text verbatim as the system message instead of rendering from "
             "`system_prompt_filename`.  Mutually exclusive with a non-default "
-            "`system_prompt_filename`."
+            "`system_prompt_filename`.\n\n"
+            "**Warning**: This is not recommended unless you know what you are "
+            "doing (e.g. customising agent behaviour for a completely different "
+            "task).  Setting this will override OpenHands' built-in system "
+            "instructions that govern default agent behaviour."
         ),
     )
     system_prompt_filename: str = Field(

@@ -246,6 +246,9 @@ class Agent(CriticMixin, AgentBase):
         system_prompt: Inline system prompt string. When provided the agent
             uses this text verbatim instead of rendering from a template.
             Mutually exclusive with a non-default ``system_prompt_filename``.
+            **Not recommended** unless you know what you are doing (e.g.
+            customising agent behaviour for a completely different task) —
+            this will override OpenHands' built-in system instructions.
         system_prompt_filename: Jinja2 template filename resolved relative to
             the agent's prompts directory, or an absolute path. Defaults to
             ``"system_prompt.j2"``.
