@@ -105,9 +105,9 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
         profile_store_dir: str | Path | None = None,
         profile_store_cipher: Cipher | None = None,
-        tags: dict[str, str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -147,11 +147,11 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
             profile_store_dir: Optional directory for persisted LLM profiles.
             profile_store_cipher: Optional cipher for decrypting persisted LLM
                    profiles when switching by name.
-            tags: Optional key-value tags for the conversation. Keys must be
-                  lowercase alphanumeric, values up to 256 characters.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially

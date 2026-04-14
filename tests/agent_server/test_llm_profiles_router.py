@@ -74,3 +74,24 @@ def test_put_llm_profile_requires_secret_key_for_secrets(
     response = client.put("/api/llm-profiles/fast", json=payload)
     assert response.status_code == 400
     assert "OH_SECRET_KEY" in response.json()["detail"]
+
+
+def test_put_llm_profile_requires_secret_key_for_aws_session_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        llm_profile_store, "_DEFAULT_PROFILE_DIR", tmp_path / "profiles"
+    )
+    client = _make_client(Config(session_api_keys=[], secret_key=None))
+
+    payload = {
+        "llm": {
+            "usage_id": "test-llm",
+            "model": "gpt-4o",
+            "aws_session_token": "temporary-session-token",
+        }
+    }
+
+    response = client.put("/api/llm-profiles/fast", json=payload)
+    assert response.status_code == 400
+    assert "OH_SECRET_KEY" in response.json()["detail"]

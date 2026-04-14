@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from filelock import FileLock, Timeout
+from pydantic import SecretStr
 
 from openhands.sdk.logger import get_logger
 
@@ -15,8 +16,21 @@ if TYPE_CHECKING:
 
 _DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
+_SECRET_FIELD_NAMES: Final[tuple[str, ...]] = (
+    "api_key",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+)
+_ENCRYPTED_SECRET_PREFIX: Final[str] = "gAAAAA"
 
 logger = get_logger(__name__)
+
+
+def _looks_encrypted_secret(secret: SecretStr | None) -> bool:
+    if secret is None:
+        return False
+    return secret.get_secret_value().startswith(_ENCRYPTED_SECRET_PREFIX)
 
 
 class LLMProfileStore:
@@ -166,6 +180,14 @@ class LLMProfileStore:
                     profile_path.read_text(),
                     context={"cipher": cipher} if cipher else None,
                 )
+                if cipher is None and any(
+                    _looks_encrypted_secret(getattr(llm_instance, field_name))
+                    for field_name in _SECRET_FIELD_NAMES
+                ):
+                    raise ValueError(
+                        f"Profile `{name}` contains encrypted secrets but no cipher "
+                        "was provided"
+                    )
             except Exception as e:
                 # Re-raise as ValueError for clearer error handling
                 raise ValueError(f"Failed to load profile `{name}`: {e}") from e

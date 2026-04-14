@@ -43,6 +43,7 @@ def _has_persisted_secret(llm: LLM) -> bool:
             llm.api_key,
             llm.aws_access_key_id,
             llm.aws_secret_access_key,
+            llm.aws_session_token,
         )
     )
 

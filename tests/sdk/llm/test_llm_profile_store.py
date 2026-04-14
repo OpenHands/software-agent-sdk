@@ -223,6 +223,22 @@ def test_save_with_cipher_encrypts_and_loads_secrets(
     assert loaded.api_key.get_secret_value() == "secret-api-key-12345"
 
 
+def test_load_encrypted_profile_requires_cipher(
+    profile_store: LLMProfileStore, sample_llm_with_secrets: LLM
+) -> None:
+    """Test that encrypted profiles fail to load when no cipher is provided."""
+    cipher = Cipher("test-secret-key")
+    profile_store.save(
+        "with_cipher",
+        sample_llm_with_secrets,
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    with pytest.raises(ValueError, match="contains encrypted secrets"):
+        profile_store.load("with_cipher")
+
+
 @pytest.mark.parametrize("name", ["my_profile", "my_profile.json"])
 def test_load_existing_profile(
     name: str, profile_store: LLMProfileStore, sample_llm: LLM
