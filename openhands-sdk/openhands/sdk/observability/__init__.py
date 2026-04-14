@@ -1,4 +1,8 @@
-from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.observability.laminar import (
+    init_laminar_for_external,
+    maybe_init_laminar,
+    observe,
+)
 
 
-__all__ = ["maybe_init_laminar", "observe"]
+__all__ = ["init_laminar_for_external", "maybe_init_laminar", "observe"]
