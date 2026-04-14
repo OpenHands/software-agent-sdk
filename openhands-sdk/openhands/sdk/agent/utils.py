@@ -175,13 +175,21 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "command": "terminal",
     "execute": "terminal",
     "execute_bash": "terminal",
+    "git": "terminal",
+    "reset": "terminal",
     "str_replace": "file_editor",
     "str_replace_editor": "file_editor",
 }
 
+# Terminal aliases that prepend the tool name to the command argument.
+# Unlike 'bash' which passes through the command directly, these tools
+# (e.g., 'git', 'reset') are themselves commands that should be combined
+# with their arguments (e.g., 'git status', 'reset clear').
+_TERMINAL_COMMAND_PREFIX_ALIASES = frozenset({"git", "reset"})
+
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
-_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
+_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "git", "ls", "pwd"})
 
 # Typo normalization for common mistakes in security_risk field
 _SECURITY_RISK_TYPOS = {"security_rort", "securtiy_risk", "security_riks"}
@@ -306,6 +314,21 @@ def normalize_tool_call(
         alias_target = TOOL_NAME_ALIASES.get(tool_name)
         if alias_target and alias_target in available_tools:
             normalized_tool_name = alias_target
+            # For terminal alias with prefix, combine tool name with command
+            if (
+                alias_target == "terminal"
+                and tool_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+            ):
+                original_command = arguments.get("command")
+                normalized_arguments = {
+                    key: value
+                    for key, value in arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                if original_command:
+                    normalized_arguments["command"] = f"{tool_name} {original_command}"
+                else:
+                    normalized_arguments["command"] = tool_name
         elif "terminal" in available_tools:
             terminal_command = _maybe_rewrite_as_terminal_command(
                 tool_name,

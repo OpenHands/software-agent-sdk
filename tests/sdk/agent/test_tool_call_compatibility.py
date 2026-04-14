@@ -470,3 +470,59 @@ def test_explicitly_registered_tool_not_hijacked_by_alias():
         "str_replace", {"old_str": "x", "new_str": "y"}, available_tools
     )
     assert tool_name == "file_editor", "str_replace alias should map to file_editor"
+
+
+def test_git_alias_executes_terminal_tool(tmp_path):
+    """Test that 'git' tool name is aliased to 'terminal'."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="git",
+        arguments={"command": "status"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.tool_call.name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "git status"
+
+
+def test_reset_alias_executes_terminal_tool(tmp_path):
+    """Test that 'reset' tool name is aliased to 'terminal'."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="reset",
+        arguments={"command": "clear"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.tool_call.name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "reset clear"
+
+
+def test_shell_tool_name_git_falls_back_to_terminal(tmp_path):
+    """Test that 'git' without arguments falls back to terminal."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="git",
+        arguments={},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "git"
