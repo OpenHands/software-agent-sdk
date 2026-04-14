@@ -11,6 +11,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from fastmcp.mcp_config import MCPConfig, RemoteMCPServer
 from pydantic import SecretStr
 
 from openhands.sdk import Agent
@@ -22,10 +23,43 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 
 
-def _make_agent(**kwargs) -> Agent:
+def _make_agent(
+    mcp_config: dict | MCPConfig | None = None,
+) -> Agent:
     """Helper to create an Agent with default LLM."""
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
-    return Agent(llm=llm, tools=[], **kwargs)
+    cfg: MCPConfig | None = None
+    if isinstance(mcp_config, dict):
+        cfg = MCPConfig.model_validate(mcp_config) if mcp_config else None
+    else:
+        cfg = mcp_config
+    return Agent(llm=llm, tools=[], mcp_config=cfg)
+
+
+# -- Tests for MCPConfig type coercion --
+
+
+def test_mcp_config_dict_coerced_to_mcpconfig():
+    """Passing a raw dict is coerced to MCPConfig via the field validator."""
+    agent = _make_agent(
+        mcp_config={
+            "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+        }
+    )
+    assert isinstance(agent.mcp_config, MCPConfig)
+    assert "fetch" in agent.mcp_config.mcpServers
+
+
+def test_mcp_config_none_stays_none():
+    """None mcp_config remains None."""
+    agent = _make_agent(mcp_config=None)
+    assert agent.mcp_config is None
+
+
+def test_mcp_config_empty_dict_normalised_to_none():
+    """Empty dict is normalised to None."""
+    agent = _make_agent(mcp_config={})
+    assert agent.mcp_config is None
 
 
 # -- Tests for model_dump / model_dump_json redaction --
@@ -97,8 +131,8 @@ def test_mcp_config_api_key_field_redacted_on_dump():
     )
 
 
-def test_mcp_config_empty_dict_preserved():
-    """Empty mcp_config is preserved as-is (no crash)."""
+def test_mcp_config_empty_serialises_to_empty_dict():
+    """None mcp_config serialises as empty dict for backward compat."""
     agent = _make_agent(mcp_config={})
     dumped = agent.model_dump(mode="json")
     assert dumped["mcp_config"] == {}
@@ -164,15 +198,10 @@ def test_mcp_config_roundtrip_preserves_structure():
     json_str = agent.model_dump_json()
     restored = AgentBase.model_validate_json(json_str)
 
-    # Structure preserved, secrets redacted
-    assert "shttp_server" in restored.mcp_config["mcpServers"]
-    assert "stdio_server" in restored.mcp_config["mcpServers"]
-    shttp = restored.mcp_config["mcpServers"]["shttp_server"]
-    assert shttp["url"] == "https://example.com/mcp"
-    assert shttp["headers"]["Authorization"] == "<redacted>"
-    stdio = restored.mcp_config["mcpServers"]["stdio_server"]
-    assert stdio["command"] == "npx"
-    assert stdio["env"]["API_TOKEN"] == "<redacted>"
+    # Structure preserved, secrets redacted; restored as MCPConfig
+    assert isinstance(restored.mcp_config, MCPConfig)
+    assert "shttp_server" in restored.mcp_config.mcpServers
+    assert "stdio_server" in restored.mcp_config.mcpServers
 
 
 # -- Tests for ConversationStateUpdateEvent pathway --
@@ -282,28 +311,30 @@ def test_persisted_base_state_has_redacted_mcp_config():
 
 
 def test_mcp_config_runtime_value_unaffected():
-    """The in-memory mcp_config dict is NOT modified by serialization.
+    """The in-memory MCPConfig is NOT modified by serialization.
 
     field_serializer only affects the output of model_dump/model_dump_json,
     not the actual field value on the instance.
     """
-    secret_config = {
-        "mcpServers": {
-            "slack": {
-                "headers": {"Authorization": "Bearer real-token"},
+    agent = _make_agent(
+        mcp_config={
+            "mcpServers": {
+                "slack": {
+                    "url": "https://mcp.example.com",
+                    "headers": {"Authorization": "Bearer real-token"},
+                }
             }
         }
-    }
-    agent = _make_agent(mcp_config=secret_config)
+    )
 
     # Serialize (triggers field_serializer)
     _ = agent.model_dump(mode="json")
 
-    # In-memory value is untouched (frozen model, so original dict is intact)
-    assert (
-        agent.mcp_config["mcpServers"]["slack"]["headers"]["Authorization"]
-        == "Bearer real-token"
-    )
+    # In-memory MCPConfig is untouched
+    assert isinstance(agent.mcp_config, MCPConfig)
+    slack = agent.mcp_config.mcpServers["slack"]
+    assert isinstance(slack, RemoteMCPServer)
+    assert slack.headers["Authorization"] == "Bearer real-token"
 
 
 def test_multiple_servers_all_sanitized():

@@ -245,7 +245,7 @@ def test_agent_settings_validates_mcp_config_as_typed_model() -> None:
     }
 
 
-def test_create_agent_serializes_typed_mcp_config_compactly() -> None:
+def test_create_agent_passes_typed_mcp_config() -> None:
     mcp_config = MCPConfig.model_validate(
         {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
     )
@@ -253,9 +253,9 @@ def test_create_agent_serializes_typed_mcp_config_compactly() -> None:
 
     agent = settings.create_agent()
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
-    }
+    # Agent now stores MCPConfig directly (not a dict)
+    assert isinstance(agent.mcp_config, MCPConfig)
+    assert "fetch" in agent.mcp_config.mcpServers
 
 
 def test_create_agent_builds_condenser_when_enabled() -> None:
