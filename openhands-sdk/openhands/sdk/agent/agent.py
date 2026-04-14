@@ -243,8 +243,13 @@ class Agent(CriticMixin, AgentBase):
     Attributes:
         llm: The language model instance used for reasoning.
         tools: List of tools available to the agent.
-        name: Optional agent identifier.
-        system_prompt: Custom system prompt (uses default if not provided).
+        system_prompt: Inline system prompt string. When provided the agent
+            uses this text verbatim instead of rendering from a template.
+            Mutually exclusive with a non-default ``system_prompt_filename``.
+        system_prompt_filename: Jinja2 template filename resolved relative to
+            the agent's prompts directory, or an absolute path. Defaults to
+            ``"system_prompt.j2"``.
+        system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
 
     Example:
         ```python
@@ -255,6 +260,14 @@ class Agent(CriticMixin, AgentBase):
         tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         agent = Agent(llm=llm, tools=tools)
         ```
+
+        To override the system prompt entirely::
+
+            agent = Agent(
+                llm=llm,
+                tools=tools,
+                system_prompt="You are a helpful coding assistant.",
+            )
     """
 
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
