@@ -612,6 +612,7 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock()
 
@@ -622,7 +623,7 @@ class TestEventServiceSendMessage:
         with patch("asyncio.get_running_loop") as mock_get_loop:
             mock_loop = MagicMock()
             mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
 
             # Call send_message with default run=True
             await event_service.send_message(message)
@@ -652,7 +653,7 @@ class TestEventServiceSendMessage:
         with patch("asyncio.get_running_loop") as mock_get_loop:
             mock_loop = MagicMock()
             mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
 
             # Call send_message with run=False
             await event_service.send_message(message, run=False)
@@ -676,27 +677,22 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock()
 
         event_service._conversation = conversation
+        event_service._get_execution_status = AsyncMock(
+            return_value=ConversationExecutionStatus.RUNNING
+        )
         message = Message(role="user", content=[])
 
-        # Mock the event loop and executor
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+        # Call send_message with run=True
+        await event_service.send_message(message, run=True)
 
-            # Call send_message with run=True
-            await event_service.send_message(message, run=True)
-
-            # Verify send_message was called via executor
-            mock_loop.run_in_executor.assert_called_once_with(
-                None, conversation.send_message, message
-            )
-            # Verify run was NOT called since agent is already running
-            assert mock_loop.run_in_executor.call_count == 1  # Only send_message call
+        conversation.send_message.assert_called_once_with(message)
+        event_service._get_execution_status.assert_awaited_once()
+        conversation.run.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_idle(self, event_service):
@@ -708,6 +704,7 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock()
 
@@ -740,6 +737,7 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock(side_effect=RuntimeError("Test error"))
 
@@ -1561,6 +1559,61 @@ class TestEventServiceConcurrentSubscriptions:
         )
 
     @pytest.mark.asyncio
+    async def test_subscription_snapshot_wait_does_not_block_event_loop(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Creating the initial state snapshot must not stall the async loop.
+
+        A reconnecting WebSocket subscriber takes an initial state snapshot before
+        the subscription starts streaming events. If snapshot creation waits on the
+        conversation's synchronous FIFOLock, it must do so in a worker thread; if
+        it blocks in the async task, the whole server loop stops answering liveness
+        probes.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+
+        original_snapshot = event_service._create_state_update_event_sync
+        release_snapshot = threading.Event()
+        timings: dict[str, float] = {}
+
+        def blocking_snapshot() -> ConversationStateUpdateEvent:
+            timings["snapshot_start"] = time.monotonic()
+            release_snapshot.wait(timeout=1.0)
+            timings["snapshot_end"] = time.monotonic()
+            return original_snapshot()
+
+        event_service._create_state_update_event_sync = blocking_snapshot
+
+        def release_after_delay() -> None:
+            time.sleep(0.2)
+            release_snapshot.set()
+
+        threading.Thread(target=release_after_delay, daemon=True).start()
+
+        class TestSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                return None
+
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.05)
+            timings["heartbeat"] = time.monotonic()
+
+        await asyncio.wait_for(
+            asyncio.gather(
+                event_service.subscribe_to_events(TestSubscriber()),
+                heartbeat(),
+            ),
+            timeout=1.0,
+        )
+
+        assert "snapshot_end" in timings
+        assert "heartbeat" in timings
+        assert timings["heartbeat"] < timings["snapshot_end"], (
+            "subscribe_to_events blocked the async loop while waiting for the "
+            "state snapshot lock"
+        )
+
+    @pytest.mark.asyncio
     async def test_subscription_during_state_update(
         self, event_service, mock_conversation_with_real_lock
     ):
@@ -1719,3 +1772,49 @@ class TestSearchEventsBlockedByRunLoop:
             f"for {hold_seconds}s.  The read path is blocked by the write lock "
             f"(see HANG_REPRO.md)."
         )
+
+
+class TestEventServiceClose:
+    """Tests for EventService.close() awaiting conversation teardown."""
+
+    @pytest.mark.asyncio
+    async def test_close_awaits_conversation_close(self, event_service):
+        """close() must await conversation.close(), not fire-and-forget."""
+        conversation = MagicMock(spec=Conversation)
+        event_service._conversation = conversation
+
+        closed = asyncio.Event()
+
+        def slow_close():
+            # Simulate non-trivial teardown work
+            time.sleep(0.05)
+            closed.set()
+
+        conversation.close = slow_close
+
+        await event_service.close()
+
+        assert closed.is_set(), (
+            "EventService.close() returned before conversation.close() finished"
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_clears_conversation_reference(self, event_service):
+        """close() must set _conversation to None after closing."""
+        conversation = MagicMock()
+        event_service._conversation = conversation
+
+        await event_service.close()
+
+        assert event_service._conversation is None
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self, event_service):
+        """Calling close() twice must not raise."""
+        conversation = MagicMock()
+        event_service._conversation = conversation
+
+        await event_service.close()
+        await event_service.close()  # second call — _conversation is already None
+
+        conversation.close.assert_called_once()

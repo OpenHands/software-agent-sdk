@@ -1,7 +1,9 @@
+import re
 import uuid
 from collections.abc import Callable
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from openhands.sdk.event.base import Event
 from openhands.sdk.llm.streaming import TokenCallbackType
@@ -15,6 +17,32 @@ ConversationTokenCallbackType = TokenCallbackType
 
 ConversationID = uuid.UUID
 """Type alias for conversation IDs."""
+
+TAG_KEY_PATTERN = re.compile(r"^[a-z0-9]+$")
+TAG_VALUE_MAX_LENGTH = 256
+
+
+def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
+    if v is None:
+        return {}
+    for key, value in v.items():
+        if not TAG_KEY_PATTERN.match(key):
+            raise ValueError(
+                f"Tag key '{key}' is invalid: keys must be lowercase alphanumeric only"
+            )
+        if len(value) > TAG_VALUE_MAX_LENGTH:
+            raise ValueError(
+                f"Tag value for '{key}' exceeds maximum length of "
+                f"{TAG_VALUE_MAX_LENGTH} characters"
+            )
+    return v
+
+
+ConversationTags = Annotated[dict[str, str], BeforeValidator(_validate_tags)]
+"""Validated dict of conversation tags.
+
+Keys must be lowercase alphanumeric. Values are arbitrary strings up to 256 chars.
+"""
 
 
 class StuckDetectionThresholds(BaseModel):

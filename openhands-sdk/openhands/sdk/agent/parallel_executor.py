@@ -1,16 +1,19 @@
 """Parallel tool execution for agent.
 
 This module provides utilities for executing multiple tool calls concurrently
-with a configurable per-agent concurrency limit.
+with a configurable per-agent concurrency limit and resource-level locking.
+
+Resource locking (via ``ResourceLockManager``) ensures that tools operating on
+the same shared state (files, terminal session, browser, …) are serialized,
+while tools touching *different* resources can run concurrently.
 
 .. warning:: Thread safety of individual tools
 
    When ``tool_concurrency_limit > 1``, multiple tools run in parallel
-   threads sharing the same ``conversation`` object. Tools are **not**
-   thread-safe by default — concurrent mutations to working directory,
-   filesystem, or conversation state can race. Callers opting into
-   parallelism must ensure the tools in use are safe for concurrent
-   execution.
+   threads sharing the same ``conversation`` object. The executor uses
+   ``ResourceLockManager`` to serialize access to shared resources, but
+   tools must correctly implement ``declared_resources()`` for this
+   to be effective.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
+from openhands.sdk.conversation.resource_lock_manager import ResourceLockManager
 from openhands.sdk.event.llm_convertible import AgentErrorEvent
 from openhands.sdk.logger import get_logger
 
@@ -26,31 +30,32 @@ from openhands.sdk.logger import get_logger
 if TYPE_CHECKING:
     from openhands.sdk.event.base import Event
     from openhands.sdk.event.llm_convertible import ActionEvent
+    from openhands.sdk.tool.tool import DeclaredResources, ToolDefinition
 
 logger = get_logger(__name__)
 
 
 class ParallelToolExecutor:
-    """Executes a batch of tool calls concurrently.
+    """Executes a batch of tool calls concurrently with resource locking.
 
-    Each instance has its own thread pool and concurrency limit, so
-    nested execution (e.g., subagents) cannot deadlock the parent.
-
-    .. warning::
-
-       When concurrency > 1, tools share the ``conversation`` object
-       across threads. Tools are not thread-safe by default — concurrent
-       mutations to filesystem, working directory, or conversation state
-       can cause race conditions.
+    Each instance has its own thread pool, concurrency limit, and
+    ``ResourceLockManager``, so nested execution (e.g., subagents) cannot
+    deadlock the parent.
     """
 
-    def __init__(self, max_workers: int = 1) -> None:
+    def __init__(
+        self,
+        max_workers: int = 1,
+        lock_manager: ResourceLockManager | None = None,
+    ) -> None:
         self._max_workers = max_workers
+        self._lock_manager = lock_manager or ResourceLockManager()
 
     def execute_batch(
         self,
         action_events: Sequence[ActionEvent],
         tool_runner: Callable[[ActionEvent], list[Event]],
+        tools: dict[str, ToolDefinition] | None = None,
     ) -> list[list[Event]]:
         """Execute a batch of action events concurrently.
 
@@ -58,6 +63,9 @@ class ParallelToolExecutor:
             action_events: Sequence of ActionEvent objects to execute.
             tool_runner: A callable that takes an ActionEvent and returns
                         a list of Event objects produced by the execution.
+            tools: Optional mapping of tool name to ToolDefinition used
+                   to derive resource keys for locking. When *None*,
+                   locking is skipped (backward-compatible).
 
         Returns:
             List of event lists in the same order as the input action_events.
@@ -65,34 +73,51 @@ class ParallelToolExecutor:
         if not action_events:
             return []
 
+        def _resolve(ae: ActionEvent) -> ToolDefinition | None:
+            return tools.get(ae.tool_name) if tools else None
+
         if len(action_events) == 1 or self._max_workers == 1:
-            return [self._run_safe(action, tool_runner) for action in action_events]
+            return [
+                self._run_safe(action, tool_runner, _resolve(action))
+                for action in action_events
+            ]
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = [
-                executor.submit(self._run_safe, action, tool_runner)
+                executor.submit(self._run_safe, action, tool_runner, _resolve(action))
                 for action in action_events
             ]
 
         return [future.result() for future in futures]
 
-    @staticmethod
     def _run_safe(
+        self,
         action: ActionEvent,
         tool_runner: Callable[[ActionEvent], list[Event]],
+        tool: ToolDefinition | None = None,
     ) -> list[Event]:
-        """Run tool_runner, converting exceptions to AgentErrorEvent.
+        """Run tool_runner with resource locking.
 
-        All exceptions are caught so that one failing tool in a parallel
-        batch cannot crash the agent or prevent sibling tools from
-        completing.  ValueErrors are expected tool errors (bad arguments,
-        validation failures); anything else is likely a programming bug
-        and is logged at ERROR with a full traceback.
+        Converts exceptions to ``AgentErrorEvent``.
+
+        Locking strategy:
+
+        - ``declared=False`` → ``tool:<name>`` mutex.
+        - ``declared=True``, empty keys → no locking.
+        - ``declared=True``, keys present → lock those resources.
         """
         try:
-            return tool_runner(action)
+            if tool is None:
+                return tool_runner(action)
+
+            resources = self._extract_declared_resources(action, tool)
+            lock_keys = self._resolve_lock_keys(resources, tool)
+            if not lock_keys:
+                return tool_runner(action)
+            with self._lock_manager.lock(*lock_keys):
+                return tool_runner(action)
+
         except ValueError as e:
-            # Expected tool errors (invalid arguments, precondition failures, etc.)
             logger.info(f"Tool error in '{action.tool_name}': {e}")
             return [
                 AgentErrorEvent(
@@ -102,8 +127,6 @@ class ParallelToolExecutor:
                 )
             ]
         except Exception as e:
-            # Unexpected errors — likely bugs in tool implementations.
-            # Logged at ERROR with traceback to aid debugging.
             logger.error(
                 f"Unexpected error in tool '{action.tool_name}': {e}",
                 exc_info=True,
@@ -115,3 +138,25 @@ class ParallelToolExecutor:
                     tool_call_id=action.tool_call_id,
                 )
             ]
+
+    @staticmethod
+    def _extract_declared_resources(
+        action: ActionEvent,
+        tool: ToolDefinition,
+    ) -> DeclaredResources | None:
+        """Call ``tool.declared_resources()`` if the action is parsed."""
+        parsed_action = action.action
+        return tool.declared_resources(parsed_action) if parsed_action else None
+
+    @staticmethod
+    def _resolve_lock_keys(
+        resources: DeclaredResources | None,
+        tool: ToolDefinition,
+    ) -> list[str]:
+        """Turn declared resources into lock keys.
+
+        Returns an empty list when no locking is needed.
+        """
+        if resources is None or not resources.declared:
+            return [f"tool:{tool.name}"]
+        return list(resources.keys)

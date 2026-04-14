@@ -3,7 +3,7 @@
 # NOTE: LC_ALL/LANG must be set to C.UTF-8 for libtmux to work correctly with
 # PyInstaller builds. Without proper locale, tmux converts UTF-8 separator
 # characters to underscores, breaking libtmux's format parsing.
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22
+ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
@@ -12,16 +12,33 @@ ARG PORT=8000
 ####################################################################################
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
+#
+# SELF-CONTAINED /agent-server CONTRACT:
+# uv installs python-build-standalone into /agent-server/uv-managed-python and
+# creates .venv against it. Both live under /agent-server, so downstream
+# consumers can COPY /agent-server onto any base image and the venv works.
+#
+# uv >= 0.11.5 pulls python-build-standalone >= 20260408, which ships
+# libpython without PT_GNU_STACK PF_X (executable stack). Earlier releases
+# had this flag set due to LLVM/BOLT bugs, causing glibc >= 2.41 and
+# DinD/sysbox/seccomp to reject dlopen() with "cannot enable executable
+# stack". No sanitizer or workaround is needed on fixed releases.
+# See OpenHands/software-agent-sdk#2761.
 ####################################################################################
 FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
-COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
+# uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
+# first release with the PT_GNU_STACK fix. Pin to 0.11.6 (latest at time of
+# writing) rather than :latest so builds are reproducible.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
- && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME}
+ && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
+ && mkdir -p /agent-server/uv-managed-python \
+ && chown -R ${USERNAME}:${USERNAME} /agent-server
 USER ${USERNAME}
 WORKDIR /agent-server
 # Cache-friendly: lockfiles first
@@ -30,9 +47,11 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-sdk ./openhands-sdk
 COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
-ARG INSTALL_BOTO3=true
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
+    uv python install 3.13 && \
+    uv venv --python-preference only-managed --python 3.13 .venv && \
+    uv sync --frozen --no-editable --managed-python --extra boto3 && \
+    readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -41,10 +60,9 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 FROM builder AS binary-builder
 ARG USERNAME UID GID
 
-ARG INSTALL_BOTO3=true
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable $([ "$INSTALL_BOTO3" = "true" ] && echo "--extra boto3")
+    uv sync --frozen --dev --no-editable --extra boto3
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
@@ -59,6 +77,12 @@ RUN test -x /agent-server/dist/openhands-agent-server
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
+
+
+ARG OPENHANDS_BUILD_GIT_SHA=unknown
+ARG OPENHANDS_BUILD_GIT_REF=unknown
+ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
+ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 
 # Install base packages and create user
 RUN set -eux; \
@@ -81,19 +105,41 @@ RUN set -eux; \
     chown -R ${USERNAME}:${USERNAME} /workspace; \
     rm -rf /var/lib/apt/lists/*
 
-# Pre-install ACP servers for ACPAgent support (Claude Code + Codex)
-# Install Node.js/npm if not present (SWE-bench base images may lack them)
-# Set INSTALL_ACP=false to skip ACP installation (e.g. for benchmark images)
-ARG INSTALL_ACP=true
+# Pre-install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI)
+# Install Node.js 22 to a dedicated prefix so ACP packages get a modern runtime
+# WITHOUT overwriting the repo-specific Node.js that test suites depend on.
+# SWE-bench images ship NVM/apt-managed Node 8-14 which cannot run ACP packages.
+ENV ACP_NODE_DIR=/opt/acp-node
 RUN set -eux; \
-    if ! command -v npm >/dev/null 2>&1; then \
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-        apt-get install -y --no-install-recommends nodejs && \
-        rm -rf /var/lib/apt/lists/*; \
-    fi; \
-    if [ "$INSTALL_ACP" = "true" ]; then \
-        npm install -g @zed-industries/claude-agent-acp @zed-industries/codex-acp; \
-    fi
+    ARCH=$(dpkg --print-architecture); \
+    case "$ARCH" in \
+      amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
+      arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
+      *) echo "Unsupported architecture for ACP Node install: $ARCH" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
+    mkdir -p "$ACP_NODE_DIR"; \
+    curl -fsSL "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
+    rm -f "$NODE_TARBALL"; \
+    PATH="$ACP_NODE_DIR/bin:$PATH"; \
+    node --version; \
+    npm install -g \
+      @agentclientprotocol/claude-agent-acp \
+      @zed-industries/codex-acp \
+      @google/gemini-cli; \
+    # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
+    # This ensures the ACP binary's #!/usr/bin/env node shebang resolves to
+    # Node 22, while the repo's own node (NVM/system) stays untouched for tests.
+    for bin in claude-agent-acp codex-acp gemini; do \
+      if [ -e "$ACP_NODE_DIR/bin/$bin" ]; then \
+        printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
+          "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
+          > /usr/local/bin/"$bin"; \
+        chmod +x /usr/local/bin/"$bin"; \
+      fi; \
+    done
 
 # Configure Claude Code managed settings for headless operation:
 # Allow all tool permissions (no human in the loop to approve).
@@ -102,15 +148,7 @@ RUN mkdir -p /etc/claude-code && \
 
 # NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
-COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
-
-# SDK version metadata — placed AFTER expensive RUN layers (apt-get, npm)
-# so that changing the SDK commit does not invalidate their cache.
-# This lets BuildKit reuse cached base layers across SDK commits.
-ARG OPENHANDS_BUILD_GIT_SHA=unknown
-ARG OPENHANDS_BUILD_GIT_REF=unknown
-ENV OPENHANDS_BUILD_GIT_SHA=${OPENHANDS_BUILD_GIT_SHA}
-ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 USER ${USERNAME}
 WORKDIR /
@@ -246,13 +284,11 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 ############################
 FROM base-image AS source
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 FROM base-image-minimal AS source-minimal
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
 ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 

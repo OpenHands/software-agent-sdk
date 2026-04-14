@@ -198,3 +198,15 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 return 200 <= status < 300
         except Exception:
             return False
+
+    @property
+    def default_conversation_tags(self) -> dict[str, str] | None:
+        """Default tags to apply to conversations created with this workspace.
+
+        Subclasses (e.g., OpenHandsCloudWorkspace) can override this to provide
+        context-specific tags like automation metadata.
+
+        Returns:
+            Dictionary of tag key-value pairs, or None if no default tags.
+        """
+        return None

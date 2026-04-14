@@ -3,6 +3,7 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -106,6 +107,7 @@ class LocalConversation(BaseConversation):
         cipher: Cipher | None = None,
         profile_store_dir: str | Path | None = None,
         profile_store_cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -148,6 +150,8 @@ class LocalConversation(BaseConversation):
             profile_store_dir: Optional directory for persisted LLM profiles.
             profile_store_cipher: Optional cipher for decrypting persisted LLM
                    profiles when switching by name.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -186,6 +190,7 @@ class LocalConversation(BaseConversation):
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
+            tags=tags,
         )
 
         # Default callback: persist every event to state
@@ -486,6 +491,16 @@ class LocalConversation(BaseConversation):
 
             self._agent_ready = True
 
+    def _should_initialize_agent_on_send_message(self) -> bool:
+        """Return whether send_message() should eagerly initialize the agent.
+
+        ACPAgent startup is substantially heavier than regular agent
+        initialization because it launches and handshakes with an external ACP
+        subprocess. Deferring that work to run() keeps send_message() fast and
+        avoids HTTP client read timeouts on the remote conversation endpoint.
+        """
+        return not isinstance(self.agent, ACPAgent)
+
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a named profile.
 
@@ -525,8 +540,12 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
-        # Ensure agent is fully initialized (loads plugins and initializes agent)
-        self._ensure_agent_ready()
+        # ACPAgent startup can take much longer than a normal send_message()
+        # round-trip because it launches and initializes a subprocess-backed
+        # session. Defer that work to run() so enqueueing the user message
+        # remains fast for remote callers.
+        if self._should_initialize_agent_on_send_message():
+            self._ensure_agent_ready()
 
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
@@ -682,6 +701,14 @@ class LocalConversation(BaseConversation):
                         break
 
                     if iteration >= self.max_iteration_per_run:
+                        # If the agent finished on this final iteration,
+                        # preserve the FINISHED status rather than
+                        # overwriting it with ERROR.
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        ):
+                            break
                         error_msg = (
                             f"Agent reached maximum iterations limit "
                             f"({self.max_iteration_per_run})."
