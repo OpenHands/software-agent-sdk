@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -17,7 +18,12 @@ from openhands.sdk.skills import (
     load_available_skills,
     to_prompt,
 )
+from openhands.sdk.skills.fork import run_skill_forked
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.agent.base import AgentBase
 
 
 logger = get_logger(__name__)
@@ -277,8 +283,39 @@ class AgentContext(BaseModel):
             return self.system_message_suffix.strip()
         return None
 
+    @staticmethod
+    def _resolve_skill_content(
+        skill: Skill,
+        agent: AgentBase | None,
+        working_dir: str | None,
+        persistence_dir: str | None,
+    ) -> str:
+        """Resolve the content to inject for a triggered skill.
+
+        For ``context='inline'`` skills this is just ``skill.content``.
+        For ``context='fork'`` skills it runs the skill as a subagent and
+        returns its final output. If the caller did not supply ``agent`` or
+        ``working_dir``, the fork falls back to inline with a warning.
+        """
+        if skill.context != "fork":
+            return skill.content
+        if agent is None or working_dir is None:
+            logger.warning(
+                "Skill ‘%s’ has context=fork but agent/working_dir not "
+                "provided; falling back to inline injection",
+                skill.name,
+            )
+            return skill.content
+        logger.info("Skill ‘%s’ running as forked subagent", skill.name)
+        return run_skill_forked(skill, agent, working_dir, persistence_dir)
+
     def get_user_message_suffix(
-        self, user_message: Message, skip_skill_names: list[str]
+        self,
+        user_message: Message,
+        skip_skill_names: list[str],
+        agent: AgentBase | None = None,
+        working_dir: str | None = None,
+        persistence_dir: str | None = None,
     ) -> tuple[TextContent, list[str]] | None:
         """Augment the user’s message with knowledge recalled from skills.
 
@@ -286,6 +323,11 @@ class AgentContext(BaseModel):
         - Extracting the text content of the user message
         - Matching skill triggers against the query
         - Returning formatted knowledge and triggered skill names if relevant skills were triggered
+
+        For skills with ``context: fork``, the skill is executed as an isolated
+        subagent and only its final output is returned.  ``agent`` and
+        ``working_dir`` must be provided for forked skills to work; if they are
+        absent, forked skills fall back to inline injection with a warning.
         """  # noqa: E501
 
         user_message_suffix = None
@@ -308,15 +350,18 @@ class AgentContext(BaseModel):
             trigger = skill.match_trigger(query)
             if trigger and skill.name not in skip_skill_names:
                 logger.info(
-                    "Skill '%s' triggered by keyword '%s'",
+                    "Skill ‘%s’ triggered by keyword ‘%s’",
                     skill.name,
                     trigger,
+                )
+                content = self._resolve_skill_content(
+                    skill, agent, working_dir, persistence_dir
                 )
                 recalled_knowledge.append(
                     SkillKnowledge(
                         name=skill.name,
                         trigger=trigger,
-                        content=skill.content,
+                        content=content,
                         location=skill.source,
                     )
                 )

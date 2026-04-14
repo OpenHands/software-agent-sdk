@@ -152,6 +152,16 @@ class Skill(BaseModel):
         default_factory=list,
         description="Input metadata for the skill (task skills only)",
     )
+    context: Literal["inline", "fork"] = Field(
+        default="inline",
+        description=(
+            "Execution context for a triggered skill. "
+            "'inline' (default) injects the skill content directly into the "
+            "parent conversation. 'fork' runs the skill content as a fresh "
+            "subagent conversation and injects only its final output. "
+            "Useful for skills that make many intermediate tool calls."
+        ),
+    )
     is_agentskills_format: bool = Field(
         default=False,
         description=(
@@ -216,6 +226,15 @@ class Skill(BaseModel):
         "the full description is shown. You can view the complete skill "
         "content at {source}.</NOTE>"
     )
+
+    @model_validator(mode="after")
+    def _validate_context(self) -> "Skill":
+        if self.context == "fork" and self.trigger is None:
+            raise SkillValidationError(
+                "context='fork' requires a trigger; "
+                "a skill with no trigger is always-active and cannot be forked."
+            )
+        return self
 
     @field_validator("allowed_tools", mode="before")
     @classmethod
@@ -418,6 +437,7 @@ class Skill(BaseModel):
             "compatibility": metadata_dict.get("compatibility"),
             "metadata": metadata_dict.get("metadata"),
             "allowed_tools": allowed_tools_value,
+            "context": metadata_dict.get("context"),
         }
         # Remove None values to avoid passing unnecessary kwargs
         agentskills_fields = {

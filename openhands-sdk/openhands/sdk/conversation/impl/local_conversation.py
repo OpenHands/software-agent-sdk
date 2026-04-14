@@ -563,6 +563,9 @@ class LocalConversation(BaseConversation):
                     user_message=message,
                     # We skip skills that were already activated
                     skip_skill_names=self._state.activated_knowledge_skills,
+                    agent=self.agent,
+                    working_dir=str(self.workspace.working_dir),
+                    persistence_dir=self._state.persistence_dir,
                 )
                 # TODO(calvin): we need to update
                 # self._state.activated_knowledge_skills
