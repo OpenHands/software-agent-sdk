@@ -8,11 +8,22 @@ assistant message is returned as the skill's recalled knowledge.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.execute import render_content_with_commands
+
+
+# Skill names are not guaranteed to be filesystem-safe:
+# - Legacy skills derive their name from a relative path, which can contain
+#   "/" (e.g. "subdir/my_skill") and would create unintended nested dirs.
+# - Programmatic Skill(name=...) has no name validator; a crafted name like
+#   "../../etc/passwd" would escape the forks directory.
+# AgentSkills-format skills ARE validated (lowercase [a-z0-9-]) but we
+# sanitize unconditionally to keep the fork persistence layout predictable.
+_UNSAFE_PATH_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
 
 
 if TYPE_CHECKING:
@@ -47,19 +58,23 @@ def run_skill_forked(
         working_dir=Path(working_dir) if working_dir else None,
     )
 
-    # Strip skills from the subagent's context so forked skills cannot
-    # re-trigger and cause infinite recursion. Everything else (system_message_suffix,
-    # secrets, datetime) is preserved.
-    sub_agent_context = (
-        agent.agent_context.model_copy(update={"skills": []})
-        if agent.agent_context is not None
-        else None
-    )
+    # Strip fork-context skills from the subagent so forked skills cannot
+    # re-trigger themselves (direct recursion) or each other (A → B → A loops).
+    # Inline skills are kept: they only inject static content and are safe to
+    # reuse inside a forked subagent. Everything else on agent_context
+    # (system_message_suffix, secrets, datetime) is preserved.
+    parent_context = agent.agent_context
+    if parent_context is not None:
+        safe_skills = [s for s in parent_context.skills if s.context != "fork"]
+        sub_agent_context = parent_context.model_copy(update={"skills": safe_skills})
+    else:
+        sub_agent_context = None
     sub_agent = agent.model_copy(update={"agent_context": sub_agent_context})
 
     fork_persistence_dir: str | None = None
     if persistence_dir is not None:
-        fork_persistence_dir = str(Path(persistence_dir) / "forks" / skill.name)
+        safe_name = _UNSAFE_PATH_CHARS.sub("_", skill.name)
+        fork_persistence_dir = str(Path(persistence_dir) / "forks" / safe_name)
 
     sub_conv = Conversation(
         agent=sub_agent,
@@ -79,5 +94,5 @@ def run_skill_forked(
     finally:
         try:
             sub_conv.close()
-        except Exception:
-            logger.debug("Ignoring error closing forked sub-conversation")
+        except Exception as e:
+            logger.debug("Ignoring error closing forked sub-conversation: %s", e)

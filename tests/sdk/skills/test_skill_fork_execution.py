@@ -153,15 +153,18 @@ def test_fork_skill_persistence_dir_forwarded(persistence_dir):
 
 
 @pytest.mark.parametrize(
-    "persistence_dir, expected",
+    "persistence_dir, skill_name, expected",
     [
-        (None, None),
-        ("/state/abc123", "/state/abc123/forks/ddebug"),
+        (None, "ddebug", None),
+        ("/state/abc123", "ddebug", "/state/abc123/forks/ddebug"),
+        # Path-unsafe characters are sanitized to avoid nested dirs or traversal
+        ("/state/abc123", "subdir/my_skill", "/state/abc123/forks/subdir_my_skill"),
+        ("/state/abc123", "../evil", "/state/abc123/forks/___evil"),
     ],
 )
-def test_fork_persistence_dir_path_construction(persistence_dir, expected):
-    """builds <persistence_dir>/forks/<skill.name> before passing to Conversation."""
-    skill = _fork_skill()
+def test_fork_persistence_dir_path_construction(persistence_dir, skill_name, expected):
+    """builds <persistence_dir>/forks/<safe_name> before passing to Conversation."""
+    skill = _fork_skill(name=skill_name)
     mock_agent = MagicMock()
     mock_agent.agent_context = None
 
@@ -204,3 +207,37 @@ def test_fork_skill_fallback_when_agent_or_working_dir_missing(
     assert result is not None
     content, _ = result
     assert "inline fallback content" in content.text
+
+
+def test_subagent_context_keeps_inline_skills_drops_forks():
+    """Forked subagent retains inline skills but not other fork skills,
+    and preserves system_message_suffix."""
+    fork_skill = _fork_skill(name="ddebug")
+    other_fork = _fork_skill(name="other_fork")
+    inline_skill = Skill(
+        name="inline_helper",
+        content="inline body",
+        trigger=KeywordTrigger(keywords=["helper"]),
+        context="inline",
+    )
+    parent_ctx = AgentContext(
+        skills=[fork_skill, other_fork, inline_skill],
+        system_message_suffix="preserve me",
+    )
+    mock_agent = MagicMock()
+    mock_agent.agent_context = parent_ctx
+    # model_copy on the agent itself: capture what gets passed
+    mock_agent.model_copy.return_value = MagicMock()
+
+    with patch(
+        "openhands.sdk.conversation.conversation.Conversation"
+    ) as MockConversation:
+        mock_conv = MagicMock()
+        mock_conv.state.events = []
+        MockConversation.return_value = mock_conv
+        run_skill_forked(fork_skill, mock_agent, "/workspace")
+
+    _, agent_copy_kwargs = mock_agent.model_copy.call_args
+    sub_ctx = agent_copy_kwargs["update"]["agent_context"]
+    assert [s.name for s in sub_ctx.skills] == ["inline_helper"]
+    assert sub_ctx.system_message_suffix == "preserve me"
