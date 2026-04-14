@@ -1311,7 +1311,7 @@ class TestConversationServiceUpdateConversation:
     ):
         """Test switching a conversation to a named LLM profile."""
         mock_service = AsyncMock(spec=EventService)
-        mock_service.stored = sample_stored_conversation.model_copy(deep=True)
+        mock_service.stored = sample_stored_conversation.model_copy()
         mock_state = ConversationState(
             id=mock_service.stored.id,
             agent=mock_service.stored.agent,
