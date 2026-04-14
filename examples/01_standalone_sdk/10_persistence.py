@@ -1,6 +1,7 @@
 import os
 import uuid
 
+from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
 from openhands.sdk import (
@@ -38,11 +39,9 @@ tools = [
 ]
 
 # Add MCP Tools
-mcp_config = {
-    "mcpServers": {
-        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
-    }
-}
+mcp_config = MCPConfig.model_validate(
+    {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
+)
 # Agent
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
 

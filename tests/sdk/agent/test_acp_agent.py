@@ -8,6 +8,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp.mcp_config import MCPConfig
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -174,7 +175,9 @@ class TestACPAgentValidation:
     def test_rejects_mcp_config(self, tmp_path):
         agent = ACPAgent(
             acp_command=["echo"],
-            mcp_config={"mcpServers": {"test": {"command": "echo"}}},
+            mcp_config=MCPConfig.model_validate(
+                {"mcpServers": {"test": {"command": "echo"}}}
+            ),
         )
         with pytest.raises(NotImplementedError, match="mcp_config"):
             self._init_with_patches(agent, tmp_path)
