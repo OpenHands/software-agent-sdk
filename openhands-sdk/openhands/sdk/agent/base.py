@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    field_serializer,
     model_validator,
 )
 
@@ -32,6 +33,7 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.redact import sanitize_config
 
 
 if TYPE_CHECKING:
@@ -227,6 +229,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "and working directory, so mutations to shared state may race."
         ),
     )
+
+    @field_serializer("mcp_config")
+    @classmethod
+    def _sanitize_mcp_config(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Sanitize MCP config during serialization to prevent secret leakage.
+
+        MCP config may contain secrets in server headers (e.g. Authorization
+        Bearer tokens), environment variables, or API keys. These must not be
+        persisted to base_state.json or emitted in ConversationStateUpdateEvents,
+        as those paths may reach shared-event endpoints or cloud storage.
+
+        The runtime agent always provides a fresh mcp_config on resume, so
+        redacting here does not break conversation restore.
+        """
+        return sanitize_config(v) if v else v
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
