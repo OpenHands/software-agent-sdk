@@ -100,6 +100,7 @@ class TestConversationServiceSearchConversations:
         """Test basic search_conversations functionality."""
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
+        sample_stored_conversation.llm_profile_id = "fast"
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
@@ -118,6 +119,7 @@ class TestConversationServiceSearchConversations:
         assert len(result.items) == 1
         assert result.items[0].id == conversation_id
         assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
+        assert result.items[0].llm_profile_id == "fast"
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
@@ -1304,56 +1306,6 @@ class TestConversationServiceUpdateConversation:
         await conversation_service.update_conversation(conversation_id, request)
 
         assert mock_service.stored.updated_at > original_updated_at
-
-    @pytest.mark.asyncio
-    async def test_switch_conversation_llm_profile_success(
-        self, conversation_service, sample_stored_conversation
-    ):
-        """Test switching a conversation to a named LLM profile."""
-        mock_service = AsyncMock(spec=EventService)
-        mock_service.stored = sample_stored_conversation.model_copy()
-        mock_state = ConversationState(
-            id=mock_service.stored.id,
-            agent=mock_service.stored.agent,
-            workspace=mock_service.stored.workspace,
-            execution_status=ConversationExecutionStatus.IDLE,
-            confirmation_policy=mock_service.stored.confirmation_policy,
-        )
-        mock_service.get_state.return_value = mock_state
-
-        async def switch_profile(profile_id: str) -> None:
-            agent = mock_service.stored.agent
-            assert isinstance(agent, Agent)
-            new_agent = agent.model_copy(
-                update={
-                    "llm": LLM(
-                        model="gpt-4.1",
-                        usage_id=f"profile:{profile_id}",
-                    )
-                }
-            )
-            mock_service.stored.agent = new_agent
-            mock_service.stored.llm_profile_id = profile_id
-            mock_state.agent = new_agent
-
-        mock_service.switch_profile.side_effect = switch_profile
-
-        conversation_id = mock_service.stored.id
-        conversation_service._event_services[conversation_id] = mock_service
-
-        with patch.object(
-            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
-        ) as mock_notify:
-            result = await conversation_service.switch_conversation_llm_profile(
-                conversation_id,
-                "fast",
-            )
-
-        assert result is not None
-        assert result.llm_profile_id == "fast"
-        assert result.agent.llm.model == "gpt-4.1"
-        mock_service.save_meta.assert_called_once()
-        mock_notify.assert_called_once()
 
 
 class TestConversationServiceDeleteConversation:

@@ -1508,6 +1508,44 @@ class TestEventServiceStartWithRunningStatus:
             assert isinstance(event_service.stored.agent, Agent)
             assert event_service.stored.agent.llm.model == "old-model"
 
+    @pytest.mark.asyncio
+    async def test_switch_profile_persists_profile_metadata(self, event_service):
+        """Test switch_profile updates the stored profile-backed agent snapshot."""
+        original_updated_at = event_service.stored.updated_at
+        new_agent = event_service.stored.agent.model_copy(
+            update={"llm": LLM(model="new-model", usage_id="profile:fast")}
+        )
+
+        mock_conversation = MagicMock()
+        mock_state = MagicMock(spec=ConversationState)
+        mock_state.execution_status = ConversationExecutionStatus.IDLE
+        mock_state.__enter__ = MagicMock(return_value=mock_state)
+        mock_state.__exit__ = MagicMock(return_value=None)
+        mock_conversation._state = mock_state
+        mock_conversation.agent = event_service.stored.agent
+
+        def switch_profile(profile_id: str) -> None:
+            assert profile_id == "fast"
+            mock_conversation.agent = new_agent
+
+        mock_conversation.switch_profile.side_effect = switch_profile
+        event_service._conversation = mock_conversation
+        event_service.save_meta = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+        event_service._setup_llm_log_streaming = MagicMock()
+        event_service._setup_stats_streaming = MagicMock()
+
+        await event_service.switch_profile("fast")
+
+        assert event_service.stored.llm_profile_id == "fast"
+        assert isinstance(event_service.stored.agent, Agent)
+        assert event_service.stored.agent.llm.model == "new-model"
+        assert event_service.stored.updated_at > original_updated_at
+        event_service.save_meta.assert_awaited_once()
+        event_service._publish_state_update.assert_awaited_once()
+        event_service._setup_llm_log_streaming.assert_called_once_with(new_agent)
+        event_service._setup_stats_streaming.assert_called_once_with(new_agent)
+
 
 class TestEventServiceConcurrentSubscriptions:
     """Test cases for concurrent subscription handling without deadlocks.

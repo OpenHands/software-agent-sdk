@@ -321,16 +321,6 @@ class UpdateConversationRequest(BaseModel):
     )
 
 
-class SetConversationLLMProfileRequest(BaseModel):
-    """Payload to switch a conversation to a named LLM profile."""
-
-    profile_id: str = Field(
-        ...,
-        min_length=1,
-        description="Name of the LLM profile to load for the conversation.",
-    )
-
-
 class GenerateTitleRequest(BaseModel):
     """Payload to generate a title for a conversation."""
 

@@ -617,25 +617,6 @@ class ConversationService:
         )
         return True
 
-    async def switch_conversation_llm_profile(
-        self, conversation_id: UUID, profile_id: str
-    ) -> ConversationInfo | None:
-        """Switch a standard conversation to a named LLM profile."""
-        if self._event_services is None:
-            raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
-        if event_service is None:
-            return None
-
-        await event_service.switch_profile(profile_id)
-        event_service.stored.updated_at = utc_now()
-        await event_service.save_meta()
-
-        state = await event_service.get_state()
-        conversation_info = _compose_conversation_info_v1(event_service.stored, state)
-        await self._notify_conversation_webhooks(conversation_info)
-        return conversation_info
-
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         if self._event_services is None:
             raise ValueError("inactive_service")

@@ -11,6 +11,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
@@ -75,11 +76,6 @@ class EventService:
                 }
             )
         )
-
-    def get_conversation(self):
-        if not self._conversation:
-            raise ValueError("inactive_service")
-        return self._conversation
 
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
@@ -655,20 +651,23 @@ class EventService:
         """Switch the active conversation LLM to a named profile."""
         if not self._conversation:
             raise ValueError("inactive_service")
+        conversation = self._conversation
         if not isinstance(self.stored.agent, Agent):
             raise ValueError("llm_profiles_not_supported")
 
-        with self._conversation._state as state:
+        with conversation._state as state:
             if state.execution_status == ConversationExecutionStatus.RUNNING:
                 raise ValueError("conversation_already_running")
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.switch_profile, profile_id)
+        await loop.run_in_executor(None, conversation.switch_profile, profile_id)
 
-        agent = self._conversation.agent
+        agent = conversation.agent
         assert isinstance(agent, Agent)
-        self.stored.agent = agent.model_copy(deep=True)
+        self.stored.agent = agent.model_copy()
         self.stored.llm_profile_id = profile_id
+        self.stored.updated_at = utc_now()
+        await self.save_meta()
         self._setup_llm_log_streaming(agent)
         self._setup_stats_streaming(agent)
         await self._publish_state_update()

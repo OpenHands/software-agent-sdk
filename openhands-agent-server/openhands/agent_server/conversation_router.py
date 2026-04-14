@@ -22,7 +22,6 @@ from openhands.agent_server.models import (
     GenerateTitleResponse,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
-    SetConversationLLMProfileRequest,
     SetSecurityAnalyzerRequest,
     StartConversationRequest,
     Success,
@@ -292,8 +291,9 @@ async def set_conversation_security_analyzer(
 @conversation_router.post(
     "/{conversation_id}/switch_profile",
     responses={
-        400: {"description": "Invalid or corrupted profile"},
+        400: {"description": "Invalid, unsupported, or corrupted profile"},
         404: {"description": "Conversation or profile not found"},
+        409: {"description": "Conversation is already running"},
     },
 )
 async def switch_conversation_profile(
@@ -305,59 +305,9 @@ async def switch_conversation_profile(
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    conversation = event_service.get_conversation()
+
     try:
-        conversation.switch_profile(profile_name)
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{profile_name}' not found",
-        )
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-    return Success()
-
-
-@conversation_router.patch(
-    "/{conversation_id}", responses={404: {"description": "Item not found"}}
-)
-async def update_conversation(
-    conversation_id: UUID,
-    request: UpdateConversationRequest,
-    conversation_service: ConversationService = Depends(get_conversation_service),
-) -> Success:
-    """Update conversation metadata.
-
-    This endpoint allows updating conversation details like title.
-    """
-    updated = await conversation_service.update_conversation(conversation_id, request)
-    if not updated:
-        return Success(success=False)
-    return Success()
-
-
-@conversation_router.post(
-    "/{conversation_id}/llm_profile",
-    responses={
-        400: {"description": "Conversation does not support LLM profiles"},
-        404: {"description": "Conversation or LLM profile not found"},
-        409: {"description": "Conversation is already running"},
-    },
-)
-async def switch_conversation_llm_profile(
-    conversation_id: UUID,
-    request: SetConversationLLMProfileRequest,
-    conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ConversationInfo:
-    """Switch a conversation to a named LLM profile."""
-    try:
-        conversation = await conversation_service.switch_conversation_llm_profile(
-            conversation_id,
-            request.profile_id,
-        )
+        await event_service.switch_profile(profile_name)
     except FileNotFoundError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except ValueError as e:
@@ -377,9 +327,25 @@ async def switch_conversation_llm_profile(
             ) from e
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    if conversation is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return conversation
+    return Success()
+
+
+@conversation_router.patch(
+    "/{conversation_id}", responses={404: {"description": "Item not found"}}
+)
+async def update_conversation(
+    conversation_id: UUID,
+    request: UpdateConversationRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Update conversation metadata.
+
+    This endpoint allows updating conversation details like title.
+    """
+    updated = await conversation_service.update_conversation(conversation_id, request)
+    if not updated:
+        return Success(success=False)
+    return Success()
 
 
 @conversation_router.post(
