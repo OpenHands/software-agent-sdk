@@ -2,14 +2,22 @@
 
 import asyncio
 import tempfile
+import warnings
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from deprecation import DeprecatedWarning
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import _get_root_path, api_lifespan, create_app
 from openhands.agent_server.config import Config
+
+
+@pytest.fixture(autouse=True)
+def clear_web_url_env(monkeypatch):
+    monkeypatch.delenv("OH_WEB_URL", raising=False)
+    monkeypatch.delenv("RUNTIME_URL", raising=False)
 
 
 class TestStaticFilesServing:
@@ -403,21 +411,55 @@ class TestConfigWebUrl:
     """Tests for web_url configuration field."""
 
     def test_web_url_default_is_none_when_env_not_set(self):
-        """Test that web_url defaults to None when RUNTIME_URL is not set."""
-        # Ensure the env var is not set
+        """Test that web_url defaults to None when no env vars are set."""
         with patch.dict("os.environ", {}, clear=True):
             config = Config()
             assert config.web_url is None
 
-    def test_web_url_reads_from_runtime_url_env(self):
-        """Test that web_url reads from RUNTIME_URL environment variable."""
-        with patch.dict("os.environ", {"RUNTIME_URL": "https://test.example.com/path"}):
+    def test_web_url_reads_from_oh_web_url_env(self):
+        """Test that web_url reads from the canonical OH_WEB_URL env var."""
+        with patch.dict("os.environ", {"OH_WEB_URL": "https://test.example.com/path"}):
             config = Config()
             assert config.web_url == "https://test.example.com/path"
 
+    def test_web_url_reads_from_runtime_url_env_with_warning(self):
+        """Test that legacy RUNTIME_URL still works but emits a deprecation warning."""
+        with patch.dict("os.environ", {"RUNTIME_URL": "https://test.example.com/path"}):
+            with pytest.warns(DeprecatedWarning) as caught:
+                config = Config()
+
+        assert config.web_url == "https://test.example.com/path"
+        assert "RUNTIME_URL environment variable is deprecated" in str(
+            caught[0].message
+        )
+        assert "OH_WEB_URL" in str(caught[0].message)
+        assert "removed in 1.20.0" in str(caught[0].message)
+
+    def test_web_url_prefers_oh_web_url_over_runtime_url(self):
+        """Test that the canonical env var wins without warnings."""
+        with patch.dict(
+            "os.environ",
+            {
+                "OH_WEB_URL": "https://preferred.example.com/path",
+                "RUNTIME_URL": "https://legacy.example.com/path",
+            },
+        ):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                config = Config()
+
+        assert config.web_url == "https://preferred.example.com/path"
+        assert caught == []
+
     def test_web_url_can_be_set_explicitly(self):
-        """Test that web_url can be set explicitly, overriding env var."""
-        with patch.dict("os.environ", {"RUNTIME_URL": "https://env.example.com"}):
+        """Test that web_url can be set explicitly, overriding env vars."""
+        with patch.dict(
+            "os.environ",
+            {
+                "OH_WEB_URL": "https://env.example.com/oh",
+                "RUNTIME_URL": "https://env.example.com/runtime",
+            },
+        ):
             config = Config(web_url="https://explicit.example.com/custom")
             assert config.web_url == "https://explicit.example.com/custom"
 

@@ -8,12 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context.skills import Skill
-from openhands.sdk.context.skills.utils import (
-    discover_skill_resources,
-    find_skill_md,
-    load_mcp_config,
-)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.fetch import fetch_plugin
@@ -21,6 +15,12 @@ from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
     PluginManifest,
+)
+from openhands.sdk.skills.skill import Skill
+from openhands.sdk.skills.utils import (
+    discover_skill_resources,
+    find_skill_md,
+    load_mcp_config,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 
@@ -86,6 +86,22 @@ class Plugin(BaseModel):
     def description(self) -> str:
         """Get the plugin description."""
         return self.manifest.description
+
+    @property
+    def entry_slash_command(self) -> str | None:
+        """Get the full slash command for the entry point, if defined.
+
+        Returns the slash command in format /<plugin-name>:<command-name>,
+        or None if no entry_command is defined in the manifest.
+
+        Example:
+            >>> plugin = Plugin.load(path)
+            >>> plugin.entry_slash_command
+            '/city-weather:now'
+        """
+        if not self.manifest.entry_command:
+            return None
+        return f"/{self.name}:{self.manifest.entry_command}"
 
     def get_all_skills(self) -> list[Skill]:
         """Get all skills including those converted from commands.

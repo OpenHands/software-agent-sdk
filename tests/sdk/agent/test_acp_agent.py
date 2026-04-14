@@ -11,9 +11,14 @@ import pytest
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _build_session_meta,
+    _estimate_cost_from_tokens,
+    _extract_token_usage,
+    _maybe_set_session_model,
     _OpenHandsACPBridge,
     _resolve_bypass_mode,
     _select_auth_method,
+    _serialize_tool_content,
 )
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
@@ -78,10 +83,6 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         assert agent.acp_env == {}
 
-    def test_system_message_returns_acp_managed(self):
-        agent = _make_agent()
-        assert agent.system_message == "ACP-managed agent"
-
     def test_get_all_llms_yields_sentinel(self):
         agent = _make_agent()
         llms = list(agent.get_all_llms())
@@ -92,6 +93,26 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         with pytest.raises(Exception):
             agent.acp_command = ["other"]  # type: ignore[misc]
+
+    def test_acp_model_propagated_to_metrics(self):
+        """When acp_model is set, metrics.model_name should reflect the actual model."""
+        agent = _make_agent(acp_model="gemini-3-flash-preview")
+        assert agent.llm.metrics.model_name == "gemini-3-flash-preview"
+        assert agent.llm.metrics.accumulated_token_usage is not None
+        assert (
+            agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
+        )
+
+    def test_no_acp_model_keeps_sentinel(self):
+        """Without acp_model, metrics.model_name remains the sentinel value."""
+        agent = _make_agent()
+        assert agent.llm.metrics.model_name == "acp-managed"
+
+    def test_acp_model_used_in_cost_entries(self):
+        """Cost entries should use the actual model name, not the sentinel."""
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        agent.llm.metrics.add_cost(0.05)
+        assert agent.llm.metrics.costs[0].model == "claude-opus-4-6"
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +279,198 @@ class TestOpenHandsACPClient:
     async def test_ext_notification_is_noop(self):
         client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Activity heartbeat
+# ---------------------------------------------------------------------------
+
+
+class TestACPActivityHeartbeat:
+    """Tests for the on_activity heartbeat in _OpenHandsACPBridge."""
+
+    def test_reset_clears_on_activity(self):
+        client = _OpenHandsACPBridge()
+        client.on_activity = lambda: None
+        client.reset()
+        assert client.on_activity is None
+
+    def test_reset_preserves_last_activity_signal(self):
+        """_last_activity_signal persists across resets (like telemetry state)."""
+        client = _OpenHandsACPBridge()
+        client._last_activity_signal = 999.0
+        client.reset()
+        assert client._last_activity_signal == 999.0
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_signals_activity(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read file"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_signals_activity(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        # Need a ToolCallStart first
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Reset throttle so ToolCallProgress can fire
+        client._last_activity_signal = float("-inf")
+        signals.clear()
+
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "ok"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_message_chunk_signals_activity(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "hello"
+
+        await client.session_update("sess-1", chunk)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_activity_signal_is_throttled(self):
+        """Signals should be throttled to at most one per interval."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        for i in range(5):
+            start = MagicMock(spec=ToolCallStart)
+            start.tool_call_id = f"tc-{i}"
+            start.title = f"Tool {i}"
+            start.kind = "read"
+            start.status = "completed"
+            start.raw_input = None
+            start.raw_output = None
+            start.content = None
+            await client.session_update("sess-1", start)
+
+        # All happened within the same throttle window → only 1 signal
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_signal_without_callback(self):
+        """No error when on_activity is None."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        assert client.on_activity is None
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_activity_callback_error_is_swallowed(self):
+        """Errors in on_activity must not break session_update."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.on_activity = MagicMock(side_effect=RuntimeError("boom"))
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+        client.on_activity.assert_called_once()
+
+    def test_step_wires_on_activity(self, tmp_path):
+        """step() should set on_activity on the bridge from _on_activity."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        # Wire up a user message
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="sys"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="test")]),
+            ),
+        )
+
+        activity_fn = MagicMock()
+        agent._on_activity = activity_fn
+
+        # Mock the internals so step() doesn't actually call the ACP server
+        agent._client = _OpenHandsACPBridge()
+        agent._executor = MagicMock()
+        agent._executor.run_async = MagicMock(return_value=MagicMock(usage=None))
+        agent._session_id = "sess-1"
+        agent._initialized = True
+
+        conversation = MagicMock()
+        conversation.state = state
+        events: list = []
+
+        agent.step(conversation, on_event=events.append)
+
+        # Verify on_activity was wired to the bridge
+        assert agent._client.on_activity is activity_fn
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +833,7 @@ class TestACPAgentTelemetry:
             mock_response.usage = mock_usage
         else:
             mock_response.usage = None
+            mock_response.field_meta = None
 
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
@@ -894,6 +1108,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"path": "/tmp/test.py"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -905,6 +1120,7 @@ class TestACPToolCallAccumulation:
         assert tc["status"] == "in_progress"
         assert tc["raw_input"] == {"path": "/tmp/test.py"}
         assert tc["raw_output"] is None
+        assert tc["content"] is None
 
     @pytest.mark.asyncio
     async def test_session_update_merges_tool_call_progress(self):
@@ -921,6 +1137,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"command": "ls"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -932,6 +1149,7 @@ class TestACPToolCallAccumulation:
         progress.status = "completed"
         progress.raw_input = None  # not updated
         progress.raw_output = "file1.py\nfile2.py"
+        progress.content = None
 
         await client.session_update("sess-1", progress)
 
@@ -957,6 +1175,7 @@ class TestACPToolCallAccumulation:
             start.status = "completed"
             start.raw_input = None
             start.raw_output = None
+            start.content = None
             await client.session_update("sess-1", start)
 
         assert len(client.accumulated_tool_calls) == 3
@@ -1358,7 +1577,7 @@ class TestResolveBypassMode:
 
     def test_claude_agent_with_scope(self):
         assert (
-            _resolve_bypass_mode("@zed-industries/claude-agent-acp")
+            _resolve_bypass_mode("@agentclientprotocol/claude-agent-acp")
             == "bypassPermissions"
         )
 
@@ -1428,6 +1647,52 @@ class TestSelectAuthMethod:
         methods = [self._make_auth_method("chatgpt")]
         env = {"OPENAI_API_KEY": "sk-test"}
         assert _select_auth_method(methods, env) is None
+
+
+# ---------------------------------------------------------------------------
+# ACP model overrides
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSessionMeta:
+    def test_claude_agent_adds_model_override(self):
+        assert _build_session_meta("claude-agent-acp", "claude-opus-4-6") == {
+            "claudeCode": {"options": {"model": "claude-opus-4-6"}}
+        }
+
+    def test_codex_agent_does_not_use_session_meta(self):
+        assert _build_session_meta("codex-acp", "gpt-5.4") == {}
+
+    def test_missing_model_does_not_add_session_meta(self):
+        assert _build_session_meta("claude-agent-acp", None) == {}
+
+
+class TestMaybeSetSessionModel:
+    @pytest.mark.asyncio
+    async def test_codex_agent_uses_protocol_model_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(conn, "codex-acp", "session-1", "gpt-5.4")
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gpt-5.4",
+            session_id="session-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_codex_agent_skips_protocol_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(
+            conn,
+            "claude-agent-acp",
+            "session-1",
+            "claude-opus-4-6",
+        )
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_model_skips_protocol_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
+        conn.set_session_model.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1601,3 +1866,241 @@ class TestACPPromptRetry:
 
         assert call_count == 4
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_retry_on_acp_server_error_then_success(self, tmp_path):
+        """Retry succeeds after transient ACP server error (JSON-RPC -32603)."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ACPRequestError(-32603, "Internal Server Error")
+            mock_client.accumulated_text.append("Success after server error retry")
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert (
+            "Success after server error retry" in events[0].llm_message.content[0].text
+        )
+
+    def test_no_retry_on_non_retriable_acp_error(self, tmp_path):
+        """Non-retriable ACP error codes fail immediately."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32600, "Invalid request")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(ACPRequestError, match="Invalid request"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 1  # No retry for non-retriable error codes
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_max_retries_exceeded_acp_server_error(self, tmp_path):
+        """ACP server error raised after max retries exhausted."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32603, "Internal Server Error")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            with pytest.raises(ACPRequestError, match="Internal Server Error"):
+                agent.step(conversation, on_event=events.append)
+
+        # Default max retries is 3, so 4 total attempts
+        assert call_count == 4
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+
+# ---------------------------------------------------------------------------
+# Gemini-specific tests
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiBypassMode:
+    def test_gemini_cli_uses_yolo(self):
+        assert _resolve_bypass_mode("gemini-cli") == "yolo"
+
+    def test_gemini_cli_with_version(self):
+        assert _resolve_bypass_mode("gemini-cli/0.35.3") == "yolo"
+
+
+class TestGeminiSessionModel:
+    @pytest.mark.asyncio
+    async def test_gemini_cli_uses_protocol_model_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(
+            conn, "gemini-cli", "session-1", "gemini-3-flash"
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gemini-3-flash",
+            session_id="session-1",
+        )
+
+
+# ---------------------------------------------------------------------------
+# _extract_token_usage
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTokenUsage:
+    def test_from_response_usage(self):
+        """claude-agent-acp, codex-acp: standard response.usage field."""
+        response = MagicMock()
+        response.usage.input_tokens = 100
+        response.usage.output_tokens = 50
+        response.usage.cached_read_tokens = 10
+        response.usage.cached_write_tokens = 5
+        response.usage.thought_tokens = 20
+        assert _extract_token_usage(response) == (100, 50, 10, 5, 20)
+
+    def test_from_field_meta_quota(self):
+        """gemini-cli: _meta.quota.token_count fallback."""
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {
+            "quota": {"token_count": {"input_tokens": 200, "output_tokens": 80}}
+        }
+        assert _extract_token_usage(response) == (200, 80, 0, 0, 0)
+
+    def test_none_response(self):
+        assert _extract_token_usage(None) == (0, 0, 0, 0, 0)
+
+    def test_no_usage_no_meta(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = None
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+    def test_empty_quota(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {"quota": {}}
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# _estimate_cost_from_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateCostFromTokens:
+    def test_unknown_model_returns_zero(self):
+        assert _estimate_cost_from_tokens("nonexistent-model-xyz", 100, 50) == 0.0
+
+    def test_zero_tokens_returns_zero(self):
+        assert _estimate_cost_from_tokens("gemini-3-flash-preview", 0, 0) == 0.0
+
+    def test_known_model_returns_positive(self):
+        mock_cost_map = {
+            "gemini-3-flash-preview": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            cost = _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500)
+            assert cost == pytest.approx(1000 * 5e-07 + 500 * 3e-06)
+
+    def test_import_failure_returns_zero(self):
+        with patch.dict("sys.modules", {"litellm": None}):
+            assert (
+                _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500) == 0.0
+            )
+
+
+# ---------------------------------------------------------------------------
+# _serialize_tool_content
+# ---------------------------------------------------------------------------
+
+
+class TestSerializeToolContent:
+    def test_none_returns_none(self):
+        assert _serialize_tool_content(None) is None
+
+    def test_empty_list_returns_none(self):
+        assert _serialize_tool_content([]) is None
+
+    def test_pydantic_model(self):
+        model = MagicMock()
+        model.model_dump.return_value = {
+            "type": "diff",
+            "path": "a.py",
+            "old_text": "x",
+            "new_text": "y",
+        }
+        result = _serialize_tool_content([model])
+        assert result == [
+            {"type": "diff", "path": "a.py", "old_text": "x", "new_text": "y"}
+        ]
+        model.model_dump.assert_called_once_with(mode="json")
+
+    def test_plain_dict_passthrough(self):
+        d = {"type": "content", "text": "hello"}
+        result = _serialize_tool_content([d])
+        assert result == [d]
+
+    def test_mixed_content(self):
+        model = MagicMock()
+        model.model_dump.return_value = {"type": "diff", "path": "b.py"}
+        d = {"type": "content", "text": "world"}
+        result = _serialize_tool_content([model, d])
+        assert result == [{"type": "diff", "path": "b.py"}, d]

@@ -14,7 +14,7 @@ from openhands.agent_server.skills_service import (
     load_all_skills,
     sync_public_skills,
 )
-from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
 
 
 skills_router = APIRouter(prefix="/skills", tags=["Skills"])

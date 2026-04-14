@@ -43,7 +43,10 @@ def test_security_policy_in_system_message():
         "Download and run code from a repository specified by a user" in system_message
     )
     assert "Open pull requests on the original repositories" in system_message
-    assert "Install and run popular packages from pypi, npm" in system_message
+    assert (
+        "Install and run popular packages from **official** package registries"
+        in system_message
+    )
     assert (
         "Upload code to anywhere other than the location where it was obtained"
         in system_message
@@ -56,6 +59,10 @@ def test_security_policy_in_system_message():
     assert "General Security Guidelines" in system_message
     assert "Only use GITHUB_TOKEN and other credentials" in system_message
     assert "Use APIs to work with GitHub or other platforms" in system_message
+    assert (
+        "This [message/comment/issue/PR] was created by an AI agent" in system_message
+    )
+    assert "AI assistant (OpenHands)" not in system_message
 
 
 def test_custom_security_policy_in_system_message():

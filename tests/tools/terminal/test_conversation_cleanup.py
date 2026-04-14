@@ -166,8 +166,8 @@ def test_terminal_executor_close_handles_missing_session():
             working_dir=temp_dir, terminal_type="subprocess"
         )
 
-        # Remove the session attribute
-        delattr(terminal_executor, "session")
+        # Clear the session to simulate a missing/uninitialized state
+        terminal_executor._session = None
 
         # This should not raise an exception
         terminal_executor.close()

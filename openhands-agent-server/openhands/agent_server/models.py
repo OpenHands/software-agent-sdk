@@ -1,40 +1,54 @@
 from abc import ABC
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal
+from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from openhands.agent_server.utils import OpenHandsUUID, utc_now
-from openhands.sdk import LLM, Agent, Event, ImageContent, Message, TextContent
-from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.conversation.request import (  # re-export for backward compat
+    ACPEnabledAgent as ACPEnabledAgent,
+    SendMessageRequest as SendMessageRequest,
+    StartACPConversationRequest as StartACPConversationRequest,
+    StartConversationRequest as StartConversationRequest,
+)
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.types import ConversationTags
+from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
+from openhands.sdk.llm.message import (  # re-export
+    ImageContent as ImageContent,
+    TextContent as TextContent,
+)
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
-from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
     OpenHandsModel,
-    kind_of,
 )
-from openhands.sdk.workspace import LocalWorkspace
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
-ACPEnabledAgent = Annotated[
-    Annotated[Agent, Tag("Agent")] | Annotated[ACPAgent, Tag("ACPAgent")],
-    Discriminator(kind_of),
-]
+class ServerErrorEvent(Event):
+    """Event emitted by the agent server when a server-level error occurs.
+
+    This event is used for errors that originate from the agent server itself,
+    such as MCP connection failures, WebSocket errors, or other infrastructure
+    issues. Unlike ConversationErrorEvent which is for conversation-level failures,
+    this event indicates a problem with the server environment.
+    """
+
+    code: str = Field(description="Code for the error - typically an error type")
+    detail: str = Field(description="Details about the error")
 
 
 class ConversationSortOrder(str, Enum):
@@ -51,119 +65,6 @@ class EventSortOrder(str, Enum):
 
     TIMESTAMP = "TIMESTAMP"
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
-
-
-class SendMessageRequest(BaseModel):
-    """Payload to send a message to the agent.
-
-    This is a simplified version of openhands.sdk.Message.
-    """
-
-    role: Literal["user", "system", "assistant", "tool"] = "user"
-    content: list[TextContent | ImageContent] = Field(default_factory=list)
-    run: bool = Field(
-        default=False,
-        description=("Whether the agent loop should automatically run if not running"),
-    )
-
-    def create_message(self) -> Message:
-        message = Message(role=self.role, content=self.content)
-        return message
-
-
-class _StartConversationRequestBase(BaseModel):
-    """Common conversation creation fields shared by conversation contracts."""
-
-    workspace: LocalWorkspace = Field(
-        ...,
-        description="Working directory for agent operations and tool execution",
-    )
-    conversation_id: UUID | None = Field(
-        default=None,
-        description=(
-            "Optional conversation ID. If not provided, a random UUID will be "
-            "generated."
-        ),
-    )
-    confirmation_policy: ConfirmationPolicyBase = Field(
-        default=NeverConfirm(),
-        description="Controls when the conversation will prompt the user before "
-        "continuing. Defaults to never.",
-    )
-    initial_message: SendMessageRequest | None = Field(
-        default=None, description="Initial message to pass to the LLM"
-    )
-    max_iterations: int = Field(
-        default=500,
-        ge=1,
-        description="If set, the max number of iterations the agent will run "
-        "before stopping. This is useful to prevent infinite loops.",
-    )
-    stuck_detection: bool = Field(
-        default=True,
-        description="If true, the conversation will use stuck detection to "
-        "prevent infinite loops.",
-    )
-    secrets: dict[str, SecretSource] = Field(
-        default_factory=dict,
-        description="Secrets available in the conversation",
-    )
-    tool_module_qualnames: dict[str, str] = Field(
-        default_factory=dict,
-        description=(
-            "Mapping of tool names to their module qualnames from the client's "
-            "registry. These modules will be dynamically imported on the server "
-            "to register the tools for this conversation."
-        ),
-    )
-    agent_definitions: list[AgentDefinition] = Field(
-        default_factory=list,
-        description=(
-            "Agent definitions from the client's registry. These are "
-            "registered on the server so that DelegateTool and TaskSetTool "
-            "can see user-registered subagents."
-        ),
-    )
-    plugins: list[PluginSource] | None = Field(
-        default=None,
-        description=(
-            "List of plugins to load for this conversation. Plugins are loaded "
-            "and their skills/MCP config are merged into the agent. "
-            "Hooks are extracted and stored for runtime execution."
-        ),
-    )
-    hook_config: HookConfig | None = Field(
-        default=None,
-        description=(
-            "Optional hook configuration for this conversation. Hooks are shell "
-            "scripts that run at key lifecycle events (PreToolUse, PostToolUse, "
-            "UserPromptSubmit, Stop, etc.). If both hook_config and plugins are "
-            "provided, they are merged with explicit hooks running before plugin "
-            "hooks."
-        ),
-    )
-    autotitle: bool = Field(
-        default=True,
-        description=(
-            "If true, automatically generate a title for the conversation from "
-            "the first user message using the conversation's LLM."
-        ),
-    )
-
-
-class StartConversationRequest(_StartConversationRequestBase):
-    """Payload to create a new conversation.
-
-    Contains an Agent configuration along with conversation-specific options.
-    """
-
-    agent: Agent
-
-
-class StartACPConversationRequest(_StartConversationRequestBase):
-    """Payload to create a conversation with ACP-capable agent support."""
-
-    agent: ACPEnabledAgent
 
 
 class StoredConversation(StartACPConversationRequest):
@@ -265,6 +166,14 @@ class _ConversationInfoBase(BaseModel):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description=(
+            "Key-value tags for the conversation. Keys must be lowercase "
+            "alphanumeric. Values are arbitrary strings up to 256 characters."
+        ),
+    )
 
 
 class ConversationInfo(_ConversationInfoBase):
@@ -384,8 +293,19 @@ class SetSecurityAnalyzerRequest(BaseModel):
 class UpdateConversationRequest(BaseModel):
     """Payload to update conversation metadata."""
 
-    title: str = Field(
-        ..., min_length=1, max_length=200, description="New conversation title"
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="New conversation title",
+    )
+    tags: ConversationTags | None = Field(
+        default=None,
+        description=(
+            "Key-value tags to set on the conversation. Keys must be lowercase "
+            "alphanumeric. Values are arbitrary strings up to 256 characters. "
+            "Replaces all existing tags when provided."
+        ),
     )
 
 
@@ -416,6 +336,22 @@ class AskAgentResponse(BaseModel):
     """Response containing the agent's answer."""
 
     response: str = Field(description="The agent's response to the question")
+
+
+class AgentResponseResult(BaseModel):
+    """The agent's final response for a conversation.
+
+    Contains the text of the last agent finish message or text response.
+    Empty string if the agent has not produced a final response yet.
+    """
+
+    response: str = Field(
+        description=(
+            "The agent's final response text. Extracted from either a "
+            "FinishAction message or the last agent MessageEvent. "
+            "Empty string if no final response is available."
+        )
+    )
 
 
 class BashEventBase(DiscriminatedUnionMixin, ABC):
@@ -457,6 +393,11 @@ class BashOutput(BashEventBase):
     stderr: str | None = Field(
         default=None, description="The error output from the command"
     )
+
+
+class BashError(BashEventBase):
+    code: str = Field(description="Code for the error - typically an error type")
+    detail: str = Field(description="Details about the error")
 
 
 class BashEventSortOrder(Enum):

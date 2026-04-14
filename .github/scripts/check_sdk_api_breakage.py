@@ -11,12 +11,14 @@ It focuses on the curated public surface:
 
 It enforces two policies:
 
-1. **Deprecation-before-removal** – any removed export or removed public class
-   member must have been marked deprecated in the *previous* release using the
-   canonical deprecation helpers (``@deprecated`` decorator or
-   ``warn_deprecated()`` call from ``openhands.sdk.utils.deprecation``). For
-   members, the recommended ``warn_deprecated`` feature name is qualified (e.g.
-   ``"LLM.some_method"``).
+1. **Deprecation runway before removal** – any removed export or removed public
+   class member must have been marked deprecated in the *previous* release using
+   the canonical deprecation helpers (``@deprecated`` decorator or
+   ``warn_deprecated()`` call from ``openhands.sdk.utils.deprecation``), and the
+   baseline deprecation metadata must show that the current version has reached a
+   scheduled removal target at least **5 minor releases** after
+   ``deprecated_in``. For members, the recommended ``warn_deprecated`` feature
+   name is qualified (e.g. ``"LLM.some_method"``).
 
 2. **MINOR version bump** – any breaking change (removal or structural) requires
    at least a MINOR version bump according to SemVer.
@@ -37,7 +39,7 @@ import sys
 import tomllib
 import urllib.request
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from packaging import version as pkg_version
@@ -54,15 +56,26 @@ class PackageConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DeprecationMetadata:
+    deprecated_in: str | None = None
+    removed_in: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DeprecatedSymbols:
     """Deprecated SDK symbols detected in a source tree.
 
     ``top_level`` tracks module-level symbols (exports) like ``LLM``.
     ``qualified`` tracks class members like ``LLM.some_method``.
+    ``metadata`` stores the parsed deprecation schedule for each feature.
     """
 
     top_level: set[str] = frozenset()  # type: ignore[assignment]
     qualified: set[str] = frozenset()  # type: ignore[assignment]
+    metadata: dict[str, DeprecationMetadata] = field(default_factory=dict)
+
+
+DEPRECATION_RUNWAY_MINOR_RELEASES = 5
 
 
 PACKAGES: tuple[PackageConfig, ...] = (
@@ -239,6 +252,71 @@ def _parse_version(v: str) -> pkg_version.Version:
     return pkg_version.parse(v)
 
 
+def _parse_string_kwarg(call: ast.Call, name: str) -> str | None:
+    for kw in call.keywords:
+        if kw.arg != name:
+            continue
+        value = kw.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        return None
+    return None
+
+
+def _minimum_removed_in(deprecated_in: str) -> str:
+    parsed = _parse_version(deprecated_in)
+    return f"{parsed.major}.{parsed.minor + DEPRECATION_RUNWAY_MINOR_RELEASES}.0"
+
+
+def _deprecation_schedule_errors(
+    *,
+    feature: str,
+    metadata: DeprecationMetadata | None,
+    current_version: str,
+) -> list[str]:
+    if metadata is None:
+        return [
+            f"Removed '{feature}' without prior deprecation. Mark it with "
+            "@deprecated(...) or warn_deprecated(...), and keep it deprecated for "
+            f"{DEPRECATION_RUNWAY_MINOR_RELEASES} minor releases before removing."
+        ]
+
+    if metadata.deprecated_in is None:
+        return [
+            f"Removed '{feature}' was marked deprecated previously, but its "
+            "deprecation metadata does not declare deprecated_in. Public API "
+            f"removals require {DEPRECATION_RUNWAY_MINOR_RELEASES} minor releases "
+            "of runway."
+        ]
+
+    if metadata.removed_in is None:
+        return [
+            f"Removed '{feature}' was marked deprecated previously, but its "
+            "deprecation metadata does not declare removed_in. Public API removals "
+            f"require {DEPRECATION_RUNWAY_MINOR_RELEASES} minor releases of runway."
+        ]
+
+    minimum_removed_in = _minimum_removed_in(metadata.deprecated_in)
+    if _parse_version(metadata.removed_in) < _parse_version(minimum_removed_in):
+        return [
+            f"Removed '{feature}' uses an invalid deprecation schedule: "
+            f"deprecated_in={metadata.deprecated_in} and "
+            f"removed_in={metadata.removed_in}. Public API removals require at "
+            f"least {DEPRECATION_RUNWAY_MINOR_RELEASES} minor releases of runway "
+            f"(minimum removed_in: {minimum_removed_in})."
+        ]
+
+    if _parse_version(current_version) < _parse_version(metadata.removed_in):
+        return [
+            f"Removed '{feature}' before its scheduled removal version "
+            f"{metadata.removed_in}. Current version is {current_version}. Public "
+            f"API removals require {DEPRECATION_RUNWAY_MINOR_RELEASES} minor releases "
+            "of deprecation runway."
+        ]
+
+    return []
+
+
 def get_pypi_baseline_version(pkg: str, current: str | None) -> str | None:
     """Fetch the baseline release version from PyPI.
 
@@ -298,12 +376,79 @@ def ensure_griffe() -> None:
         raise SystemExit(1)
 
 
+def _strip_balanced_param(text: str, param: str) -> str:
+    """Remove a keyword parameter whose value may contain nested delimiters.
+
+    Handles values like ``json_schema_extra={'key': {'nested': True}}`` where a
+    simple regex cannot reliably match the balanced braces/parens/brackets.
+
+    Returns *text* with the ``param=<value>`` fragment (and any surrounding
+    comma) removed.
+    """
+    pattern = re.compile(rf",?\s*{re.escape(param)}\s*=\s*")
+    match = pattern.search(text)
+    if not match:
+        return text
+
+    start = match.start()
+    pos = match.end()
+    if pos >= len(text):
+        return text
+
+    # Track balanced delimiters to find where the value ends.
+    openers = {"(": ")", "[": "]", "{": "}"}
+    closers = {")", "]", "}"}
+    stack: list[str] = []
+    in_string: str | None = None
+
+    while pos < len(text):
+        ch = text[pos]
+
+        # Handle string literals (skip their contents).
+        if in_string:
+            if ch == "\\" and pos + 1 < len(text):
+                pos += 2
+                continue
+            if ch == in_string:
+                in_string = None
+            pos += 1
+            continue
+
+        if ch in ("'", '"'):
+            in_string = ch
+            pos += 1
+            continue
+
+        if ch in openers:
+            stack.append(openers[ch])
+            pos += 1
+            continue
+
+        if ch in closers:
+            if stack:
+                stack.pop()
+                pos += 1
+                if not stack:
+                    break
+                continue
+            # Unmatched closer — end of value.
+            break
+
+        # At depth 0, a comma or closing paren ends the value.
+        if not stack and ch in (",", ")"):
+            break
+
+        pos += 1
+
+    return text[:start] + text[pos:]
+
+
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     """Check if the change is only in Field metadata (description, title, etc.).
 
-    Field metadata parameters like ``description``, ``title``, ``examples``, and
-    ``deprecated`` don't affect runtime behavior. Changes to these should not be
-    considered breaking API changes.
+    Field metadata parameters like ``description``, ``title``, ``examples``,
+    ``json_schema_extra``, and ``deprecated`` don't affect runtime behavior.
+    Changes to these should not be considered breaking API changes.
 
     Returns:
         True if both values are Field() calls and only metadata parameters differ.
@@ -314,21 +459,29 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     if not (old_str.startswith("Field(") and new_str.startswith("Field(")):
         return False
 
-    # Metadata parameters that don't affect runtime behavior.
+    # Simple metadata parameters whose values are always plain quoted strings
+    # or simple literals.
     # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
-    metadata_patterns = {
+    simple_metadata_patterns = {
         "description": r'([\'"])([^\'"]*?)\1',
         "title": r'([\'"])([^\'"]*?)\1',
         "examples": r'([\'"])([^\'"]*?)\1',
-        "json_schema_extra": r'([\'"])([^\'"]*?)\1',
         "deprecated": r"(?:True|False|None|'[^']*'|\"[^\"]*\")",
     }
 
+    # Parameters whose values can be complex nested structures (dicts, function
+    # calls, etc.) and need balanced-delimiter parsing instead of a regex.
+    balanced_params = ("json_schema_extra",)
+
     def _normalize(value: str) -> str:
         normalized = value
-        for param, value_pattern in metadata_patterns.items():
+
+        for param, value_pattern in simple_metadata_patterns.items():
             pattern = rf",?\s*{param}\s*=\s*{value_pattern}"
             normalized = re.sub(pattern, "", normalized)
+
+        for param in balanced_params:
+            normalized = _strip_balanced_param(normalized, param)
 
         normalized = re.sub(r"\(\s*,", "(", normalized)
         normalized = re.sub(r",\s*\)", ")", normalized)
@@ -339,10 +492,48 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     return _normalize(old_str) == _normalize(new_str)
 
 
+def _member_deprecation_metadata(
+    cls_obj: object,
+    member_name: str,
+    deprecated: DeprecatedSymbols,
+) -> DeprecationMetadata | None:
+    """Return deprecation metadata for a class member, including parent classes.
+
+    When a member like ``system_message`` is deprecated on a base class
+    (``AgentBase``) but removed from a subclass (``Agent``), griffe reports
+    the removal against the subclass name. This helper walks the MRO so that
+    ``Agent.system_message`` reuses the base-class deprecation schedule.
+    """
+    cls_name = getattr(cls_obj, "name", "")
+    feature = f"{cls_name}.{member_name}"
+    if feature in deprecated.qualified:
+        return deprecated.metadata.get(feature, DeprecationMetadata())
+    if cls_name in deprecated.top_level:
+        return deprecated.metadata.get(cls_name, DeprecationMetadata())
+
+    for base in getattr(cls_obj, "resolved_bases", []):
+        base_name = getattr(base, "name", None)
+        if base_name is None:
+            continue
+        feature = f"{base_name}.{member_name}"
+        if feature in deprecated.qualified:
+            return deprecated.metadata.get(feature, DeprecationMetadata())
+    return None
+
+
+def _was_deprecated(
+    cls_obj: object,
+    member_name: str,
+    deprecated: DeprecatedSymbols,
+) -> bool:
+    return _member_deprecation_metadata(cls_obj, member_name, deprecated) is not None
+
+
 def _collect_breakages_pairs(
     objs: Iterable[tuple[object, object]],
     *,
     deprecated: DeprecatedSymbols,
+    current_version: str,
     title: str,
 ) -> tuple[list[object], int]:
     """Find breaking changes between pairs of old/new API objects.
@@ -350,14 +541,14 @@ def _collect_breakages_pairs(
     Only reports breakages for public API members.
 
     Returns:
-        (breakages, undeprecated_removals)
+        (breakages, removal_policy_errors)
     """
 
     import griffe
     from griffe import Alias, AliasResolutionError, BreakageKind, ExplanationStyle, Kind
 
     breakages: list[object] = []
-    undeprecated_removals = 0
+    removal_policy_errors = 0
 
     for old, new in objs:
         try:
@@ -389,17 +580,17 @@ def _collect_breakages_pairs(
                     continue
 
                 feature = f"{parent.name}.{obj.name}"
-                if (
-                    feature not in deprecated.qualified
-                    and parent.name not in deprecated.top_level
-                ):
-                    print(
-                        f"::error title={title}::Removed '{feature}' without prior "
-                        "deprecation. Mark it with @deprecated(...) or "
-                        f"warn_deprecated('{feature}', ...) for at least one release "
-                        "before removing."
-                    )
-                    undeprecated_removals += 1
+                errors = _deprecation_schedule_errors(
+                    feature=feature,
+                    metadata=_member_deprecation_metadata(parent, obj.name, deprecated),
+                    current_version=current_version,
+                )
+                if not errors:
+                    continue
+
+                for error in errors:
+                    print(f"::error title={title}::{error}")
+                removal_policy_errors += len(errors)
         except AliasResolutionError as e:
             if isinstance(old, Alias) or isinstance(new, Alias):
                 old_target = old.target_path if isinstance(old, Alias) else None
@@ -428,7 +619,7 @@ def _collect_breakages_pairs(
         except Exception as e:
             print(f"::warning title={title}::Failed to compute breakages: {e}")
 
-    return breakages, undeprecated_removals
+    return breakages, removal_policy_errors
 
 
 def _extract_exported_names(module) -> set[str]:
@@ -586,29 +777,42 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
     - ``warn_deprecated('SomeFeature', ...)`` call
 
     Returns:
-        DeprecatedSymbols(top_level=..., qualified=...)
+        DeprecatedSymbols(top_level=..., qualified=..., metadata=...)
     """
 
-    def _is_deprecated_decorator(deco: ast.AST) -> bool:
+    def _deprecated_metadata(call: ast.Call) -> DeprecationMetadata:
+        return DeprecationMetadata(
+            deprecated_in=_parse_string_kwarg(call, "deprecated_in"),
+            removed_in=_parse_string_kwarg(call, "removed_in"),
+        )
+
+    def _is_deprecated_decorator(deco: ast.AST) -> ast.Call | None:
         if not isinstance(deco, ast.Call):
-            return False
+            return None
         target = deco.func
-        if isinstance(target, ast.Name):
-            return target.id == "deprecated"
-        if isinstance(target, ast.Attribute):
-            return target.attr == "deprecated"
-        return False
+        if isinstance(target, ast.Name) and target.id == "deprecated":
+            return deco
+        if isinstance(target, ast.Attribute) and target.attr == "deprecated":
+            return deco
+        return None
 
     class _Visitor(ast.NodeVisitor):
         def __init__(self) -> None:
             self.class_stack: list[str] = []
             self.top_level: set[str] = set()
             self.qualified: set[str] = set()
+            self.metadata: dict[str, DeprecationMetadata] = {}
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
-            if any(_is_deprecated_decorator(deco) for deco in node.decorator_list):
+            for deco in node.decorator_list:
+                deprecated_call = _is_deprecated_decorator(deco)
+                if deprecated_call is None:
+                    continue
+                metadata = _deprecated_metadata(deprecated_call)
                 self.top_level.add(node.name)
                 self.qualified.add(node.name)
+                self.metadata[node.name] = metadata
+                break
 
             self.class_stack.append(node.name)
             self.generic_visit(node)
@@ -618,12 +822,20 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
             self,
             node: ast.FunctionDef | ast.AsyncFunctionDef,
         ) -> None:
-            if any(_is_deprecated_decorator(deco) for deco in node.decorator_list):
+            for deco in node.decorator_list:
+                deprecated_call = _is_deprecated_decorator(deco)
+                if deprecated_call is None:
+                    continue
+                metadata = _deprecated_metadata(deprecated_call)
                 if self.class_stack:
-                    self.qualified.add(".".join([*self.class_stack, node.name]))
+                    feature = ".".join([*self.class_stack, node.name])
+                    self.qualified.add(feature)
+                    self.metadata[feature] = metadata
                 else:
                     self.top_level.add(node.name)
                     self.qualified.add(node.name)
+                    self.metadata[node.name] = metadata
+                break
 
             self.generic_visit(node)
 
@@ -644,13 +856,18 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
             if func_name == "warn_deprecated" and node.args:
                 feature = _extract_string_literal(node.args[0])
                 if feature is not None:
+                    metadata = _deprecated_metadata(node)
                     self.qualified.add(feature)
-                    self.top_level.add(feature.split(".")[0])
+                    top_level_name = feature.split(".")[0]
+                    self.top_level.add(top_level_name)
+                    self.metadata[feature] = metadata
+                    self.metadata.setdefault(top_level_name, metadata)
 
             self.generic_visit(node)
 
     top_level: set[str] = set()
     qualified: set[str] = set()
+    metadata: dict[str, DeprecationMetadata] = {}
 
     for pyfile in source_root.rglob("*.py"):
         try:
@@ -666,8 +883,11 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
         visitor.visit(tree)
         top_level |= visitor.top_level
         qualified |= visitor.qualified
+        metadata.update(visitor.metadata)
 
-    return DeprecatedSymbols(top_level=top_level, qualified=qualified)
+    return DeprecatedSymbols(
+        top_level=top_level, qualified=qualified, metadata=metadata
+    )
 
 
 def _extract_string_literal(node: ast.AST) -> str | None:
@@ -685,19 +905,25 @@ def _get_source_root(griffe_root: object) -> Path | None:
     return None
 
 
-def _compute_breakages(old_root, new_root, cfg: PackageConfig) -> tuple[int, int]:
+def _compute_breakages(
+    old_root,
+    new_root,
+    cfg: PackageConfig,
+    *,
+    current_version: str = "9999.0.0",
+) -> tuple[int, int]:
     """Detect breaking changes between old and new package versions.
 
     Returns:
-        ``(total_breaks, undeprecated_removals)`` — *total_breaks* counts all
+        ``(total_breaks, removal_policy_errors)`` — *total_breaks* counts all
         structural breakages (for the version-bump policy), while
-        *undeprecated_removals* counts public API removals (exports and class
-        members) without a prior deprecation marker (a separate hard failure).
+        *removal_policy_errors* counts public API removals that violate the
+        required deprecation runway.
     """
     pkg = cfg.package
     title = f"{cfg.distribution} API"
     total_breaks = 0
-    undeprecated_removals = 0
+    removal_policy_errors = 0
 
     source_root = _get_source_root(old_root)
     deprecated = (
@@ -727,22 +953,28 @@ def _compute_breakages(old_root, new_root, cfg: PackageConfig) -> tuple[int, int
 
     removed = sorted(old_exports - new_exports)
 
-    # Check deprecation-before-removal policy (exports)
+    # Check deprecation runway policy (exports)
     for name in removed:
         total_breaks += 1  # every removal is a structural break
-        if name not in deprecated.top_level:
-            print(
-                f"::error title={title}::Removed '{name}' from "
-                f"{pkg}.__all__ without prior deprecation. "
-                "Mark it with @deprecated or warn_deprecated() "
-                "for at least one release before removing."
-            )
-            undeprecated_removals += 1
-        else:
+        errors = _deprecation_schedule_errors(
+            feature=name,
+            metadata=(
+                deprecated.metadata.get(name, DeprecationMetadata())
+                if name in deprecated.top_level
+                else None
+            ),
+            current_version=current_version,
+        )
+        if not errors:
             print(
                 f"::notice title={title}::Removed previously-deprecated symbol "
-                f"'{name}' from {pkg}.__all__"
+                f"'{name}' from {pkg}.__all__ after its scheduled removal version"
             )
+            continue
+
+        for error in errors:
+            print(f"::error title={title}::{error}")
+        removal_policy_errors += len(errors)
 
     common = sorted(old_exports & new_exports)
     pairs: list[tuple[object, object]] = []
@@ -752,15 +984,16 @@ def _compute_breakages(old_root, new_root, cfg: PackageConfig) -> tuple[int, int
         except Exception as e:
             print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
 
-    breakages, undeprecated_members = _collect_breakages_pairs(
+    breakages, member_policy_errors = _collect_breakages_pairs(
         pairs,
         deprecated=deprecated,
+        current_version=current_version,
         title=title,
     )
     total_breaks += len(breakages)
-    undeprecated_removals += undeprecated_members
+    removal_policy_errors += member_policy_errors
 
-    return total_breaks, undeprecated_removals
+    return total_breaks, removal_policy_errors
 
 
 def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
@@ -788,21 +1021,25 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
         return 1
 
     try:
-        total_breaks, undeprecated = _compute_breakages(old_root, new_root, cfg)
+        total_breaks, removal_policy_errors = _compute_breakages(
+            old_root,
+            new_root,
+            cfg,
+            current_version=new_version,
+        )
     except Exception as e:
         print(f"::error title={title}::Failed to compute breakages: {e}")
         return 1
 
-    if undeprecated:
+    if removal_policy_errors:
         print(
-            f"::error title={title}::{undeprecated} symbol(s) removed "
-            f"from {cfg.package} without prior deprecation — "
-            f"see errors above"
+            f"::error title={title}::{removal_policy_errors} public API removal "
+            f"policy violation(s) detected in {cfg.package} — see errors above"
         )
 
     bump_rc = _check_version_bump(baseline, new_version, total_breaks)
 
-    return 1 if (undeprecated or bump_rc) else 0
+    return 1 if (removal_policy_errors or bump_rc) else 0
 
 
 def main() -> int:

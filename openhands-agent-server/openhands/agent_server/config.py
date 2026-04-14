@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.env_parser import from_env
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 # Environment variable constants
@@ -45,6 +46,24 @@ def _default_secret_key() -> SecretStr | None:
     if session_api_key:
         return SecretStr(session_api_key)
     return None
+
+
+def _default_web_url() -> str | None:
+    web_url = os.getenv("OH_WEB_URL")
+    if web_url:
+        return web_url
+
+    legacy_web_url = os.getenv(V0_RUNTIME_URL)
+    if not legacy_web_url:
+        return None
+
+    warn_deprecated(
+        "RUNTIME_URL environment variable",
+        deprecated_in="1.15.0",
+        removed_in="1.20.0",
+        details="Use OH_WEB_URL instead.",
+    )
+    return legacy_web_url
 
 
 class WebhookSpec(BaseModel):
@@ -175,7 +194,7 @@ class Config(BaseModel):
         ),
     )
     web_url: str | None = Field(
-        default_factory=lambda: os.getenv(V0_RUNTIME_URL),
+        default_factory=_default_web_url,
         description=(
             "The URL where this agent server instance is available externally"
         ),

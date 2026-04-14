@@ -14,8 +14,27 @@ Outputs to GITHUB_OUTPUT:
 
 import json
 import os
+import signal
 import sys
+import time
 from typing import Any
+
+
+def _sigterm_handler(signum: int, _frame: object) -> None:
+    """Handle SIGTERM/SIGALRM with a diagnostic message instead of silent death."""
+    sig_name = signal.Signals(signum).name
+    print(
+        f"\nERROR: Process received {sig_name} during preflight check.\n"
+        "This usually means the LiteLLM proxy is unreachable or hanging.\n"
+        f"LLM_BASE_URL: {os.environ.get('LLM_BASE_URL', '(not set)')}\n",
+        file=sys.stderr,
+        flush=True,
+    )
+    sys.exit(1)
+
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+signal.signal(signal.SIGALRM, _sigterm_handler)
 
 
 # SDK-specific parameters that should not be passed to litellm.
@@ -69,6 +88,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "qwen3.6-plus": {
+        "id": "qwen3.6-plus",
+        "display_name": "Qwen3.6 Plus",
+        "llm_config": {
+            "model": "litellm_proxy/dashscope/qwen3.6-plus",
+            "temperature": 0.0,
+        },
+    },
     "claude-4.5-opus": {
         "id": "claude-4.5-opus",
         "display_name": "Claude 4.5 Opus",
@@ -90,14 +117,6 @@ MODELS = {
         "display_name": "Claude Sonnet 4.6",
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-sonnet-4-6",
-            "temperature": 0.0,
-        },
-    },
-    "gemini-3-pro": {
-        "id": "gemini-3-pro",
-        "display_name": "Gemini 3 Pro",
-        "llm_config": {
-            "model": "litellm_proxy/gemini-3-pro-preview",
             "temperature": 0.0,
         },
     },
@@ -223,6 +242,16 @@ MODELS = {
             "disable_vision": True,
         },
     },
+    "glm-5.1": {
+        "id": "glm-5.1",
+        "display_name": "GLM-5.1",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5.1",
+            "temperature": 0.0,
+            # OpenRouter glm-5.1 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
+    },
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",
         "display_name": "Qwen3 Coder Next",
@@ -253,6 +282,23 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/nvidia/nemotron-3-super-120b-a12b",
             "temperature": 0.0,
+        },
+    },
+    "converse-nemotron-super-3-120b": {
+        "id": "converse-nemotron-super-3-120b",
+        "display_name": "NVIDIA Converse Nemotron Super 3 120B",
+        "llm_config": {
+            "model": "litellm_proxy/converse-nemotron-super-3-120b",
+            "temperature": 0.0,
+        },
+    },
+    "trinity-large-thinking": {
+        "id": "trinity-large-thinking",
+        "display_name": "Trinity Large Thinking",
+        "llm_config": {
+            "model": "litellm_proxy/trinity-large-thinking",
+            "temperature": 1.0,
+            "top_p": 0.95,
         },
     },
 }
@@ -380,6 +426,31 @@ def check_model(
 test_model = check_model
 
 
+def _check_proxy_reachable(
+    base_url: str, api_key: str | None = None, timeout: int = 10
+) -> tuple[bool, str]:
+    """Quick health check: can we reach the proxy at all?
+
+    Uses /v1/models (standard OpenAI-compatible endpoint) which works with
+    any valid API key. The /health endpoint requires admin-level access on
+    some LiteLLM configurations.
+    """
+    import urllib.error
+    import urllib.request
+
+    models_url = f"{base_url.rstrip('/')}/v1/models"
+    try:
+        req = urllib.request.Request(models_url, method="GET")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        urllib.request.urlopen(req, timeout=timeout)
+        return True, f"Proxy reachable at {base_url}"
+    except urllib.error.URLError as e:
+        return False, f"Cannot reach proxy at {base_url}: {e.reason}"
+    except Exception as e:
+        return False, f"Cannot reach proxy at {base_url}: {type(e).__name__}: {e}"
+
+
 def run_preflight_check(models: list[dict[str, Any]]) -> bool:
     """Run preflight LLM check for all models.
 
@@ -401,23 +472,42 @@ def run_preflight_check(models: list[dict[str, Any]]) -> bool:
         print("Preflight check: SKIPPED (LLM_API_KEY not set)")
         return True
 
-    print(f"\nPreflight LLM check for {len(models)} model(s)...")
-    print("-" * 50)
+    # Quick connectivity check before trying expensive model completions
+    print(f"\nChecking proxy connectivity: {base_url}", flush=True)
+    reachable, msg = _check_proxy_reachable(base_url, api_key=api_key)
+    if not reachable:
+        print(f"✗ {msg}", file=sys.stderr, flush=True)
+        print(
+            "\nThe LiteLLM proxy appears to be down or unreachable.\n"
+            "Set SKIP_PREFLIGHT=true to bypass this check.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    print(f"✓ {msg}", flush=True)
+
+    print(f"\nPreflight LLM check for {len(models)} model(s)...", flush=True)
+    print("-" * 50, flush=True)
 
     all_passed = True
     for model_config in models:
+        display_name = model_config.get("display_name", "unknown")
+        print(f"  Checking {display_name}...", end=" ", flush=True)
+        t0 = time.monotonic()
         success, message = check_model(model_config, api_key, base_url)
-        print(message)
+        elapsed = time.monotonic() - t0
+        print(f"({elapsed:.1f}s)", flush=True)
+        print(f"  {message}", flush=True)
         if not success:
             all_passed = False
 
-    print("-" * 50)
+    print("-" * 50, flush=True)
 
     if all_passed:
-        print(f"✓ All {len(models)} model(s) passed preflight check\n")
+        print(f"✓ All {len(models)} model(s) passed preflight check\n", flush=True)
     else:
-        print("✗ Some models failed preflight check")
-        print("Evaluation aborted to avoid wasting compute resources.\n")
+        print("✗ Some models failed preflight check", flush=True)
+        print("Evaluation aborted to avoid wasting compute resources.\n", flush=True)
 
     return all_passed
 
@@ -431,7 +521,7 @@ def main() -> None:
 
     # Resolve model configs
     resolved = find_models_by_id(model_ids)
-    print(f"Resolved {len(resolved)} model(s): {', '.join(model_ids)}")
+    print(f"Resolved {len(resolved)} model(s): {', '.join(model_ids)}", flush=True)
 
     # Run preflight check
     if not run_preflight_check(resolved):

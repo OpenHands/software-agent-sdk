@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -12,8 +16,9 @@ from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
+    normalize_tool_call,
+    parse_tool_call_arguments,
     prepare_llm_messages,
-    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -48,6 +53,7 @@ from openhands.sdk.llm import (
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContextWindowExceedError,
+    LLMMalformedConversationHistoryError,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
@@ -61,6 +67,11 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
@@ -70,6 +81,23 @@ from openhands.sdk.tool.builtins import (
 
 logger = get_logger(__name__)
 maybe_init_laminar()
+
+
+def _tool_has_summary_param(tool: ToolDefinition) -> bool:
+    """Return True if the tool's own schema declares ``summary`` as a parameter.
+
+    Checks both regular tool action_type model_fields and MCP tool inputSchema
+    so that ``_extract_summary`` can avoid popping the field when it belongs
+    to the tool (e.g. Jira's ticket title).
+    """
+    if "summary" in tool.action_type.model_fields:
+        return True
+    if isinstance(tool, MCPToolDefinition):
+        props = tool.mcp_tool.inputSchema.get("properties", {})
+        if "summary" in props:
+            return True
+    return False
+
 
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
@@ -127,7 +155,8 @@ class _ActionBatch:
         state: ConversationState,
         executor: ParallelToolExecutor,
         tool_runner: Callable[[ActionEvent], list[Event]],
-    ) -> "_ActionBatch":
+        tools: dict[str, ToolDefinition] | None = None,
+    ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
         action_events, has_finish = cls._truncate_at_finish(action_events)
 
@@ -140,7 +169,7 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = executor.execute_batch(executable, tool_runner)
+        executed_results = executor.execute_batch(executable, tool_runner, tools)
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -407,6 +436,7 @@ class Agent(CriticMixin, AgentBase):
             state=state,
             executor=self._parallel_executor,
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
         )
         batch.emit(on_event)
         batch.finalize(
@@ -489,6 +519,30 @@ class Agent(CriticMixin, AgentBase):
             )
             on_event(error_message)
             return
+        except LLMMalformedConversationHistoryError as e:
+            # The provider rejected the current message history as structurally
+            # invalid (for example, broken tool_use/tool_result pairing). Route
+            # this into condensation recovery, but keep the logs distinct from
+            # true context-window exhaustion so upstream event-stream bugs remain
+            # visible.
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised malformed conversation history error, "
+                    "triggering condensation retry with condensed history: "
+                    f"{e}"
+                )
+                on_event(CondensationRequest())
+                return
+            logger.warning(
+                "LLM raised malformed conversation history error but no "
+                "condenser can handle condensation requests. This usually "
+                "indicates an upstream event-stream or resume bug: "
+                f"{e}"
+            )
+            raise e
         except LLMContextWindowExceedError as e:
             # If condenser is available and handles requests, trigger condensation
             if (
@@ -699,20 +753,43 @@ class Agent(CriticMixin, AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
-    def _extract_summary(self, tool_name: str, arguments: dict) -> str:
+    def _extract_summary(
+        self,
+        tool_name: str,
+        arguments: dict,
+        tool: ToolDefinition | None = None,
+    ) -> str:
         """Extract and validate the summary field from tool arguments.
 
         Summary field is always requested but optional - if LLM doesn't provide
         it or provides invalid data, we generate a default summary using the
         tool name and arguments.
 
+        When the tool's own schema declares ``summary`` as a real parameter
+        (e.g. Jira's ticket title), the value is **read but not removed** so
+        that ``action_from_arguments`` validation still succeeds.  The tool's
+        own ``summary`` value is reused as the event-level summary because it
+        is usually descriptive (e.g. a Jira ticket title).
+
         Args:
             tool_name: Name of the tool being called
             arguments: Dictionary of tool arguments from LLM
+            tool: The tool definition (used to check if "summary" is a
+                declared parameter of the tool's schema)
 
         Returns:
             The summary string - either from LLM or a default generated one
         """
+        if tool is not None and _tool_has_summary_param(tool):
+            # "summary" belongs to the tool — read it but don't pop it.
+            # Reuse the tool's own value as the event summary (e.g. a Jira
+            # ticket title is a reasonable description of the action).
+            summary = arguments.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+            args_str = json.dumps(arguments)
+            return f"{tool_name}: {args_str}"
+
         summary = arguments.pop("summary", None)
 
         # If valid summary provided by LLM, use it
@@ -722,6 +799,40 @@ class Agent(CriticMixin, AgentBase):
         # Generate default summary: {tool_name}: {arguments}
         args_str = json.dumps(arguments)
         return f"{tool_name}: {args_str}"
+
+    def _emit_tool_error(
+        self,
+        *,
+        error: str,
+        tool_name: str,
+        tool_call: MessageToolCall,
+        llm_response_id: str,
+        on_event: ConversationCallbackType,
+        thought: list[TextContent] | None = None,
+        reasoning_content: str | None = None,
+        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
+        responses_reasoning_item: ReasoningItemModel | None = None,
+    ) -> None:
+        tc_event = ActionEvent(
+            source="agent",
+            thought=thought or [],
+            reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks or [],
+            responses_reasoning_item=responses_reasoning_item,
+            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
+            llm_response_id=llm_response_id,
+            action=None,
+        )
+        on_event(tc_event)
+        on_event(
+            AgentErrorEvent(
+                error=error,
+                tool_name=tool_name,
+                tool_call_id=tool_call.id,
+            )
+        )
 
     def _get_action_event(
         self,
@@ -739,52 +850,51 @@ class Agent(CriticMixin, AgentBase):
 
         NOTE: state will be mutated in-place.
         """
-        tool_name = tool_call.name
-        tool = self.tools_map.get(tool_name, None)
-        # Handle non-existing tools
-        if tool is None:
-            available = list(self.tools_map.keys())
-            err = f"Tool '{tool_name}' not found. Available: {available}"
-            logger.error(err)
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
-                error=err,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
-            )
-            on_event(event)
-            return
+        # Track the originally-requested tool name (before normalization) for
+        # error messages when the tool is not found or validation fails.
+        requested_tool_name = tool_call.name
+        tool: ToolDefinition | None = None
+        # Store the normalized tool call to persist correct name/args in events.
+        normalized_tool_call = tool_call
+        arguments: dict[str, object] | None = None
 
-        # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            # Try parsing arguments as-is first.  Raw newlines / tabs are
-            # legal JSON whitespace and many models emit them between tokens
-            # (e.g. Qwen: "view_range": \n[1, 100]\n).  sanitize_json_
-            # control_chars would escape those to \\n, which breaks parsing.
-            # Fall back to sanitization only when the raw string is invalid
-            # (handles models that emit raw control chars *inside* strings).
-            try:
-                arguments = json.loads(tool_call.arguments)
-            except json.JSONDecodeError:
-                sanitized_args = sanitize_json_control_chars(tool_call.arguments)
-                arguments = json.loads(sanitized_args)
+            # Parse arguments inside the try block so JSONDecodeError is caught.
+            arguments = parse_tool_call_arguments(tool_call.arguments)
 
-            # Fix malformed arguments (e.g., JSON strings for list/dict fields)
+            # Normalize tool call (handles aliasing, terminal fallback, etc.)
+            tool_name, arguments = normalize_tool_call(
+                requested_tool_name,
+                arguments,
+                self.tools_map.keys(),
+            )
+
+            tool = self.tools_map.get(tool_name, None)
+            if tool is None:
+                available = list(self.tools_map.keys())
+                err = f"Tool '{tool_name}' not found. Available: {available}"
+                logger.error(err)
+                self._emit_tool_error(
+                    error=err,
+                    tool_name=tool_name,
+                    tool_call=tool_call,
+                    llm_response_id=llm_response_id,
+                    on_event=on_event,
+                    thought=thought,
+                    reasoning_content=reasoning_content,
+                    thinking_blocks=thinking_blocks,
+                    responses_reasoning_item=responses_reasoning_item,
+                )
+                return
+
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
+            normalized_tool_call = tool_call.model_copy(
+                update={
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments),
+                }
+            )
             security_risk = self._extract_security_risk(
                 arguments,
                 tool.name,
@@ -795,34 +905,44 @@ class Agent(CriticMixin, AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
-            summary = self._extract_summary(tool.name, arguments)
+            summary = self._extract_summary(tool.name, arguments, tool=tool)
 
             action: Action = tool.action_from_arguments(arguments)
-        except (json.JSONDecodeError, ValidationError, ValueError) as e:
-            err = (
-                f"Error validating args {tool_call.arguments} for tool "
-                f"'{tool.name}': {e}"
+
+        except (ValueError, json.JSONDecodeError, ValidationError) as e:
+            # normalize_tool_call or Pydantic validation raised an error.
+            # Build concise error message with parameter names only (not values).
+            # Try to extract keys for the error message, but gracefully handle
+            # truly unparseable JSON by showing "unparseable JSON" instead.
+
+            # When normalize_tool_call raises about file_editor "Cannot infer",
+            # the error message contains the alias target (e.g. "file_editor"),
+            # not the original tool name. Extract it so error messages match.
+            err_str = str(e)
+            display_tool_name = requested_tool_name
+            if "Cannot infer" in err_str:
+                match = re.search(r"for tool '([^']+)'", err_str)
+                if match:
+                    display_tool_name = match.group(1)
+
+            keys = list(arguments.keys()) if isinstance(arguments, dict) else None
+            params = (
+                f"Parameters provided: {keys}"
+                if keys is not None
+                else "Arguments: unparseable JSON"
             )
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
+            err = f"Error validating tool '{display_tool_name}': {e}. {params}"
+            self._emit_tool_error(
                 error=err,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
+                tool_name=display_tool_name,
+                tool_call=tool_call,
+                llm_response_id=llm_response_id,
+                on_event=on_event,
+                thought=thought,
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks,
+                responses_reasoning_item=responses_reasoning_item,
             )
-            on_event(event)
             return
 
         # Create initial action event
@@ -833,8 +953,8 @@ class Agent(CriticMixin, AgentBase):
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
             tool_name=tool.name,
-            tool_call_id=tool_call.id,
-            tool_call=tool_call,
+            tool_call_id=normalized_tool_call.id,
+            tool_call=normalized_tool_call,
             llm_response_id=llm_response_id,
             security_risk=security_risk,
             summary=summary,

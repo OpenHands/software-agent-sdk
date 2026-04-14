@@ -1,8 +1,11 @@
-"""Tests for OpenHandsCloudWorkspace.get_llm() and get_secrets() methods.
+"""Tests for OpenHandsCloudWorkspace settings methods.
+
+Tests for get_llm(), get_secrets(), and get_mcp_config().
 
 get_llm() returns a real LLM with the raw api_key from SaaS.
 get_secrets() returns LookupSecret references — raw values only flow
 SaaS→sandbox, never to the SDK client.
+get_mcp_config() returns MCP server configuration in SDK Agent format.
 """
 
 from unittest.mock import MagicMock, patch
@@ -185,6 +188,216 @@ class TestGetSecrets:
         mock_workspace._sandbox_id = None
         with pytest.raises(RuntimeError, match="Sandbox is not running"):
             mock_workspace.get_secrets()
+
+
+class TestGetMcpConfig:
+    """Tests for OpenHandsCloudWorkspace.get_mcp_config()."""
+
+    def test_get_mcp_config_returns_empty_when_no_config(self, mock_workspace):
+        """get_mcp_config returns empty dict when no MCP config is set."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "llm_model": "gpt-4o",
+            "mcp_config": None,
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            mcp_config = mock_workspace.get_mcp_config()
+
+        assert mcp_config == {}
+
+    def test_get_mcp_config_transforms_sse_servers(self, mock_workspace):
+        """get_mcp_config correctly transforms SSE servers."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "sse_servers": [
+                    {"url": "https://sse.example.com/mcp", "api_key": "sse-key-123"},
+                    {"url": "https://sse2.example.com/mcp", "api_key": None},
+                ],
+                "shttp_servers": [],
+                "stdio_servers": [],
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ) as mock_req:
+            mcp_config = mock_workspace.get_mcp_config()
+
+        mock_req.assert_called_once_with(
+            "GET",
+            f"{CLOUD_URL}/api/v1/users/me",
+            headers={"X-Session-API-Key": SESSION_KEY},
+        )
+
+        assert "mcpServers" in mcp_config
+        servers = mcp_config["mcpServers"]
+        assert len(servers) == 2
+
+        # First SSE server with API key
+        assert servers["sse_0"]["url"] == "https://sse.example.com/mcp"
+        assert servers["sse_0"]["transport"] == "sse"
+        assert servers["sse_0"]["headers"]["Authorization"] == "Bearer sse-key-123"
+
+        # Second SSE server without API key
+        assert servers["sse_1"]["url"] == "https://sse2.example.com/mcp"
+        assert servers["sse_1"]["transport"] == "sse"
+        assert "headers" not in servers["sse_1"]
+
+    def test_get_mcp_config_transforms_shttp_servers(self, mock_workspace):
+        """get_mcp_config correctly transforms SHTTP servers."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "sse_servers": [],
+                "shttp_servers": [
+                    {
+                        "url": "https://shttp.example.com/mcp",
+                        "api_key": "shttp-key",
+                        "timeout": 120,
+                    },
+                ],
+                "stdio_servers": [],
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            mcp_config = mock_workspace.get_mcp_config()
+
+        servers = mcp_config["mcpServers"]
+        assert len(servers) == 1
+
+        assert servers["shttp_0"]["url"] == "https://shttp.example.com/mcp"
+        assert servers["shttp_0"]["transport"] == "streamable-http"
+        assert servers["shttp_0"]["headers"]["Authorization"] == "Bearer shttp-key"
+        assert servers["shttp_0"]["timeout"] == 120
+
+    def test_get_mcp_config_transforms_stdio_servers(self, mock_workspace):
+        """get_mcp_config correctly transforms STDIO servers."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "sse_servers": [],
+                "shttp_servers": [],
+                "stdio_servers": [
+                    {
+                        "name": "my-stdio-server",
+                        "command": "npx",
+                        "args": ["-y", "mcp-server-fetch"],
+                        "env": {"MY_VAR": "value"},
+                    },
+                ],
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            mcp_config = mock_workspace.get_mcp_config()
+
+        servers = mcp_config["mcpServers"]
+        assert len(servers) == 1
+
+        # STDIO servers use their explicit name
+        assert "my-stdio-server" in servers
+        assert servers["my-stdio-server"]["command"] == "npx"
+        assert servers["my-stdio-server"]["args"] == ["-y", "mcp-server-fetch"]
+        assert servers["my-stdio-server"]["env"] == {"MY_VAR": "value"}
+
+    def test_get_mcp_config_mixed_server_types(self, mock_workspace):
+        """get_mcp_config correctly handles mixed server types."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "sse_servers": [
+                    {"url": "https://sse.example.com/mcp", "api_key": None},
+                ],
+                "shttp_servers": [
+                    {"url": "https://shttp.example.com/mcp", "api_key": None},
+                ],
+                "stdio_servers": [
+                    {"name": "fetch", "command": "uvx", "args": ["mcp-server-fetch"]},
+                ],
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            mcp_config = mock_workspace.get_mcp_config()
+
+        servers = mcp_config["mcpServers"]
+        assert len(servers) == 3
+        assert "sse_0" in servers
+        assert "shttp_0" in servers
+        assert "fetch" in servers
+
+    def test_get_mcp_config_raises_when_no_sandbox(self, mock_workspace):
+        """get_mcp_config raises RuntimeError when sandbox is not running."""
+        mock_workspace._sandbox_id = None
+        with pytest.raises(RuntimeError, match="Sandbox is not running"):
+            mock_workspace.get_mcp_config()
+
+    def test_get_mcp_config_returns_empty_when_all_lists_empty(self, mock_workspace):
+        """get_mcp_config returns empty dict when all server lists are empty."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "sse_servers": [],
+                "shttp_servers": [],
+                "stdio_servers": [],
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            mcp_config = mock_workspace.get_mcp_config()
+
+        assert mcp_config == {}
+
+    def test_get_mcp_config_is_mcpconfig_compatible(self, mock_workspace):
+        """get_mcp_config returns dict that can be validated by fastmcp.MCPConfig."""
+        from fastmcp.mcp_config import MCPConfig
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "sse_servers": [
+                    {"url": "https://sse.example.com/mcp", "api_key": "key123"},
+                ],
+                "shttp_servers": [
+                    {"url": "https://shttp.example.com/mcp", "api_key": None},
+                ],
+                "stdio_servers": [
+                    {"name": "fetch", "command": "uvx", "args": ["mcp-server-fetch"]},
+                ],
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            mcp_config_dict = mock_workspace.get_mcp_config()
+
+        # Should be parseable by MCPConfig
+        config = MCPConfig.model_validate(mcp_config_dict)
+        assert len(config.mcpServers) == 3
+        assert "sse_0" in config.mcpServers
+        assert "shttp_0" in config.mcpServers
+        assert "fetch" in config.mcpServers
 
 
 class TestRetry:

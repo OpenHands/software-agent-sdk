@@ -30,7 +30,6 @@ from openhands.sdk.tool import (
     ToolDefinition,
     resolve_tool,
 )
-from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -228,6 +227,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             The rendered system prompt template without dynamic context.
         """
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Auto-detect browser tools from the tool spec list
+        template_kwargs.setdefault(
+            "enable_browser",
+            any(t.name == "browser_tool_set" for t in self.tools),
+        )
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
@@ -271,41 +275,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             llm_model=self.llm.model,
             llm_model_canonical=self.llm.model_canonical_name,
         )
-
-    @property
-    @deprecated(
-        deprecated_in="1.11.0",
-        removed_in="1.16.0",
-        details=(
-            "Use static_system_message for the cacheable system prompt and "
-            "dynamic_context for per-conversation content. Using system_message "
-            "DISABLES cross-conversation prompt caching because it combines static "
-            "and dynamic content into a single string."
-        ),
-    )
-    def system_message(self) -> str:
-        """Return the combined system message (static + dynamic).
-
-        .. deprecated:: 1.11.0
-            Use :attr:`static_system_message` for the cacheable system prompt and
-            :attr:`dynamic_context` for per-conversation content. This separation
-            enables cross-conversation prompt caching. Will be removed in 1.16.0.
-
-        .. warning::
-            Using this property DISABLES cross-conversation prompt caching because
-            it combines static and dynamic content into a single string. Use
-            :attr:`static_system_message` and :attr:`dynamic_context` separately
-            to enable caching.
-        """
-        logger.warning(
-            "Accessing system_message property disables cross-conversation prompt "
-            "caching. Use static_system_message and dynamic_context separately."
-        )
-        system_message = self.static_system_message
-        dynamic = self.dynamic_context
-        if dynamic:
-            system_message += "\n\n" + dynamic
-        return system_message
 
     def init_state(
         self,
