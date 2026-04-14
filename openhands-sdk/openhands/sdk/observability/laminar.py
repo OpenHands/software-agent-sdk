@@ -186,3 +186,39 @@ def end_active_span() -> None:
     except Exception:
         logger.debug("Error ending active span")
         pass
+
+
+def init_laminar_for_external():
+    """Initialize Laminar for external callers and return parent span context.
+
+    This is a convenience function for integrations (e.g., GitHub, Slack webhooks)
+    that need to:
+    1. Initialize Laminar if env vars are set (via maybe_init_laminar)
+    2. Capture the parent span context from the external trigger
+
+    Returns:
+        The parent span context if observability is enabled, None otherwise.
+
+    Example:
+        ```python
+        from openhands.sdk.observability import init_laminar_for_external
+        from lmnr import Laminar
+
+        # At the start of handling an external event (webhook, etc.)
+        laminar_span_context = init_laminar_for_external()
+
+        if laminar_span_context:
+            with Laminar.start_as_current_span(
+                name='my-integration',
+                parent_span_context=laminar_span_context,
+            ):
+                # Do work - traces will be children of the external trigger
+                await do_something()
+        else:
+            await do_something()
+        ```
+    """
+    maybe_init_laminar()
+    if should_enable_observability():
+        return Laminar.get_laminar_span_context()
+    return None
