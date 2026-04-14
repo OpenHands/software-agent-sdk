@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from openhands.sdk.extensions.fetch import get_cache_path, parse_extension_source
 from openhands.sdk.plugin import (
     InstalledPluginInfo,
     InstalledPluginsMetadata,
@@ -29,7 +30,7 @@ from openhands.sdk.plugin import (
     uninstall_plugin,
     update_plugin,
 )
-from openhands.sdk.plugin.fetch import get_cache_path, parse_plugin_source
+from openhands.sdk.plugin.fetch import DEFAULT_CACHE_DIR as DEFAULT_PLUGIN_CACHE_DIR
 
 
 # ============================================================================
@@ -571,8 +572,8 @@ def test_install_document_skills_plugin(installed_dir: Path) -> None:
             installed_dir=installed_dir,
         )
 
-        _, url = parse_plugin_source(source)
-        expected_name = get_cache_path(url).name
+        _, url = parse_extension_source(source)
+        expected_name = get_cache_path(url, DEFAULT_PLUGIN_CACHE_DIR).name
         assert info.name == expected_name
         assert info.source == source
 

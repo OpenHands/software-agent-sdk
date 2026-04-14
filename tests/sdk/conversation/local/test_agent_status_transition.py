@@ -25,6 +25,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
@@ -417,7 +418,6 @@ def test_send_message_resets_stuck_to_idle():
 
 def test_execution_status_error_on_max_iterations():
     """Test that status is set to ERROR with clear message when max iterations hit."""
-    from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
     status_during_execution: list[ConversationExecutionStatus] = []
     events_received: list = []
@@ -475,3 +475,71 @@ def test_execution_status_error_on_max_iterations():
     assert error_events[0].code == "MaxIterationsReached"
     assert "maximum iterations limit" in error_events[0].detail
     assert "(2)" in error_events[0].detail  # max_iteration_per_run value
+
+
+def test_execution_status_finished_on_final_iteration():
+    """FINISHED is preserved when agent completes on its final iteration.
+
+    Regression test for: agent's FINISHED status being overwritten with
+    ERROR when the task completes exactly on the max_iteration_per_run
+    boundary.
+    """
+
+    events_received: list = []
+
+    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+        return StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))
+
+    register_tool("test_tool", _make_tool)
+
+    # Two tool-call iterations followed by a text response on the 3rd (final) iteration.
+    # A text-only assistant message causes the agent to set status to FINISHED.
+    tool_call_message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id="call_1",
+                name="test_tool",
+                arguments='{"command": "test_command"}',
+                origin="completion",
+            )
+        ],
+    )
+    finish_message = Message(
+        role="assistant", content=[TextContent(text="Task completed successfully")]
+    )
+
+    llm = TestLLM.from_messages(
+        [
+            tool_call_message,  # iteration 1
+            tool_call_message,  # iteration 2
+            finish_message,  # iteration 3 (final) — agent finishes here
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    conversation = Conversation(
+        agent=agent,
+        max_iteration_per_run=3,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    conversation.run()
+
+    # Status must be FINISHED, not ERROR
+    assert (
+        conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    ), (
+        f"Expected FINISHED but got {conversation.state.execution_status}. "
+        "Agent completing on the final iteration should not be treated as an error."
+    )
+
+    # No MaxIterationsReached error event should have been emitted
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    max_iter_errors = [e for e in error_events if e.code == "MaxIterationsReached"]
+    assert len(max_iter_errors) == 0, (
+        "Expected no MaxIterationsReached error when agent finishes on final iteration"
+    )

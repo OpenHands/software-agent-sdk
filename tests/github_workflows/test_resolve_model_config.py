@@ -268,6 +268,16 @@ def test_glm_5_config():
     assert model["llm_config"]["disable_vision"] is True
 
 
+def test_glm_5_1_config():
+    """Test that glm-5.1 has correct configuration."""
+    model = MODELS["glm-5.1"]
+
+    assert model["id"] == "glm-5.1"
+    assert model["display_name"] == "GLM-5.1"
+    assert model["llm_config"]["model"] == "litellm_proxy/openrouter/z-ai/glm-5.1"
+    assert model["llm_config"]["disable_vision"] is True
+
+
 # Tests for preflight check functionality
 
 
@@ -580,3 +590,14 @@ def test_qwen3_6_plus_config():
     assert model["display_name"] == "Qwen3.6 Plus"
     assert model["llm_config"]["model"] == "litellm_proxy/dashscope/qwen3.6-plus"
     assert model["llm_config"]["temperature"] == 0.0
+
+
+def test_trinity_large_thinking_config():
+    """Test that trinity-large-thinking has correct configuration."""
+    model = MODELS["trinity-large-thinking"]
+
+    assert model["id"] == "trinity-large-thinking"
+    assert model["display_name"] == "Trinity Large Thinking"
+    assert model["llm_config"]["model"] == "litellm_proxy/trinity-large-thinking"
+    assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["top_p"] == 0.95

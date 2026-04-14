@@ -171,7 +171,7 @@ class TestTaskManager:
         register_builtins_agents()
 
         task = manager._create_task(
-            subagent_type="default",
+            subagent_type="general-purpose",
             description="test task",
         )
         assert isinstance(task, Task)
@@ -185,10 +185,7 @@ class TestTaskManager:
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
 
-        task = manager._create_task(
-            subagent_type="default",
-            description=None,
-        )
+        task = manager._create_task(subagent_type="general-purpose", description=None)
         assert task.id in manager._tasks
         assert isinstance(manager._tasks[task.id].conversation_id, uuid.UUID)
 
@@ -249,7 +246,9 @@ class TestTaskManager:
     def test_resume_unknown_task_raises(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         with pytest.raises(ValueError, match="not found"):
-            manager._resume_task(resume="task_nonexistent", subagent_type="default")
+            manager._resume_task(
+                resume="task_nonexistent", subagent_type="general-purpose"
+            )
 
     def test_resume_after_evict(self, tmp_path):
         """A task that was created, evicted, and then resumed should work."""
@@ -257,17 +256,16 @@ class TestTaskManager:
         register_builtins_agents()
 
         # Create and evict a task (simulating a completed first run)
-        task = manager._create_task(
-            subagent_type="default",
-            description=None,
-        )
+        task = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = task.id
         original_uuid = task.conversation_id
         manager._evict_task(task)
         assert original_id in manager._tasks
 
         # Resume it
-        resumed = manager._resume_task(resume=original_id, subagent_type="default")
+        resumed = manager._resume_task(
+            resume=original_id, subagent_type="general-purpose"
+        )
         assert resumed.id == original_id
         assert resumed.conversation_id == original_uuid
         assert resumed.status == TaskStatus.RUNNING
@@ -278,7 +276,7 @@ class TestTaskManager:
         """'default' should return an agent without raising."""
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
         assert isinstance(agent, Agent)
         assert agent.llm.stream is False
 
@@ -327,7 +325,7 @@ class TestTaskManager:
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="quiz",
@@ -343,7 +341,7 @@ class TestTaskManager:
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description=None,
@@ -362,7 +360,7 @@ class TestTaskManager:
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="test",
@@ -532,7 +530,7 @@ class TestStartTask:
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             result = manager.start_task(
                 prompt="do the thing",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 conversation=parent,
             )
 
@@ -552,7 +550,7 @@ class TestStartTask:
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             manager.start_task(
                 prompt="hello",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 conversation=parent,
             )
 
@@ -564,17 +562,14 @@ class TestStartTask:
         register_builtins_agents()
 
         # Create and evict a task to simulate a prior completed run
-        first = manager._create_task(
-            subagent_type="default",
-            description=None,
-        )
+        first = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = first.id
         manager._evict_task(first)
 
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             result = manager.start_task(
                 prompt="continue",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 resume=original_id,
                 conversation=parent,
             )
@@ -591,7 +586,7 @@ class TestStartTask:
         with pytest.raises(ValueError, match="not found"):
             manager.start_task(
                 prompt="continue",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 resume="task_nonexistent",
                 conversation=parent,
             )
@@ -612,7 +607,7 @@ class TestTaskMetrics:
         register_builtins_agents()
 
         parent_llm = parent.agent.llm
-        sub_agent = manager._get_sub_agent("default")
+        sub_agent = manager._get_sub_agent("general-purpose")
 
         assert sub_agent.llm.metrics is not parent_llm.metrics
 
@@ -626,7 +621,7 @@ class TestTaskMetrics:
         register_builtins_agents()
 
         task = manager._create_task(
-            subagent_type="default",
+            subagent_type="general-purpose",
             description="test",
         )
 
@@ -673,7 +668,7 @@ class TestTaskMetrics:
 
         for cost in (1.00, 2.00):
             task = manager._create_task(
-                subagent_type="default",
+                subagent_type="general-purpose",
                 description="test",
             )
             sub_conv = task.conversation
@@ -758,7 +753,7 @@ class TestTaskManagerHooks:
 
         manager, _ = _manager_with_parent(tmp_path)
         task = manager._create_task(
-            subagent_type="default",
+            subagent_type="general-purpose",
             description="no hooks",
         )
 
@@ -813,7 +808,7 @@ class TestTaskManagerHooks:
         )
 
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="test",
@@ -834,7 +829,7 @@ class TestTaskManagerHooks:
         manager, _ = _manager_with_parent(tmp_path)
 
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="test",
@@ -913,7 +908,7 @@ class TestTaskManagerPersistence:
         register_builtins_agents()
 
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description=None,

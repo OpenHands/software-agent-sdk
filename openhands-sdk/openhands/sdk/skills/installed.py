@@ -13,11 +13,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
-from openhands.sdk.context.skills.skill import Skill, load_skills_from_dir
-from openhands.sdk.context.skills.utils import find_skill_md, validate_skill_name
 from openhands.sdk.logger import get_logger
+from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.fetch import fetch_skill_with_resolution
+from openhands.sdk.skills.skill import Skill, load_skills_from_dir
+from openhands.sdk.skills.utils import find_skill_md, validate_skill_name
 
 
 logger = get_logger(__name__)
@@ -518,7 +518,8 @@ def install_skills_from_marketplace(
         >>> for info in installed:
         ...     print(f"Installed: {info.name}")
     """
-    from openhands.sdk.plugin import Marketplace, resolve_source_path
+    from openhands.sdk.marketplace import Marketplace
+    from openhands.sdk.plugin import resolve_source_path
 
     marketplace_path = Path(marketplace_path)
     installed_dir = _resolve_installed_dir(installed_dir)

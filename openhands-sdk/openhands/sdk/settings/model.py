@@ -1,16 +1,29 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, get_args, get_origin
+from uuid import UUID
 
 from fastmcp.mcp_config import MCPConfig
-from pydantic import BaseModel, Field, SecretStr, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SecretStr,
+    field_serializer,
+    field_validator,
+)
 from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
+from openhands.sdk.plugin import PluginSource
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.workspace import LocalWorkspace
 
 from .metadata import (
     SETTINGS_METADATA_KEY,
@@ -98,7 +111,7 @@ class CondenserSettings(BaseModel):
 
 
 class VerificationSettings(BaseModel):
-    """Combined critic and security settings."""
+    """Critic and iterative-refinement settings for the agent."""
 
     # -- Critic --
     critic_enabled: bool = Field(
@@ -190,10 +203,14 @@ class VerificationSettings(BaseModel):
         },
     )
 
-    # -- Security --
+    # -- Deprecated (moved to ConversationSettings) --
     confirmation_mode: bool = Field(
         default=False,
         description="Require user confirmation before executing risky actions.",
+        deprecated=(
+            "Deprecated in 1.17.0; use ConversationSettings.confirmation_mode "
+            "instead. Will be removed in 1.22.0."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Confirmation mode",
@@ -203,7 +220,11 @@ class VerificationSettings(BaseModel):
     )
     security_analyzer: SecurityAnalyzerType | None = Field(
         default=None,
-        description="Security analyzer that evaluates actions before execution.",
+        description=("Security analyzer that evaluates actions before execution."),
+        deprecated=(
+            "Deprecated in 1.17.0; use ConversationSettings.security_analyzer "
+            "instead. Will be removed in 1.22.0."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Security analyzer",
@@ -213,6 +234,34 @@ class VerificationSettings(BaseModel):
         },
     )
 
+    @field_validator("confirmation_mode", mode="before")
+    @classmethod
+    def _warn_confirmation_mode(cls, v: Any) -> Any:
+        if v:
+            from openhands.sdk.utils.deprecation import warn_deprecated
+
+            warn_deprecated(
+                "VerificationSettings.confirmation_mode",
+                deprecated_in="1.17.0",
+                removed_in="1.22.0",
+                details="Use ConversationSettings.confirmation_mode instead.",
+            )
+        return v
+
+    @field_validator("security_analyzer", mode="before")
+    @classmethod
+    def _warn_security_analyzer(cls, v: Any) -> Any:
+        if v is not None:
+            from openhands.sdk.utils.deprecation import warn_deprecated
+
+            warn_deprecated(
+                "VerificationSettings.security_analyzer",
+                deprecated_in="1.17.0",
+                removed_in="1.22.0",
+                details="Use ConversationSettings.security_analyzer instead.",
+            )
+        return v
+
 
 def _default_llm_settings() -> LLM:
     model = LLM.model_fields["model"].get_default()
@@ -220,7 +269,190 @@ def _default_llm_settings() -> LLM:
     return LLM(model=model)
 
 
+_RequestT = TypeVar("_RequestT")
+
+AGENT_SETTINGS_SCHEMA_VERSION = 1
+CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
+
+
+class ConversationSettings(BaseModel):
+    schema_version: int = Field(default=CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
+
+    # --- runtime fields (populated on-the-fly, not persisted) ---------------
+    agent_settings: AgentSettings | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Agent settings used to build the Agent for the conversation. "
+            "When set, create_request() will automatically build the agent "
+            "and populate secrets from agent_context."
+        ),
+    )
+    workspace: LocalWorkspace | None = Field(
+        default=None,
+        exclude=True,
+        description="Working directory for the conversation.",
+    )
+    conversation_id: UUID | None = Field(
+        default=None,
+        exclude=True,
+        description="Conversation UUID. Auto-generated if not set.",
+    )
+    initial_message: SendMessageRequest | None = Field(
+        default=None,
+        exclude=True,
+        description="Initial message to send to the agent.",
+    )
+    tool_module_qualnames: dict[str, str] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="Mapping of tool names to module qualnames.",
+    )
+    agent_definitions: list[AgentDefinition] = Field(
+        default_factory=list,
+        exclude=True,
+        description="Agent definitions for DelegateTool / TaskSetTool.",
+    )
+    plugins: list[PluginSource] | None = Field(
+        default=None,
+        exclude=True,
+        description="Plugin sources to load for this conversation.",
+    )
+    hook_config: HookConfig | None = Field(
+        default=None,
+        exclude=True,
+        description="Hook configuration for lifecycle events.",
+    )
+    selected_repository: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Repository selected for the conversation.",
+    )
+
+    # --- persisted fields ---------------------------------------------------
+    max_iterations: int = Field(
+        default=500,
+        ge=1,
+        description=(
+            "Maximum number of iterations the conversation will run before stopping."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Max iterations",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump()
+        },
+    )
+    confirmation_mode: bool = Field(
+        default=False,
+        description="Require user confirmation before executing risky actions.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Confirmation mode",
+                prominence=SettingProminence.MAJOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="verification",
+                label="Verification",
+            ).model_dump(),
+        },
+    )
+    security_analyzer: SecurityAnalyzerType | None = Field(
+        default="llm",
+        description="Security analyzer that evaluates actions before execution.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Security analyzer",
+                prominence=SettingProminence.MAJOR,
+                depends_on=("confirmation_mode",),
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="verification",
+                label="Verification",
+            ).model_dump(),
+        },
+    )
+
+    @classmethod
+    def export_schema(cls) -> SettingsSchema:
+        """Export a structured schema describing configurable conversation settings."""
+        return export_settings_schema(cls)
+
+    def _build_confirmation_policy(self):
+        from openhands.sdk.security.confirmation_policy import (
+            AlwaysConfirm,
+            ConfirmRisky,
+            NeverConfirm,
+        )
+
+        if not self.confirmation_mode:
+            return NeverConfirm()
+        if (self.security_analyzer or "").lower() == "llm":
+            return ConfirmRisky()
+        return AlwaysConfirm()
+
+    def _build_security_analyzer(self):
+        analyzer_kind = (self.security_analyzer or "").lower()
+        if not analyzer_kind or analyzer_kind == "none":
+            return None
+        if analyzer_kind == "llm":
+            from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+
+            return LLMSecurityAnalyzer()
+        return None
+
+    def _start_request_kwargs(self, **kwargs: Any) -> dict[str, Any]:
+        payload = dict(kwargs)
+
+        # --- agent (from agent_settings) ------------------------------------
+        if "agent" not in payload and self.agent_settings is not None:
+            payload["agent"] = self.agent_settings.create_agent()
+
+        # --- secrets (from agent's context) ---------------------------------
+        agent = payload.get("agent")
+        if "secrets" not in payload and agent is not None:
+            ctx = getattr(agent, "agent_context", None)
+            if ctx is not None and getattr(ctx, "secrets", None):
+                payload["secrets"] = ctx.secrets
+
+        # --- runtime fields -------------------------------------------------
+        if self.workspace is not None:
+            payload.setdefault("workspace", self.workspace)
+        if self.conversation_id is not None:
+            payload.setdefault("conversation_id", self.conversation_id)
+        if self.initial_message is not None:
+            payload.setdefault("initial_message", self.initial_message)
+        if self.tool_module_qualnames:
+            payload.setdefault("tool_module_qualnames", self.tool_module_qualnames)
+        if self.agent_definitions:
+            payload.setdefault("agent_definitions", self.agent_definitions)
+        if self.plugins is not None:
+            payload.setdefault("plugins", self.plugins)
+        if self.hook_config is not None:
+            payload.setdefault("hook_config", self.hook_config)
+
+        # --- persisted defaults ---------------------------------------------
+        payload.setdefault("confirmation_policy", self._build_confirmation_policy())
+        payload.setdefault("security_analyzer", self._build_security_analyzer())
+        payload.setdefault("max_iterations", self.max_iterations)
+        return payload
+
+    def create_request(
+        self,
+        request_type: Callable[..., _RequestT],
+        /,
+        **kwargs: Any,
+    ) -> _RequestT:
+        """Build a request from these settings.
+
+        Every field on ``ConversationSettings`` is used as a default.
+        Explicit *kwargs* override any setting.
+        """
+        return request_type(**self._start_request_kwargs(**kwargs))
+
+
 class AgentSettings(BaseModel):
+    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent: str = Field(
         default="CodeActAgent",
         description="Agent class to use.",
@@ -277,7 +509,7 @@ class AgentSettings(BaseModel):
     )
     verification: VerificationSettings = Field(
         default_factory=VerificationSettings,
-        description="Verification settings (critic + security) for the agent.",
+        description="Verification settings for the agent critic.",
         json_schema_extra={
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",
@@ -401,6 +633,10 @@ def settings_metadata(field: FieldInfo) -> SettingsFieldMetadata | None:
 
 _GENERAL_SECTION_KEY = "general"
 _GENERAL_SECTION_LABEL = "General"
+_GENERAL_SECTION_METADATA = SettingsSectionMetadata(
+    key=_GENERAL_SECTION_KEY,
+    label=_GENERAL_SECTION_LABEL,
+)
 
 
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
@@ -411,26 +647,30 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     whether the value should be treated as secret input.
     """
     sections: list[SettingsSectionSchema] = []
-    general_fields: list[SettingsFieldSchema] = []
+    sections_by_key: dict[str, SettingsSectionSchema] = {}
+
+    def ensure_section(metadata: SettingsSectionMetadata) -> SettingsSectionSchema:
+        section = sections_by_key.get(metadata.key)
+        if section is not None:
+            return section
+        section = SettingsSectionSchema(
+            key=metadata.key,
+            label=metadata.label or _humanize_name(metadata.key),
+            fields=[],
+        )
+        sections_by_key[metadata.key] = section
+        sections.append(section)
+        return section
 
     for field_name, field in model.model_fields.items():
-        section_metadata = settings_section_metadata(field)
+        explicit_section_metadata = settings_section_metadata(field)
+        section_metadata = explicit_section_metadata or _GENERAL_SECTION_METADATA
+        nested_model = _nested_model_type(field.annotation)
 
-        # Nested section (e.g., llm, condenser, critic, security)
-        if section_metadata is not None:
-            nested_model = _nested_model_type(field.annotation)
-            if nested_model is None:
-                continue
-
+        # Nested section (e.g., llm, condenser, critic)
+        if explicit_section_metadata is not None and nested_model is not None:
             section_default = field.get_default(call_default_factory=True)
-            section_label = section_metadata.label or _humanize_name(
-                section_metadata.key
-            )
-            section = SettingsSectionSchema(
-                key=section_metadata.key,
-                label=section_label,
-                fields=[],
-            )
+            section = ensure_section(explicit_section_metadata)
             for nested_key, nested_field in nested_model.model_fields.items():
                 if nested_field.exclude:
                     continue
@@ -440,15 +680,15 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                     default_value = getattr(section_default, nested_key)
                 section.fields.append(
                     SettingsFieldSchema(
-                        key=f"{section_metadata.key}.{nested_key}",
+                        key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
                             metadata.label
                             if metadata is not None and metadata.label is not None
                             else _humanize_name(nested_key)
                         ),
                         description=nested_field.description,
-                        section=section_metadata.key,
-                        section_label=section_label,
+                        section=section.key,
+                        section_label=section.label,
                         value_type=_infer_value_type(nested_field.annotation),
                         default=_normalize_default(default_value),
                         prominence=(
@@ -457,7 +697,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                             else SettingProminence.MINOR
                         ),
                         depends_on=[
-                            f"{section_metadata.key}.{dependency}"
+                            f"{explicit_section_metadata.key}.{dependency}"
                             for dependency in (
                                 metadata.depends_on if metadata is not None else ()
                             )
@@ -466,16 +706,15 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         choices=_extract_choices(nested_field.annotation),
                     )
                 )
-            sections.append(section)
             continue
 
-        # Top-level scalar field with settings metadata (e.g., agent)
         metadata = settings_metadata(field)
         if metadata is None:
             continue
 
         default_value = field.get_default(call_default_factory=True)
-        general_fields.append(
+        section = ensure_section(section_metadata)
+        section.fields.append(
             SettingsFieldSchema(
                 key=field_name,
                 label=(
@@ -484,8 +723,8 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                     else _humanize_name(field_name)
                 ),
                 description=field.description,
-                section=_GENERAL_SECTION_KEY,
-                section_label=_GENERAL_SECTION_LABEL,
+                section=section.key,
+                section_label=section.label,
                 value_type=_infer_value_type(field.annotation),
                 default=_normalize_default(default_value),
                 prominence=metadata.prominence,
@@ -493,16 +732,6 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 secret=_contains_secret(field.annotation),
                 choices=_extract_choices(field.annotation),
             )
-        )
-
-    if general_fields:
-        sections.insert(
-            0,
-            SettingsSectionSchema(
-                key=_GENERAL_SECTION_KEY,
-                label=_GENERAL_SECTION_LABEL,
-                fields=general_fields,
-            ),
         )
 
     return SettingsSchema(model_name=model.__name__, sections=sections)
