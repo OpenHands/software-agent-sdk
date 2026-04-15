@@ -31,6 +31,7 @@ from openhands.sdk.tool import (
     ToolDefinition,
     resolve_tool,
 )
+from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -368,7 +369,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Include default tools from include_default_tools; not subject to regex
         # filtering. Use explicit mapping to resolve tool class names.
-        for tool_name in self.include_default_tools:
+        # Auto-attach `InvokeSkillTool` iff an AgentSkills-format skill is
+        # loaded and the user hasn't already opted in explicitly.
+        has_agentskills = bool(
+            self.agent_context
+            and any(s.is_agentskills_format for s in self.agent_context.skills)
+        )
+        default_tool_names = list(self.include_default_tools)
+        if has_agentskills and InvokeSkillTool.__name__ not in default_tool_names:
+            default_tool_names.append(InvokeSkillTool.__name__)
+
+        for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
                 raise ValueError(
