@@ -15,9 +15,9 @@ run_eval_path = Path(__file__).parent.parent.parent / ".github" / "run-eval"
 sys.path.append(str(run_eval_path))
 from resolve_model_config import (  # noqa: E402  # type: ignore[import-not-found]
     MODELS,
+    check_model,
     find_models_by_id,
     run_preflight_check,
-    test_model,
 )
 
 
@@ -108,12 +108,12 @@ def test_find_models_by_id_single_model():
     }
     model_ids = ["gpt-4"]
 
-    with patch.dict("resolve_model_config.MODELS", mock_models):
+    with patch.dict("resolve_model_config.MODELS", mock_models, clear=True):
         result = find_models_by_id(model_ids)
 
     assert len(result) == 1
-    assert result[0]["id"] == "claude-sonnet-4-5-20250929"
-    assert result[0]["display_name"] == "Claude Sonnet 4.5"
+    assert result[0]["id"] == "gpt-4"
+    assert result[0]["display_name"] == "GPT-4"
 
 
 def test_find_models_by_id_multiple_models():
@@ -125,12 +125,12 @@ def test_find_models_by_id_multiple_models():
     }
     model_ids = ["gpt-4", "claude-3"]
 
-    with patch.dict("resolve_model_config.MODELS", mock_models):
+    with patch.dict("resolve_model_config.MODELS", mock_models, clear=True):
         result = find_models_by_id(model_ids)
 
     assert len(result) == 2
-    assert result[0]["id"] == "claude-sonnet-4-5-20250929"
-    assert result[1]["id"] == "deepseek-chat"
+    assert result[0]["id"] == "gpt-4"
+    assert result[1]["id"] == "claude-3"
 
 
 def test_find_models_by_id_preserves_order():
@@ -142,7 +142,7 @@ def test_find_models_by_id_preserves_order():
     }
     model_ids = ["c", "a", "b"]
 
-    with patch.dict("resolve_model_config.MODELS", mock_models):
+    with patch.dict("resolve_model_config.MODELS", mock_models, clear=True):
         result = find_models_by_id(model_ids)
 
     assert len(result) == 3
@@ -157,7 +157,7 @@ def test_find_models_by_id_missing_model_exits():
     }
     model_ids = ["gpt-4", "nonexistent"]
 
-    with patch.dict("resolve_model_config.MODELS", mock_models):
+    with patch.dict("resolve_model_config.MODELS", mock_models, clear=True):
         with pytest.raises(SystemExit) as exc_info:
             find_models_by_id(model_ids)
 
@@ -171,7 +171,7 @@ def test_find_models_by_id_empty_list():
     }
     model_ids = []
 
-    with patch.dict("resolve_model_config.MODELS", mock_models):
+    with patch.dict("resolve_model_config.MODELS", mock_models, clear=True):
         result = find_models_by_id(model_ids)
 
     assert result == []
@@ -193,15 +193,14 @@ def test_find_models_by_id_preserves_full_config():
     }
     model_ids = ["custom-model"]
 
-    with patch.dict("resolve_model_config.MODELS", mock_models):
+    with patch.dict("resolve_model_config.MODELS", mock_models, clear=True):
         result = find_models_by_id(model_ids)
 
     assert len(result) == 1
-    assert result[0]["id"] == "claude-sonnet-4-5-20250929"
-    assert (
-        result[0]["llm_config"]["model"] == "litellm_proxy/claude-sonnet-4-5-20250929"
-    )
-    assert result[0]["llm_config"]["temperature"] == 0.0
+    assert result[0]["id"] == "custom-model"
+    assert result[0]["llm_config"]["model"] == "custom-model"
+    assert result[0]["llm_config"]["api_key"] == "test-key"
+    assert result[0]["extra_field"] == "should be preserved"
 
 
 def test_all_models_valid_with_pydantic():
@@ -282,7 +281,7 @@ def test_glm_5_1_config():
 
 
 class TestTestModel:
-    """Tests for the test_model function."""
+    """Tests for the check_model function."""
 
     def test_successful_response(self):
         """Test that a successful model response returns True."""
@@ -294,7 +293,7 @@ class TestTestModel:
         mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
 
         with patch("litellm.completion", return_value=mock_response):
-            success, message = test_model(model_config, "test-key", "https://test.com")
+            success, message = check_model(model_config, "test-key", "https://test.com")
 
         assert success is True
         assert "✓" in message
@@ -312,7 +311,7 @@ class TestTestModel:
         ]
 
         with patch("litellm.completion", return_value=mock_response):
-            success, message = test_model(model_config, "test-key", "https://test.com")
+            success, message = check_model(model_config, "test-key", "https://test.com")
 
         assert success is False
         assert "✗" in message
@@ -332,7 +331,7 @@ class TestTestModel:
         ]
 
         with patch("litellm.completion", return_value=mock_response):
-            success, message = test_model(model_config, "test-key", "https://test.com")
+            success, message = check_model(model_config, "test-key", "https://test.com")
 
         assert success is True
         assert "✓" in message
@@ -353,7 +352,7 @@ class TestTestModel:
         mock_response.choices = [choice]
 
         with patch("litellm.completion", return_value=mock_response):
-            success, message_str = test_model(
+            success, message_str = check_model(
                 model_config, "test-key", "https://test.com"
             )
 
@@ -375,7 +374,7 @@ class TestTestModel:
                 message="Timeout", model="test-model", llm_provider="test"
             ),
         ):
-            success, message = test_model(model_config, "test-key", "https://test.com")
+            success, message = check_model(model_config, "test-key", "https://test.com")
 
         assert success is False
         assert "✗" in message
@@ -396,7 +395,7 @@ class TestTestModel:
                 message="Connection failed", llm_provider="test", model="test-model"
             ),
         ):
-            success, message = test_model(model_config, "test-key", "https://test.com")
+            success, message = check_model(model_config, "test-key", "https://test.com")
 
         assert success is False
         assert "✗" in message
@@ -417,7 +416,7 @@ class TestTestModel:
                 "Model not found", llm_provider="test", model="test-model"
             ),
         ):
-            success, message = test_model(model_config, "test-key", "https://test.com")
+            success, message = check_model(model_config, "test-key", "https://test.com")
 
         assert success is False
         assert "✗" in message
@@ -437,7 +436,7 @@ class TestTestModel:
         mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
 
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
-            test_model(model_config, "test-key", "https://test.com")
+            check_model(model_config, "test-key", "https://test.com")
 
         mock_completion.assert_called_once()
         call_kwargs = mock_completion.call_args[1]
@@ -478,7 +477,13 @@ class TestRunPreflightCheck:
         mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
 
         with patch.dict("os.environ", {"LLM_API_KEY": "test"}):
-            with patch("litellm.completion", return_value=mock_response):
+            with (
+                patch(
+                    "resolve_model_config._check_proxy_reachable",
+                    return_value=(True, "Proxy reachable"),
+                ),
+                patch("litellm.completion", return_value=mock_response),
+            ):
                 result = run_preflight_check(models)
 
         assert result is True
@@ -498,7 +503,13 @@ class TestRunPreflightCheck:
             return mock_response
 
         with patch.dict("os.environ", {"LLM_API_KEY": "test"}):
-            with patch("litellm.completion", side_effect=mock_completion):
+            with (
+                patch(
+                    "resolve_model_config._check_proxy_reachable",
+                    return_value=(True, "Proxy reachable"),
+                ),
+                patch("litellm.completion", side_effect=mock_completion),
+            ):
                 result = run_preflight_check(models)
 
         assert result is False
