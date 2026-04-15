@@ -193,6 +193,10 @@ def _try_fix_malformed_tool_name(
     When LLMs emit malformed tool names like "str_replace </parameter" or
     "str_replace</function", extract the first valid identifier and check
     if it matches a known alias or is a registered tool.
+
+    If the extracted identifier doesn't match any alias or tool, return the
+    original tool name so the caller can fall back to other resolution paths
+    (e.g., terminal fallback).
     """
     match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
     if not match:
@@ -209,7 +213,7 @@ def _try_fix_malformed_tool_name(
     if alias_target and alias_target in available_tools:
         return alias_target
 
-    # No fix possible, return original
+    # No fix possible (base name doesn't match any known tool/alias), return original
     return tool_name
 
 
@@ -340,6 +344,7 @@ def normalize_tool_call(
         # First, try to fix malformed tool names (e.g., "str_replace </parameter")
         fixed_name = _try_fix_malformed_tool_name(tool_name, available_tools)
         if fixed_name != tool_name:
+            # Successfully fixed - use the result (already includes alias resolution)
             normalized_tool_name = fixed_name
         else:
             alias_target = TOOL_NAME_ALIASES.get(tool_name)
