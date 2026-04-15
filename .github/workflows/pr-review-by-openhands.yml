@@ -40,6 +40,7 @@ jobs:
         runs-on: ubuntu-24.04
         steps:
             - name: Run PR Review
+              # TODO: Revert to @main after OpenHands/extensions#164 is merged
               uses: OpenHands/extensions/plugins/pr-review@feat/pr-review-sub-agent-delegation
               with:
                   llm-model: litellm_proxy/claude-sonnet-4-5-20250929
