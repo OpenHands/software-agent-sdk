@@ -378,6 +378,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default_tool_names = list(self.include_default_tools)
         if has_agentskills and InvokeSkillTool.__name__ not in default_tool_names:
             default_tool_names.append(InvokeSkillTool.__name__)
+            logger.debug(
+                "Auto-attached %s (AgentSkills-format skill present in agent_context)",
+                InvokeSkillTool.__name__,
+            )
 
         for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
