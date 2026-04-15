@@ -175,9 +175,18 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "command": "terminal",
     "execute": "terminal",
     "execute_bash": "terminal",
+    "run": "terminal",
+    "straight": "terminal",
     "str_replace": "file_editor",
     "str_replace_editor": "file_editor",
+    "str_view": "file_editor",
+    "write": "file_editor",
 }
+
+# Some models emit malformed tool names with trailing XML-ish fragments such as
+# ``str_replace\n</parameter``. Keep the normalization narrow by extracting only
+# the leading identifier token when the raw tool name is otherwise unknown.
+_TOOL_NAME_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
@@ -212,6 +221,16 @@ def parse_tool_call_arguments(raw_arguments: str) -> dict[str, Any]:
 
     result = parsed if isinstance(parsed, dict) else {}
     return _normalize_arguments(result)
+
+
+def _sanitize_tool_name(tool_name: str) -> str:
+    """Return the leading identifier token from XML-ish tool-name artifacts."""
+    stripped = tool_name.strip()
+    if not any(marker in stripped for marker in ("\n", "<", ">")):
+        return stripped
+
+    match = _TOOL_NAME_TOKEN_RE.match(stripped)
+    return match.group(0) if match else stripped
 
 
 def _infer_file_editor_command(arguments: dict[str, Any]) -> str | None:
@@ -303,26 +322,40 @@ def normalize_tool_call(
     # Only apply aliases for tool names that are not explicitly registered.
     # This prevents hijacking legitimate tools that share names with aliases.
     if tool_name not in available_tools:
-        alias_target = TOOL_NAME_ALIASES.get(tool_name)
-        if alias_target and alias_target in available_tools:
-            normalized_tool_name = alias_target
-        elif "terminal" in available_tools:
-            terminal_command = _maybe_rewrite_as_terminal_command(
-                tool_name,
-                normalized_arguments,
-            )
-            if terminal_command is not None:
-                normalized_tool_name = "terminal"
-                # Preserve only terminal-relevant arguments (security_risk, summary)
-                # along with the generated command
-                normalized_arguments = {
-                    key: value
-                    for key, value in normalized_arguments.items()
-                    if key in {"security_risk", "summary"}
-                }
-                normalized_arguments["command"] = terminal_command
+        sanitized_tool_name = _sanitize_tool_name(tool_name)
+        if sanitized_tool_name in available_tools:
+            normalized_tool_name = sanitized_tool_name
+        else:
+            alias_target = TOOL_NAME_ALIASES.get(sanitized_tool_name)
+            if alias_target and alias_target in available_tools:
+                normalized_tool_name = alias_target
+            elif "terminal" in available_tools:
+                terminal_command = _maybe_rewrite_as_terminal_command(
+                    sanitized_tool_name,
+                    normalized_arguments,
+                )
+                if terminal_command is not None:
+                    normalized_tool_name = "terminal"
+                    # Preserve only terminal-relevant arguments (security_risk,
+                    # summary) along with the generated command.
+                    normalized_arguments = {
+                        key: value
+                        for key, value in normalized_arguments.items()
+                        if key in {"security_risk", "summary"}
+                    }
+                    normalized_arguments["command"] = terminal_command
+
+    if normalized_tool_name == "think" and not normalized_arguments:
+        normalized_arguments = {"thought": ""}
 
     if normalized_tool_name == "file_editor":
+        command = normalized_arguments.get("command")
+        if isinstance(command, str):
+            normalized_arguments = {
+                **normalized_arguments,
+                "command": _sanitize_tool_name(command),
+            }
+
         inferred_command = _infer_file_editor_command(normalized_arguments)
         if inferred_command is not None:
             normalized_arguments = {

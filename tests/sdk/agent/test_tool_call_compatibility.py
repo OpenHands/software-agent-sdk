@@ -19,6 +19,7 @@ from litellm.types.utils import (
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.utils import normalize_tool_call
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -103,6 +104,9 @@ class _FileEditorExecutor(ToolExecutor[_FileEditorAction, _FileEditorObservation
             updated = path.read_text().replace(action.old_str, action.new_str or "", 1)
             path.write_text(updated)
             return _FileEditorObservation.from_text("replaced")
+        if action.command == "create":
+            path.write_text(action.file_text or "")
+            return _FileEditorObservation.from_text("created")
         if action.command == "view":
             return _FileEditorObservation.from_text(path.read_text())
         raise ValueError(f"Unsupported file_editor command: {action.command}")
@@ -231,6 +235,77 @@ def test_str_replace_alias_infers_file_editor_command(tmp_path):
     assert action_event.action is not None
     assert getattr(action_event.action, "command") == "str_replace"
     assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_malformed_str_replace_tool_name_is_sanitized(tmp_path):
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace\n</parameter",
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.tool_call.name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "str_replace"
+    assert test_file.read_text() == "value = 'new'\n"
+
+
+@pytest.mark.parametrize("tool_name", ["run", "straight"])
+def test_terminal_aliases_execute_terminal_tool(tmp_path, tool_name):
+    events = _run_tool_call(
+        tmp_path,
+        tool_name=tool_name,
+        arguments={"command": "printf hello"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    observation_event = next(e for e in events if isinstance(e, ObservationEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.tool_call.name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "printf hello"
+    assert "hello" in observation_event.observation.text
+
+
+def test_write_alias_infers_file_editor_create(tmp_path):
+    created_file = tmp_path / "created.py"
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="write",
+        arguments={
+            "path": str(created_file),
+            "file_text": "print('hello')\n",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.tool_call.name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "create"
+    assert created_file.read_text() == "print('hello')\n"
 
 
 def test_shell_tool_name_falls_back_to_terminal(tmp_path):
@@ -447,10 +522,6 @@ def test_explicitly_registered_tool_not_hijacked_by_alias():
     rather than aliased to 'terminal'. This prevents legitimate tools from being
     silently overridden by the compatibility shim.
     """
-    from openhands.sdk.agent.utils import normalize_tool_call
-
-    # When 'bash' is explicitly registered alongside 'terminal',
-    # normalize_tool_call should preserve 'bash', not alias to 'terminal'
     available_tools = {"bash", "terminal", "file_editor"}
 
     # Test with 'bash' tool name - should NOT be aliased since it's registered
@@ -465,8 +536,52 @@ def test_explicitly_registered_tool_not_hijacked_by_alias():
     tool_name, args = normalize_tool_call("ls", {}, available_tools)
     assert tool_name == "terminal", "Unknown 'ls' should fallback to terminal"
 
-    # Test with 'str_replace' - should be aliased (alias target is registered)
+    # Test with malformed XML-ish suffixes - should sanitize, then alias.
     tool_name, args = normalize_tool_call(
-        "str_replace", {"old_str": "x", "new_str": "y"}, available_tools
+        "str_replace\n</function",
+        {"path": "/tmp/example.py", "old_str": "x", "new_str": "y"},
+        available_tools,
     )
-    assert tool_name == "file_editor", "str_replace alias should map to file_editor"
+    assert tool_name == "file_editor"
+    assert args["command"] == "str_replace"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "expected_name", "expected_command"),
+    [
+        (
+            "write",
+            {"path": "/tmp/example.py", "file_text": "print('hi')\n"},
+            "file_editor",
+            "create",
+        ),
+        ("str_view", {"path": "/tmp/example.py"}, "file_editor", "view"),
+        (
+            "file_editor",
+            {"command": "view\n</parameter", "path": "/tmp/example.py"},
+            "file_editor",
+            "view",
+        ),
+    ],
+)
+def test_file_editor_compatibility_normalization(
+    tool_name,
+    arguments,
+    expected_name,
+    expected_command,
+):
+    normalized_name, normalized_args = normalize_tool_call(
+        tool_name,
+        arguments,
+        {"file_editor", "terminal", "think"},
+    )
+
+    assert normalized_name == expected_name
+    assert normalized_args["command"] == expected_command
+
+
+def test_empty_think_arguments_are_normalized():
+    tool_name, args = normalize_tool_call("think", {}, {"think"})
+
+    assert tool_name == "think"
+    assert args == {"thought": ""}
