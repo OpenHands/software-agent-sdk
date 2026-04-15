@@ -171,7 +171,7 @@ class SimpleBrowsingTest(BaseIntegrationTest):
             )
 
     def teardown(self):
-        """Turn down the web server"""
+        """Turn down the web server and close the conversation."""
         if self.server_process:
             try:
                 self.server_process.terminate()
@@ -182,3 +182,4 @@ class SimpleBrowsingTest(BaseIntegrationTest):
                 logger.warning(f"Error terminating server process: {e}")
 
         logger.info("Cleaned up web server")
+        super().teardown()
