@@ -61,26 +61,23 @@ class InvokeSkillExecutor(ToolExecutor):
     def _get_skills_and_working_dir(
         conversation: BaseConversation | None,
     ) -> tuple[list, Path | None]:
+        """Extract the skill catalog and working dir from the conversation state."""
         if conversation is None:
             return [], None
 
-        agent = getattr(conversation, "agent", None)
-        ctx = getattr(agent, "agent_context", None)
+        state = conversation.state
+        ctx = state.agent.agent_context
         skills = list(ctx.skills) if ctx else []
-
-        ws = getattr(conversation, "workspace", None)
-        wd = getattr(ws, "working_dir", None)
-        return skills, Path(wd) if wd else None
+        working_dir = state.workspace.working_dir
+        return skills, Path(working_dir) if working_dir else None
 
     @staticmethod
     def _record_invocation(conversation: BaseConversation | None, name: str) -> None:
+        """Append `name` to the conversation's invoked-skills list (deduped)."""
         if conversation is None:
             return
-        state = getattr(conversation, "_state", None)
-        if state is None:
-            state = getattr(conversation, "state", None)
-        invoked = getattr(state, "invoked_skills", None)
-        if isinstance(invoked, list) and name not in invoked:
+        invoked = conversation.state.invoked_skills
+        if name not in invoked:
             invoked.append(name)
 
     @staticmethod
@@ -105,8 +102,48 @@ class InvokeSkillExecutor(ToolExecutor):
             )
 
         rendered = render_content_with_commands(match.content, working_dir=working_dir)
+        rendered = self._append_skill_location_footer(
+            rendered, match.source, working_dir
+        )
         self._record_invocation(conversation, name)
         return InvokeSkillObservation.from_text(text=rendered, skill_name=name)
+
+    @staticmethod
+    def _append_skill_location_footer(
+        rendered: str, source: str | None, working_dir: Path | None
+    ) -> str:
+        """Append a trailing note pointing the LLM at the skill's on-disk directory.
+
+        The AgentSkills spec allows skills to bundle `scripts/`, `references/`, and
+        `assets/` alongside `SKILL.md`. Skill authors reference those by relative
+        path, so the model needs to know where the skill lives to reach them.
+
+        When the skill lives under the conversation's `working_dir`, the path is
+        rendered relative to it to avoid leaking absolute home-directory paths
+        into the LLM context.
+        """
+        if not source:
+            return rendered
+        try:
+            skill_md = Path(source).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return rendered
+        if not skill_md.is_file():
+            return rendered
+        skill_dir = skill_md.parent
+        display: Path = skill_dir
+        if working_dir is not None:
+            try:
+                display = skill_dir.relative_to(working_dir.resolve())
+            except (ValueError, OSError):
+                pass  # skill lives outside working_dir, keep absolute
+        footer = (
+            f"\n\n---\n"
+            f"This skill is located at `{display}`. "
+            f"Any files it references (e.g. under `scripts/`, `references/`, "
+            f"`assets/`) are relative to that directory."
+        )
+        return rendered + footer
 
 
 class InvokeSkillTool(ToolDefinition[InvokeSkillAction, InvokeSkillObservation]):

@@ -51,11 +51,13 @@ def _make_conv(
     SimpleNamespace is enough at runtime.
     """
     return SimpleNamespace(
-        agent=SimpleNamespace(
-            agent_context=SimpleNamespace(skills=skills),
+        state=SimpleNamespace(
+            agent=SimpleNamespace(
+                agent_context=SimpleNamespace(skills=skills),
+            ),
+            workspace=SimpleNamespace(working_dir=working_dir),
+            invoked_skills=invoked_skills or [],
         ),
-        workspace=SimpleNamespace(working_dir=working_dir),
-        _state=SimpleNamespace(invoked_skills=invoked_skills or []),
     )
 
 
@@ -133,7 +135,7 @@ def test_invoke_renders_and_records(
     assert present in obs.text
     if absent is not None:
         assert absent not in obs.text
-    assert conv._state.invoked_skills == ["s"]
+    assert conv.state.invoked_skills == ["s"]
 
 
 @pytest.mark.parametrize(
@@ -150,13 +152,98 @@ def test_name_is_trimmed_before_lookup(requested: str):
     assert obs.skill_name == "pdf-analyst"
 
 
+def test_footer_uses_absolute_path_when_outside_working_dir(tmp_path):
+    """Skill outside the conversation's working_dir: footer shows absolute path."""
+    skill_dir = tmp_path / "pdf-analyst"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("placeholder")
+    skill = Skill(
+        name="pdf-analyst",
+        content="# body\n\nSee scripts/extract.py.",
+        description="desc",
+        source=str(skill_md),
+        is_agentskills_format=True,
+    )
+    # working_dir is unrelated, so the footer must stay absolute.
+    conv = _make_conv([skill], working_dir=str(tmp_path / "elsewhere"))
+
+    obs = _run("pdf-analyst", conv)
+
+    assert obs.is_error is False
+    assert str(skill_dir.resolve()) in obs.text
+    assert "scripts/" in obs.text and "references/" in obs.text
+    assert obs.text.rstrip().endswith("relative to that directory.")
+
+
+def test_footer_uses_relative_path_when_inside_working_dir(tmp_path):
+    """Skill under working_dir: footer uses the relative path, avoiding leakage
+    of absolute home-directory paths into the LLM context."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    skill_dir = workspace / "skills" / "pdf-analyst"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("placeholder")
+    skill = Skill(
+        name="pdf-analyst",
+        content="body",
+        description="desc",
+        source=str(skill_md),
+        is_agentskills_format=True,
+    )
+    conv = _make_conv([skill], working_dir=str(workspace))
+
+    obs = _run("pdf-analyst", conv)
+
+    assert obs.is_error is False
+    assert "`skills/pdf-analyst`" in obs.text
+    assert str(workspace.resolve()) not in obs.text
+
+
+def test_footer_omitted_when_skill_has_no_source():
+    """Programmatic skills (source=None) should not get a footer."""
+    skill = Skill(
+        name="prog",
+        content="inline body",
+        description="desc",
+        source=None,
+        is_agentskills_format=True,
+    )
+    conv = _make_conv([skill])
+
+    obs = _run("prog", conv)
+
+    assert obs.is_error is False
+    assert "located at" not in obs.text
+    assert obs.text.strip() == "inline body"
+
+
+def test_footer_omitted_when_source_is_not_a_real_path():
+    """Sentinels like `'local'` or `'github:owner/repo'` must not produce a footer
+    pointing at a made-up path."""
+    skill = Skill(
+        name="remote",
+        content="body",
+        description="desc",
+        source="github:owner/repo",
+        is_agentskills_format=True,
+    )
+    conv = _make_conv([skill])
+
+    obs = _run("remote", conv)
+
+    assert obs.is_error is False
+    assert "located at" not in obs.text
+
+
 def test_invoked_skills_dedupes():
     conv = _make_conv([_make_skill("x")])
 
     _run("x", conv)
     _run("x", conv)
 
-    assert conv._state.invoked_skills == ["x"]
+    assert conv.state.invoked_skills == ["x"]
 
 
 def test_legacy_triggered_skill_is_invocable():
@@ -175,7 +262,7 @@ def test_legacy_triggered_skill_is_invocable():
 
     assert obs.is_error is False
     assert "legacy body" in obs.text
-    assert conv._state.invoked_skills == ["flarglebargle"]
+    assert conv.state.invoked_skills == ["flarglebargle"]
 
 
 @pytest.mark.parametrize(
@@ -213,7 +300,7 @@ def test_error_paths_do_not_mutate_state(
     for expected in expected_substrings:
         assert expected in obs.text
     if conv is not None:
-        assert conv._state.invoked_skills == []
+        assert conv.state.invoked_skills == []
 
 
 @pytest.mark.parametrize(
