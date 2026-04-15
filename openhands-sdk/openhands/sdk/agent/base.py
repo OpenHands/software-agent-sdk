@@ -164,7 +164,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "Security policy template filename. Can be either:\n"
             "- A relative filename (e.g., 'security_policy.j2') loaded from the "
             "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+            "- Empty string to disable security policy"
         ),
     )
     system_prompt_kwargs: dict[str, object] = Field(
