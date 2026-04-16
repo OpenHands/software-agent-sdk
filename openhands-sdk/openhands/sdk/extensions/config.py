@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.utils import merge_mcp_configs
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -103,13 +104,13 @@ class ExtensionConfig(BaseModel):
 
     # -- Auto-loading flags -----------------------------------------------
 
-    load_user_skills: bool = Field(
+    load_user_extensions: bool = Field(
         default=False,
-        description="Load skills from ~/.openhands/skills/.",
+        description="Load extensions from ~/.openhands/skills/.",
     )
-    load_public_skills: bool = Field(
+    load_public_extensions: bool = Field(
         default=False,
-        description="Load skills from the public OpenHands extensions repo.",
+        description="Load extensions from the public OpenHands extensions repo.",
     )
     marketplace_path: str | None = Field(
         default=DEFAULT_MARKETPLACE_PATH,
@@ -161,12 +162,12 @@ class ExtensionConfig(BaseModel):
                 skills_by_name[s.name] = s
 
         # -- 2-4. Auto-load from well-known locations ---------------------
-        if self.load_public_skills or self.load_user_skills or work_dir:
+        if self.load_public_extensions or self.load_user_extensions or work_dir:
             auto = load_available_skills(
                 work_dir=work_dir,
-                include_user=self.load_user_skills,
+                include_user=self.load_user_extensions,
                 include_project=work_dir is not None,
-                include_public=self.load_public_skills,
+                include_public=self.load_public_extensions,
                 marketplace_path=self.marketplace_path,
             )
             for name, skill in auto.items():
@@ -217,7 +218,7 @@ class ExtensionConfig(BaseModel):
                 skills_by_name[skill.name] = skill
 
             # MCP: server-name-based last-wins
-            mcp_config = plugin.add_mcp_config_to(mcp_config)
+            mcp_config = merge_mcp_configs(mcp_config, plugin.mcp_config)
 
             # Hooks: concatenate
             if plugin.hooks and not plugin.hooks.is_empty():
