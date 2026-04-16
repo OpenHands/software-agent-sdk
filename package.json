@@ -54,7 +54,7 @@
     "prettier": "^3.8.2",
     "ts-jest": "^29.4.9",
     "typescript": "^6.0.2",
-    "typescript-eslint": "^8.58.0"
+    "typescript-eslint": "^8.58.2"
   },
   "files": [
     "dist/**/*"
