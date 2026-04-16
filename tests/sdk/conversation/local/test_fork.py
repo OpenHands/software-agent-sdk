@@ -172,3 +172,22 @@ def test_fork_shares_workspace():
         fork = src.fork()
 
         assert fork.workspace.working_dir == src.workspace.working_dir
+
+
+def test_fork_event_deep_copy_isolation():
+    """Mutating an event object in the fork must not affect the source."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src.state.events.append(_msg("deep-evt", "original"))
+
+        fork = src.fork()
+
+        # The fork event is a different object
+        src_evt = src.state.events[0]
+        fork_evt = fork.state.events[0]
+        assert src_evt is not fork_evt
+
+        # Mutating the fork event should not change the source
+        assert fork_evt.llm_message.content[0].text == "original"  # type: ignore[union-attr]
+        fork_evt.llm_message.content[0].text = "mutated"  # type: ignore[union-attr]
+        assert src_evt.llm_message.content[0].text == "original"  # type: ignore[union-attr]

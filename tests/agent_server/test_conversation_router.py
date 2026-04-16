@@ -1729,3 +1729,48 @@ def test_switch_conversation_profile_corrupted_profile(
         mock_conversation.switch_profile.assert_called_once_with("corrupted")
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_success(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """Test fork endpoint returns 201 with forked conversation info."""
+    mock_conversation_service.fork_conversation.return_value = sample_conversation_info
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"title": "Forked", "reset_metrics": True},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+        mock_conversation_service.fork_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test fork returns 404 when source conversation doesn't exist."""
+    mock_conversation_service.fork_conversation.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()

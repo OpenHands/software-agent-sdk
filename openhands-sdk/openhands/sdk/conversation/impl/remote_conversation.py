@@ -1360,13 +1360,17 @@ class RemoteConversation(BaseConversation):
             self.agent.model_dump(context={"expose_secrets": True}),
         )
 
+        # Use server-returned tags (which include merged title) rather than
+        # the input tags, so the client-side object stays consistent.
+        server_tags: dict[str, str] | None = fork_info.get("tags") or None
+
         return RemoteConversation(
             agent=fork_agent,
             workspace=self.workspace,
             conversation_id=fork_uuid,
             max_iteration_per_run=self.max_iteration_per_run,
             delete_on_close=self.delete_on_close,
-            tags=tags,
+            tags=server_tags,
         )
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
