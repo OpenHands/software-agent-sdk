@@ -18,6 +18,7 @@ from openhands.sdk.skills import (
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
@@ -59,6 +60,10 @@ class AgentContext(BaseModel):
     )
     load_user_skills: bool = Field(
         default=False,
+        deprecated=(
+            "Deprecated since v1.18.0; will be removed in v1.23.0. "
+            "Use ExtensionConfig(load_user_extensions=True) on Conversation."
+        ),
         description=(
             "Whether to automatically load user skills from ~/.openhands/skills/ "
             "and ~/.openhands/microagents/ (for backward compatibility). "
@@ -66,6 +71,10 @@ class AgentContext(BaseModel):
     )
     load_public_skills: bool = Field(
         default=False,
+        deprecated=(
+            "Deprecated since v1.18.0; will be removed in v1.23.0. "
+            "Use ExtensionConfig(load_public_extensions=True) on Conversation."
+        ),
         description=(
             "Whether to automatically load skills from the public OpenHands "
             "skills repository at https://github.com/OpenHands/extensions. "
@@ -74,6 +83,10 @@ class AgentContext(BaseModel):
     )
     marketplace_path: str | None = Field(
         default=DEFAULT_MARKETPLACE_PATH,
+        deprecated=(
+            "Deprecated since v1.18.0; will be removed in v1.23.0. "
+            "Use ExtensionConfig(marketplace_path=...) on Conversation."
+        ),
         description=(
             "Relative marketplace JSON path within the public skills repository. "
             "Set to None to load all public skills without marketplace filtering."
@@ -114,9 +127,36 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or public skills if enabled."""
+        """Load user and/or public skills if enabled.
+
+        .. deprecated:: 1.18.0
+            Use ``ExtensionConfig(load_user_extensions=...,
+            load_public_extensions=...)`` on ``Conversation`` instead.
+            Will be removed in v1.23.0.
+        """
         if not self.load_user_skills and not self.load_public_skills:
             return self
+
+        _details = (
+            "Use ExtensionConfig(load_user_extensions=..., "
+            "load_public_extensions=...) on Conversation instead."
+        )
+        if self.load_user_skills:
+            warn_deprecated(
+                "AgentContext.load_user_skills",
+                deprecated_in="1.18.0",
+                removed_in="1.23.0",
+                details=_details,
+                stacklevel=3,
+            )
+        if self.load_public_skills:
+            warn_deprecated(
+                "AgentContext.load_public_skills",
+                deprecated_in="1.18.0",
+                removed_in="1.23.0",
+                details=_details,
+                stacklevel=3,
+            )
 
         auto_skills = load_available_skills(
             work_dir=None,

@@ -1,13 +1,16 @@
-"""Tests for plugin handling in ConversationService.
+"""Tests for plugin and extension_config handling in ConversationService.
 
 This module tests plugin handling via the `plugins` list parameter
-on StartConversationRequest.
+and extension_config via the `extension_config` parameter on
+StartConversationRequest.
 
 These tests verify that:
 1. Plugin specs are passed through to StoredConversation (for lazy loading)
 2. Explicit hook_config is preserved (merging happens lazily in LocalConversation)
 3. Plugins ARE persisted (unlike the old eager loading model) since
    LocalConversation loads them lazily on first run()/send_message()
+4. ExtensionConfig is passed through to StoredConversation and
+   forwarded to LocalConversation for centralized extension loading.
 """
 
 import tempfile
@@ -30,6 +33,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.extensions.config import ExtensionConfig
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher, HookType
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.workspace import LocalWorkspace
@@ -468,3 +472,116 @@ async def test_start_conversation_stores_both_hooks_and_plugins_for_lazy_merge(
             # Plugins are stored for lazy loading
             assert stored.plugins is not None
             assert len(stored.plugins) == 1
+
+
+# Tests for extension_config
+
+
+def test_start_conversation_request_has_extension_config_field():
+    """Verify StartConversationRequest has extension_config field."""
+    fields = StartConversationRequest.model_fields
+    assert "extension_config" in fields
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_with_extension_config(conversation_service, tmp_path):
+    """Test that extension_config is passed through to StoredConversation."""
+    plugin_dir = create_test_plugin_dir(
+        tmp_path,
+        skills=[{"name": "ext-skill", "content": "From ExtensionConfig"}],
+    )
+
+    hook_config = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[HookDefinition(type=HookType.COMMAND, command="echo ext")],
+            )
+        ]
+    )
+
+    ext_config = ExtensionConfig(
+        plugins=[PluginSource(source=str(plugin_dir))],
+        hook_config=hook_config,
+        load_public_extensions=True,
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=temp_dir),
+            extension_config=ext_config,
+        )
+
+        with patch(
+            "openhands.agent_server.conversation_service.EventService"
+        ) as mock_event_service_class:
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service_class.return_value = mock_event_service
+
+            mock_state = ConversationState(
+                id=uuid4(),
+                agent=request.agent,
+                workspace=request.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=request.confirmation_policy,
+            )
+            mock_event_service.get_state.return_value = mock_state
+            mock_event_service.stored = StoredConversation(
+                id=mock_state.id,
+                **request.model_dump(),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+
+            await conversation_service.start_conversation(request)
+
+            stored = mock_event_service_class.call_args.kwargs["stored"]
+            assert stored.extension_config is not None
+            assert len(stored.extension_config.plugins) == 1
+            assert stored.extension_config.hook_config is not None
+            assert stored.extension_config.load_public_extensions is True
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_without_extension_config(
+    conversation_service,
+):
+    """extension_config defaults to None when not provided."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="test-llm"),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=temp_dir),
+        )
+
+        with patch(
+            "openhands.agent_server.conversation_service.EventService"
+        ) as mock_event_service_class:
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service_class.return_value = mock_event_service
+
+            mock_state = ConversationState(
+                id=uuid4(),
+                agent=request.agent,
+                workspace=request.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=request.confirmation_policy,
+            )
+            mock_event_service.get_state.return_value = mock_state
+            mock_event_service.stored = StoredConversation(
+                id=mock_state.id,
+                **request.model_dump(),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+
+            await conversation_service.start_conversation(request)
+
+            stored = mock_event_service_class.call_args.kwargs["stored"]
+            assert stored.extension_config is None

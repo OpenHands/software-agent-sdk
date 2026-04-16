@@ -16,6 +16,7 @@ from pydantic import BaseModel, Discriminator, Field, Tag
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.agent import Agent
 from openhands.sdk.conversation.types import ConversationTags
+from openhands.sdk.extensions.config import ExtensionConfig
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import ImageContent, Message, TextContent
 from openhands.sdk.plugin import PluginSource
@@ -117,12 +118,21 @@ class _StartConversationRequestBase(BaseModel):
             "can see user-registered subagents."
         ),
     )
+    extension_config: ExtensionConfig | None = Field(
+        default=None,
+        description=(
+            "Declarative specification of all extensions to load (skills, "
+            "plugins, hooks). When provided, ``plugins`` and ``hook_config`` "
+            "are ignored — use the config object instead."
+        ),
+    )
     plugins: list[PluginSource] | None = Field(
         default=None,
         description=(
             "List of plugins to load for this conversation. Plugins are loaded "
             "and their skills/MCP config are merged into the agent. "
-            "Hooks are extracted and stored for runtime execution."
+            "Hooks are extracted and stored for runtime execution. "
+            "Ignored when ``extension_config`` is provided."
         ),
     )
     hook_config: HookConfig | None = Field(
@@ -132,7 +142,7 @@ class _StartConversationRequestBase(BaseModel):
             "scripts that run at key lifecycle events (PreToolUse, PostToolUse, "
             "UserPromptSubmit, Stop, etc.). If both hook_config and plugins are "
             "provided, they are merged with explicit hooks running before plugin "
-            "hooks."
+            "hooks. Ignored when ``extension_config`` is provided."
         ),
     )
     tags: ConversationTags = Field(

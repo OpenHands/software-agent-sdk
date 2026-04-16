@@ -8,6 +8,7 @@ from openhands.sdk import (
     AgentContext,
     Conversation,
     Event,
+    ExtensionConfig,
     LLMConvertibleEvent,
     get_logger,
 )
@@ -87,9 +88,6 @@ agent_context = AgentContext(
     system_message_suffix="Always finish your response with the word 'yay!'",
     # user_message_suffix is appended to each user message
     user_message_suffix="The first character of your response should be 'I'",
-    # You can also enable automatic load skills from
-    # public registry at https://github.com/OpenHands/extensions
-    load_public_skills=True,
 )
 
 # Agent
@@ -103,8 +101,13 @@ def conversation_callback(event: Event):
         llm_messages.append(event.to_llm_message())
 
 
+# ExtensionConfig controls loading of extensions (skills, plugins, hooks)
+# from well-known locations at the conversation level.
 conversation = Conversation(
-    agent=agent, callbacks=[conversation_callback], workspace=cwd
+    agent=agent,
+    callbacks=[conversation_callback],
+    workspace=cwd,
+    extension_config=ExtensionConfig(load_public_extensions=True),
 )
 
 print("=" * 100)

@@ -110,8 +110,6 @@ llm = LLM(
 # Create agent context with loaded skills
 agent_context = AgentContext(
     skills=list(agent_skills.values()),
-    # Disable public skills for this demo to keep output focused
-    load_public_skills=False,
 )
 
 # Create agent with tools so it can read skill resources

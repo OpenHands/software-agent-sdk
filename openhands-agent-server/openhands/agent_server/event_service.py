@@ -472,10 +472,8 @@ class EventService:
             self.stored.agent.model_dump(context={"expose_secrets": True}),
         )
 
-        # Create LocalConversation with plugins and hook_config.
-        # Plugins are loaded lazily on first run()/send_message() call.
-        # Hook execution semantics: OpenHands runs hooks sequentially with early-exit
-        # on block (PreToolUse), unlike Claude Code's parallel execution model.
+        # Extensions (plugins, hooks, skills) are loaded lazily on first
+        # run()/send_message() call via ExtensionConfig.resolve().
 
         # Create and store callback wrapper to allow flushing pending events
         self._callback_wrapper = AsyncCallbackWrapper(
@@ -485,6 +483,7 @@ class EventService:
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
+            extension_config=self.stored.extension_config,
             plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
