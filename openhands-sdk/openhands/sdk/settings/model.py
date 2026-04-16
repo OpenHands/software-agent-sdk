@@ -495,8 +495,9 @@ the other choices map to a default npx command (see
 _DEFAULT_ACP_COMMANDS: dict[str, list[str]] = {
     "claude-code": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
     "codex": ["npx", "-y", "@zed-industries/codex-acp"],
-    # gemini-cli's ACP mode is activated via --experimental-acp.
-    "gemini-cli": ["npx", "-y", "@google/gemini-cli", "--experimental-acp"],
+    # gemini-cli's ACP mode is activated via ``--acp`` (``--experimental-acp``
+    # is deprecated in the gemini-cli >=0.38 releases).
+    "gemini-cli": ["npx", "-y", "@google/gemini-cli", "--acp"],
 }
 
 
