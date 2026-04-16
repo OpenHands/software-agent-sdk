@@ -572,20 +572,6 @@ class ACPAgent(AgentBase):
             "If None, the server picks its default."
         ),
     )
-    acp_session_id: str | None = Field(
-        default=None,
-        description=(
-            "ACP server's session identifier.  Persisted so that restarting "
-            "the agent-server replays the ACP subprocess's prior context via "
-            "``load_session`` instead of starting from scratch.  When the ACP "
-            "server no longer recognises the id (e.g. on-disk state was wiped, "
-            "or the conversation resumed on a host that never saw it), the "
-            "load silently falls back to ``new_session`` and the field is "
-            "rewritten with the fresh id.  Note: ACP servers key their "
-            "persistence by ``cwd``, so resuming in a different working "
-            "directory may miss the prior session."
-        ),
-    )
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)
@@ -766,12 +752,18 @@ class ACPAgent(AgentBase):
 
         self._initialized = True
 
-        # Store agent info in agent_state so it's accessible from remote
-        # conversations (PrivateAttrs aren't serialized in state updates).
+        # Persist agent info + the ACP session id in agent_state.  Keeping the
+        # session id here (rather than on the frozen ACPAgent model) means
+        # ConversationState's existing base_state.json persistence carries it
+        # across agent-server restarts, and ``_start_acp_server`` on the next
+        # launch reads it back to call ``load_session`` instead of starting
+        # from scratch.  ACP servers key their persistence by ``cwd``, so
+        # resuming in a different working directory may miss the prior session.
         state.agent_state = {
             **state.agent_state,
             "acp_agent_name": self._agent_name,
             "acp_agent_version": self._agent_version,
+            "acp_session_id": self._session_id,
         }
 
     def _start_acp_server(self, state: ConversationState) -> None:
@@ -790,6 +782,11 @@ class ACPAgent(AgentBase):
         args = list(self.acp_command[1:]) + list(self.acp_args)
 
         working_dir = str(state.workspace.working_dir)
+
+        # Prior ACP session id — survives agent-server restarts via
+        # ConversationState.agent_state (serialized into base_state.json).
+        # Its presence is the signal to resume; its absence means fresh start.
+        prior_session_id: str | None = state.agent_state.get("acp_session_id")
 
         async def _init() -> tuple[Any, Any, Any, str, str, str]:
             # Spawn the subprocess directly so we can install a
@@ -863,14 +860,14 @@ class ACPAgent(AgentBase):
             # has forgotten it (state wiped, new host, etc.) fall through to
             # new_session so the conversation still starts cleanly.
             session_id: str | None = None
-            if self.acp_session_id is not None:
+            if prior_session_id is not None:
                 try:
                     await conn.load_session(
                         cwd=working_dir,
-                        session_id=self.acp_session_id,
+                        session_id=prior_session_id,
                         mcp_servers=[],
                     )
-                    session_id = self.acp_session_id
+                    session_id = prior_session_id
                     logger.info(
                         "Resumed ACP session: %s (cwd=%s)",
                         session_id,
@@ -879,7 +876,7 @@ class ACPAgent(AgentBase):
                 except ACPRequestError as e:
                     logger.warning(
                         "ACP load_session(%s) failed (%s); starting a fresh session",
-                        self.acp_session_id,
+                        prior_session_id,
                         e,
                     )
 
@@ -919,11 +916,6 @@ class ACPAgent(AgentBase):
             self._agent_version,
         ) = result
         self._working_dir = working_dir
-        # Persist the ACP session id on the (frozen) model so a subsequent
-        # model_dump() → model_validate() round-trip can resume via
-        # load_session instead of starting from scratch.
-        if self.acp_session_id != self._session_id:
-            object.__setattr__(self, "acp_session_id", self._session_id)
 
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(

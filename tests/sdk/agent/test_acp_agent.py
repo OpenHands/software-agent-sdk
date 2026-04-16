@@ -2108,22 +2108,19 @@ class TestSerializeToolContent:
 
 
 # ---------------------------------------------------------------------------
-# acp_session_id persistence (issue #2867)
+# ACP session resume via ConversationState.agent_state (issue #2867)
 # ---------------------------------------------------------------------------
 
 
 class TestACPSessionIdPersistence:
-    """Verify that acp_session_id round-trips through serialization and that
-    _start_acp_server picks between new_session and load_session based on it.
+    """Verify that the ACP session id is stashed in ``state.agent_state`` on
+    first launch and that _start_acp_server reads it back on resume to drive
+    load_session vs. new_session.
     """
 
     @staticmethod
     def _patched_start_acp_server(agent, state, *, conn):
-        """Invoke the real _start_acp_server with ACP transport layers mocked.
-
-        Returns the mock connection so callers can inspect which ACP methods
-        were awaited.
-        """
+        """Invoke the real _start_acp_server with ACP transport layers mocked."""
         mock_process = MagicMock()
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
@@ -2187,12 +2184,13 @@ class TestACPSessionIdPersistence:
         conn.close = AsyncMock()
         return conn
 
-    def test_default_session_id_is_none(self):
-        agent = _make_agent()
-        assert agent.acp_session_id is None
+    def test_fresh_state_has_no_session_id(self, tmp_path):
+        """A fresh ConversationState holds no session id under agent_state."""
+        state = _make_state(tmp_path)
+        assert "acp_session_id" not in state.agent_state
 
     def test_first_launch_calls_new_session(self, tmp_path):
-        """Without a stored id, _start_acp_server must call new_session."""
+        """Empty agent_state → _start_acp_server calls new_session only."""
         agent = _make_agent()
         state = _make_state(tmp_path)
         conn = self._make_conn(new_session_id="fresh-sess")
@@ -2201,27 +2199,34 @@ class TestACPSessionIdPersistence:
 
         conn.new_session.assert_awaited_once()
         conn.load_session.assert_not_awaited()
-        assert agent.acp_session_id == "fresh-sess"
         assert agent._session_id == "fresh-sess"
 
-    def test_session_id_survives_model_dump_roundtrip(self, tmp_path):
-        """After first launch, model_dump() → model_validate() keeps the id."""
-        agent = ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"])
+    def test_init_state_writes_session_id_into_agent_state(self, tmp_path):
+        """init_state lands the session id in state.agent_state so
+        ConversationState's base_state.json persistence carries it forward.
+        """
+        agent = _make_agent()
         state = _make_state(tmp_path)
-        conn = self._make_conn(new_session_id="survive-sess")
 
-        self._patched_start_acp_server(agent, state, conn=conn)
+        # Short-circuit _start_acp_server: pretend the ACP handshake ran and
+        # populated the runtime attrs that init_state reads afterwards.
+        def _fake_start(self, _state):
+            self._session_id = "end-to-end-sess"
+            self._agent_name = "claude-agent-acp"
+            self._agent_version = "1.0"
 
-        dumped = agent.model_dump_json()
-        restored = AgentBase.model_validate_json(dumped)
+        with patch.object(ACPAgent, "_start_acp_server", _fake_start):
+            agent.init_state(state, on_event=lambda _: None)
 
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_session_id == "survive-sess"
+        assert state.agent_state["acp_session_id"] == "end-to-end-sess"
+        assert state.agent_state["acp_agent_name"] == "claude-agent-acp"
+        assert state.agent_state["acp_agent_version"] == "1.0"
 
-    def test_second_launch_calls_load_session(self, tmp_path):
-        """With a stored id, _start_acp_server must call load_session."""
-        agent = _make_agent(acp_session_id="stored-sess")
+    def test_resume_reads_session_id_from_agent_state(self, tmp_path):
+        """Prior session id in agent_state → load_session is called with it."""
+        agent = _make_agent()
         state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
         conn = self._make_conn()
 
         self._patched_start_acp_server(agent, state, conn=conn)
@@ -2231,13 +2236,13 @@ class TestACPSessionIdPersistence:
         assert kwargs["session_id"] == "stored-sess"
         assert kwargs["cwd"] == str(tmp_path)
         conn.new_session.assert_not_awaited()
-        assert agent.acp_session_id == "stored-sess"
         assert agent._session_id == "stored-sess"
 
     def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
-        """ACPRequestError on load_session → new_session is called, id rewritten."""
-        agent = _make_agent(acp_session_id="stale-sess")
+        """ACPRequestError on load_session → new_session is called."""
+        agent = _make_agent()
         state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stale-sess"}
         conn = self._make_conn(
             new_session_id="replacement-sess",
             load_exc=ACPRequestError(-32602, "unknown session"),
@@ -2247,11 +2252,13 @@ class TestACPSessionIdPersistence:
 
         conn.load_session.assert_awaited_once()
         conn.new_session.assert_awaited_once()
-        assert agent.acp_session_id == "replacement-sess"
         assert agent._session_id == "replacement-sess"
 
-    def test_serialization_includes_acp_session_id_field(self):
-        """acp_session_id is part of the serialized model, not a PrivateAttr."""
-        agent = _make_agent(acp_session_id="ser-sess")
+    def test_session_id_not_on_serialized_agent(self):
+        """Session id must not leak onto the agent model — it lives in
+        ConversationState.agent_state, not on the frozen ACPAgent.
+        """
+        agent = _make_agent()
         data = json.loads(agent.model_dump_json())
-        assert data["acp_session_id"] == "ser-sess"
+        assert "acp_session_id" not in data
+        assert not hasattr(agent, "acp_session_id")
