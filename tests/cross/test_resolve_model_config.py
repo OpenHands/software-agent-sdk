@@ -621,4 +621,6 @@ def test_claude_opus_4_7_config():
     assert model["id"] == "claude-opus-4-7"
     assert model["display_name"] == "Claude 4.7 Opus"
     assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-7"
-    # Note: temperature is not set for claude-opus-4-7 as it's deprecated for this model
+    # LiteLLM doesn't have claude-opus-4-7 in its model database yet,
+    # so we explicitly enable vision
+    assert model["llm_config"]["enable_vision"] is True

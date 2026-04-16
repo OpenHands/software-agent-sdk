@@ -319,6 +319,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="If model is vision capable, this option allows to disable image "
         "processing (useful for cost reduction).",
     )
+    enable_vision: bool | None = Field(
+        default=None,
+        description="Explicitly enable vision for models where LiteLLM detection "
+        "is incorrect (e.g., new models not yet in LiteLLM database).",
+    )
     disable_stop_word: bool | None = Field(
         default=False,
         description="Disable using of stop word.",
@@ -1291,6 +1296,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            # Explicit enable_vision takes precedence over automatic detection
+            if self.enable_vision is True:
+                return True
+            if self.enable_vision is False:
+                return False
             return not self.disable_vision and self._supports_vision()
 
     def _supports_vision(self) -> bool:

@@ -40,7 +40,7 @@ signal.signal(signal.SIGALRM, _sigterm_handler)
 # SDK-specific parameters that should not be passed to litellm.
 # These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
 # Keep this list in sync with SDK LLM config parameters that are SDK-internal.
-SDK_ONLY_PARAMS = {"disable_vision"}
+SDK_ONLY_PARAMS = {"disable_vision", "enable_vision"}
 
 
 # Model configurations dictionary
@@ -117,6 +117,9 @@ MODELS = {
         "display_name": "Claude 4.7 Opus",
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-opus-4-7",
+            # LiteLLM doesn't have claude-opus-4-7 in its model database yet,
+            # so we explicitly enable vision until LiteLLM is updated
+            "enable_vision": True,
         },
     },
     "claude-sonnet-4-6": {
