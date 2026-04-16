@@ -71,7 +71,7 @@ class TestLocalConversationPlugins:
     """Tests for plugin loading in LocalConversation.
 
     Note: Plugins are lazy-loaded on first run()/send_message() call.
-    Tests trigger _ensure_plugins_loaded() to verify loading behavior.
+    Tests trigger _ensure_extensions_loaded() to verify loading behavior.
     """
 
     def test_create_conversation_with_plugins(self, tmp_path: Path, basic_agent):
@@ -92,7 +92,7 @@ class TestLocalConversationPlugins:
         )
 
         # Plugins are lazy loaded - trigger loading
-        conversation._ensure_plugins_loaded()
+        conversation._ensure_extensions_loaded()
 
         # Agent should have been updated with plugin skills
         assert conversation.agent.agent_context is not None
@@ -132,7 +132,7 @@ class TestLocalConversationPlugins:
         )
 
         # Plugins are lazy loaded - trigger loading
-        conversation._ensure_plugins_loaded()
+        conversation._ensure_extensions_loaded()
 
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
@@ -180,7 +180,7 @@ class TestLocalConversationPlugins:
         )
 
         # Hooks are lazy loaded - trigger loading
-        conversation._ensure_plugins_loaded()
+        conversation._ensure_extensions_loaded()
 
         # Both hook sources should be combined
         assert conversation._hook_processor is not None
@@ -206,14 +206,14 @@ class TestLocalConversationPlugins:
         )
 
         # Before loading, plugins should not be applied
-        assert conversation._plugins_loaded is False
+        assert conversation._extensions_loaded is False
         assert conversation.resolved_plugins is None
         assert conversation.agent.agent_context is None
 
         # After triggering load
-        conversation._ensure_plugins_loaded()
+        conversation._ensure_extensions_loaded()
 
-        assert conversation._plugins_loaded is True
+        assert conversation._extensions_loaded is True
         assert conversation.resolved_plugins is not None
         assert conversation.agent.agent_context is not None
 
@@ -305,7 +305,7 @@ class TestConversationFactoryPlugins:
         assert isinstance(conversation, LocalConversation)
 
         # Plugins are lazy loaded - trigger loading
-        conversation._ensure_plugins_loaded()
+        conversation._ensure_extensions_loaded()
 
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
@@ -332,7 +332,7 @@ class TestConversationFactoryPlugins:
         )
 
         # Plugins are lazy loaded - trigger loading
-        conversation._ensure_plugins_loaded()
+        conversation._ensure_extensions_loaded()
 
         assert conversation.agent.agent_context is not None
         assert len(conversation.agent.agent_context.skills) == 1
@@ -351,4 +351,155 @@ class TestConversationFactoryPlugins:
 
         # Should work without errors
         assert conversation is not None
+        conversation.close()
+
+
+class TestExtensionConfigWiring:
+    """Tests for ExtensionConfig integration with LocalConversation."""
+
+    def test_extension_config_with_plugins(self, tmp_path: Path, basic_agent):
+        """ExtensionConfig with plugins loads them during resolution."""
+        from openhands.sdk.extensions.config import ExtensionConfig
+
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="ext-plugin",
+            skills=[{"name": "ext-skill", "content": "From extension config"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        ext_config = ExtensionConfig(
+            plugins=[PluginSource(source=str(plugin_dir))],
+        )
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            extension_config=ext_config,
+            visualizer=None,
+        )
+
+        conversation._ensure_extensions_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "ext-skill" in skill_names
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+        conversation.close()
+
+    def test_extension_config_overrides_legacy_params(
+        self, tmp_path: Path, basic_agent
+    ):
+        """When extension_config is provided, legacy plugins/hook_config are ignored."""
+        from openhands.sdk.extensions.config import ExtensionConfig
+
+        plugin_dir = create_test_plugin(
+            tmp_path / "ext-plugin",
+            name="ext-plugin",
+            skills=[{"name": "ext-skill", "content": "From config"}],
+        )
+        legacy_dir = create_test_plugin(
+            tmp_path / "legacy-plugin",
+            name="legacy-plugin",
+            skills=[{"name": "legacy-skill", "content": "From legacy"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        ext_config = ExtensionConfig(
+            plugins=[PluginSource(source=str(plugin_dir))],
+        )
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            extension_config=ext_config,
+            plugins=[PluginSource(source=str(legacy_dir))],  # should be ignored
+            visualizer=None,
+        )
+
+        conversation._ensure_extensions_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "ext-skill" in skill_names
+        assert "legacy-skill" not in skill_names
+        conversation.close()
+
+    def test_extension_config_with_hook_config(self, tmp_path: Path, basic_agent):
+        """ExtensionConfig hook_config is applied to conversation state."""
+        from openhands.sdk.extensions.config import ExtensionConfig
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        hook_config = HookConfig(
+            session_start=[
+                HookMatcher(
+                    matcher="*",
+                    hooks=[HookDefinition(command="echo hello")],
+                )
+            ]
+        )
+        ext_config = ExtensionConfig(hook_config=hook_config)
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            extension_config=ext_config,
+            visualizer=None,
+        )
+
+        conversation._ensure_extensions_loaded()
+
+        assert conversation.state.hook_config is not None
+        assert len(conversation.state.hook_config.session_start) == 1
+        conversation.close()
+
+    def test_factory_accepts_extension_config(self, tmp_path: Path, basic_agent):
+        """Conversation factory forwards extension_config to LocalConversation."""
+        from openhands.sdk.extensions.config import ExtensionConfig
+
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="factory-plugin",
+            skills=[{"name": "factory-skill", "content": "From factory"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        ext_config = ExtensionConfig(
+            plugins=[PluginSource(source=str(plugin_dir))],
+        )
+        conversation = Conversation(
+            agent=basic_agent,
+            workspace=workspace,
+            extension_config=ext_config,
+            visualizer=None,
+        )
+
+        conversation._ensure_extensions_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "factory-skill" in skill_names
+        conversation.close()
+
+    def test_empty_extension_config_no_side_effects(self, tmp_path: Path, basic_agent):
+        """Empty ExtensionConfig doesn't modify the agent."""
+        from openhands.sdk.extensions.config import ExtensionConfig
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        original_agent = basic_agent
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            extension_config=ExtensionConfig(),
+            visualizer=None,
+        )
+
+        conversation._ensure_extensions_loaded()
+
+        # Agent should be the same object (no model_copy)
+        assert conversation.agent is original_agent
         conversation.close()

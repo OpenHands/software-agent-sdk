@@ -81,7 +81,7 @@ When a `LocalConversation` becomes ready, it establishes the following priority:
 
 This is the order implemented by:
 
-- `LocalConversation._ensure_plugins_loaded()` → registers plugin agents
+- `LocalConversation._ensure_extensions_loaded()` → registers plugin agents
 - `LocalConversation._register_file_based_agents()` → registers project/user file agents, then built-ins
 
 ### Deduplication rules inside file-based loading

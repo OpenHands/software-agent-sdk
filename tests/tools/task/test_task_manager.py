@@ -743,9 +743,11 @@ class TestTaskManagerHooks:
 
         sub_conv = task.conversation
         assert sub_conv is not None
-        assert sub_conv._pending_hook_config is not None
-        assert len(sub_conv._pending_hook_config.pre_tool_use) == 1
-        assert sub_conv._pending_hook_config.pre_tool_use[0].matcher == "terminal"
+        assert sub_conv._extension_config.hook_config is not None
+        assert len(sub_conv._extension_config.hook_config.pre_tool_use) == 1
+        assert (
+            sub_conv._extension_config.hook_config.pre_tool_use[0].matcher == "terminal"
+        )
 
     def test_create_task_no_hooks_passes_none(self, tmp_path):
         """When the agent definition has no hooks, hook_config should be None."""
@@ -759,7 +761,7 @@ class TestTaskManagerHooks:
 
         sub_conv = task.conversation
         assert sub_conv is not None
-        assert sub_conv._pending_hook_config is None
+        assert sub_conv._extension_config.hook_config is None
 
     def test_resume_task_passes_hook_config(self, tmp_path):
         """_resume_task should pass hooks from the agent definition."""
@@ -789,9 +791,9 @@ class TestTaskManagerHooks:
         )
         sub_conv = resumed.conversation
         assert sub_conv is not None
-        assert sub_conv._pending_hook_config is not None
-        assert len(sub_conv._pending_hook_config.post_tool_use) == 1
-        assert sub_conv._pending_hook_config.post_tool_use[0].matcher == "*"
+        assert sub_conv._extension_config.hook_config is not None
+        assert len(sub_conv._extension_config.hook_config.post_tool_use) == 1
+        assert sub_conv._extension_config.hook_config.post_tool_use[0].matcher == "*"
 
     def test_get_conversation_passes_hook_config(self, tmp_path):
         """_get_conversation should forward hook_config to LocalConversation."""
@@ -819,9 +821,11 @@ class TestTaskManagerHooks:
             hook_config=hook_config,
         )
 
-        assert conv._pending_hook_config is not None
-        assert len(conv._pending_hook_config.pre_tool_use) == 1
-        assert conv._pending_hook_config.pre_tool_use[0].matcher == "file_editor"
+        assert conv._extension_config.hook_config is not None
+        assert len(conv._extension_config.hook_config.pre_tool_use) == 1
+        assert (
+            conv._extension_config.hook_config.pre_tool_use[0].matcher == "file_editor"
+        )
 
     def test_get_conversation_without_hook_config(self, tmp_path):
         """_get_conversation without hook_config should leave it as None."""
@@ -839,7 +843,7 @@ class TestTaskManagerHooks:
             worker_agent=agent,
         )
 
-        assert conv._pending_hook_config is None
+        assert conv._extension_config.hook_config is None
 
 
 class TestTaskManagerPersistence:

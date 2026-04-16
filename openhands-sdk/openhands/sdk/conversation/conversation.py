@@ -14,6 +14,7 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.extensions.config import ExtensionConfig
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
@@ -63,6 +64,7 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: str | Path | LocalWorkspace = "workspace/project",
+        extension_config: ExtensionConfig | None = None,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
@@ -88,6 +90,7 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: RemoteWorkspace,
+        extension_config: ExtensionConfig | None = None,
         plugins: list[PluginSource] | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
@@ -111,6 +114,7 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: str | Path | LocalWorkspace | RemoteWorkspace = "workspace/project",
+        extension_config: ExtensionConfig | None = None,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
@@ -168,6 +172,7 @@ class Conversation:
 
             return RemoteConversation(
                 agent=agent,
+                extension_config=extension_config,
                 plugins=plugins,
                 conversation_id=conversation_id,
                 callbacks=callbacks,
@@ -185,6 +190,7 @@ class Conversation:
 
         return LocalConversation(
             agent=agent,
+            extension_config=extension_config,
             plugins=plugins,
             conversation_id=conversation_id,
             callbacks=callbacks,

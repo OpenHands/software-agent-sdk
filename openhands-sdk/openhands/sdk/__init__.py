@@ -20,6 +20,7 @@ from openhands.sdk.conversation import (
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.extensions.config import ExtensionConfig
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
@@ -134,6 +135,7 @@ __all__ = [
     "ConversationExecutionStatus",
     "ConversationCallbackType",
     "Event",
+    "ExtensionConfig",
     "LLMConvertibleEvent",
     "AgentContext",
     "LLMSummarizingCondenser",

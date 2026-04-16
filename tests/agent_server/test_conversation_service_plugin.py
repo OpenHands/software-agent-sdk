@@ -455,7 +455,7 @@ async def test_start_conversation_stores_both_hooks_and_plugins_for_lazy_merge(
             await conversation_service.start_conversation(request)
 
             # Verify both explicit hooks AND plugins are stored
-            # (merging happens lazily in LocalConversation._ensure_plugins_loaded)
+            # (merging happens lazily in LocalConversation._ensure_extensions_loaded)
             stored = mock_event_service_class.call_args.kwargs["stored"]
 
             # Explicit hook_config is stored as-is (not merged yet)

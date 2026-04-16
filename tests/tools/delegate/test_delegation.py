@@ -485,9 +485,9 @@ def test_spawn_passes_hook_config_to_sub_conversation():
     assert "Successfully spawned" in observation.text
     sub_conv = executor._sub_agents["h1"]
     # The sub-conversation should have the hook_config set
-    assert sub_conv._pending_hook_config is not None
-    assert len(sub_conv._pending_hook_config.pre_tool_use) == 1
-    assert sub_conv._pending_hook_config.pre_tool_use[0].matcher == "terminal"
+    assert sub_conv._extension_config.hook_config is not None
+    assert len(sub_conv._extension_config.hook_config.pre_tool_use) == 1
+    assert sub_conv._extension_config.hook_config.pre_tool_use[0].matcher == "terminal"
 
     _reset_registry_for_tests()
 

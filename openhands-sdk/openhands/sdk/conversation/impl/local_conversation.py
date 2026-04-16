@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.event_store import EventLog
@@ -35,26 +36,23 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.extensions.config import ExtensionConfig
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.utils import merge_mcp_configs
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
-    Plugin,
     PluginSource,
     ResolvedPluginSource,
-    fetch_plugin_with_resolution,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.subagent import (
-    AgentDefinition,
     register_file_agents,
     register_plugin_agents,
 )
@@ -79,16 +77,16 @@ class LocalConversation(BaseConversation):
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
-    # Plugin lazy loading state
-    _plugin_specs: list[PluginSource] | None
+    # Extension config (replaces per-field plugin/hook tracking)
+    _extension_config: ExtensionConfig
     _resolved_plugins: list[ResolvedPluginSource] | None
-    _plugins_loaded: bool
-    _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    _extensions_loaded: bool
 
     def __init__(
         self,
         agent: AgentBase,
         workspace: str | Path | LocalWorkspace,
+        extension_config: ExtensionConfig | None = None,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
@@ -115,12 +113,14 @@ class LocalConversation(BaseConversation):
             agent: The agent to use for the conversation.
             workspace: Working directory for agent operations and tool execution.
                 Can be a string path, Path object, or LocalWorkspace instance.
-            plugins: Optional list of plugins to load. Each plugin is specified
-                with a source (github:owner/repo, git URL, or local path),
-                optional ref (branch/tag/commit), and optional repo_path for
-                monorepos. Plugins are loaded in order with these merge
-                semantics: skills override by name (last wins), MCP config
-                override by key (last wins), hooks concatenate (all run).
+            extension_config: Declarative specification of all extensions to
+                load (skills, plugins, hooks). When provided, ``plugins`` and
+                ``hook_config`` are ignored — use the config object instead.
+                When ``None`` (the default), an ``ExtensionConfig`` is built
+                from the ``plugins`` and ``hook_config`` parameters for
+                backward compatibility.
+            plugins: Optional list of plugins to load. Ignored when
+                ``extension_config`` is provided.
             persistence_dir: Directory for persisting conversation state and events.
                 Can be a string path or Path object.
             conversation_id: Optional ID for the conversation. If provided, will
@@ -129,7 +129,7 @@ class LocalConversation(BaseConversation):
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             hook_config: Optional hook configuration to auto-wire session hooks.
-                If plugins are loaded, their hooks are combined with this config.
+                Ignored when ``extension_config`` is provided.
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -154,13 +154,17 @@ class LocalConversation(BaseConversation):
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
 
-        # Store plugin specs for lazy loading (no IO in constructor)
-        # Plugins will be loaded on first run() or send_message() call
-        self._plugin_specs = plugins
+        # Build ExtensionConfig: prefer explicit config, fall back to legacy params
+        if extension_config is not None:
+            self._extension_config = extension_config
+        else:
+            self._extension_config = ExtensionConfig(
+                plugins=plugins or [],
+                hook_config=hook_config,
+            )
         self._resolved_plugins = None
-        self._plugins_loaded = False
-        self._pending_hook_config = hook_config  # Will be combined with plugin hooks
-        self._agent_ready = False  # Agent initialized lazily after plugins loaded
+        self._extensions_loaded = False
+        self._agent_ready = False  # Agent initialized lazily after extensions
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -227,9 +231,9 @@ class LocalConversation(BaseConversation):
 
         # Compose the base callback chain (visualizer -> user callbacks -> default)
         base_callback = BaseConversation.compose_callbacks(composed_list)
-        self._base_callback = base_callback  # Store for _ensure_plugins_loaded
+        self._base_callback = base_callback  # Store for _ensure_extensions_loaded
 
-        # Defer all hook setup to _ensure_plugins_loaded() for consistency
+        # Defer all hook setup to _ensure_extensions_loaded() for consistency
         # This runs on first run()/send_message() call and handles both
         # explicit hooks and plugin hooks in one place
         self._hook_processor = None
@@ -308,108 +312,78 @@ class LocalConversation(BaseConversation):
         """
         return self._resolved_plugins
 
-    def _ensure_plugins_loaded(self) -> None:
-        """Lazy load plugins and set up hooks on first use.
+    def _ensure_extensions_loaded(self) -> None:
+        """Lazy-load all extensions and set up hooks on first use.
 
-        This method is called automatically before run() and send_message().
-        It handles both plugin loading and hook initialization in one place
-        for consistency.
+        This method is called automatically before ``run()`` and
+        ``send_message()``.  It delegates to ``ExtensionConfig.resolve()``
+        for the actual I/O (plugin fetching, skill loading, MCP merging)
+        and then applies the ``ResolvedExtensions`` to the agent and
+        conversation state.
 
         The method:
-        1. Fetches plugins from their sources (network IO for remote sources)
-        2. Resolves refs to commit SHAs for deterministic resume
-        3. Loads plugin contents (skills, MCP config, hooks)
-        4. Merges plugin contents into the agent
-        5. Sets up hook processor with combined hooks (explicit + plugin)
-        6. Runs session_start hooks
+        1. Calls ``ExtensionConfig.resolve()`` with the workspace and
+           agent's existing skills/MCP config.
+        2. Updates the agent with merged skills and MCP config.
+        3. Registers plugin-provided agent definitions.
+        4. Sets up hook processor with combined hooks (explicit + plugin).
+        5. Runs ``session_start`` hooks.
         """
-        if self._plugins_loaded:
+        if self._extensions_loaded:
             return
 
-        all_plugin_hooks: list[HookConfig] = []
-        all_plugin_agents: list[AgentDefinition] = []
+        # Only pass work_dir when the config requests extension loading;
+        # otherwise project skills are loaded by AgentContext during the
+        # deprecation period and we avoid unintentional side effects.
+        wants_loading = (
+            self._extension_config.plugins
+            or self._extension_config.load_user_extensions
+            or self._extension_config.load_public_extensions
+        )
+        resolved = self._extension_config.resolve(
+            work_dir=self.workspace.working_dir if wants_loading else None,
+            existing_skills=(
+                list(self.agent.agent_context.skills)
+                if self.agent.agent_context
+                else None
+            ),
+            existing_mcp_config=(
+                dict(self.agent.mcp_config) if self.agent.mcp_config else None
+            ),
+        )
 
-        # Load plugins if specified
-        if self._plugin_specs:
-            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
-            self._resolved_plugins = []
+        # Store resolved plugins for persistence / deterministic resume
+        self._resolved_plugins = resolved.resolved_plugins or None
 
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
-
-            for spec in self._plugin_specs:
-                # Fetch plugin and get resolved commit SHA
-                path, resolved_ref = fetch_plugin_with_resolution(
-                    source=spec.source,
-                    ref=spec.ref,
-                    repo_path=spec.repo_path,
+        # Update agent with merged skills and MCP config
+        has_new_skills = bool(resolved.skills)
+        has_new_mcp = bool(resolved.mcp_config)
+        if has_new_skills or has_new_mcp:
+            update: dict = {}
+            if has_new_skills:
+                ctx = self.agent.agent_context or AgentContext()
+                update["agent_context"] = ctx.model_copy(
+                    update={"skills": resolved.skills}
                 )
+            if has_new_mcp:
+                update["mcp_config"] = resolved.mcp_config
+            self.agent = self.agent.model_copy(update=update)
 
-                # Store resolved ref for persistence
-                resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
-                self._resolved_plugins.append(resolved)
-
-                # Load the plugin
-                plugin = Plugin.load(path)
-                logger.debug(
-                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
-                    + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
-                )
-
-                # Merge plugin contents
-                merged_context = plugin.add_skills_to(merged_context)
-                merged_mcp = merge_mcp_configs(merged_mcp, plugin.mcp_config)
-
-                # Collect hooks
-                if plugin.hooks and not plugin.hooks.is_empty():
-                    all_plugin_hooks.append(plugin.hooks)
-
-                # Collect agent definitions
-                if plugin.agents:
-                    all_plugin_agents.extend(plugin.agents)
-
-            # Update agent with merged content
-            self.agent = self.agent.model_copy(
-                update={
-                    "agent_context": merged_context,
-                    "mcp_config": merged_mcp,
-                }
-            )
-
-            # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
 
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
-
-        # Register file-based agents defined in plugins
-        if all_plugin_agents:
+        # Register plugin-provided agent definitions
+        if resolved.agents:
             register_plugin_agents(
-                agents=all_plugin_agents,
+                agents=resolved.agents,
                 work_dir=self.workspace.working_dir,
             )
 
-        # Combine explicit hook_config with plugin hooks
-        # Explicit hooks run first (before plugin hooks)
-        final_hook_config = self._pending_hook_config
-        if all_plugin_hooks:
-            plugin_hooks = HookConfig.merge(all_plugin_hooks)
-            if plugin_hooks is not None:
-                if final_hook_config is not None:
-                    final_hook_config = HookConfig.merge(
-                        [final_hook_config, plugin_hooks]
-                    )
-                else:
-                    final_hook_config = plugin_hooks
-
-        # Set up hook processor with the combined config
-        if final_hook_config is not None:
-            # Store final hook_config in state for observability
-            self._state.hook_config = final_hook_config
-
+        # Set up hook processor
+        if resolved.hooks is not None:
+            self._state.hook_config = resolved.hooks
             self._hook_processor, self._on_event = create_hook_callback(
-                hook_config=final_hook_config,
+                hook_config=resolved.hooks,
                 working_dir=str(self.workspace.working_dir),
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
@@ -417,7 +391,7 @@ class LocalConversation(BaseConversation):
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
-        self._plugins_loaded = True
+        self._extensions_loaded = True
 
     def _register_file_based_agents(self) -> None:
         """Discover and register file-based agents into the agent registry.
@@ -428,8 +402,8 @@ class LocalConversation(BaseConversation):
 
         Registration order (highest to lowest priority):
           1. Programmatic `register_agent()` calls (already in the registry)
-          2. Plugin agents (registered during plugin loading, i.e.,
-                in _ensure_plugins_loaded())
+          2. Plugin agents (registered during extension loading, i.e.,
+                in _ensure_extensions_loaded())
           3. Project-level file agents (`{project}/.agents/agents/*.md`,
                 then `{project}/.openhands/agents/*.md`)
           4. User-level file agents (`~/.agents/agents/*.md`,
@@ -439,14 +413,14 @@ class LocalConversation(BaseConversation):
         register_file_agents(self.workspace.working_dir)
 
     def _ensure_agent_ready(self) -> None:
-        """Ensure the agent is fully initialized with plugins and agents loaded.
+        """Ensure the agent is fully initialized with extensions and agents loaded.
 
         Performs one-time lazy initialization on the first `send_message()`
         or `run()` call.  The steps executed (in order) are:
 
-        1. Load plugins (merges skills, MCP config, and hooks).
+        1. Load extensions (merges skills, MCP config, and hooks).
         2. Register file-based agents into the agent registry.
-        3. Initialize the agent with complete plugin config and hooks.
+        3. Initialize the agent with complete extension config and hooks.
         4. Register LLMs in the LLM registry.
 
         This preserves the design principle that constructors should not perform
@@ -468,8 +442,8 @@ class LocalConversation(BaseConversation):
             if self._agent_ready:
                 return
 
-            # Load plugins first (merges skills, MCP config, hooks)
-            self._ensure_plugins_loaded()
+            # Load extensions first (merges skills, MCP config, hooks)
+            self._ensure_extensions_loaded()
 
             # register file-based agents
             self._register_file_based_agents()

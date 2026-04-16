@@ -18,6 +18,7 @@ from openhands.sdk.conversation.base import BaseConversation, ConversationStateP
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.extensions.config import ExtensionConfig
     from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -614,6 +615,7 @@ class RemoteConversation(BaseConversation):
         self,
         agent: AgentBase,
         workspace: RemoteWorkspace,
+        extension_config: "ExtensionConfig | None" = None,
         plugins: list | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
@@ -636,8 +638,12 @@ class RemoteConversation(BaseConversation):
         Args:
             agent: Agent configuration (will be sent to the server)
             workspace: The working directory for agent operations and tool execution.
-            plugins: Optional list of plugins to load on the server. Each plugin
-                    is a PluginSource specifying source, ref, and repo_path.
+            extension_config: Declarative specification of all extensions to
+                load (skills, plugins, hooks). When provided, ``plugins`` and
+                ``hook_config`` are ignored — use the config object instead.
+                Serialized and sent to the server in the creation payload.
+            plugins: Optional list of plugins to load on the server. Ignored
+                when ``extension_config`` is provided.
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
@@ -648,7 +654,7 @@ class RemoteConversation(BaseConversation):
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
             hook_config: Optional hook configuration sent to the server.
-                      All hooks are executed server-side.
+                Ignored when ``extension_config`` is provided.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -712,6 +718,16 @@ class RemoteConversation(BaseConversation):
             serialized_defs = [d.model_dump(mode="json") for d in agent_defs]
             logger.debug(f"Sending {len(serialized_defs)} agent_definitions to server")
 
+            # Derive effective plugins/hook_config from extension_config
+            # when provided; otherwise use the legacy parameters directly.
+            effective_plugins = plugins
+            effective_hook_config = hook_config
+            serialized_ext_config = None
+            if extension_config is not None:
+                effective_plugins = extension_config.plugins or None
+                effective_hook_config = extension_config.hook_config
+                serialized_ext_config = extension_config.model_dump()
+
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -727,10 +743,20 @@ class RemoteConversation(BaseConversation):
                 "tool_module_qualnames": tool_qualnames,
                 # Include agent definitions for subagent registration on server
                 "agent_definitions": serialized_defs,
-                # Include plugins to load on server
-                "plugins": [p.model_dump() for p in plugins] if plugins else None,
-                # Include hook_config for server-side hooks
-                "hook_config": hook_config.model_dump() if hook_config else None,
+                # Include extension_config for server-side resolution
+                "extension_config": serialized_ext_config,
+                # Include plugins to load on server (legacy)
+                "plugins": (
+                    [p.model_dump() for p in effective_plugins]
+                    if effective_plugins
+                    else None
+                ),
+                # Include hook_config for server-side hooks (legacy)
+                "hook_config": (
+                    effective_hook_config.model_dump()
+                    if effective_hook_config
+                    else None
+                ),
                 # Include tags if provided
                 "tags": tags or {},
             }
