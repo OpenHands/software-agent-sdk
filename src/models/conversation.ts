@@ -79,7 +79,8 @@ export interface GenerateTitleResponse {
 }
 
 export interface UpdateConversationRequest {
-  title: string;
+  title?: string;
+  tags?: Record<string, string>;
 }
 
 export interface StaticSecret {
@@ -106,6 +107,7 @@ export interface ConversationSearchRequest {
   limit?: number;
   status?: ConversationExecutionStatus;
   sort_order?: string;
+  tag?: string[];
 }
 
 export interface AskAgentRequest {

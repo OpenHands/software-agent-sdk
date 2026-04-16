@@ -59,7 +59,11 @@ export class HttpClient {
     if (options.params) {
       Object.entries(options.params).forEach(([key, value]) => {
         if (value !== undefined && value !== null) {
-          url.searchParams.append(key, String(value));
+          if (Array.isArray(value)) {
+            value.forEach((v: unknown) => url.searchParams.append(key, String(v)));
+          } else {
+            url.searchParams.append(key, String(value));
+          }
         }
       });
     }

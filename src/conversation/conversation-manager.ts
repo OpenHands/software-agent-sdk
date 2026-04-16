@@ -52,7 +52,7 @@ export class ConversationManager {
   /**
    * Get all conversations (convenience method)
    */
-  async getAllConversations(): Promise<ConversationInfo[]> {
+  async getAllConversations(options?: { tag?: string[] }): Promise<ConversationInfo[]> {
     const conversations: ConversationInfo[] = [];
     let nextPageId: string | undefined;
 
@@ -60,6 +60,7 @@ export class ConversationManager {
       const response = await this.searchConversations({
         page_id: nextPageId,
         limit: 100,
+        ...(options?.tag ? { tag: options.tag } : {}),
       });
 
       conversations.push(...response.items);
