@@ -2,6 +2,7 @@ import atexit
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
@@ -42,13 +43,13 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
-from openhands.sdk.mcp.project_config import try_load_project_mcp_config
+from openhands.sdk.mcp.merge import merge_mcp_configs
+from openhands.sdk.mcp.project_config import load_project_mcp_config
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
-    merge_mcp_configs,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -153,8 +154,7 @@ class LocalConversation(BaseConversation):
                   lowercase alphanumeric, values up to 256 characters.
             trust_project_mcp: When True, load ``.openhands/.mcp.json`` or root
                 ``.mcp.json`` from the workspace and merge under user/agent MCP
-                settings. UIs should set this only after the user approves
-                project-scoped servers.
+                settings.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -316,6 +316,25 @@ class LocalConversation(BaseConversation):
         """
         return self._resolved_plugins
 
+    def _load_project_mcp_config(self) -> dict[str, Any] | None:
+        """Load project ``.mcp.json`` if trusted; update agent when merged differs.
+
+        Call only while holding ``self._state`` (same thread as other agent updates).
+        """
+        if not self._trust_project_mcp:
+            return None
+
+        project_dir = Path(self.workspace.working_dir)
+        project_mcp = load_project_mcp_config(project_dir)
+        if project_mcp is None:
+            return None
+
+        merged = merge_mcp_configs(project_mcp, self.agent.mcp_config)
+        if merged != self.agent.mcp_config:
+            self.agent = self.agent.model_copy(update={"mcp_config": merged})
+            self._state.agent = self.agent
+        return merged
+
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
 
@@ -337,13 +356,7 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
-        project_dir = Path(self.workspace.working_dir)
-        project_mcp = (
-            try_load_project_mcp_config(project_dir)
-            if self._trust_project_mcp
-            else None
-        )
-        merged_mcp = merge_mcp_configs(project_mcp, self.agent.mcp_config)
+        merged_mcp = dict(self.agent.mcp_config)
 
         # Load plugins if specified
         if self._plugin_specs:
@@ -396,11 +409,6 @@ class LocalConversation(BaseConversation):
                 self._state.agent = self.agent
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
-
-        elif merged_mcp != self.agent.mcp_config:
-            self.agent = self.agent.model_copy(update={"mcp_config": merged_mcp})
-            with self._state:
-                self._state.agent = self.agent
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
@@ -463,10 +471,11 @@ class LocalConversation(BaseConversation):
         Performs one-time lazy initialization on the first `send_message()`
         or `run()` call.  The steps executed (in order) are:
 
-        1. Load plugins (merges skills, MCP config, and hooks).
-        2. Register file-based agents into the agent registry.
-        3. Initialize the agent with complete plugin config and hooks.
-        4. Register LLMs in the LLM registry.
+        1. Load project MCP config when trusted (merges under user settings).
+        2. Load plugins (merges skills, MCP config, and hooks).
+        3. Register file-based agents into the agent registry.
+        4. Initialize the agent with complete configuration and hooks.
+        5. Register LLMs in the LLM registry.
 
         This preserves the design principle that constructors should not perform
         I/O or error-prone operations, while eliminating double initialization.
@@ -487,7 +496,7 @@ class LocalConversation(BaseConversation):
             if self._agent_ready:
                 return
 
-            # Load plugins first (merges skills, MCP config, hooks)
+            self._load_project_mcp_config()
             self._ensure_plugins_loaded()
 
             # register file-based agents
