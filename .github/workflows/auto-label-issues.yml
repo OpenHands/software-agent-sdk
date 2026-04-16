@@ -4,6 +4,12 @@ name: Auto-label New Issues
 on:
     issues:
         types: [opened]
+    workflow_dispatch: # temporary — verifying write path
+        inputs:
+            issue_number:
+                description: 'Issue number to test labeling on'
+                required: true
+                type: number
 
 permissions:
     issues: write
@@ -17,8 +23,19 @@ jobs:
               with:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   script: |
-                      // Get the issue details
-                      const issue = context.payload.issue;
+                      // Get issue number from event payload or workflow_dispatch input
+                      const issueNumber = context.payload.issue?.number || Number('${{ inputs.issue_number }}');
+                      if (!issueNumber) {
+                        core.setFailed('No issue number available');
+                        return;
+                      }
+
+                      // Fetch issue details (needed for workflow_dispatch where payload.issue is null)
+                      const { data: issue } = await github.rest.issues.get({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: issueNumber,
+                      });
                       const labels = issue.labels.map(label => label.name);
 
                       // Check if issue has already been triaged
@@ -30,7 +47,7 @@ jobs:
                         await github.rest.issues.addLabels({
                           owner: context.repo.owner,
                           repo: context.repo.repo,
-                          issue_number: context.issue.number,
+                          issue_number: issueNumber,
                           labels: ['needs-triage']
                         });
                       }
