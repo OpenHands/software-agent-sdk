@@ -1,15 +1,20 @@
 """Tests for project-level .mcp.json discovery and merge behavior."""
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
 
-from openhands.sdk import Agent, LLM
+from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.mcp.project_config import find_project_mcp_json, try_load_project_mcp_config
-from openhands.sdk.plugin import PluginSource, merge_mcp_configs
+from openhands.sdk.mcp.merge import merge_mcp_configs
+from openhands.sdk.mcp.project_config import (
+    _find_project_mcp_json,
+    load_project_mcp_config,
+)
+from openhands.sdk.plugin import PluginSource
+from openhands.sdk.testing import TestLLM
 
 
 def _minimal_mcp_file() -> dict:
@@ -26,7 +31,7 @@ def test_find_project_mcp_json_prefers_openhands_dir(tmp_path: Path) -> None:
     preferred["mcpServers"]["proj"]["args"] = ["preferred"]
     (oh / ".mcp.json").write_text(json.dumps(preferred))
 
-    found = find_project_mcp_json(root)
+    found = _find_project_mcp_json(root)
     assert found == oh / ".mcp.json"
 
 
@@ -35,7 +40,7 @@ def test_find_project_mcp_json_falls_back_to_root(tmp_path: Path) -> None:
     root.mkdir()
     (root / ".mcp.json").write_text(json.dumps(_minimal_mcp_file()))
 
-    assert find_project_mcp_json(root) == root / ".mcp.json"
+    assert _find_project_mcp_json(root) == root / ".mcp.json"
 
 
 def test_merge_mcp_configs_overlay_wins() -> None:
@@ -47,13 +52,35 @@ def test_merge_mcp_configs_overlay_wins() -> None:
 
 
 @pytest.fixture
-def mock_llm():
-    return LLM(model="test/model", api_key=SecretStr("test-key"))
+def mock_llm() -> TestLLM:
+    return TestLLM.from_messages([])
 
 
 @pytest.fixture
-def basic_agent(mock_llm):
+def basic_agent(mock_llm: TestLLM) -> Agent:
     return Agent(llm=mock_llm, tools=[])
+
+
+def test_load_project_mcp_config_expands_env_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("OH_PROJECT_MCP_TEST", "expanded-cmd")
+    cfg = {
+        "mcpServers": {
+            "s": {
+                "command": "${OH_PROJECT_MCP_TEST}",
+                "args": ["${MISSING:-default-arg}"],
+            }
+        }
+    }
+    (ws / ".mcp.json").write_text(json.dumps(cfg))
+
+    loaded = load_project_mcp_config(ws)
+    assert loaded is not None
+    assert loaded["mcpServers"]["s"]["command"] == "expanded-cmd"
+    assert loaded["mcpServers"]["s"]["args"] == ["default-arg"]
 
 
 def test_trust_project_mcp_merges_under_user_config(
@@ -148,15 +175,13 @@ def test_project_mcp_layer_before_plugin(
     conv.close()
 
 
-def test_try_load_project_mcp_config_invalid_json_logs(
+def test_load_project_mcp_config_invalid_json_logs(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / ".mcp.json").write_text("not json")
 
-    import logging
-
     with caplog.at_level(logging.WARNING):
-        assert try_load_project_mcp_config(ws) is None
+        assert load_project_mcp_config(ws) is None
     assert "Ignoring invalid project MCP config" in caplog.text
