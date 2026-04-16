@@ -185,7 +185,15 @@ When an action originates from or is influenced by repository-provided context (
   - When possible, use more targeted approaches like finding the PID from a pidfile or using application-specific shutdown commands
 </PROCESS_MANAGEMENT>
 
-Tools Available: 2
+<IMPORTANT>
+* Try to follow the instructions exactly as given - don't make extra or fewer actions if not asked.
+* Avoid unnecessary defensive programming; do not add redundant fallbacks or default values — fail fast instead of masking misconfigurations.
+* When backward compatibility expectations are unclear, confirm with the user before making changes that could break existing behavior.
+</IMPORTANT>
+
+Tools Available: 3
+  - terminal: Execute a bash command in the terminal within a persistent shell session....
+  Parameters: {"type": "object", "description": "Schema for bash command execution.", "properties": {"command": {"type": "string", "description": "The bash command to execute. Can be empty string to view additio...
   - finish: Signals the completion of the current task or conversation....
   Parameters: {"type": "object", "properties": {"message": {"type": "string", "description": "Final message to send to the user."}}, "required": ["message"]}
   - think: Use the tool to think about something. It will not obtain new information or make any changes to the...
@@ -193,56 +201,61 @@ Tools Available: 2
 
 Message from User ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-Analyse the sales report and list top trends.
+Run `echo hello-from-source` in the terminal.
 
 Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
 
-Message from User ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Agent Action ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-Focus on the EMEA region specifically.
+Summary: Run echo command to print hello-from-source
 
-Tokens: ↑ input 0 • cache hit N/A • ↓ output 0 • $ 0.00
+Reasoning:
+The user wants me to run a simple echo command in the terminal. This is a straightforward request to execute `echo hello-from-source`.
+
+This is a safe, read-only action, so I'll assess it as LOW security risk.
+
+$ echo hello-from-source
+
+Tokens: ↑ input 5.64K • cache hit 0.00% •  reasoning 46 • ↓ output 160 • $ 0.0078
+
+Observation ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Tool: terminal
+Result:
+hello-from-source
+
+📁 Working directory: /workspace/project/software-agent-sdk
+🐍 Python interpreter: /workspace/project/software-agent-sdk/.venv/bin/python
+✅ Exit code: 0
+
+Message from Agent ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Done! The command `echo hello-from-source` has been executed and printed `hello-from-source` to the terminal.
+
+Tokens: ↑ input 11.52K • cache hit 48.85% •  reasoning 72 • ↓ output 227 • $ 0.0091
 
 ================================================================
   Conversation.fork() — SDK Example
 ================================================================
 
-Source conversation ID : 47d1815e-8dd8-4282-8a54-54d3071e1e85
-Source events count    : 3
-Source status          : ConversationExecutionStatus.IDLE
+Source conversation ID : 3bf2b7eb-89b0-4746-84f7-3d72950dfd06
+Source events count    : 5
 
---- Basic fork ---
-Fork conversation ID   : dbc1ca62-da49-4ee5-a617-e049f408ca4d
-Fork events count      : 3
-Fork title tag         : Follow-up exploration
-Fork status            : ConversationExecutionStatus.IDLE
-OK: Fork has same event count, different ID, correct title
+--- Fork created ---
+Fork ID                : e230e89e-a8ee-41ed-97ca-4b886516c198
+Fork events (copied)   : 5
+Fork title             : Follow-up fork
 
---- Source isolation ---
-Source events (unchanged): 3
-Fork events (grew)       : 4
-OK: Source is immutable after fork
-
---- Deep-copy isolation ---
-OK: Fork event list is independent from source
+--- After running fork ---
+Source events (unchanged): 5
+Fork events (grew)       : 9
 
 --- Fork with alternate agent ---
-Fork ID     : e7f580e2-0e17-42e7-ba43-dfe5c8686a8d
-Fork model  : gpt-4o
-Fork tags   : {'purpose': 'a/b-test', 'variant': 'B', 'title': 'Tool-change experiment'}
-Fork events : 3
-OK: Fork uses alternate agent, retains event history
-
---- Metrics ---
-Fork (reset=True)  accumulated_cost: 0.0
-Fork (reset=False) accumulated_cost: 0.0
-OK: Metrics respect reset_metrics flag
+Fork ID     : 1bb2326d-bb79-4989-8be5-1808f65588e9
+Fork tags   : {'purpose': 'a/b-test', 'title': 'Tool-change experiment'}
+Fork events : 7
 
 ================================================================
-All assertions passed — fork() works correctly.
-
-In a real workflow, call fork.run() to resume agentic execution
-from the copied state. The agent will have full memory of the
-source conversation.
+All done — fork() works end-to-end.
 ================================================================
-EXAMPLE_COST: 0
+EXAMPLE_COST: 0.010233200000000001
