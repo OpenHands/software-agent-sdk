@@ -34,6 +34,8 @@ NO_CHANGE_TIMEOUT_SECONDS: Final[int] = 30
 POLL_INTERVAL: Final[float] = 0.5
 HISTORY_LIMIT: Final[int] = 10_000
 
+TMUX_SOCKET_NAME: Final[str] = "openhands"
+
 # Tmux session dimensions (columns x rows).
 # Large values ensure output is not wrapped or truncated by the virtual terminal.
 TMUX_SESSION_WIDTH: Final[int] = 1000

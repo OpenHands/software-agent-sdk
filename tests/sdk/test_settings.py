@@ -1,11 +1,26 @@
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, AgentSettings, SettingProminence, Tool
+from openhands.agent_server.models import (
+    StartACPConversationRequest,
+    StartConversationRequest,
+)
+from openhands.sdk import (
+    LLM,
+    Agent,
+    AgentSettings,
+    ConversationSettings,
+    SettingProminence,
+    Tool,
+)
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import CondenserSettings, VerificationSettings
+from openhands.sdk.workspace import LocalWorkspace
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
@@ -79,7 +94,7 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert condenser_fields["condenser.max_size"].depends_on == ["condenser.enabled"]
     assert condenser_fields["condenser.max_size"].prominence is SettingProminence.MINOR
 
-    # -- verification section (critic + security combined) --
+    # -- verification section (critic settings only) --
     v_fields = {f.key: f for f in sections["verification"].fields}
     assert v_fields["verification.critic_mode"].value_type == "string"
     assert [c.value for c in v_fields["verification.critic_mode"].choices] == [
@@ -97,15 +112,105 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert (
         v_fields["verification.critic_threshold"].prominence is SettingProminence.MINOR
     )
-    assert v_fields["verification.confirmation_mode"].value_type == "boolean"
-    assert v_fields["verification.confirmation_mode"].default is False
+    assert "confirmation_mode" not in v_fields
+    assert "security_analyzer" not in v_fields
+
+
+def test_conversation_settings_export_schema_groups_sections() -> None:
+    schema = ConversationSettings.export_schema()
+
+    assert schema.model_name == "ConversationSettings"
+    section_keys = [section.key for section in schema.sections]
+    assert section_keys == ["general", "verification"]
+
+    sections = {s.key: s for s in schema.sections}
+    general_fields = {f.key: f for f in sections["general"].fields}
+    assert set(general_fields) == {"max_iterations"}
+    assert general_fields["max_iterations"].default == 500
+    assert general_fields["max_iterations"].prominence is SettingProminence.MAJOR
+
+    assert len(sections["verification"].fields) == 2
+    verification_fields = {f.key: f for f in sections["verification"].fields}
+    assert set(verification_fields) == {
+        "confirmation_mode",
+        "security_analyzer",
+    }
+    assert verification_fields["confirmation_mode"].default is False
     assert (
-        v_fields["verification.confirmation_mode"].prominence is SettingProminence.MAJOR
+        verification_fields["confirmation_mode"].prominence is SettingProminence.MAJOR
     )
-    assert v_fields["verification.security_analyzer"].choices[0].value == "llm"
-    assert v_fields["verification.security_analyzer"].depends_on == [
-        "verification.confirmation_mode"
-    ]
+    assert verification_fields["security_analyzer"].default == "llm"
+    assert verification_fields["security_analyzer"].choices[0].value == "llm"
+    assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
+
+
+def test_conversation_settings_model_dump_roundtrip() -> None:
+    settings = ConversationSettings(
+        max_iterations=42,
+        confirmation_mode=True,
+        security_analyzer="none",
+    )
+
+    restored = ConversationSettings.model_validate(settings.model_dump(mode="json"))
+
+    assert restored == settings
+
+
+def test_conversation_settings_create_request() -> None:
+    settings = ConversationSettings(
+        max_iterations=77,
+        confirmation_mode=True,
+        security_analyzer="llm",
+    )
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = AgentSettings(llm=LLM(model="test-model")).create_agent()
+
+    request = settings.create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+    )
+
+    assert isinstance(request, StartConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, ConfirmRisky)
+    assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
+
+    overridden_request = settings.create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+        max_iterations=5,
+        confirmation_policy=AlwaysConfirm(),
+        security_analyzer=None,
+    )
+
+    assert overridden_request.max_iterations == 5
+    assert isinstance(overridden_request.confirmation_policy, AlwaysConfirm)
+    assert overridden_request.security_analyzer is None
+
+
+def test_conversation_settings_create_request_for_acp() -> None:
+    settings = ConversationSettings(
+        max_iterations=77,
+        confirmation_mode=True,
+        security_analyzer="none",
+    )
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = ACPAgent(acp_command=["echo", "test"])
+
+    request = settings.create_request(
+        StartACPConversationRequest,
+        agent=agent,
+        workspace=workspace,
+    )
+
+    assert isinstance(request, StartACPConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, AlwaysConfirm)
+    assert request.security_analyzer is None
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +346,46 @@ def test_roundtrip_preserves_llm_model() -> None:
     data = settings.model_dump()
     restored = AgentSettings.model_validate(data)
     assert restored.llm.model == "test-model"
+
+
+def test_agent_settings_model_validate_accepts_nested_payload() -> None:
+    settings = AgentSettings.model_validate(
+        {
+            "schema_version": 1,
+            "llm": {
+                "model": "test-model",
+                "api_key": "secret-key",
+            },
+            "verification": {"critic_enabled": True},
+        }
+    )
+
+    assert settings.schema_version == 1
+    assert settings.llm.model == "test-model"
+    assert isinstance(settings.llm.api_key, SecretStr)
+    assert settings.llm.api_key.get_secret_value() == "secret-key"
+    assert settings.verification.critic_enabled is True
+
+
+def test_agent_settings_model_dump_roundtrip_preserves_sparse_updates() -> None:
+    settings = AgentSettings.model_validate(
+        {
+            "schema_version": 1,
+            "llm": {"model": "base-model", "base_url": "https://example.com"},
+        }
+    )
+
+    updated = settings.model_copy(
+        update={
+            "llm": settings.llm.model_copy(
+                update={"model": "personal-model", "base_url": None}
+            )
+        }
+    )
+    restored = AgentSettings.model_validate(
+        updated.model_dump(mode="json", context={"expose_secrets": True})
+    )
+
+    assert restored.llm.model == "personal-model"
+    assert restored.llm.base_url is None
+    assert restored.schema_version == 1

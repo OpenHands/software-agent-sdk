@@ -498,8 +498,8 @@ class EventService:
             tags=self.stored.tags,
         )
 
-        # Set confirmation mode if enabled
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
+        conversation.set_security_analyzer(self.stored.security_analyzer)
         self._conversation = conversation
 
         # Register state change callback to automatically publish updates
@@ -656,7 +656,8 @@ class EventService:
         await self._pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._conversation.close)
+            await loop.run_in_executor(None, self._conversation.close)
+            self._conversation = None
 
     async def generate_title(
         self, llm: "LLM | None" = None, max_length: int = 50

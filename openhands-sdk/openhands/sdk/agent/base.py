@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    model_validator,
 )
 
 from openhands.sdk.context.agent_context import AgentContext
@@ -135,6 +136,19 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
+    system_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Inline system prompt string.  When provided, the agent uses this "
+            "text verbatim as the system message instead of rendering from "
+            "`system_prompt_filename`.  Mutually exclusive with a non-default "
+            "`system_prompt_filename`.\n\n"
+            "**Warning**: This is not recommended unless you know what you are "
+            "doing (e.g. customising agent behaviour for a completely different "
+            "task).  Setting this will override OpenHands' built-in system "
+            "instructions that govern default agent behaviour."
+        ),
+    )
     system_prompt_filename: str = Field(
         default="system_prompt.j2",
         description=(
@@ -150,7 +164,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "Security policy template filename. Can be either:\n"
             "- A relative filename (e.g., 'security_policy.j2') loaded from the "
             "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+            "- Empty string to disable security policy"
         ),
     )
     system_prompt_kwargs: dict[str, object] = Field(
@@ -158,6 +173,28 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
         examples=[{"cli_mode": True}],
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_system_prompt_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if (
+            "security_policy_filename" in data
+            and data["security_policy_filename"] is None
+        ):
+            data["security_policy_filename"] = ""
+        has_inline = data.get("system_prompt") is not None
+        has_custom_filename = (
+            "system_prompt_filename" in data
+            and data["system_prompt_filename"] != "system_prompt.j2"
+        )
+        if has_inline and has_custom_filename:
+            raise ValueError(
+                "Cannot set both 'system_prompt' and a non-default "
+                "'system_prompt_filename'. Use one or the other."
+            )
+        return data
 
     condenser: CondenserBase | None = Field(
         default=None,
@@ -223,9 +260,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
+        When ``system_prompt`` is set, that string is returned verbatim,
+        bypassing Jinja2 template rendering entirely.
+
         Returns:
             The rendered system prompt template without dynamic context.
         """
+        if self.system_prompt is not None:
+            return self.system_prompt
+
         template_kwargs = dict(self.system_prompt_kwargs)
         # Auto-detect browser tools from the tool spec list
         template_kwargs.setdefault(

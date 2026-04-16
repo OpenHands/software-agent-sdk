@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from openhands.sdk.plugin import (
+from openhands.sdk.marketplace import (
     Marketplace,
     MarketplaceMetadata,
     MarketplaceOwner,
     MarketplacePluginEntry,
     MarketplacePluginSource,
-    PluginAuthor,
 )
+from openhands.sdk.plugin import PluginAuthor
 
 
 class TestMarketplaceOwner:

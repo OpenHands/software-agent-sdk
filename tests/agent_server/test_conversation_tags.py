@@ -1,6 +1,7 @@
 """Tests for conversation tags in the API layer."""
 
-from unittest.mock import AsyncMock
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -14,11 +15,13 @@ from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationInfo,
+    StoredConversation,
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -220,3 +223,50 @@ def test_get_conversation_includes_tags(
         assert data["tags"] == {"env": "test", "team": "backend"}
     finally:
         client.app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_event_service_start_forwards_tags_to_local_conversation(tmp_path):
+    """EventService.start() must pass stored tags to LocalConversation.
+
+    Regression test for https://github.com/OpenHands/software-agent-sdk/issues/2821:
+    tags sent via POST /api/conversations were persisted in StoredConversation but
+    not forwarded to the LocalConversation constructor, so state.tags was always {}.
+    """
+    tags = {"source": "pipeline", "symbol": "gold"}
+    stored = StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        tags=tags,
+        created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+        updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+    )
+
+    event_service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path / "conversations",
+    )
+
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation"
+    ) as MockConversation:
+        mock_conv = MagicMock()
+        mock_state = MagicMock()
+        mock_state.execution_status = ConversationExecutionStatus.IDLE
+        mock_state.events = []
+        mock_agent = MagicMock()
+        mock_agent.get_all_llms.return_value = []
+        mock_conv._state = mock_state
+        mock_conv.state = mock_state
+        mock_conv.agent = mock_agent
+        mock_conv._on_event = MagicMock()
+        MockConversation.return_value = mock_conv
+
+        await event_service.start()
+
+        # Verify LocalConversation was called with the correct tags
+        MockConversation.assert_called_once()
+        call_kwargs = MockConversation.call_args.kwargs
+        assert call_kwargs["tags"] == tags

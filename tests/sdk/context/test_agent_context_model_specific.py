@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.skills import load_project_skills
+from openhands.sdk.skills import load_project_skills
 
 
 _REPO_BASELINE_TEXT = (
