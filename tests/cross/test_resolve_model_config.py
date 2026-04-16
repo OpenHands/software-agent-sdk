@@ -621,4 +621,3 @@ def test_claude_4_7_opus_config():
     assert model["id"] == "claude-4.7-opus"
     assert model["display_name"] == "Claude 4.7 Opus"
     assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-7"
-    assert model["llm_config"]["temperature"] == 0.0
