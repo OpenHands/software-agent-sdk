@@ -301,7 +301,7 @@ class ConversationSettings(BaseModel):
     schema_version: int = Field(default=CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
 
     # --- runtime fields (populated on-the-fly, not persisted) ---------------
-    agent_settings: "AgentSettingsConfig | None" = Field(
+    agent_settings: AgentSettingsConfig | None = Field(
         default=None,
         exclude=True,
         description=(

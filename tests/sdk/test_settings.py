@@ -164,7 +164,9 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys
     for f in general.fields:
-        assert f.variant == "llm", f"expected field {f.key} variant=llm, got {f.variant}"
+        assert f.variant == "llm", (
+            f"expected field {f.key} variant=llm, got {f.variant}"
+        )
 
     # LLM-variant sections.
     assert ("llm", "llm") in by_keyvariant
