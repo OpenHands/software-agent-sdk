@@ -7,7 +7,12 @@ import libtmux
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
-from openhands.tools.terminal.constants import HISTORY_LIMIT
+from openhands.tools.terminal.constants import (
+    HISTORY_LIMIT,
+    TMUX_SESSION_HEIGHT,
+    TMUX_SESSION_WIDTH,
+    TMUX_SOCKET_NAME,
+)
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
 
@@ -43,7 +48,7 @@ class TmuxTerminal(TerminalInterface):
 
         env = sanitized_env()
         # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
-        self.server = libtmux.Server(socket_name="openhands", environment=env)
+        self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
@@ -57,8 +62,8 @@ class TmuxTerminal(TerminalInterface):
             session_name=session_name,
             start_directory=self.work_dir,
             kill_session=True,
-            x=1000,
-            y=1000,
+            x=TMUX_SESSION_WIDTH,
+            y=TMUX_SESSION_HEIGHT,
         )
         for k, v in env.items():
             self.session.set_environment(k, v)

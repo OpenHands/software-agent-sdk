@@ -12,6 +12,7 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
+    AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
     ConversationInfo,
@@ -111,6 +112,27 @@ async def get_conversation(
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return conversation
+
+
+@conversation_router.get(
+    "/{conversation_id}/agent_final_response",
+    responses={404: {"description": "Conversation not found"}},
+)
+async def get_conversation_agent_final_response(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> AgentResponseResult:
+    """Get the agent's final response for a conversation.
+
+    Returns the text of the last agent finish message (FinishAction) or
+    the last agent text response (MessageEvent). Returns an empty string
+    if the agent has not produced a final response yet.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    response = await event_service.get_agent_final_response()
+    return AgentResponseResult(response=response)
 
 
 @conversation_router.get("")
@@ -263,6 +285,38 @@ async def set_conversation_security_analyzer(
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     await event_service.set_security_analyzer(request.security_analyzer)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/switch_profile",
+    responses={
+        400: {"description": "Invalid or corrupted profile"},
+        404: {"description": "Conversation or profile not found"},
+    },
+)
+async def switch_conversation_profile(
+    conversation_id: UUID,
+    profile_name: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Switch the conversation's LLM profile to a named profile."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    conversation = event_service.get_conversation()
+    try:
+        conversation.switch_profile(profile_name)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{profile_name}' not found",
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     return Success()
 
 

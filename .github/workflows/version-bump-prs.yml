@@ -105,7 +105,7 @@ jobs:
 
             - name: Install Poetry
               run: |
-                  pipx install poetry==2.2.1
+                  pipx install poetry==2.3.3
 
             # OpenHands-CLI step runs first since it's simpler and less error-prone
             - name: Create PR for OpenHands-CLI repo
@@ -138,7 +138,10 @@ jobs:
                   fi
 
                   # OpenHands-CLI currently requires Python 3.12, so resolve with that interpreter.
-                  uv add --python 3.12 --refresh \
+                  # Override exclude-newer so uv can find the just-published packages
+                  # (the target repo's lockfile may have an older cutoff date).
+                  UV_EXCLUDE_NEWER="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                    uv add --python 3.12 --refresh \
                     "openhands-sdk==$VERSION" \
                     "openhands-tools==$VERSION"
 

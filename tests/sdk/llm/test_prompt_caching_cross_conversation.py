@@ -11,8 +11,8 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentContext
-from openhands.sdk.context.skills import Skill
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.skills import Skill
 
 
 def test_static_system_message_is_constant_across_different_contexts():

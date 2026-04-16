@@ -76,7 +76,9 @@ You are OpenHands agent, a helpful AI assistant that can interact with a compute
 </SELF_DOCUMENTATION>
 
 <SECURITY>
+{% if security_policy_filename %}
 {% include security_policy_filename %}
+{% endif %}
 </SECURITY>
 
 {% if llm_security_analyzer %}
