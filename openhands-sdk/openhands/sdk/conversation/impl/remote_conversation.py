@@ -1317,8 +1317,9 @@ class RemoteConversation(BaseConversation):
         Args:
             conversation_id: ID for the forked conversation (auto-generated
                 on the server if ``None``).
-            agent: Agent for the fork (serialised and sent to the server).
-                Defaults to a deep-copy of the source agent on the server.
+            agent: **Not supported for remote conversations.** Passing a
+                non-``None`` value raises ``NotImplementedError``. Use
+                ``LocalConversation.fork(agent=...)`` for agent replacement.
             title: Optional title for the forked conversation.
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
@@ -1327,12 +1328,19 @@ class RemoteConversation(BaseConversation):
         Returns:
             A new ``RemoteConversation`` backed by the forked server-side
             conversation.
+
+        Raises:
+            NotImplementedError: If ``agent`` is provided.
         """
+        if agent is not None:
+            raise NotImplementedError(
+                "Agent replacement is not supported for remote conversation "
+                "forks. Use LocalConversation.fork(agent=...) instead."
+            )
+
         body: dict[str, object] = {"reset_metrics": reset_metrics}
         if conversation_id is not None:
             body["id"] = str(conversation_id)
-        if agent is not None:
-            body["agent"] = agent.model_dump(mode="json")
         if title is not None:
             body["title"] = title
         if tags is not None:
@@ -1347,13 +1355,10 @@ class RemoteConversation(BaseConversation):
         fork_info = resp.json()
         fork_uuid = uuid.UUID(fork_info["id"])
 
-        if agent is None:
-            agent_cls = type(self.agent)
-            fork_agent = agent_cls.model_validate(
-                self.agent.model_dump(context={"expose_secrets": True}),
-            )
-        else:
-            fork_agent = agent
+        agent_cls = type(self.agent)
+        fork_agent = agent_cls.model_validate(
+            self.agent.model_dump(context={"expose_secrets": True}),
+        )
 
         return RemoteConversation(
             agent=fork_agent,

@@ -1,4 +1,5 @@
 import atexit
+import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -368,15 +369,18 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
-        # Copy events from source → fork
+        # Deep-copy events from source → fork so the source stays immutable.
         for event in self._state.events:
-            fork_conv._state.events.append(event)
+            fork_conv._state.events.append(event.model_copy(deep=True))
 
-        # Copy runtime state that accumulated during the source conversation
+        # Copy runtime state that accumulated during the source conversation.
+        # activated_knowledge_skills is list[str] – strings are immutable so a
+        # shallow list copy is sufficient. agent_state can hold arbitrary
+        # mutable values, so deep-copy it.
         fork_conv._state.activated_knowledge_skills = list(
             self._state.activated_knowledge_skills
         )
-        fork_conv._state.agent_state = dict(self._state.agent_state)
+        fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
 
         # Copy title via tags if provided
         if title is not None:
