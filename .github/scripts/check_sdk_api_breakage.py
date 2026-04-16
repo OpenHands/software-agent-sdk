@@ -33,7 +33,6 @@ from __future__ import annotations
 import ast
 import json
 import os
-import re
 import subprocess
 import sys
 import tomllib
@@ -376,71 +375,88 @@ def ensure_griffe() -> None:
         raise SystemExit(1)
 
 
-def _strip_balanced_param(text: str, param: str) -> str:
-    """Remove a keyword parameter whose value may contain nested delimiters.
+FIELD_METADATA_KWARGS = frozenset(
+    {
+        "deprecated",
+        "description",
+        "examples",
+        "json_schema_extra",
+        "title",
+    }
+)
 
-    Handles values like ``json_schema_extra={'key': {'nested': True}}`` where a
-    simple regex cannot reliably match the balanced braces/parens/brackets.
 
-    Returns *text* with the ``param=<value>`` fragment (and any surrounding
-    comma) removed.
-    """
-    pattern = re.compile(rf",?\s*{re.escape(param)}\s*=\s*")
-    match = pattern.search(text)
-    if not match:
-        return text
-
-    start = match.start()
-    pos = match.end()
-    if pos >= len(text):
-        return text
-
-    # Track balanced delimiters to find where the value ends.
-    openers = {"(": ")", "[": "]", "{": "}"}
-    closers = {")", "]", "}"}
-    stack: list[str] = []
+def _escape_newlines_in_string_literals(text: str) -> str:
+    """Escape literal newlines that appear inside quoted string literals."""
+    chars: list[str] = []
     in_string: str | None = None
+    escaped = False
 
-    while pos < len(text):
-        ch = text[pos]
-
-        # Handle string literals (skip their contents).
-        if in_string:
-            if ch == "\\" and pos + 1 < len(text):
-                pos += 2
-                continue
-            if ch == in_string:
-                in_string = None
-            pos += 1
+    for ch in text:
+        if in_string is None:
+            chars.append(ch)
+            if ch in {"'", '"'}:
+                in_string = ch
             continue
 
-        if ch in ("'", '"'):
-            in_string = ch
-            pos += 1
+        if escaped:
+            chars.append(ch)
+            escaped = False
             continue
 
-        if ch in openers:
-            stack.append(openers[ch])
-            pos += 1
+        if ch == "\\":
+            chars.append(ch)
+            escaped = True
             continue
 
-        if ch in closers:
-            if stack:
-                stack.pop()
-                pos += 1
-                if not stack:
-                    break
-                continue
-            # Unmatched closer — end of value.
-            break
+        if ch == in_string:
+            chars.append(ch)
+            in_string = None
+            continue
 
-        # At depth 0, a comma or closing paren ends the value.
-        if not stack and ch in (",", ")"):
-            break
+        if ch == "\n":
+            chars.append("\\n")
+            continue
 
-        pos += 1
+        chars.append(ch)
 
-    return text[:start] + text[pos:]
+    return "".join(chars)
+
+
+def _parse_field_call(value: object) -> ast.Call | None:
+    """Parse a stringified Pydantic ``Field(...)`` value into an AST call."""
+    try:
+        expr = ast.parse(
+            _escape_newlines_in_string_literals(str(value)),
+            mode="eval",
+        ).body
+    except SyntaxError:
+        return None
+
+    if not isinstance(expr, ast.Call):
+        return None
+
+    func = expr.func
+    if isinstance(func, ast.Name):
+        func_name = func.id
+    elif isinstance(func, ast.Attribute):
+        func_name = func.attr
+    else:
+        return None
+
+    if func_name != "Field":
+        return None
+
+    return expr
+
+
+def _filter_field_metadata_kwargs(call: ast.Call) -> ast.Call:
+    """Return a copy of a ``Field(...)`` call without metadata-only kwargs."""
+    return ast.Call(
+        func=call.func,
+        args=call.args,
+        keywords=[kw for kw in call.keywords if kw.arg not in FIELD_METADATA_KWARGS],
+    )
 
 
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
@@ -453,43 +469,18 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     Returns:
         True if both values are Field() calls and only metadata parameters differ.
     """
-    old_str = str(old_val)
-    new_str = str(new_val)
-
-    if not (old_str.startswith("Field(") and new_str.startswith("Field(")):
+    old_call = _parse_field_call(old_val)
+    new_call = _parse_field_call(new_val)
+    if old_call is None or new_call is None:
         return False
 
-    # Simple metadata parameters whose values are always plain quoted strings
-    # or simple literals.
-    # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
-    simple_metadata_patterns = {
-        "description": r'([\'"])([^\'"]*?)\1',
-        "title": r'([\'"])([^\'"]*?)\1',
-        "examples": r'([\'"])([^\'"]*?)\1',
-        "deprecated": r"(?:True|False|None|'[^']*'|\"[^\"]*\")",
-    }
-
-    # Parameters whose values can be complex nested structures (dicts, function
-    # calls, etc.) and need balanced-delimiter parsing instead of a regex.
-    balanced_params = ("json_schema_extra",)
-
-    def _normalize(value: str) -> str:
-        normalized = value
-
-        for param, value_pattern in simple_metadata_patterns.items():
-            pattern = rf",?\s*{param}\s*=\s*{value_pattern}"
-            normalized = re.sub(pattern, "", normalized)
-
-        for param in balanced_params:
-            normalized = _strip_balanced_param(normalized, param)
-
-        normalized = re.sub(r"\(\s*,", "(", normalized)
-        normalized = re.sub(r",\s*\)", ")", normalized)
-        normalized = re.sub(r",\s*,", ", ", normalized)
-        normalized = re.sub(r"\s+", " ", normalized)
-        return normalized.strip()
-
-    return _normalize(old_str) == _normalize(new_str)
+    return ast.dump(
+        _filter_field_metadata_kwargs(old_call),
+        include_attributes=False,
+    ) == ast.dump(
+        _filter_field_metadata_kwargs(new_call),
+        include_attributes=False,
+    )
 
 
 def _member_deprecation_metadata(
