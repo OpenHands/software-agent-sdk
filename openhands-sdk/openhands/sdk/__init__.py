@@ -45,15 +45,20 @@ from openhands.sdk.mcp import (
 )
 from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
+    ACPAgentSettings,
     AgentSettings,
     CondenserSettings,
     ConversationSettings,
+    LLMAgentSettings,
     SettingsChoice,
     SettingsFieldSchema,
     SettingsSchema,
     SettingsSectionSchema,
     VerificationSettings,
+    default_agent_settings,
+    export_agent_settings_schema,
     export_settings_schema,
+    validate_agent_settings,
 )
 from openhands.sdk.settings.metadata import (
     SettingProminence,
@@ -140,7 +145,12 @@ __all__ = [
     "CondenserSettings",
     "ConversationSettings",
     "VerificationSettings",
+    "ACPAgentSettings",
     "AgentSettings",
+    "LLMAgentSettings",
+    "default_agent_settings",
+    "export_agent_settings_schema",
+    "validate_agent_settings",
     "SettingsChoice",
     "SettingProminence",
     "SettingsFieldMetadata",

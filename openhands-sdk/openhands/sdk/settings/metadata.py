@@ -19,6 +19,7 @@ class SettingProminence(str, Enum):
 class SettingsSectionMetadata(BaseModel):
     key: str
     label: str | None = None
+    variant: str | None = None
 
 
 class SettingsFieldMetadata(BaseModel):
