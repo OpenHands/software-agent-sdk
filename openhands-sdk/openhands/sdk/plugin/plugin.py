@@ -22,6 +22,7 @@ from openhands.sdk.plugin.types import (
     PluginAuthor,
     PluginManifest,
 )
+from openhands.sdk.mcp.merge import merge_mcp_configs
 from openhands.sdk.subagent.schema import AgentDefinition
 
 
@@ -29,32 +30,6 @@ if TYPE_CHECKING:
     from openhands.sdk.context import AgentContext
 
 logger = get_logger(__name__)
-
-
-def merge_mcp_configs(
-    base: dict[str, Any] | None,
-    overlay: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Merge two MCP config dicts; overlay wins on key conflicts."""
-    if base is None and overlay is None:
-        return {}
-    if base is None:
-        return dict(overlay) if overlay is not None else {}
-    if overlay is None:
-        return dict(base)
-
-    result = dict(base)
-    if "mcpServers" in overlay:
-        existing_servers = result.get("mcpServers", {})
-        result["mcpServers"] = {
-            **existing_servers,
-            **overlay["mcpServers"],
-        }
-    for key, value in overlay.items():
-        if key != "mcpServers":
-            result[key] = value
-    return result
-
 
 # Directories to check for plugin manifest
 PLUGIN_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
