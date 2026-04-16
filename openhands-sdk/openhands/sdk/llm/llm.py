@@ -657,6 +657,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+        # Keep telemetry in sync so post-resume LLM calls record into
+        # the restored metrics object, not the stale one from __init__.
+        if self._telemetry is not None:
+            self._telemetry.metrics = metrics
 
     def reset_metrics(self) -> None:
         """Reset metrics and telemetry to fresh instances.
