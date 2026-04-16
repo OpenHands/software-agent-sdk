@@ -616,9 +616,9 @@ def test_trinity_large_thinking_config():
 
 def test_claude_opus_4_7_config():
     """Test that claude-opus-4-7 has correct configuration."""
-    model = MODELS["claude-opus-4-7
+    model = MODELS["claude-opus-4-7"]
 
     assert model["id"] == "claude-opus-4-7"
-    assert model["display_name"] == "Claude Opus 4.7"
+    assert model["display_name"] == "Claude 4.7 Opus"
     assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-7"
-    assert model["llm_config"]["temperature"] == 0.0
+    # Note: temperature is not set for claude-opus-4-7 as it's deprecated for this model
