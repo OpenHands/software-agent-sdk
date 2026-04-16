@@ -1443,10 +1443,15 @@ class TestACPToolCallEmission:
             # during prompt(). session_update fires on_event synchronously,
             # so these events appear before run_async returns.
             for tool_call_id, title, kind, status, raw_input, raw_output in [
-                ("tc-1", "Read file", "read", "completed",
-                 {"path": "/tmp/f.py"}, "content"),
-                ("tc-2", "Execute bash", "execute", "failed",
-                 {"command": "ls"}, None),
+                (
+                    "tc-1",
+                    "Read file",
+                    "read",
+                    "completed",
+                    {"path": "/tmp/f.py"},
+                    "content",
+                ),
+                ("tc-2", "Execute bash", "execute", "failed", {"command": "ls"}, None),
             ]:
                 start = MagicMock(spec=ToolCallStart)
                 start.tool_call_id = tool_call_id

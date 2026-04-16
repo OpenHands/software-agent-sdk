@@ -297,7 +297,7 @@ class _OpenHandsACPBridge:
         # updates arrive, so the event stream reflects real subprocess
         # progress instead of a single end-of-turn burst. Set by
         # ACPAgent.step() for the duration of one prompt() round-trip.
-        self.on_event: Any = None  # ConversationCallbackType | None
+        self.on_event: ConversationCallbackType | None = None
         # Activity heartbeat — called (throttled) during session_update to
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
@@ -919,6 +919,26 @@ class ACPAgent(AgentBase):
         ) = result
         self._working_dir = working_dir
 
+    def _reset_client_for_turn(
+        self,
+        on_token: ConversationTokenCallbackType | None,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Reset per-turn client state and (re)wire live callbacks.
+
+        Called at the start of ``step()`` and again on each retry inside the
+        prompt loop so that the three callbacks (``on_token``, ``on_event``,
+        ``on_activity``) stay in sync with the fresh turn after ``reset()``
+        clears them.  ``on_event`` is fired from inside
+        ``_OpenHandsACPBridge.session_update`` as tool-call notifications
+        arrive, so consumers see ACPToolCallEvents streamed live instead of
+        a single end-of-turn burst.
+        """
+        self._client.reset()
+        self._client.on_token = on_token
+        self._client.on_event = on_event
+        self._client.on_activity = self._on_activity
+
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
@@ -946,14 +966,7 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        # Reset client accumulators and wire live callbacks. ``on_event``
-        # is fired from inside ``_OpenHandsACPBridge.session_update`` as
-        # tool-call notifications arrive, so consumers see ACPToolCallEvents
-        # streamed live instead of a single end-of-turn burst.
-        self._client.reset()
-        self._client.on_token = on_token
-        self._client.on_event = on_event
-        self._client.on_activity = self._on_activity
+        self._reset_client_for_turn(on_token, on_event)
 
         t0 = time.monotonic()
         try:
@@ -1011,10 +1024,7 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._client.reset()
-                        self._client.on_token = on_token
-                        self._client.on_event = on_event
-                        self._client.on_activity = self._on_activity
+                        self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
                 except ACPRequestError as e:
@@ -1038,10 +1048,7 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._client.reset()
-                        self._client.on_token = on_token
-                        self._client.on_event = on_event
-                        self._client.on_activity = self._on_activity
+                        self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
 
