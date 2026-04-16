@@ -72,6 +72,15 @@ class SettingsFieldSchema(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     secret: bool = False
     choices: list[SettingsChoice] = Field(default_factory=list)
+    variant: str | None = Field(
+        default=None,
+        description=(
+            "When set, the field only applies to the named ``AgentSettings`` "
+            "variant (``'llm'`` or ``'acp'``). The GUI filters fields by the "
+            "user's current variant; fields with ``variant=None`` are shown "
+            "regardless."
+        ),
+    )
 
 
 class SettingsSectionSchema(BaseModel):
@@ -474,6 +483,22 @@ class ConversationSettings(BaseModel):
 
 AgentKind = Literal["llm", "acp"]
 
+ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
+"""Known ACP backend servers the GUI can pick from.
+
+``custom`` means the user supplies the raw ``acp_command`` themselves;
+the other choices map to a default npx command (see
+:data:`_DEFAULT_ACP_COMMANDS`).
+"""
+
+
+_DEFAULT_ACP_COMMANDS: dict[str, list[str]] = {
+    "claude-code": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+    "codex": ["npx", "-y", "@zed-industries/codex-acp"],
+    # gemini-cli's ACP mode is activated via --experimental-acp.
+    "gemini-cli": ["npx", "-y", "@google/gemini-cli", "--experimental-acp"],
+}
+
 
 class LLMAgentSettings(BaseModel):
     """Settings for a standard LLM-backed :class:`Agent`.
@@ -497,6 +522,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Agent",
                 prominence=SettingProminence.MAJOR,
+                variant="llm",
             ).model_dump()
         },
     )
@@ -518,6 +544,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Tools",
                 prominence=SettingProminence.MAJOR,
+                variant="llm",
             ).model_dump()
         },
     )
@@ -528,6 +555,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="MCP configuration",
                 prominence=SettingProminence.MINOR,
+                variant="llm",
             ).model_dump()
         },
     )
@@ -670,16 +698,37 @@ class ACPAgentSettings(BaseModel):
             "an ACP-delegating agent."
         ),
     )
-    acp_command: list[str] = Field(
-        default_factory=list,
+    acp_server: ACPServerKind = Field(
+        default="claude-code",
         description=(
-            "Command to launch the ACP subprocess server, e.g. "
-            "``['npx', '-y', '@agentclientprotocol/claude-agent-acp']``."
+            "Which ACP-compatible backend to launch. Each choice maps to a "
+            "default subprocess command (see ``acp_command`` to override)."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="ACP command",
+                label="ACP server",
                 prominence=SettingProminence.CRITICAL,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_command: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional explicit command to launch the ACP subprocess. Leave "
+            "empty to use the default for :attr:`acp_server` (e.g. ``npx -y "
+            "@agentclientprotocol/claude-agent-acp`` for ``claude-code``). "
+            "Must be set when :attr:`acp_server` is ``'custom'``."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP command (custom override)",
+                prominence=SettingProminence.MINOR,
+                depends_on=("acp_server",),
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="acp",
@@ -729,7 +778,7 @@ class ACPAgentSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="ACP model",
-                prominence=SettingProminence.MAJOR,
+                prominence=SettingProminence.CRITICAL,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="acp",
@@ -793,22 +842,40 @@ class ACPAgentSettings(BaseModel):
         """Export a structured schema describing configurable ACP settings."""
         return export_settings_schema(cls)
 
+    def resolve_acp_command(self) -> list[str]:
+        """Return the effective subprocess command for this settings block.
+
+        Uses :attr:`acp_command` verbatim when non-empty; otherwise looks
+        up the default for :attr:`acp_server`. Raises ``ValueError`` when
+        the server is ``'custom'`` but no explicit command is set (there
+        is no sensible default to fall back to).
+        """
+        if self.acp_command:
+            return list(self.acp_command)
+        if self.acp_server == "custom":
+            raise ValueError(
+                "ACPAgentSettings.acp_command must be set when "
+                "acp_server='custom' — there is no default to fall back to"
+            )
+        default = _DEFAULT_ACP_COMMANDS.get(self.acp_server)
+        if default is None:
+            raise ValueError(
+                f"No default ACP command for acp_server={self.acp_server!r}"
+            )
+        return list(default)
+
     def create_agent(self) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.
 
-        Raises ``ValueError`` if :attr:`acp_command` is empty — the agent
-        has no process to talk to without it.
+        The subprocess command is resolved via :meth:`resolve_acp_command`
+        which maps :attr:`acp_server` to a default when no explicit
+        :attr:`acp_command` is set.
         """
-        if not self.acp_command:
-            raise ValueError(
-                "ACPAgentSettings.acp_command must be non-empty to create an ACPAgent"
-            )
-
         from openhands.sdk.agent import ACPAgent
 
         return ACPAgent(
             llm=self.llm,
-            acp_command=list(self.acp_command),
+            acp_command=self.resolve_acp_command(),
             acp_args=list(self.acp_args),
             acp_env=dict(self.acp_env),
             acp_model=self.acp_model,
@@ -879,38 +946,16 @@ def create_agent_from_settings(
     return settings.create_agent()
 
 
-def _build_agent_kind_field() -> SettingsFieldSchema:
-    return SettingsFieldSchema(
-        key="agent_kind",
-        label="Agent kind",
-        description=(
-            "Which agent backend to use. ``llm`` configures a standard "
-            "LLM-backed agent; ``acp`` delegates to an ACP subprocess server "
-            "(Claude Code, Codex, Gemini CLI, …)."
-        ),
-        section=_GENERAL_SECTION_KEY,
-        section_label=_GENERAL_SECTION_LABEL,
-        value_type="string",
-        default="llm",
-        prominence=SettingProminence.CRITICAL,
-        depends_on=[],
-        secret=False,
-        choices=[
-            SettingsChoice(value="llm", label="Standard LLM Agent"),
-            SettingsChoice(value="acp", label="ACP (Agent Client Protocol)"),
-        ],
-    )
-
-
 def export_agent_settings_schema() -> SettingsSchema:
     """Export a combined schema for the :data:`AgentSettings` union.
 
     Walks both variants, tags each non-shared section with its variant,
-    and returns a single :class:`SettingsSchema`. A synthetic
-    ``agent_kind`` critical field is prepended to ``general`` so the GUI
-    can render a variant selector; sections carry a ``variant`` tag
-    (``'llm'``, ``'acp'``, or ``None`` for shared) that the frontend
-    uses to filter by the current ``agent_kind`` value.
+    and returns a single :class:`SettingsSchema`. The discriminator
+    (``agent_kind``) is intentionally **not** emitted as a schema field
+    — each variant lives on its own settings page in the GUI, and the
+    page injects the correct ``agent_kind`` value on save. Sections
+    carry a ``variant`` tag (``'llm'``, ``'acp'``, or ``None`` for
+    shared) so the frontend can filter by the page's variant.
     """
     llm_schema = LLMAgentSettings.export_schema()
     acp_schema = ACPAgentSettings.export_schema()
@@ -921,8 +966,7 @@ def export_agent_settings_schema() -> SettingsSchema:
     def _merge(schema: SettingsSchema, default_variant: str) -> None:
         for section in schema.sections:
             # "general" is shared across variants; tag non-shared keys
-            # with the variant so the GUI can filter sections by
-            # agent_kind.
+            # with the variant so the GUI can filter sections by variant.
             if section.key == _GENERAL_SECTION_KEY and section.variant is None:
                 effective_variant: str | None = None
             else:
@@ -942,25 +986,6 @@ def export_agent_settings_schema() -> SettingsSchema:
 
     _merge(llm_schema, default_variant="llm")
     _merge(acp_schema, default_variant="acp")
-
-    # Prepend the synthetic agent_kind selector to the first "general" section.
-    # If neither variant produced a "general" section, create one.
-    general_section = next(
-        (s for s in merged_sections if s.key == _GENERAL_SECTION_KEY and s.variant is None),
-        None,
-    )
-    if general_section is None:
-        general_section = SettingsSectionSchema(
-            key=_GENERAL_SECTION_KEY,
-            label=_GENERAL_SECTION_LABEL,
-            fields=[],
-            variant=None,
-        )
-        merged_sections.insert(0, general_section)
-
-    # Inject agent_kind as the first field of general, unless already present.
-    if not any(f.key == "agent_kind" for f in general_section.fields):
-        general_section.fields.insert(0, _build_agent_kind_field())
 
     return SettingsSchema(model_name="AgentSettings", sections=merged_sections)
 
@@ -1061,6 +1086,13 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         ],
                         secret=_contains_secret(nested_field.annotation),
                         choices=_extract_choices(nested_field.annotation),
+                        # Field-level variant falls back to the enclosing
+                        # section's variant — nested fields inherit their
+                        # parent section's variant by default.
+                        variant=(
+                            (metadata.variant if metadata is not None else None)
+                            or section.variant
+                        ),
                     )
                 )
             continue
@@ -1088,6 +1120,9 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 depends_on=list(metadata.depends_on),
                 secret=_contains_secret(field.annotation),
                 choices=_extract_choices(field.annotation),
+                # Top-level field: use its own variant if set, otherwise
+                # fall back to the enclosing section's variant.
+                variant=metadata.variant or section.variant,
             )
         )
 

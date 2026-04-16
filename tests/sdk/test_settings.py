@@ -105,6 +105,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
     sections = {s.key: s for s in schema.sections}
     acp_fields = {f.key: f for f in sections["acp"].fields}
     assert set(acp_fields) == {
+        "acp_server",
         "acp_command",
         "acp_args",
         "acp_env",
@@ -112,8 +113,11 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_session_mode",
         "acp_prompt_timeout",
     }
-    assert acp_fields["acp_command"].prominence is SettingProminence.CRITICAL
-    assert acp_fields["acp_model"].prominence is SettingProminence.MAJOR
+    # Server picker + model are both critical — users pick server then
+    # model. Raw command is a minor override for power users.
+    assert acp_fields["acp_server"].prominence is SettingProminence.CRITICAL
+    assert acp_fields["acp_model"].prominence is SettingProminence.CRITICAL
+    assert acp_fields["acp_command"].prominence is SettingProminence.MINOR
 
 
 def test_conversation_settings_export_schema_groups_sections() -> None:
@@ -147,13 +151,17 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
 
     by_keyvariant = {(s.key, s.variant): s for s in schema.sections}
 
-    # Shared general section (no variant) carries the agent_kind selector.
+    # Shared general section contains LLM-only top-level fields with
+    # field-level variant="llm" tags (so they hide on the ACP page).
     general = by_keyvariant.get(("general", None))
     assert general is not None
-    agent_kind_field = next(f for f in general.fields if f.key == "agent_kind")
-    assert agent_kind_field.prominence is SettingProminence.CRITICAL
-    assert [c.value for c in agent_kind_field.choices] == ["llm", "acp"]
-    assert agent_kind_field.default == "llm"
+    general_keys = {f.key for f in general.fields}
+    assert general_keys == {"agent", "tools", "mcp_config"}
+    # No agent_kind field — each variant has its own settings page and
+    # injects the discriminator on save.
+    assert "agent_kind" not in general_keys
+    for f in general.fields:
+        assert f.variant == "llm", f"expected field {f.key} variant=llm, got {f.variant}"
 
     # LLM-variant sections.
     assert ("llm", "llm") in by_keyvariant
@@ -161,7 +169,24 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     assert ("verification", "llm") in by_keyvariant
 
     # ACP-variant sections.
-    assert ("acp", "acp") in by_keyvariant
+    acp_section = by_keyvariant.get(("acp", "acp"))
+    assert acp_section is not None
+    acp_keys = {f.key for f in acp_section.fields}
+    assert "acp_server" in acp_keys
+    assert "acp_command" in acp_keys
+    assert "acp_model" in acp_keys
+
+    # acp_server is the critical user-visible field (the command is a
+    # minor override).
+    server_field = next(f for f in acp_section.fields if f.key == "acp_server")
+    assert server_field.prominence is SettingProminence.CRITICAL
+    server_choices = {c.value for c in server_field.choices}
+    assert server_choices == {"claude-code", "codex", "gemini-cli", "custom"}
+
+    command_field = next(f for f in acp_section.fields if f.key == "acp_command")
+    assert command_field.prominence is SettingProminence.MINOR
+
+    # ACP variant also has an LLM section (for cost/pricing attribution).
     assert ("llm", "acp") in by_keyvariant
 
 
@@ -313,25 +338,53 @@ def test_llm_roundtrip_preserves_llm_model() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_acp_create_agent_returns_acp_agent() -> None:
-    settings = ACPAgentSettings(
-        acp_command=["npx", "-y", "claude-agent-acp"],
-        acp_model="claude-opus-4-6",
-    )
+def test_acp_create_agent_uses_server_default_command() -> None:
+    """With ``acp_server`` set but no explicit command, use the built-in default."""
+    settings = ACPAgentSettings(acp_server="claude-code", acp_model="claude-opus-4-6")
     agent = settings.create_agent()
     assert isinstance(agent, ACPAgent)
-    assert agent.acp_command == ["npx", "-y", "claude-agent-acp"]
+    assert agent.acp_command == [
+        "npx",
+        "-y",
+        "@agentclientprotocol/claude-agent-acp",
+    ]
     assert agent.acp_model == "claude-opus-4-6"
 
 
-def test_acp_create_agent_rejects_empty_command() -> None:
-    settings = ACPAgentSettings(acp_command=[])
+def test_acp_resolve_command_for_known_servers() -> None:
+    """Every non-custom choice must map to a runnable default."""
+    for server in ("claude-code", "codex", "gemini-cli"):
+        settings = ACPAgentSettings(acp_server=server)
+        cmd = settings.resolve_acp_command()
+        assert cmd, f"expected default command for {server}, got empty"
+        assert cmd[0] == "npx", f"expected npx-based default, got {cmd}"
+
+
+def test_acp_create_agent_explicit_command_overrides_default() -> None:
+    settings = ACPAgentSettings(
+        acp_server="claude-code",
+        acp_command=["my-local-acp-binary"],
+    )
+    agent = settings.create_agent()
+    assert agent.acp_command == ["my-local-acp-binary"]
+
+
+def test_acp_custom_server_requires_explicit_command() -> None:
+    settings = ACPAgentSettings(acp_server="custom")
     try:
         settings.create_agent()
     except ValueError as e:
-        assert "acp_command" in str(e)
+        assert "acp_command" in str(e) and "custom" in str(e)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_acp_custom_server_with_command_resolves() -> None:
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["bin", "--flag"],
+    )
+    assert settings.resolve_acp_command() == ["bin", "--flag"]
 
 
 # ---------------------------------------------------------------------------

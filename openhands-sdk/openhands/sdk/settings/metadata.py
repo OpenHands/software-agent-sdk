@@ -26,6 +26,10 @@ class SettingsFieldMetadata(BaseModel):
     label: str | None = None
     prominence: SettingProminence = SettingProminence.MINOR
     depends_on: tuple[str, ...] = ()
+    variant: str | None = None
+    """When set, the field only applies to the named ``AgentSettings``
+    variant (``"llm"`` or ``"acp"``). Fields with ``variant=None`` are
+    shown regardless of the active ``agent_kind``."""
 
 
 def field_meta(
