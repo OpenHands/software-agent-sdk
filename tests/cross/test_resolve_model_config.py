@@ -614,7 +614,7 @@ def test_trinity_large_thinking_config():
     assert model["llm_config"]["top_p"] == 0.95
 
 
-def test_claude_4_7_opus_config():
+def test_claude_opus_4_7_config():
     """Test that claude-opus-4-7 has correct configuration."""
     model = MODELS["claude-opus-4-7
 
