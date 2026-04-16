@@ -117,6 +117,7 @@ MODELS = {
         "display_name": "Claude Opus 4.7",
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-opus-4-7",
+            "temperature": 0.0,
         },
     },
     "claude-sonnet-4-6": {
