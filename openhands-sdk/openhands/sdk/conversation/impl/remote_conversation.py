@@ -1300,6 +1300,70 @@ class RemoteConversation(BaseConversation):
             f"{self._conversation_action_base_path}/{self._id}/condense",
         )
 
+    def fork(
+        self,
+        *,
+        conversation_id: "ConversationID | None" = None,
+        agent: "AgentBase | None" = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "RemoteConversation":
+        """Fork this conversation on the remote agent server.
+
+        Sends a fork request to the server which deep-copies events and
+        state. Returns a new ``RemoteConversation`` pointing at the fork.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                on the server if ``None``).
+            agent: Agent for the fork (serialised and sent to the server).
+                Defaults to a deep-copy of the source agent on the server.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``RemoteConversation`` backed by the forked server-side
+            conversation.
+        """
+        body: dict[str, object] = {"reset_metrics": reset_metrics}
+        if conversation_id is not None:
+            body["id"] = str(conversation_id)
+        if agent is not None:
+            body["agent"] = agent.model_dump(mode="json")
+        if title is not None:
+            body["title"] = title
+        if tags is not None:
+            body["tags"] = tags
+
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/fork",
+            json=body,
+        )
+        fork_info = resp.json()
+        fork_uuid = uuid.UUID(fork_info["id"])
+
+        if agent is None:
+            agent_cls = type(self.agent)
+            fork_agent = agent_cls.model_validate(
+                self.agent.model_dump(context={"expose_secrets": True}),
+            )
+        else:
+            fork_agent = agent
+
+        return RemoteConversation(
+            agent=fork_agent,
+            workspace=self.workspace,
+            conversation_id=fork_uuid,
+            max_iteration_per_run=self.max_iteration_per_run,
+            delete_on_close=self.delete_on_close,
+            tags=tags,
+        )
+
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.
 

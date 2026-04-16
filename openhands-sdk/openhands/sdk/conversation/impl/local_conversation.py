@@ -307,6 +307,95 @@ class LocalConversation(BaseConversation):
         """
         return self._resolved_plugins
 
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: AgentBase | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "LocalConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``LocalConversation`` that shares the same event history
+            but has its own identity and independent state going forward.
+        """
+        fork_id = conversation_id or uuid.uuid4()
+        if agent is not None:
+            fork_agent = agent
+        else:
+            # Round-trip via JSON to produce a deep copy that avoids
+            # thread-lock pickling issues with model_copy(deep=True).
+            agent_cls = type(self.agent)
+            fork_agent = agent_cls.model_validate(
+                self.agent.model_dump(context={"expose_secrets": True}),
+            )
+
+        # Determine persistence_dir for the fork
+        source_persistence = self._state.persistence_dir
+        fork_persistence: str | None = None
+        if source_persistence is not None:
+            source_path = Path(source_persistence)
+            fork_persistence = str(source_path.parent / fork_id.hex)
+
+        # Build the fork conversation (empty – no events yet)
+        fork_conv = LocalConversation(
+            agent=fork_agent,
+            workspace=self.workspace,
+            plugins=self._plugin_specs,
+            persistence_dir=fork_persistence,
+            conversation_id=fork_id,
+            max_iteration_per_run=self.max_iteration_per_run,
+            stuck_detection=self._stuck_detector is not None,
+            visualizer=None,
+            delete_on_close=self.delete_on_close,
+            tags=tags,
+        )
+
+        # Copy events from source → fork
+        for event in self._state.events:
+            fork_conv._state.events.append(event)
+
+        # Copy runtime state that accumulated during the source conversation
+        fork_conv._state.activated_knowledge_skills = list(
+            self._state.activated_knowledge_skills
+        )
+        fork_conv._state.agent_state = dict(self._state.agent_state)
+
+        # Copy title via tags if provided
+        if title is not None:
+            fork_conv._state.tags = {
+                **fork_conv._state.tags,
+                "title": title,
+            }
+
+        # Reset or copy metrics
+        if not reset_metrics:
+            fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+
+        logger.info(
+            f"Forked conversation {self.id} → {fork_id} "
+            f"({len(self._state.events)} events copied, "
+            f"reset_metrics={reset_metrics})"
+        )
+        return fork_conv
+
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
 

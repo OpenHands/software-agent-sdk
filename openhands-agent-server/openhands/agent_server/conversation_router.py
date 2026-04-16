@@ -18,6 +18,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    ForkConversationRequest,
     GenerateTitleRequest,
     GenerateTitleResponse,
     SendMessageRequest,
@@ -392,3 +393,36 @@ async def condense_conversation(
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/fork",
+    responses={
+        201: {"description": "Forked conversation created"},
+        404: {"description": "Source conversation not found"},
+    },
+    status_code=status.HTTP_201_CREATED,
+)
+async def fork_conversation(
+    conversation_id: UUID,
+    request: Annotated[ForkConversationRequest, Body()] = ForkConversationRequest(),  # noqa: B008
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Fork a conversation, deep-copying its event history.
+
+    The fork starts in ``idle`` status with a fresh event loop.
+    Calling ``run`` on the fork resumes from the copied state, meaning
+    the agent has full event memory of the source conversation.
+    """
+    info = await conversation_service.fork_conversation(
+        conversation_id,
+        fork_id=request.id,
+        title=request.title,
+        tags=request.tags if request.tags is not None else None,
+        reset_metrics=request.reset_metrics,
+    )
+    if info is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Source conversation not found"
+        )
+    return info

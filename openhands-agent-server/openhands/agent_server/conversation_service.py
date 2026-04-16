@@ -659,6 +659,57 @@ class ConversationService:
         await event_service.condense()
         return True
 
+    async def fork_conversation(
+        self,
+        source_id: UUID,
+        *,
+        fork_id: UUID | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> ConversationInfo | None:
+        """Fork an existing conversation, deep-copying its event history.
+
+        The fork is persisted to disk and then loaded as a new EventService,
+        so the forked conversation is fully independent from the source.
+
+        Returns ``None`` when *source_id* does not exist.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        source_service = self._event_services.get(source_id)
+        if source_service is None:
+            return None
+
+        source_conversation = source_service.get_conversation()
+
+        # fork() deep-copies events, state, and writes to a new persistence dir.
+        fork_conv = await asyncio.to_thread(
+            source_conversation.fork,
+            conversation_id=fork_id,
+            title=title,
+            tags=tags,
+            reset_metrics=reset_metrics,
+        )
+        # Extract the persisted data, then discard the temporary conversation.
+        fork_conv_id = fork_conv.id
+        fork_agent = cast(Agent, fork_conv.agent)
+        fork_workspace = fork_conv.workspace
+        fork_conv.delete_on_close = False
+        fork_conv.close()
+
+        # _start_event_service will resume from the persisted fork directory.
+        fork_stored = StoredConversation(
+            id=fork_conv_id,
+            agent=fork_agent,
+            workspace=fork_workspace,
+        )
+        fork_event_service = await self._start_event_service(fork_stored)
+
+        state = await fork_event_service.get_state()
+        return _compose_conversation_info_v1(fork_event_service.stored, state)
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
