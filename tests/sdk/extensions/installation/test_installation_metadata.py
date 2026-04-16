@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -19,9 +18,9 @@ class MockExtension(BaseModel):
 class MockExtensionInstallationInterface(InstallationInterface):
     @staticmethod
     def load_from_dir(extension_dir: Path) -> MockExtension:
-        extension_path: Path = extension_dir / "extension.json"
-        with extension_path.open() as f:
-            return MockExtension.model_validate_json(json.load(f))
+        return MockExtension.model_validate_json(
+            (extension_dir / "extension.json").read_text()
+        )
 
 
 def _write_mock_extension(
@@ -34,7 +33,7 @@ def _write_mock_extension(
     directory.mkdir(parents=True, exist_ok=True)
     ext = MockExtension(name=name, version=version, description=description)
     with (directory / "extension.json").open("w") as f:
-        json.dump(ext.model_dump_json(), f)
+        f.write(ext.model_dump_json())
     return directory
 
 
