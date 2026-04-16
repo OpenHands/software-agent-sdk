@@ -301,7 +301,7 @@ class ConversationSettings(BaseModel):
     schema_version: int = Field(default=CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
 
     # --- runtime fields (populated on-the-fly, not persisted) ---------------
-    agent_settings: AgentSettings | None = Field(
+    agent_settings: "AgentSettingsConfig | None" = Field(
         default=None,
         exclude=True,
         description=(
@@ -885,7 +885,7 @@ class ACPAgentSettings(BaseModel):
 
 
 def _agent_settings_discriminator(value: Any) -> str:
-    """Discriminator for :data:`AgentSettings` — defaults to ``'llm'``.
+    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'llm'``.
 
     Existing persisted payloads predate ``agent_kind`` and carry only
     LLM-agent fields. Treating a missing discriminator as ``'llm'`` lets
@@ -898,7 +898,7 @@ def _agent_settings_discriminator(value: Any) -> str:
     return "llm"
 
 
-AgentSettings = Annotated[
+AgentSettingsConfig = Annotated[
     Annotated[LLMAgentSettings, Tag("llm")] | Annotated[ACPAgentSettings, Tag("acp")],
     Discriminator(_agent_settings_discriminator),
 ]
@@ -907,23 +907,74 @@ AgentSettings = Annotated[
 Use :func:`validate_agent_settings` or a :class:`~pydantic.TypeAdapter`
 to validate/construct instances from raw payloads. Use
 :func:`default_agent_settings` for the default (LLM-agent) shape.
+
+Named ``AgentSettingsConfig`` rather than ``AgentSettings`` because the
+latter is retained as a (deprecated) concrete class for backwards
+compatibility with v1.17.x callers — see :class:`AgentSettings`.
 """
 
 
 _AGENT_SETTINGS_ADAPTER: TypeAdapter[LLMAgentSettings | ACPAgentSettings] = TypeAdapter(
-    AgentSettings
+    AgentSettingsConfig
 )
 
 
 def validate_agent_settings(
     data: Any,
 ) -> LLMAgentSettings | ACPAgentSettings:
-    """Validate ``data`` as an :data:`AgentSettings` discriminated union.
+    """Validate ``data`` as an :data:`AgentSettingsConfig` discriminated union.
 
     This is the drop-in replacement for the old
     ``AgentSettings.model_validate(...)`` classmethod.
     """
     return _AGENT_SETTINGS_ADAPTER.validate_python(data)
+
+
+class AgentSettings(LLMAgentSettings):
+    """Deprecated legacy name for :class:`LLMAgentSettings`.
+
+    Before the discriminated-union redesign, ``AgentSettings`` was the
+    single concrete class for agent configuration. It is kept as a
+    :class:`LLMAgentSettings` subclass so every v1.17 attribute and
+    method (``agent``, ``llm``, ``tools``, ``mcp_config``,
+    ``condenser``, ``verification``, ``build_condenser``,
+    ``build_critic``, ``create_agent``, …) resolves through
+    inheritance — existing callers keep working, though direct
+    construction now emits a :class:`DeprecationWarning`.
+
+    For new code:
+
+    * Use :class:`LLMAgentSettings` to build an explicit LLM-backed
+      agent, or :class:`ACPAgentSettings` for an ACP-delegating one.
+    * Use :data:`AgentSettingsConfig` as the type for fields that may
+      hold either variant (FastAPI / Pydantic pick the variant from
+      the ``agent_kind`` discriminator).
+    * Use :func:`validate_agent_settings` to validate raw payloads
+      into the correct variant.
+
+    Scheduled for removal in v1.22.0 (5 minor releases after the
+    discriminated-union landing in v1.17.1).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        # ``deprecated_in`` matches the current SDK version that ships
+        # this refactor so warn_deprecated() actually fires (its gate is
+        # current_version >= deprecated_in). ``removed_in`` is 5 minor
+        # releases later per the repo's API-breakage policy.
+        warn_deprecated(
+            "AgentSettings",
+            deprecated_in="1.17.0",
+            removed_in="1.22.0",
+            details=(
+                "Use ``LLMAgentSettings`` (for an LLM agent) or "
+                "``ACPAgentSettings`` (for an ACP agent) directly; use "
+                "``AgentSettingsConfig`` as the type for fields that accept "
+                "either variant."
+            ),
+        )
+        super().__init__(*args, **kwargs)
 
 
 def default_agent_settings() -> LLMAgentSettings:

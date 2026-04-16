@@ -47,6 +47,7 @@ from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
     ACPAgentSettings,
     AgentSettings,
+    AgentSettingsConfig,
     CondenserSettings,
     ConversationSettings,
     LLMAgentSettings,
@@ -147,6 +148,7 @@ __all__ = [
     "VerificationSettings",
     "ACPAgentSettings",
     "AgentSettings",
+    "AgentSettingsConfig",
     "LLMAgentSettings",
     "default_agent_settings",
     "export_agent_settings_schema",
