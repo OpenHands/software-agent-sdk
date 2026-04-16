@@ -164,7 +164,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "Security policy template filename. Can be either:\n"
             "- A relative filename (e.g., 'security_policy.j2') loaded from the "
             "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+            "- Empty string to disable security policy"
         ),
     )
     system_prompt_kwargs: dict[str, object] = Field(
@@ -178,6 +179,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def _validate_system_prompt_fields(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
+        if (
+            "security_policy_filename" in data
+            and data["security_policy_filename"] is None
+        ):
+            data["security_policy_filename"] = ""
         has_inline = data.get("system_prompt") is not None
         has_custom_filename = (
             "system_prompt_filename" in data
