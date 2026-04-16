@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1204,6 +1205,202 @@ class TestACPToolCallAccumulation:
         assert client.accumulated_tool_calls == []
 
 
+class TestACPToolCallLiveEmission:
+    """Tests that ``session_update`` fires ``on_event`` live (not batched).
+
+    Closes OpenHands/software-agent-sdk#2866: tool-call events must reach
+    ``on_event`` as each ACP notification arrives, so the event stream
+    reflects real subprocess progress instead of a single end-of-turn burst.
+    """
+
+    @pytest.mark.asyncio
+    async def test_session_update_fires_on_event_live(self):
+        """Each ToolCallStart/Progress triggers an immediate on_event call."""
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read file"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = {"path": "/a"}
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess", start)
+
+        # on_event fires synchronously — event already present, not batched.
+        assert len(events) == 1
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert events[0].tool_call_id == "tc-1"
+        assert events[0].status == "in_progress"
+        assert events[0].raw_output is None
+
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "hello"
+        progress.content = None
+        await client.session_update("sess", progress)
+
+        # Same tool_call_id, evolving status/raw_output — consumer dedupes.
+        assert len(events) == 2
+        assert events[1].tool_call_id == "tc-1"
+        assert events[1].status == "completed"
+        assert events[1].raw_output == "hello"
+        assert events[1].is_error is False
+
+    @pytest.mark.asyncio
+    async def test_session_update_preserves_interleaved_order(self):
+        """Tool-call and text-chunk updates reach callbacks in arrival order.
+
+        The bridge emits on_event synchronously from session_update, so the
+        order consumers see is exactly the order the ACP subprocess sent them.
+        Text/thought chunks are routed to on_token rather than on_event, but
+        the *combined* callback stream must stay in arrival order so that
+        consumers can rebuild a coherent trace.
+        """
+        from acp.schema import (
+            AgentMessageChunk,
+            AgentThoughtChunk,
+            TextContentBlock,
+            ToolCallProgress,
+            ToolCallStart,
+        )
+
+        client = _OpenHandsACPBridge()
+        # Single timeline of callback arrivals, tagged by source.
+        observed: list[tuple[str, Any]] = []
+        client.on_event = lambda e: observed.append(("event", e))
+        client.on_token = lambda t: observed.append(("token", t))
+
+        def make_start(tc_id: str) -> Any:
+            s = MagicMock(spec=ToolCallStart)
+            s.tool_call_id = tc_id
+            s.title = f"Tool {tc_id}"
+            s.kind = "read"
+            s.status = "in_progress"
+            s.raw_input = None
+            s.raw_output = None
+            s.content = None
+            return s
+
+        def make_progress(tc_id: str, status: str) -> Any:
+            p = MagicMock(spec=ToolCallProgress)
+            p.tool_call_id = tc_id
+            p.title = None
+            p.kind = None
+            p.status = status
+            p.raw_input = None
+            p.raw_output = None
+            p.content = None
+            return p
+
+        def make_text_chunk(text: str) -> Any:
+            c = MagicMock(spec=AgentMessageChunk)
+            c.content = MagicMock(spec=TextContentBlock)
+            c.content.text = text
+            return c
+
+        def make_thought_chunk(text: str) -> Any:
+            c = MagicMock(spec=AgentThoughtChunk)
+            c.content = MagicMock(spec=TextContentBlock)
+            c.content.text = text
+            return c
+
+        sequence: list = [
+            make_thought_chunk("thinking..."),
+            make_start("tc-a"),
+            make_text_chunk("reading "),
+            make_progress("tc-a", "completed"),
+            make_start("tc-b"),
+            make_text_chunk("done"),
+            make_progress("tc-b", "completed"),
+        ]
+        for update in sequence:
+            await client.session_update("sess", update)
+
+        # Thought chunks don't fire a callback today — filter to the callback
+        # kinds we drove and confirm arrival order matches the driven sequence.
+        expected_stream = [
+            "event",  # tc-a start
+            "token",  # text chunk
+            "event",  # tc-a progress
+            "event",  # tc-b start
+            "token",  # text chunk
+            "event",  # tc-b progress
+        ]
+        assert [kind for kind, _ in observed] == expected_stream
+        tool_events = [payload for kind, payload in observed if kind == "event"]
+        assert [e.tool_call_id for e in tool_events] == [
+            "tc-a",
+            "tc-a",
+            "tc-b",
+            "tc-b",
+        ]
+        assert [e.status for e in tool_events] == [
+            "in_progress",
+            "completed",
+            "in_progress",
+            "completed",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_session_update_no_on_event_when_unset(self):
+        """When on_event is None (no active step), session_update is a no-op emit."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        assert client.on_event is None
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        # Must not raise
+        await client.session_update("sess", start)
+        # Still accumulated so step() can reference it if needed.
+        assert len(client.accumulated_tool_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_on_event_errors_are_swallowed(self):
+        """A raising on_event must not break the session_update pipeline."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.on_event = MagicMock(side_effect=RuntimeError("boom"))
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess", start)  # must not raise
+        client.on_event.assert_called_once()
+
+    def test_reset_clears_on_event(self):
+        """reset() clears on_event so the next step wires a fresh callback."""
+        client = _OpenHandsACPBridge()
+        client.on_event = lambda _: None
+        client.reset()
+        assert client.on_event is None
+
+
 class TestACPToolCallEmission:
     """Tests for ACPToolCallEvent emission in step()."""
 
@@ -1229,7 +1426,9 @@ class TestACPToolCallEmission:
         return conversation
 
     def test_step_emits_tool_call_events_before_message(self, tmp_path):
-        """step() emits ACPToolCallEvent for each tool call before the MessageEvent."""
+        """Tool-call events reach on_event live, ahead of the MessageEvent."""
+        from acp.schema import ToolCallStart
+
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
@@ -1240,27 +1439,25 @@ class TestACPToolCallEmission:
         agent._session_id = "test-session"
 
         def _fake_run_async(_coro, **_kwargs):
+            # Simulate the ACP subprocess streaming two tool-call notifications
+            # during prompt(). session_update fires on_event synchronously,
+            # so these events appear before run_async returns.
+            for tool_call_id, title, kind, status, raw_input, raw_output in [
+                ("tc-1", "Read file", "read", "completed",
+                 {"path": "/tmp/f.py"}, "content"),
+                ("tc-2", "Execute bash", "execute", "failed",
+                 {"command": "ls"}, None),
+            ]:
+                start = MagicMock(spec=ToolCallStart)
+                start.tool_call_id = tool_call_id
+                start.title = title
+                start.kind = kind
+                start.status = status
+                start.raw_input = raw_input
+                start.raw_output = raw_output
+                start.content = None
+                asyncio.run(mock_client.session_update("sess", start))
             mock_client.accumulated_text.append("done")
-            mock_client.accumulated_tool_calls.extend(
-                [
-                    {
-                        "tool_call_id": "tc-1",
-                        "title": "Read file",
-                        "tool_kind": "read",
-                        "status": "completed",
-                        "raw_input": {"path": "/tmp/f.py"},
-                        "raw_output": "content",
-                    },
-                    {
-                        "tool_call_id": "tc-2",
-                        "title": "Execute bash",
-                        "tool_kind": "execute",
-                        "status": "failed",
-                        "raw_input": {"command": "ls"},
-                        "raw_output": None,
-                    },
-                ]
-            )
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
@@ -1268,7 +1465,7 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        # Should be: 2 tool call events + 1 message event
+        # Should be: 2 tool call events (live) + 1 message event
         # + finish action + finish observation
         assert len(events) == 5
         assert isinstance(events[0], ACPToolCallEvent)
