@@ -8,6 +8,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from acp.exceptions import RequestError as ACPRequestError
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -2104,3 +2105,153 @@ class TestSerializeToolContent:
         d = {"type": "content", "text": "world"}
         result = _serialize_tool_content([model, d])
         assert result == [{"type": "diff", "path": "b.py"}, d]
+
+
+# ---------------------------------------------------------------------------
+# acp_session_id persistence (issue #2867)
+# ---------------------------------------------------------------------------
+
+
+class TestACPSessionIdPersistence:
+    """Verify that acp_session_id round-trips through serialization and that
+    _start_acp_server picks between new_session and load_session based on it.
+    """
+
+    @staticmethod
+    def _patched_start_acp_server(agent, state, *, conn):
+        """Invoke the real _start_acp_server with ACP transport layers mocked.
+
+        Returns the mock connection so callers can inspect which ACP methods
+        were awaited.
+        """
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent._executor = AsyncExecutor()
+        with (
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_create_subprocess_exec,
+            ),
+            patch(
+                "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                return_value=conn,
+            ),
+            patch(
+                "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                new=_fake_filter,
+            ),
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                return_value=MagicMock(),
+            ),
+        ):
+            agent._start_acp_server(state)
+
+    @staticmethod
+    def _make_conn(
+        *,
+        new_session_id: str = "sess-new",
+        load_exc: Exception | None = None,
+    ):
+        conn = MagicMock()
+
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = []
+        conn.initialize = AsyncMock(return_value=init_response)
+
+        new_response = MagicMock()
+        new_response.session_id = new_session_id
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        if load_exc is not None:
+            conn.load_session = AsyncMock(side_effect=load_exc)
+        else:
+            conn.load_session = AsyncMock(return_value=MagicMock())
+
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    def test_default_session_id_is_none(self):
+        agent = _make_agent()
+        assert agent.acp_session_id is None
+
+    def test_first_launch_calls_new_session(self, tmp_path):
+        """Without a stored id, _start_acp_server must call new_session."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = self._make_conn(new_session_id="fresh-sess")
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.new_session.assert_awaited_once()
+        conn.load_session.assert_not_awaited()
+        assert agent.acp_session_id == "fresh-sess"
+        assert agent._session_id == "fresh-sess"
+
+    def test_session_id_survives_model_dump_roundtrip(self, tmp_path):
+        """After first launch, model_dump() → model_validate() keeps the id."""
+        agent = ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"])
+        state = _make_state(tmp_path)
+        conn = self._make_conn(new_session_id="survive-sess")
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        dumped = agent.model_dump_json()
+        restored = AgentBase.model_validate_json(dumped)
+
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_session_id == "survive-sess"
+
+    def test_second_launch_calls_load_session(self, tmp_path):
+        """With a stored id, _start_acp_server must call load_session."""
+        agent = _make_agent(acp_session_id="stored-sess")
+        state = _make_state(tmp_path)
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        _, kwargs = conn.load_session.call_args
+        assert kwargs["session_id"] == "stored-sess"
+        assert kwargs["cwd"] == str(tmp_path)
+        conn.new_session.assert_not_awaited()
+        assert agent.acp_session_id == "stored-sess"
+        assert agent._session_id == "stored-sess"
+
+    def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
+        """ACPRequestError on load_session → new_session is called, id rewritten."""
+        agent = _make_agent(acp_session_id="stale-sess")
+        state = _make_state(tmp_path)
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert agent.acp_session_id == "replacement-sess"
+        assert agent._session_id == "replacement-sess"
+
+    def test_serialization_includes_acp_session_id_field(self):
+        """acp_session_id is part of the serialized model, not a PrivateAttr."""
+        agent = _make_agent(acp_session_id="ser-sess")
+        data = json.loads(agent.model_dump_json())
+        assert data["acp_session_id"] == "ser-sess"
