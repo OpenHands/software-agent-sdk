@@ -288,6 +288,38 @@ async def set_conversation_security_analyzer(
     return Success()
 
 
+@conversation_router.post(
+    "/{conversation_id}/switch_profile",
+    responses={
+        400: {"description": "Invalid or corrupted profile"},
+        404: {"description": "Conversation or profile not found"},
+    },
+)
+async def switch_conversation_profile(
+    conversation_id: UUID,
+    profile_name: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Switch the conversation's LLM profile to a named profile."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    conversation = event_service.get_conversation()
+    try:
+        conversation.switch_profile(profile_name)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{profile_name}' not found",
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    return Success()
+
+
 @conversation_router.patch(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )
