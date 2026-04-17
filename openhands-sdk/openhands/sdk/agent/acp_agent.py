@@ -109,6 +109,12 @@ _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 # well below the ~20 min runtime-api kill threshold.
 _ACTIVITY_SIGNAL_INTERVAL: float = 30.0
 
+# ACP tool-call statuses that represent a terminal outcome.  Non-terminal
+# statuses (``pending``, ``in_progress``) mean the call is still in flight
+# and, if the turn aborts before it reaches a terminal state, the live-
+# emitted event on state.events will otherwise be orphaned forever.
+_TERMINAL_TOOL_CALL_STATUSES: frozenset[str] = frozenset({"completed", "failed"})
+
 
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
@@ -286,6 +292,16 @@ class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
     Implements the ``Client`` protocol from ``agent_client_protocol``.
+
+    Concurrency model — ``on_event`` / ``on_token`` / ``on_activity`` are
+    fired synchronously from ``session_update``, which runs on the
+    ``AsyncExecutor`` portal thread.  The caller thread driving
+    ``ACPAgent.step()`` is blocked inside ``portal.call()`` for the entire
+    ``prompt()`` round-trip, so these callbacks do not race with the final
+    ``MessageEvent`` / ``FinishAction`` emitted by the caller thread after
+    ``prompt()`` returns.  Consumers that keep cross-callback state (e.g.
+    hook processors reading-then-writing, visualizers) can therefore treat
+    each callback as sequential within a single turn.
     """
 
     def __init__(self) -> None:
@@ -939,6 +955,45 @@ class ACPAgent(AgentBase):
         self._client.on_event = on_event
         self._client.on_activity = self._on_activity
 
+    def _cancel_inflight_tool_calls(self, on_event: ConversationCallbackType) -> None:
+        """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
+        in the accumulator that has not reached a terminal status yet.
+
+        ACP servers mint fresh ``tool_call_id``s on a retried turn, so any
+        ``pending`` / ``in_progress`` events already streamed during the
+        failed attempt would otherwise be orphaned on ``state.events`` —
+        no later notification reuses their id, and consumers that dedupe
+        by ``tool_call_id`` + "last-seen status wins" would keep them
+        spinning forever.  This method closes those cards before we wipe
+        the in-memory accumulator on retry / turn abort.
+
+        Called with ``on_event`` passed in explicitly because the bridge's
+        ``on_event`` attribute is about to be cleared by ``reset()``.
+        """
+        for tc in self._client.accumulated_tool_calls:
+            status = tc.get("status")
+            if status in _TERMINAL_TOOL_CALL_STATUSES:
+                continue
+            try:
+                on_event(
+                    ACPToolCallEvent(
+                        tool_call_id=tc["tool_call_id"],
+                        title=tc["title"],
+                        status="failed",
+                        tool_kind=tc.get("tool_kind"),
+                        raw_input=tc.get("raw_input"),
+                        raw_output=tc.get("raw_output"),
+                        content=tc.get("content"),
+                        is_error=True,
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to emit supersede event for %s",
+                    tc.get("tool_call_id"),
+                    exc_info=True,
+                )
+
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
@@ -1024,6 +1079,7 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
+                        self._cancel_inflight_tool_calls(on_event)
                         self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
@@ -1048,6 +1104,7 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
+                        self._cancel_inflight_tool_calls(on_event)
                         self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
@@ -1144,11 +1201,16 @@ class ACPAgent(AgentBase):
                     )
                 ],
             )
+            # Close any tool cards left in flight from the timed-out attempt.
+            self._cancel_inflight_tool_calls(on_event)
             on_event(MessageEvent(source="agent", llm_message=error_message))
             state.execution_status = ConversationExecutionStatus.ERROR
         except Exception as e:
             logger.error("ACP prompt failed: %s", e, exc_info=True)
             error_str = str(e)
+
+            # Close any tool cards left in flight before surfacing the error.
+            self._cancel_inflight_tool_calls(on_event)
 
             # Emit error as an agent message (existing behavior, preserved for
             # consumers that inspect MessageEvents)

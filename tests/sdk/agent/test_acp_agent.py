@@ -1401,6 +1401,172 @@ class TestACPToolCallLiveEmission:
         assert client.on_event is None
 
 
+class TestACPCancelInflightToolCalls:
+    """Tests for _cancel_inflight_tool_calls — ensures ghost tool cards are
+    closed on retry / abort so the live-emission stream cannot leave an
+    orphaned pending event on ``state.events``.
+
+    Raised in PR review on #2866: ACP servers mint fresh ``tool_call_id``s
+    when the prompt is retried, so any pending event already fired for the
+    failed attempt would otherwise spin forever under dedup-by-id consumers.
+    """
+
+    @staticmethod
+    def _push_entry(
+        client: _OpenHandsACPBridge, tool_call_id: str, status: str
+    ) -> None:
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": tool_call_id,
+                "title": f"Tool {tool_call_id}",
+                "tool_kind": "read",
+                "status": status,
+                "raw_input": {"k": "v"},
+                "raw_output": None,
+                "content": None,
+            }
+        )
+
+    def test_emits_failed_event_for_pending_entries(self, tmp_path):
+        """Pending / in_progress entries get a terminal failed ACPToolCallEvent."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        self._push_entry(agent._client, "tc-1", "pending")
+        self._push_entry(agent._client, "tc-2", "in_progress")
+
+        emitted: list = []
+        agent._cancel_inflight_tool_calls(emitted.append)
+
+        assert len(emitted) == 2
+        assert all(isinstance(e, ACPToolCallEvent) for e in emitted)
+        assert [e.tool_call_id for e in emitted] == ["tc-1", "tc-2"]
+        assert all(e.status == "failed" and e.is_error for e in emitted)
+
+    def test_skips_already_terminal_entries(self, tmp_path):
+        """completed / failed entries are left alone — they already closed."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        self._push_entry(agent._client, "tc-done", "completed")
+        self._push_entry(agent._client, "tc-bad", "failed")
+        self._push_entry(agent._client, "tc-live", "pending")
+
+        emitted: list = []
+        agent._cancel_inflight_tool_calls(emitted.append)
+
+        # Only the pending one gets a synthetic terminal event.
+        assert [e.tool_call_id for e in emitted] == ["tc-live"]
+
+    def test_callback_errors_are_swallowed(self):
+        """A raising on_event during cancellation must not break the retry path."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        self._push_entry(agent._client, "tc-1", "pending")
+        self._push_entry(agent._client, "tc-2", "pending")
+
+        seen: list = []
+
+        def flaky(event) -> None:
+            seen.append(event)
+            raise RuntimeError("boom")
+
+        agent._cancel_inflight_tool_calls(flaky)  # must not raise
+        # Both entries still attempted even though the first raised.
+        assert len(seen) == 2
+
+    def test_retry_cancels_pending_events_before_reset(self, tmp_path):
+        """Full step() retry path closes pending cards before the new attempt."""
+        from acp.schema import ToolCallStart
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="sys"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="go")]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        events: list = []
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First attempt: stream a pending tool call, then fail
+                start = MagicMock(spec=ToolCallStart)
+                start.tool_call_id = "toolu_AAA"
+                start.title = "Read file"
+                start.kind = "read"
+                start.status = "pending"
+                start.raw_input = {"path": "/tmp/x"}
+                start.raw_output = None
+                start.content = None
+                asyncio.run(mock_client.session_update("sess", start))
+                raise ConnectionError("reset by peer")
+            # Retry: fresh tool call id reaches terminal state
+            start = MagicMock(spec=ToolCallStart)
+            start.tool_call_id = "toolu_BBB"
+            start.title = "Read file"
+            start.kind = "read"
+            start.status = "completed"
+            start.raw_input = {"path": "/tmp/x"}
+            start.raw_output = "ok"
+            start.content = None
+            asyncio.run(mock_client.session_update("sess", start))
+            mock_client.accumulated_text.append("done")
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2
+        tool_events = [e for e in events if isinstance(e, ACPToolCallEvent)]
+        # Expected sequence:
+        #   toolu_AAA(pending)  — live-emitted during attempt 1
+        #   toolu_AAA(failed)   — synthetic cancellation before retry reset
+        #   toolu_BBB(completed) — attempt 2
+        by_id: dict[str, list[ACPToolCallEvent]] = {}
+        for e in tool_events:
+            by_id.setdefault(e.tool_call_id, []).append(e)
+
+        assert "toolu_AAA" in by_id
+        aaa_events = by_id["toolu_AAA"]
+        # Must end in a terminal status so consumer dedupe-by-id closes the card.
+        assert aaa_events[-1].status == "failed"
+        assert aaa_events[-1].is_error is True
+
+        assert "toolu_BBB" in by_id
+        assert by_id["toolu_BBB"][-1].status == "completed"
+
+        # The toolu_AAA cancellation comes before any toolu_BBB event.
+        aaa_idx = max(
+            i for i, e in enumerate(tool_events) if e.tool_call_id == "toolu_AAA"
+        )
+        bbb_idx = min(
+            i for i, e in enumerate(tool_events) if e.tool_call_id == "toolu_BBB"
+        )
+        assert aaa_idx < bbb_idx
+
+
 class TestACPToolCallEmission:
     """Tests for ACPToolCallEvent emission in step()."""
 
