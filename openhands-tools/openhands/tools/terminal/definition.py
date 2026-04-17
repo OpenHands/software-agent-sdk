@@ -33,7 +33,17 @@ class TerminalAction(Action):
     """Schema for bash command execution."""
 
     command: str = Field(
-        description="The bash command to execute. Can be empty string to view additional logs when previous exit code is `-1`. Can be `C-c` (Ctrl+C) to interrupt the currently running process. Note: You can only execute one bash command at a time. If you need to run multiple commands sequentially, you can use `&&` or `;` to chain them together."  # noqa
+        description=(
+            "The bash command to execute. Can be empty string to view"
+            " additional logs when previous exit code is `-1`. Can be a"
+            " special key name when `is_input` is True: `C-c` (Ctrl+C),"
+            " `C-d` (Ctrl+D/EOF), `C-z` (Ctrl+Z), or any `C-<letter>`"
+            " for Ctrl sequences; navigation keys `UP`, `DOWN`, `LEFT`,"
+            " `RIGHT`, `HOME`, `END`, `PGUP`, `PGDN`; and `TAB`, `ESC`,"
+            " `BS` (Backspace), `ENTER`. Note: You can only execute one"
+            " bash command at a time. If you need to run multiple commands"
+            " sequentially, you can use `&&` or `;` to chain them together."
+        )
     )
     is_input: bool = Field(
         default=False,
@@ -217,6 +227,8 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
   - Send empty `command` to retrieve additional logs
   - Send text (set `command` to the text) to STDIN of the running process
   - Send control commands like `C-c` (Ctrl+C), `C-d` (Ctrl+D), or `C-z` (Ctrl+Z) to interrupt the process
+  - Send navigation keys like `UP`, `DOWN`, `LEFT`, `RIGHT`, `TAB`, `ESC`, `BS` (Backspace), `HOME`, `END`, `PGUP`, `PGDN`
+  - Any `C-<letter>` Ctrl sequence is supported (e.g. `C-a`, `C-e`, `C-l`)
   - If you do C-c, you can re-start the process with a longer "timeout" parameter to let it run to completion
 
 ### Best Practices
