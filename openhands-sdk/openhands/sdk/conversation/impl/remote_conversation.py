@@ -375,9 +375,22 @@ class RemoteEventsList(EventsListBase):
         self.add_event(event)
 
     def create_default_callback(self) -> ConversationCallbackType:
-        """Create a default callback that adds events to this list."""
+        """Create a default callback that adds conversation events to this list.
+
+        Filters out full-state snapshot events
+        (``ConversationStateUpdateEvent`` with ``key == FULL_STATE_KEY``)
+        that are delivered over the WebSocket but are **not** stored in the
+        server-side ``EventLog``.  Including them would cause the
+        client-side event count to diverge from the server-side count,
+        breaking consistency guarantees (e.g. fork event-count parity).
+        """
 
         def callback(event: Event) -> None:
+            if (
+                isinstance(event, ConversationStateUpdateEvent)
+                and event.key == FULL_STATE_KEY
+            ):
+                return
             self.add_event(event)
 
         return callback

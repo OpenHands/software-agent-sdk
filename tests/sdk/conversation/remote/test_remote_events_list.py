@@ -149,6 +149,60 @@ def test_remote_events_list_callback_integration(mock_client, conversation_id):
     assert events_list[0].id == "callback-event"
 
 
+def test_default_callback_filters_full_state_snapshots(mock_client, conversation_id):
+    """Default callback must ignore full-state snapshot events.
+
+    Full-state snapshots (``ConversationStateUpdateEvent`` with
+    ``key == FULL_STATE_KEY``) are published via ``_pub_sub`` when a
+    WebSocket subscriber connects or a run completes, but they are
+    **not** stored in the server-side ``EventLog``.  Including them
+    would cause the client-side event count to diverge from the server.
+
+    Per-field state updates and other event types must still pass through.
+    """
+    from openhands.sdk.event.conversation_state import (
+        FULL_STATE_KEY,
+        ConversationStateUpdateEvent,
+    )
+    from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+
+    mock_response = create_mock_api_response([])
+    mock_client.request.return_value = mock_response
+
+    events_list = RemoteEventsList(mock_client, conversation_id)
+    callback = events_list.create_default_callback()
+
+    # Full-state snapshot should be filtered
+    full_snapshot = ConversationStateUpdateEvent(
+        key=FULL_STATE_KEY,
+        value={"execution_status": "finished"},
+    )
+    callback(full_snapshot)
+    assert len(events_list) == 0
+
+    # Per-field state update (key != FULL_STATE_KEY) should pass through
+    field_update = ConversationStateUpdateEvent(
+        key="execution_status",
+        value="finished",
+    )
+    callback(field_update)
+    assert len(events_list) == 1
+
+    # LLMCompletionLogEvent should also pass through (persisted in EventLog)
+    llm_log_event = LLMCompletionLogEvent(
+        filename="test.json",
+        log_data="{}",
+    )
+    callback(llm_log_event)
+    assert len(events_list) == 2
+
+    # Regular conversation events should pass through
+    normal_event = create_mock_event("regular-event")
+    callback(normal_event)
+    assert len(events_list) == 3
+    assert events_list[2].id == "regular-event"
+
+
 def test_remote_events_list_api_error(mock_client, conversation_id):
     """Test error propagation when API calls fail."""
     mock_request = Mock()
