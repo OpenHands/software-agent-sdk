@@ -513,9 +513,7 @@ class EventService:
                     continue
                 event = StreamingDeltaEvent(
                     content=content if isinstance(content, str) else None,
-                    reasoning_content=reasoning
-                    if isinstance(reasoning, str)
-                    else None,
+                    reasoning_content=reasoning if isinstance(reasoning, str) else None,
                 )
                 with suppress(RuntimeError):
                     asyncio.run_coroutine_threadsafe(
@@ -529,9 +527,7 @@ class EventService:
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
             callbacks=[self._callback_wrapper],
-            token_callbacks=(
-                [_token_streaming_callback] if streaming_enabled else []
-            ),
+            token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
