@@ -382,9 +382,7 @@ class LocalConversation(BaseConversation):
             if secrets:
                 merged_mcp = expand_mcp_variables(merged_mcp, {}, secrets=secrets)
                 agent_update_needed = True
-                logger.debug(
-                    f"Expanded MCP config with {len(secrets)} secret(s)"
-                )
+                logger.debug(f"Expanded MCP config with {len(secrets)} secret(s)")
 
         # Update agent with merged content if needed
         if agent_update_needed:

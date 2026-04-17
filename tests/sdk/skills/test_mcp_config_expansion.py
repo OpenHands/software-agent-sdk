@@ -2,10 +2,6 @@
 
 import json
 import os
-import tempfile
-from pathlib import Path
-
-import pytest
 
 from openhands.sdk.skills.utils import expand_mcp_variables, load_mcp_config
 
@@ -130,7 +126,9 @@ class TestExpandMcpVariables:
 
         result = expand_mcp_variables(config, {})
 
-        assert result["mcpServers"]["test-server"]["url"] == "https://default.example.com"
+        assert (
+            result["mcpServers"]["test-server"]["url"] == "https://default.example.com"
+        )
         assert result["mcpServers"]["test-server"]["timeout"] == "30"
 
     def test_default_not_used_when_secret_exists(self):
@@ -146,7 +144,9 @@ class TestExpandMcpVariables:
 
         result = expand_mcp_variables(config, {}, secrets=secrets)
 
-        assert result["mcpServers"]["test-server"]["url"] == "https://secret.example.com"
+        assert (
+            result["mcpServers"]["test-server"]["url"] == "https://secret.example.com"
+        )
 
     def test_unexpanded_variables_remain_unchanged(self):
         """Test that unresolved variables remain as-is."""
@@ -280,4 +280,6 @@ class TestLoadMcpConfigWithSecrets:
 
         assert result["mcpServers"]["my-server"]["command"] == f"{tmp_path}/server.py"
         assert result["mcpServers"]["my-server"]["env"]["API_KEY"] == "secret-key-123"
-        assert result["mcpServers"]["my-server"]["env"]["DB_URL"] == "sqlite://default.db"
+        assert (
+            result["mcpServers"]["my-server"]["env"]["DB_URL"] == "sqlite://default.db"
+        )
