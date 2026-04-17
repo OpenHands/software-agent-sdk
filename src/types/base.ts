@@ -8,8 +8,8 @@ export interface Event {
   id: string;
   kind: string;
   timestamp: string;
-  source?: 'agent' | 'user' | 'environment';
-  [key: string]: any;
+  source?: 'agent' | 'user' | 'environment' | 'system' | 'hook';
+  [key: string]: unknown;
 }
 
 // Specific event types for better type safety
@@ -21,14 +21,14 @@ export interface MessageEvent extends Event {
 
 export interface ActionEvent extends Event {
   kind: 'ActionEvent';
-  action: any; // The action object varies by action type
+  action: Record<string, unknown>;
 }
 
 export interface ObservationEvent extends Event {
   kind: 'ObservationEvent';
   tool_name: string;
   tool_call_id: string;
-  observation: any;
+  observation: unknown;
   action_id: string;
 }
 
@@ -36,14 +36,14 @@ export interface AgentErrorEvent extends Event {
   kind: 'AgentErrorEvent';
   tool_name: string;
   tool_call_id: string;
-  observation: any;
+  observation: unknown;
   action_id: string;
 }
 
 export interface SystemPromptEvent extends Event {
   kind: 'SystemPromptEvent';
   system_prompt: TextContent;
-  tools: any[];
+  tools: unknown[];
 }
 
 export interface PauseEvent extends Event {
@@ -72,19 +72,18 @@ export interface ImageContent extends MessageContent {
 }
 
 export interface AgentContext {
-  skills?: any[];
+  skills?: unknown[];
   system_message_suffix?: string | null;
   user_message_suffix?: string | null;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface AgentBase {
   kind: string;
   llm: LLM;
   agent_context?: AgentContext | null;
-  // Keep name for backward compatibility
   name?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // Alias for user-facing API
@@ -94,12 +93,12 @@ export interface LLM {
   model: string;
   api_key?: string;
   base_url?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface ServerInfo {
   version: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface Success {
@@ -145,12 +144,12 @@ export interface ConversationStats {
   message_events: number;
   action_events: number;
   observation_events: number;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface ConfirmationPolicyBase {
   type: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface NeverConfirm extends ConfirmationPolicyBase {

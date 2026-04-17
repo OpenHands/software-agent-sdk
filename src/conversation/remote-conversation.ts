@@ -194,7 +194,11 @@ export class RemoteConversation implements IConversation {
 
   async conversationStats(): Promise<ConversationStats> {
     const response = await this.client.get<ConversationInfo>(`/api/conversations/${this.id}`);
-    return response.data.stats;
+    const stats = response.data.stats ?? response.data.conversation_stats;
+    if (!stats) {
+      throw new Error('No conversation stats available');
+    }
+    return stats;
   }
 
   async sendMessage(message: string | Message): Promise<void> {

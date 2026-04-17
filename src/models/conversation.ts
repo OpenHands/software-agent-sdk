@@ -28,10 +28,11 @@ export interface ConversationInfo {
   confirmation_policy: ConfirmationPolicyBase;
   activated_knowledge_skills: string[];
   agent: AgentBase;
-  workspace: any;
+  workspace: unknown;
   persistence_dir: string;
   conversation_stats?: ConversationStats;
-  stats?: any; // API returns stats instead of conversation_stats
+  /** API may return stats instead of conversation_stats */
+  stats?: ConversationStats;
   hook_config?: HookConfig | null;
   blocked_actions?: Record<string, string>;
   blocked_messages?: Record<string, string>;
@@ -42,7 +43,7 @@ export interface ConversationInfo {
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */
   status?: ConversationExecutionStatus;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export interface SendMessageRequest {

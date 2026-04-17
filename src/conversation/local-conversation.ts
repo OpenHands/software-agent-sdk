@@ -737,8 +737,10 @@ export class LocalConversation implements IConversation {
   /**
    * Generate a title for the conversation using the LLM.
    */
-  async generateTitle(maxLength: number = 50, llm?: LLM): Promise<string> {
-    const llmToUse = llm || this.llm;
+  async generateTitle(maxLength: number = 50, _llm?: LLM): Promise<string> {
+    // LocalConversation always uses its own ILLM instance for title generation.
+    // The llm parameter exists for interface compatibility with RemoteConversation.
+    const llmToUse = this.llm;
 
     // Get a summary of the conversation
     const userMessages = this.messages
