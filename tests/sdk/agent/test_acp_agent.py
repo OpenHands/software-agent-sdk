@@ -2119,8 +2119,12 @@ class TestACPSessionIdPersistence:
     """
 
     @staticmethod
-    def _patched_start_acp_server(agent, state, *, conn):
-        """Invoke the real _start_acp_server with ACP transport layers mocked."""
+    def _transport_patches(conn):
+        """Context manager stacking the transport-layer mocks that let
+        _start_acp_server run without spawning a real subprocess.
+        """
+        from contextlib import ExitStack
+
         mock_process = MagicMock()
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
@@ -2131,27 +2135,40 @@ class TestACPSessionIdPersistence:
         async def _fake_filter(_src, _dst):
             return None
 
-        from openhands.sdk.utils.async_executor import AsyncExecutor
-
-        agent._executor = AsyncExecutor()
-        with (
+        stack = ExitStack()
+        stack.enter_context(
             patch(
                 "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
                 new=_fake_create_subprocess_exec,
-            ),
+            )
+        )
+        stack.enter_context(
             patch(
                 "openhands.sdk.agent.acp_agent.ClientSideConnection",
                 return_value=conn,
-            ),
+            )
+        )
+        stack.enter_context(
             patch(
                 "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
                 new=_fake_filter,
-            ),
+            )
+        )
+        stack.enter_context(
             patch(
                 "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
                 return_value=MagicMock(),
-            ),
-        ):
+            )
+        )
+        return stack
+
+    @staticmethod
+    def _patched_start_acp_server(agent, state, *, conn):
+        """Invoke the real _start_acp_server with ACP transport layers mocked."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent._executor = AsyncExecutor()
+        with TestACPSessionIdPersistence._transport_patches(conn):
             agent._start_acp_server(state)
 
     @staticmethod
@@ -2321,3 +2338,130 @@ class TestACPSessionIdPersistence:
         conn.load_session.assert_awaited_once()
         conn.new_session.assert_not_awaited()
         assert agent._session_id == "legacy-sess"
+
+    def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
+        """When load_session fails and new_session runs, init_state must
+        overwrite state.agent_state['acp_session_id'] with the new id so
+        the next restart doesn't keep trying to resume the stale one.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stale-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
+        """load_session must be followed by the same set_session_model and
+        set_session_mode calls as new_session, so a resumed session honours
+        acp_model overrides and the bypass-permissions mode.
+        """
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        # Name the server "codex-acp" so _maybe_set_session_model routes
+        # acp_model through conn.set_session_model (claude-acp uses _meta,
+        # which only applies on new_session and so wouldn't exercise the
+        # protocol-level override on the resume path).
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="claude-opus-4-6",
+            session_id="stored-sess",
+        )
+        conn.set_session_mode.assert_awaited_once_with(
+            mode_id="full-access",
+            session_id="stored-sess",
+        )
+
+    def test_roundtrip_via_conversation_state_persistence(self, tmp_path):
+        """End-to-end round-trip through ConversationState persistence:
+
+        1. First Conversation with persistence_dir → init_state runs,
+           new_session is called, ``state.agent_state["acp_session_id"]`` is
+           written, autosave flushes ``base_state.json`` to disk.
+        2. Fresh ACPAgent + Conversation pointed at the same persistence_dir
+           and id → ConversationState.create() restores ``base_state.json``
+           so ``agent_state["acp_session_id"]`` survives; init_state on the
+           resumed state triggers ``load_session`` with that id.
+        """
+        import uuid as _uuid
+
+        from openhands.sdk.conversation import Conversation
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        persistence_dir = tmp_path / "persist"
+        conv_id = _uuid.uuid4()
+        workspace = tmp_path / "work"
+        workspace.mkdir()
+
+        conn1 = self._make_conn(new_session_id="roundtrip-sess")
+        agent1 = _make_agent()
+        agent1._executor = AsyncExecutor()
+        with self._transport_patches(conn1):
+            conv1 = Conversation(
+                agent=agent1,
+                workspace=str(workspace),
+                persistence_dir=str(persistence_dir),
+                conversation_id=conv_id,
+                delete_on_close=False,
+                visualizer=None,
+            )
+            conv1._ensure_agent_ready()
+            assert conv1.state.agent_state["acp_session_id"] == "roundtrip-sess"
+            conv1.close()
+
+        conn1.new_session.assert_awaited_once()
+        conn1.load_session.assert_not_awaited()
+
+        # Fresh ACPAgent with no runtime knowledge of the prior session.
+        conn2 = self._make_conn()
+        agent2 = _make_agent()
+        agent2._executor = AsyncExecutor()
+        with self._transport_patches(conn2):
+            conv2 = Conversation(
+                agent=agent2,
+                workspace=str(workspace),
+                persistence_dir=str(persistence_dir),
+                conversation_id=conv_id,
+                delete_on_close=True,
+                visualizer=None,
+            )
+            conv2._ensure_agent_ready()
+            # base_state.json restored the id into agent_state.
+            assert conv2.state.agent_state["acp_session_id"] == "roundtrip-sess"
+            conv2.close()
+
+        # Second launch took the load_session branch with the persisted id.
+        conn2.load_session.assert_awaited_once()
+        _, kwargs = conn2.load_session.call_args
+        assert kwargs["session_id"] == "roundtrip-sess"
+        assert kwargs["cwd"] == str(workspace)
+        conn2.new_session.assert_not_awaited()
+        assert agent2._session_id == "roundtrip-sess"
