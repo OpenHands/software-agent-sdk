@@ -137,7 +137,8 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     }
     assert verification_fields["confirmation_mode"].default is False
     assert (
-        verification_fields["confirmation_mode"].prominence is SettingProminence.MAJOR
+        verification_fields["confirmation_mode"].prominence
+        is SettingProminence.CRITICAL
     )
     assert verification_fields["security_analyzer"].default == "llm"
     assert verification_fields["security_analyzer"].choices[0].value == "llm"

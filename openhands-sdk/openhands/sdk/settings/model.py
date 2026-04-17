@@ -349,7 +349,7 @@ class ConversationSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Confirmation mode",
-                prominence=SettingProminence.MAJOR,
+                prominence=SettingProminence.CRITICAL,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",
