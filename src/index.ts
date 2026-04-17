@@ -74,12 +74,12 @@ export type {
   EventID,
   EventSource,
   BaseEvent,
-  MessageEvent as TypedMessageEvent,
-  ActionEvent as TypedActionEvent,
-  ObservationEvent as TypedObservationEvent,
-  AgentErrorEvent as TypedAgentErrorEvent,
-  SystemPromptEvent as TypedSystemPromptEvent,
-  PauseEvent as TypedPauseEvent,
+  MessageEvent,
+  ActionEvent,
+  ObservationEvent,
+  AgentErrorEvent,
+  SystemPromptEvent,
+  PauseEvent,
   CondensationRequestEvent,
   CondensationSummaryEvent,
   CondensationEvent,
@@ -93,9 +93,9 @@ export type {
   StuckDetectionEvent,
   FinishEvent,
   ThinkEvent,
-  HookExecutionEvent as TypedHookExecutionEvent,
+  HookExecutionEvent,
   HookExecutionEventType,
-  ConversationEvent as TypedConversationEvent,
+  ConversationEvent,
 } from './events/types';
 
 // Hooks
@@ -143,12 +143,6 @@ export { HttpClient, HttpError } from './client/http-client';
 export type {
   ConversationID,
   Event,
-  MessageEvent,
-  ActionEvent,
-  ObservationEvent,
-  AgentErrorEvent,
-  SystemPromptEvent,
-  PauseEvent,
   Message,
   MessageContent,
   TextContent,
@@ -163,7 +157,6 @@ export type {
   SecretValue,
   ConversationStats,
   ConfirmationPolicyBase,
-  // Note: NeverConfirm and AlwaysConfirm classes are exported from security module
 } from './types/base';
 
 export type { AgentOptions } from './agent/agent';

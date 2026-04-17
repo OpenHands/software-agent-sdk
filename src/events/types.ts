@@ -5,7 +5,7 @@
  * structured events for all conversation activities.
  */
 
-import { Message, MessageContent } from '../types/base';
+import { Message, MessageContent, Event } from '../types/base';
 
 /**
  * Event ID type - unique identifier for events
@@ -18,9 +18,10 @@ export type EventID = string;
 export type EventSource = 'agent' | 'user' | 'environment' | 'system' | 'hook';
 
 /**
- * Base interface for all conversation events
+ * Base interface for all rich conversation events.
+ * Extends the minimal Event interface from types/base.ts.
  */
-export interface BaseEvent {
+export interface BaseEvent extends Event {
   /** Unique event identifier */
   id: EventID;
   /** Event type/kind discriminator */

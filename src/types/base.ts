@@ -4,50 +4,16 @@
 
 export type ConversationID = string;
 
+/**
+ * Base event interface matching the agent-server wire format.
+ * For rich, typed events use the specific types from events/types.ts
+ * (e.g., ActionEvent, ObservationEvent, ConversationEvent).
+ */
 export interface Event {
   id: string;
   kind: string;
   timestamp: string;
   source?: 'agent' | 'user' | 'environment' | 'system' | 'hook';
-  [key: string]: unknown;
-}
-
-// Specific event types for better type safety
-export interface MessageEvent extends Event {
-  kind: 'MessageEvent';
-  llm_message: Message;
-  activated_skills?: string[];
-}
-
-export interface ActionEvent extends Event {
-  kind: 'ActionEvent';
-  action: Record<string, unknown>;
-}
-
-export interface ObservationEvent extends Event {
-  kind: 'ObservationEvent';
-  tool_name: string;
-  tool_call_id: string;
-  observation: unknown;
-  action_id: string;
-}
-
-export interface AgentErrorEvent extends Event {
-  kind: 'AgentErrorEvent';
-  tool_name: string;
-  tool_call_id: string;
-  observation: unknown;
-  action_id: string;
-}
-
-export interface SystemPromptEvent extends Event {
-  kind: 'SystemPromptEvent';
-  system_prompt: TextContent;
-  tools: unknown[];
-}
-
-export interface PauseEvent extends Event {
-  kind: 'PauseEvent';
 }
 
 export interface Message {
