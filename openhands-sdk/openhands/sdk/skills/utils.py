@@ -69,6 +69,8 @@ def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
     secrets: dict[str, str] | None = None,
+    *,
+    expand_defaults: bool = True,
 ) -> dict:
     """Expand variables in MCP configuration.
 
@@ -80,12 +82,15 @@ def expand_mcp_variables(
     1. Provided variables (e.g., SKILL_ROOT)
     2. Secrets (per-conversation secrets from SecretRegistry)
     3. Environment variables
-    4. Default value (if specified)
+    4. Default value (if specified and expand_defaults=True)
 
     Args:
         config: MCP configuration dictionary.
         variables: Dictionary of variable names to values (e.g., SKILL_ROOT).
         secrets: Optional dictionary of per-conversation secrets for expansion.
+        expand_defaults: If True, apply default values for unresolved variables.
+            If False, preserve ${VAR:-default} as-is for later expansion.
+            This allows deferred expansion when secrets are not yet available.
 
     Returns:
         Configuration with variables expanded.
@@ -109,9 +114,10 @@ def expand_mcp_variables(
             return secrets_dict[var_name]
         if var_name in os.environ:
             return os.environ[var_name]
-        if default_value is not None:
+        # Apply default only if expand_defaults is True
+        if expand_defaults and default_value is not None:
             return default_value
-        # Return original if not found
+        # Return original if not found (preserves placeholder for later expansion)
         return match.group(0)
 
     config_str = var_pattern.sub(replace_var, config_str)
@@ -122,6 +128,8 @@ def load_mcp_config(
     mcp_json_path: Path,
     skill_root: Path | None = None,
     secrets: dict[str, str] | None = None,
+    *,
+    expand_defaults: bool = True,
 ) -> dict:
     """Load and parse .mcp.json with variable expansion.
 
@@ -129,6 +137,9 @@ def load_mcp_config(
         mcp_json_path: Path to the .mcp.json file.
         skill_root: Root directory of the skill (for ${SKILL_ROOT} expansion).
         secrets: Optional dictionary of per-conversation secrets for expansion.
+        expand_defaults: If True, apply default values for unresolved variables.
+            If False, preserve ${VAR:-default} as-is for later expansion.
+            Use False during plugin loading to defer until secrets are available.
 
     Returns:
         Parsed MCP configuration dictionary.
@@ -155,7 +166,9 @@ def load_mcp_config(
         variables["SKILL_ROOT"] = str(skill_root)
 
     # Expand variables (includes secrets if provided)
-    config = expand_mcp_variables(config, variables, secrets=secrets)
+    config = expand_mcp_variables(
+        config, variables, secrets=secrets, expand_defaults=expand_defaults
+    )
 
     # Validate using MCPConfig
     try:

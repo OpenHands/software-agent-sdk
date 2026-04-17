@@ -52,6 +52,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -373,15 +374,19 @@ class LocalConversation(BaseConversation):
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Expand MCP config variables with per-conversation secrets
-        # This handles ${VAR} placeholders that reference secrets injected via API
-        # Runs even without plugins to expand agent's existing mcp_config
+        # This handles ${VAR} and ${VAR:-default} placeholders:
+        # - Variables referencing secrets injected via API are expanded to secret values
+        # - Variables with defaults that don't have secrets fall back to their defaults
+        # - This is the ONLY place where defaults are applied (plugin loading preserves
+        #   placeholders with expand_defaults=False to avoid double-expansion)
         if merged_mcp:
-            from openhands.sdk.skills.utils import expand_mcp_variables
-
             secrets = self._state.secret_registry.get_all_secrets()
+            # Always expand, even if secrets is empty, to apply defaults
+            merged_mcp = expand_mcp_variables(
+                merged_mcp, {}, secrets=secrets, expand_defaults=True
+            )
+            agent_update_needed = True
             if secrets:
-                merged_mcp = expand_mcp_variables(merged_mcp, {}, secrets=secrets)
-                agent_update_needed = True
                 logger.debug(f"Expanded MCP config with {len(secrets)} secret(s)")
 
         # Update agent with merged content if needed
