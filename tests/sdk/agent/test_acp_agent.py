@@ -459,8 +459,18 @@ class TestACPActivityHeartbeat:
 
         # Mock the internals so step() doesn't actually call the ACP server
         agent._client = _OpenHandsACPBridge()
+
+        # Capture on_activity while prompt() is still "running" — step()
+        # unwires the bridge callbacks in its finally block once the turn
+        # completes, so the post-return value is None by design.
+        wired_during_prompt: list = []
+
+        def _capture_run_async(_coro, **_kwargs):
+            wired_during_prompt.append(agent._client.on_activity)
+            return MagicMock(usage=None)
+
         agent._executor = MagicMock()
-        agent._executor.run_async = MagicMock(return_value=MagicMock(usage=None))
+        agent._executor.run_async = _capture_run_async
         agent._session_id = "sess-1"
         agent._initialized = True
 
@@ -470,8 +480,11 @@ class TestACPActivityHeartbeat:
 
         agent.step(conversation, on_event=events.append)
 
-        # Verify on_activity was wired to the bridge
-        assert agent._client.on_activity is activity_fn
+        # Verify on_activity was wired to the bridge during the turn.
+        assert wired_during_prompt == [activity_fn]
+        # And that it was cleared afterward so a late session_update
+        # cannot fire the per-turn heartbeat callback out-of-band.
+        assert agent._client.on_activity is None
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +656,12 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
+        # Capture on_token while prompt() is still running — step() clears
+        # the per-turn callbacks in its finally block once the turn ends.
+        wired_during_prompt: list = []
+
         def _fake_run_async(_coro, **_kwargs):
+            wired_during_prompt.append(mock_client.on_token)
             mock_client.accumulated_text.append("ok")
 
         mock_executor = MagicMock()
@@ -654,8 +672,10 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None, on_token=on_token)
 
-        # Verify on_token was passed to the client
-        assert mock_client.on_token == on_token
+        # Verify on_token was wired during the turn.
+        assert wired_during_prompt == [on_token]
+        # And unwired afterward so a late token chunk is a no-op.
+        assert mock_client.on_token is None
 
 
 # ---------------------------------------------------------------------------
@@ -1668,6 +1688,77 @@ class TestACPToolCallEmission:
         # Verify second tool call event (failed)
         assert events[1].tool_call_id == "tc-2"
         assert events[1].is_error is True
+
+    def test_step_clears_live_callbacks_on_return(self, tmp_path):
+        """After step() returns, bridge callbacks are unwired.
+
+        A trailing ``session_update`` that lands between turns (the ACP
+        subprocess sending a late ``ToolCallProgress`` after its prompt
+        response) would otherwise fire the previous step's ``on_event``
+        on the portal thread with no FIFOLock held by anyone, racing
+        other threads appending to ``state.events``.
+        """
+        from acp.schema import ToolCallStart
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            mock_client.accumulated_text.append("done")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append, on_token=lambda _: None)
+
+        # Callbacks unwired — a late session_update is a safe no-op emit.
+        assert mock_client.on_event is None
+        assert mock_client.on_token is None
+        assert mock_client.on_activity is None
+
+        pre_count = len(events)
+        trailing = MagicMock(spec=ToolCallStart)
+        trailing.tool_call_id = "tc-late"
+        trailing.title = "Late arrival"
+        trailing.kind = "read"
+        trailing.status = "completed"
+        trailing.raw_input = None
+        trailing.raw_output = None
+        trailing.content = None
+        asyncio.run(mock_client.session_update("sess", trailing))
+        assert len(events) == pre_count  # nothing reached the stale callback
+
+    def test_step_clears_live_callbacks_on_error(self, tmp_path):
+        """Callback unwire also runs when step() raises (finally block)."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            raise RuntimeError("boom")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(RuntimeError):
+            agent.step(conversation, on_event=events.append)
+
+        assert mock_client.on_event is None
+        assert mock_client.on_token is None
+        assert mock_client.on_activity is None
 
     def test_step_emits_no_tool_call_events_when_none(self, tmp_path):
         """step() emits only MessageEvent when no tool calls accumulated."""

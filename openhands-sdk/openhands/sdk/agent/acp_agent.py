@@ -317,6 +317,21 @@ class _OpenHandsACPBridge:
     elsewhere) from racing with either phase.  The ordering between the
     two phases is what keeps a single consumer's cross-callback state
     (e.g. hook processors that read-then-write) consistent.
+
+    Two invariants callers rely on:
+
+    * ``on_event`` handlers MUST NOT acquire the conversation state lock
+      (``with conversation.state:``).  The bridge fires them on the portal
+      thread while the caller thread is parked inside ``portal.call()``
+      owning that lock, and ``FIFOLock`` is thread-bound — a lock-acquire
+      on the portal thread would deadlock rather than re-enter.
+    * Tool-call → final-message ordering depends on the ACP server
+      draining every ``session_update`` notification for a turn *before*
+      the prompt response returns.  Verified against
+      ``claude-agent-acp@0.29.0``; servers that interleave trailing
+      ``ToolCallProgress`` after the prompt response would invert the
+      order a consumer sees, and dedupe-by-id+"last-seen wins" would
+      treat the post-message event as authoritative.
     """
 
     def __init__(self) -> None:
@@ -1261,6 +1276,17 @@ class ACPAgent(AgentBase):
             # breaks the loop, emits ConversationErrorEvent, and raises
             # ConversationRunError — matching how the regular Agent works
             raise
+        finally:
+            # Unwire the per-turn callbacks now that this step has finished
+            # emitting everything it's going to emit.  If the ACP subprocess
+            # later dispatches a trailing ``session_update`` (e.g. between
+            # turns), it fires on the portal thread with no FIFOLock held
+            # by anyone — firing a stale ``on_event`` there would race
+            # with other threads mutating ``state.events``.  Clearing the
+            # callbacks turns any such late update into a no-op emit.
+            self._client.on_event = None
+            self._client.on_token = None
+            self._client.on_activity = None
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""
