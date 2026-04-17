@@ -152,3 +152,75 @@ def test_get_secrets_as_env_vars_handles_callable_exceptions():
 
     # Only working secret should be returned
     assert env_vars == {"WORKING_SECRET": "working-value"}
+
+
+def test_get_all_secrets_static_values():
+    """Test get_all_secrets with static string values."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_KEY": "test-api-key",
+            "DATABASE_URL": "postgresql://localhost/test",
+        }
+    )
+
+    all_secrets = secret_registry.get_all_secrets()
+    assert all_secrets == {
+        "API_KEY": "test-api-key",
+        "DATABASE_URL": "postgresql://localhost/test",
+    }
+
+
+def test_get_all_secrets_callable_values():
+    """Test get_all_secrets with callable values."""
+    secret_registry = SecretRegistry()
+
+    class MyTokenSource(SecretSource):
+        def get_value(self):
+            return "dynamic-token-456"
+
+    secret_registry.update_secrets(
+        {
+            "STATIC_KEY": "static-value",
+            "DYNAMIC_TOKEN": MyTokenSource(),
+        }
+    )
+
+    all_secrets = secret_registry.get_all_secrets()
+    assert all_secrets == {
+        "STATIC_KEY": "static-value",
+        "DYNAMIC_TOKEN": "dynamic-token-456",
+    }
+
+
+def test_get_all_secrets_handles_exceptions():
+    """Test that get_all_secrets handles exceptions from callables gracefully."""
+    secret_registry = SecretRegistry()
+
+    class MyFailingTokenSource(SecretSource):
+        def get_value(self):
+            raise ValueError("Secret retrieval failed")
+
+    class MyWorkingTokenSource(SecretSource):
+        def get_value(self):
+            return "working-value"
+
+    secret_registry.update_secrets(
+        {
+            "FAILING_SECRET": MyFailingTokenSource(),
+            "WORKING_SECRET": MyWorkingTokenSource(),
+        }
+    )
+
+    # Should not raise exception, should skip failing secret
+    all_secrets = secret_registry.get_all_secrets()
+
+    # Only working secret should be returned
+    assert all_secrets == {"WORKING_SECRET": "working-value"}
+
+
+def test_get_all_secrets_empty_registry():
+    """Test get_all_secrets with empty registry."""
+    secret_registry = SecretRegistry()
+    all_secrets = secret_registry.get_all_secrets()
+    assert all_secrets == {}

@@ -132,6 +132,28 @@ class SecretRegistry(OpenHandsModel):
             secret_infos.append({"name": name, "description": description})
         return secret_infos
 
+    def get_all_secrets(self) -> dict[str, str]:
+        """Get all secrets as a dictionary of name to value.
+
+        This method retrieves the current values of all registered secrets.
+        Useful for MCP config variable expansion and other contexts where
+        all secrets need to be available as a dict.
+
+        Returns:
+            Dictionary mapping secret names to their current values.
+            Secrets that fail to retrieve are excluded from the result.
+        """
+        secrets: dict[str, str] = {}
+        for name, source in self.secret_sources.items():
+            try:
+                value = source.get_value()
+                if value:
+                    secrets[name] = value
+            except Exception as e:
+                logger.warning(f"Failed to retrieve secret '{name}': {e}")
+                continue
+        return secrets
+
 
 def _wrap_secret(value: SecretValue) -> SecretSource:
     """Convert the value given to a secret source"""

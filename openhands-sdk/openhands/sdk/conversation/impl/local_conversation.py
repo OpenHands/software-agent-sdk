@@ -328,14 +328,15 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
+        # Track if we need to update the agent
+        agent_update_needed = False
+        merged_context = self.agent.agent_context
+        merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
-
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -368,7 +369,25 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            # Update agent with merged content
+            agent_update_needed = True
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Expand MCP config variables with per-conversation secrets
+        # This handles ${VAR} placeholders that reference secrets injected via API
+        # Runs even without plugins to expand agent's existing mcp_config
+        if merged_mcp:
+            from openhands.sdk.skills.utils import expand_mcp_variables
+
+            secrets = self._state.secret_registry.get_all_secrets()
+            if secrets:
+                merged_mcp = expand_mcp_variables(merged_mcp, {}, secrets=secrets)
+                agent_update_needed = True
+                logger.debug(
+                    f"Expanded MCP config with {len(secrets)} secret(s)"
+                )
+
+        # Update agent with merged content if needed
+        if agent_update_needed:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -379,8 +398,6 @@ class LocalConversation(BaseConversation):
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
-
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
