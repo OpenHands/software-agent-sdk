@@ -295,13 +295,28 @@ class _OpenHandsACPBridge:
 
     Concurrency model — ``on_event`` / ``on_token`` / ``on_activity`` are
     fired synchronously from ``session_update``, which runs on the
-    ``AsyncExecutor`` portal thread.  The caller thread driving
-    ``ACPAgent.step()`` is blocked inside ``portal.call()`` for the entire
-    ``prompt()`` round-trip, so these callbacks do not race with the final
-    ``MessageEvent`` / ``FinishAction`` emitted by the caller thread after
-    ``prompt()`` returns.  Consumers that keep cross-callback state (e.g.
-    hook processors reading-then-writing, visualizers) can therefore treat
-    each callback as sequential within a single turn.
+    ``AsyncExecutor`` portal thread.  The guarantees that keep callbacks
+    serialized within a single turn rely on the combination of two things,
+    not the GIL alone:
+
+    1. ``LocalConversation.run()`` calls ``agent.step(...)`` while holding
+       the reentrant ``ConversationState`` lock (a ``FIFOLock``) — see
+       ``local_conversation.py`` where ``self.agent.step(...)`` sits inside
+       ``with self._state:``.  The caller thread owns that lock for the
+       entire duration of ``step()``, so no other thread can append to
+       ``state.events`` during the turn.
+    2. ``portal.call(_prompt)`` blocks the caller thread until ``prompt()``
+       returns.  Live ``on_event`` calls happen on the portal thread while
+       the caller thread is parked inside ``portal.call()`` still owning
+       the state lock; the final ``MessageEvent`` / ``FinishAction`` run
+       on the caller thread after ``prompt()`` returns.  The two phases
+       never overlap in time.
+
+    The caller's state-lock ownership is what excludes *other* threads
+    (hook workers, remote-conversation push layers, visualizers spawned
+    elsewhere) from racing with either phase.  The ordering between the
+    two phases is what keeps a single consumer's cross-callback state
+    (e.g. hook processors that read-then-write) consistent.
     """
 
     def __init__(self) -> None:
@@ -955,7 +970,7 @@ class ACPAgent(AgentBase):
         self._client.on_event = on_event
         self._client.on_activity = self._on_activity
 
-    def _cancel_inflight_tool_calls(self, on_event: ConversationCallbackType) -> None:
+    def _cancel_inflight_tool_calls(self) -> None:
         """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
         in the accumulator that has not reached a terminal status yet.
 
@@ -967,9 +982,14 @@ class ACPAgent(AgentBase):
         spinning forever.  This method closes those cards before we wipe
         the in-memory accumulator on retry / turn abort.
 
-        Called with ``on_event`` passed in explicitly because the bridge's
-        ``on_event`` attribute is about to be cleared by ``reset()``.
+        Uses the bridge's ``on_event`` directly (the same callback driving
+        live emissions); call this *before* ``_reset_client_for_turn`` so
+        the callback is still wired up.  No-op if ``on_event`` was never
+        set (e.g. during tests exercising the bridge in isolation).
         """
+        on_event = self._client.on_event
+        if on_event is None:
+            return
         for tc in self._client.accumulated_tool_calls:
             status = tc.get("status")
             if status in _TERMINAL_TOOL_CALL_STATUSES:
@@ -1079,7 +1099,7 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._cancel_inflight_tool_calls(on_event)
+                        self._cancel_inflight_tool_calls()
                         self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
@@ -1104,7 +1124,7 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._cancel_inflight_tool_calls(on_event)
+                        self._cancel_inflight_tool_calls()
                         self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
@@ -1202,7 +1222,7 @@ class ACPAgent(AgentBase):
                 ],
             )
             # Close any tool cards left in flight from the timed-out attempt.
-            self._cancel_inflight_tool_calls(on_event)
+            self._cancel_inflight_tool_calls()
             on_event(MessageEvent(source="agent", llm_message=error_message))
             state.execution_status = ConversationExecutionStatus.ERROR
         except Exception as e:
@@ -1210,7 +1230,7 @@ class ACPAgent(AgentBase):
             error_str = str(e)
 
             # Close any tool cards left in flight before surfacing the error.
-            self._cancel_inflight_tool_calls(on_event)
+            self._cancel_inflight_tool_calls()
 
             # Emit error as an agent message (existing behavior, preserved for
             # consumers that inspect MessageEvents)

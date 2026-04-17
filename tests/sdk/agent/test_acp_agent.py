@@ -1431,11 +1431,12 @@ class TestACPCancelInflightToolCalls:
         """Pending / in_progress entries get a terminal failed ACPToolCallEvent."""
         agent = _make_agent()
         agent._client = _OpenHandsACPBridge()
+        emitted: list = []
+        agent._client.on_event = emitted.append
         self._push_entry(agent._client, "tc-1", "pending")
         self._push_entry(agent._client, "tc-2", "in_progress")
 
-        emitted: list = []
-        agent._cancel_inflight_tool_calls(emitted.append)
+        agent._cancel_inflight_tool_calls()
 
         assert len(emitted) == 2
         assert all(isinstance(e, ACPToolCallEvent) for e in emitted)
@@ -1446,12 +1447,13 @@ class TestACPCancelInflightToolCalls:
         """completed / failed entries are left alone — they already closed."""
         agent = _make_agent()
         agent._client = _OpenHandsACPBridge()
+        emitted: list = []
+        agent._client.on_event = emitted.append
         self._push_entry(agent._client, "tc-done", "completed")
         self._push_entry(agent._client, "tc-bad", "failed")
         self._push_entry(agent._client, "tc-live", "pending")
 
-        emitted: list = []
-        agent._cancel_inflight_tool_calls(emitted.append)
+        agent._cancel_inflight_tool_calls()
 
         # Only the pending one gets a synthetic terminal event.
         assert [e.tool_call_id for e in emitted] == ["tc-live"]
@@ -1469,9 +1471,20 @@ class TestACPCancelInflightToolCalls:
             seen.append(event)
             raise RuntimeError("boom")
 
-        agent._cancel_inflight_tool_calls(flaky)  # must not raise
+        agent._client.on_event = flaky
+        agent._cancel_inflight_tool_calls()  # must not raise
         # Both entries still attempted even though the first raised.
         assert len(seen) == 2
+
+    def test_noop_when_on_event_unset(self):
+        """If no on_event is wired, cancellation quietly does nothing."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        self._push_entry(agent._client, "tc-1", "pending")
+
+        # on_event default is None — must not raise, must not iterate
+        assert agent._client.on_event is None
+        agent._cancel_inflight_tool_calls()
 
     def test_retry_cancels_pending_events_before_reset(self, tmp_path):
         """Full step() retry path closes pending cards before the new attempt."""
