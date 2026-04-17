@@ -57,6 +57,7 @@ def event_service(tmp_path):
                         usage_id="test-llm",
                         model="test-model",
                         api_key=SecretStr("test-key"),
+                        stream=True,
                     ),
                     tools=[],
                 ),
@@ -138,7 +139,8 @@ async def test_callback_publishes_delta(
 
 
 @pytest.mark.asyncio
-async def test_callback_ignores_empty_delta(event_service, tmp_path):
+async def test_callback_ignores_delta_with_no_content_fields(event_service, tmp_path):
+    """Chunks where both content and reasoning_content are None are dropped."""
     collector = _CollectorSubscriber()
     event_service._pub_sub.subscribe(collector)
 
@@ -149,6 +151,71 @@ async def test_callback_ignores_empty_delta(event_service, tmp_path):
 
     delta_events = [e for e in collector.events if isinstance(e, StreamingDeltaEvent)]
     assert len(delta_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_callback_forwards_empty_string_delta(event_service, tmp_path):
+    """Empty-string chunks (legitimate at stream boundaries) must be forwarded."""
+    collector = _CollectorSubscriber()
+    event_service._pub_sub.subscribe(collector)
+
+    callback = await _start_and_capture_callback(event_service, tmp_path)
+    callback(_make_chunk(content=""))
+    await asyncio.sleep(0.05)
+
+    delta_events = [e for e in collector.events if isinstance(e, StreamingDeltaEvent)]
+    assert len(delta_events) == 1
+    assert delta_events[0].content == ""
+
+
+@pytest.mark.asyncio
+async def test_callback_handles_none_choices(event_service, tmp_path):
+    """Some providers emit keepalive chunks with choices=None."""
+    collector = _CollectorSubscriber()
+    event_service._pub_sub.subscribe(collector)
+
+    callback = await _start_and_capture_callback(event_service, tmp_path)
+    keepalive = ModelResponseStream(id="k", choices=[], model="test-model")
+    object.__setattr__(keepalive, "choices", None)
+
+    callback(keepalive)
+    await asyncio.sleep(0.05)
+
+    assert not [e for e in collector.events if isinstance(e, StreamingDeltaEvent)]
+
+
+@pytest.mark.asyncio
+async def test_token_callbacks_not_wired_when_stream_disabled(tmp_path):
+    """If no LLM has stream=True, don't attach the streaming callback at all."""
+    with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
+        mock_get.return_value = MagicMock(json=lambda: {"data": []})
+        service = EventService(
+            stored=StoredConversation(
+                id=uuid4(),
+                agent=Agent(
+                    llm=LLM(
+                        usage_id="test-llm",
+                        model="test-model",
+                        api_key=SecretStr("test-key"),
+                        stream=False,
+                    ),
+                    tools=[],
+                ),
+                workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            conversations_dir=tmp_path / "conversations",
+        )
+        (tmp_path / "workspace").mkdir(exist_ok=True)
+
+        with _mock_local_conversation() as MockConv:
+            mock_conv = MagicMock()
+            mock_conv.state = MagicMock(execution_status="idle")
+            mock_conv._state = MagicMock()
+            mock_conv._on_event = MagicMock()
+            MockConv.return_value = mock_conv
+
+            await service.start()
+            assert MockConv.call_args.kwargs["token_callbacks"] == []
 
 
 @pytest.mark.asyncio
