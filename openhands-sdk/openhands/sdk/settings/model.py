@@ -726,10 +726,14 @@ class ACPAgentSettings(BaseModel):
             "Must be set when :attr:`acp_server` is ``'custom'``."
         ),
         json_schema_extra={
+            # Deliberately no ``depends_on=("acp_server",)``: the frontend's
+            # ``depends_on`` filter does a boolean check, which would evaluate
+            # to false for the string-valued ``acp_server`` and hide the
+            # field outright. Users see ``acp_command`` in the "all" view of
+            # the ACP Server page if they need to supply a custom command.
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="ACP command (custom override)",
                 prominence=SettingProminence.MINOR,
-                depends_on=("acp_server",),
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="acp",
