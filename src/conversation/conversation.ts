@@ -93,9 +93,6 @@ export function createConversation(config: CreateConversationOptions): IConversa
       );
 
     case 'local':
-      if (!(config.workspace instanceof LocalWorkspace)) {
-        throw new Error('Local conversation requires LocalWorkspace');
-      }
       return new LocalConversation(
         config.agent,
         config.workspace,

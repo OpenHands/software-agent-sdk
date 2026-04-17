@@ -19,6 +19,7 @@ import {
   Event,
 } from '../types/base';
 import { LocalWorkspace } from '../workspace/local-workspace';
+import { IWorkspace } from '../workspace/base';
 import { IConversation, IConversationState, IEventsList, BaseConversationOptions } from './base';
 import { ILLM, ChatMessage, Tool, ToolCall, TokenStreamEvent } from '../llm/base';
 import { generateSystemPrompt, TOOL_DESCRIPTIONS } from '../prompts';
@@ -177,10 +178,10 @@ class LocalConversationState implements IConversationState {
 }
 
 /**
- * Built-in tools available to the agent
- * Aligned with the Python SDK's tool definitions
+ * Built-in tools that require a functional workspace (execute_command, read_file, write_file).
+ * These are only registered when the workspace supports them (i.e., not a stub LocalWorkspace).
  */
-const BUILTIN_TOOLS: Tool[] = [
+const WORKSPACE_TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
@@ -245,6 +246,13 @@ const BUILTIN_TOOLS: Tool[] = [
       },
     },
   },
+];
+
+/**
+ * Built-in tools that work without a functional workspace.
+ * These are always available when built-in tools are enabled.
+ */
+const STANDALONE_TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
@@ -304,7 +312,7 @@ const BUILTIN_TOOLS: Tool[] = [
  */
 export class LocalConversation implements IConversation {
   public readonly agent: AgentBase;
-  public readonly workspace: LocalWorkspace;
+  public readonly workspace: IWorkspace;
   public readonly llm: ILLM;
 
   private _conversationId?: string;
@@ -329,7 +337,7 @@ export class LocalConversation implements IConversation {
   private stuckDetectionEnabled: boolean;
   private securityAnalyzer?: SecurityAnalyzer;
 
-  constructor(agent: AgentBase, workspace: LocalWorkspace, options: LocalConversationOptions) {
+  constructor(agent: AgentBase, workspace: IWorkspace, options: LocalConversationOptions) {
     this.agent = agent;
     this.workspace = workspace;
     this.llm = options.llm;
@@ -370,12 +378,25 @@ export class LocalConversation implements IConversation {
   }
 
   /**
+   * Check whether the workspace supports actual operations.
+   * LocalWorkspace is a stub that throws on all operations.
+   */
+  private workspaceIsStub(): boolean {
+    return this.workspace instanceof LocalWorkspace;
+  }
+
+  /**
    * Get the tools available to the agent.
+   * Workspace-dependent tools (execute_command, read_file, write_file) are only
+   * included when the workspace supports actual operations.
    */
   private getTools(): Tool[] {
     const tools: Tool[] = [];
     if (this.includeBuiltinTools) {
-      tools.push(...BUILTIN_TOOLS);
+      tools.push(...STANDALONE_TOOLS);
+      if (!this.workspaceIsStub()) {
+        tools.push(...WORKSPACE_TOOLS);
+      }
     }
     if (this.customTools) {
       tools.push(...this.customTools);
