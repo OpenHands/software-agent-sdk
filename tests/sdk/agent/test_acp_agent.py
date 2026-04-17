@@ -2262,3 +2262,65 @@ class TestACPSessionIdPersistence:
         data = json.loads(agent.model_dump_json())
         assert "acp_session_id" not in data
         assert not hasattr(agent, "acp_session_id")
+
+    def test_init_state_writes_cwd_alongside_session_id(self, tmp_path):
+        """init_state records the cwd the session was created under so a later
+        resume can reject cwd mismatches (ACP keys persistence by cwd).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        def _fake_start(self, _state):
+            self._session_id = "sess-123"
+            self._agent_name = "claude-agent-acp"
+            self._agent_version = "1.0"
+            self._working_dir = str(tmp_path)
+
+        with patch.object(ACPAgent, "_start_acp_server", _fake_start):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert state.agent_state["acp_session_id"] == "sess-123"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_cwd_mismatch_skips_load_and_calls_new_session(
+        self, tmp_path, caplog
+    ):
+        """If the stored cwd differs from the current workspace cwd, resume
+        is skipped and new_session runs instead — so we never silently load
+        a session that the ACP server associated with a different directory.
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "old-sess",
+            "acp_session_cwd": "/some/other/place",
+        }
+        conn = self._make_conn(new_session_id="fresh-sess")
+
+        with caplog.at_level("WARNING"):
+            self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_not_awaited()
+        conn.new_session.assert_awaited_once()
+        assert agent._session_id == "fresh-sess"
+        assert any(
+            "cwd=/some/other/place" in rec.message
+            and "differs" in rec.message
+            for rec in caplog.records
+        ), "expected a warning explaining the cwd mismatch"
+
+    def test_resume_without_stored_cwd_still_works(self, tmp_path):
+        """Legacy state written by an earlier version has acp_session_id but
+        no acp_session_cwd — resume should still proceed (best-effort).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "legacy-sess"}
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "legacy-sess"

@@ -752,18 +752,22 @@ class ACPAgent(AgentBase):
 
         self._initialized = True
 
-        # Persist agent info + the ACP session id in agent_state.  Keeping the
-        # session id here (rather than on the frozen ACPAgent model) means
-        # ConversationState's existing base_state.json persistence carries it
-        # across agent-server restarts, and ``_start_acp_server`` on the next
-        # launch reads it back to call ``load_session`` instead of starting
-        # from scratch.  ACP servers key their persistence by ``cwd``, so
-        # resuming in a different working directory may miss the prior session.
+        # Persist agent info + the ACP session id + its cwd in agent_state.
+        # Keeping these here (rather than on the frozen ACPAgent model) means
+        # ConversationState's existing base_state.json persistence carries
+        # them across agent-server restarts, and ``_start_acp_server`` on the
+        # next launch reads them back to call ``load_session`` instead of
+        # starting from scratch.  We record ``acp_session_cwd`` alongside the
+        # id because ACP servers key their persistence by ``cwd``: resuming
+        # in a different working directory would at best silently miss the
+        # prior session and at worst load a different session that happens to
+        # exist at the new cwd.
         state.agent_state = {
             **state.agent_state,
             "acp_agent_name": self._agent_name,
             "acp_agent_version": self._agent_version,
             "acp_session_id": self._session_id,
+            "acp_session_cwd": self._working_dir,
         }
 
     def _start_acp_server(self, state: ConversationState) -> None:
@@ -786,7 +790,23 @@ class ACPAgent(AgentBase):
         # Prior ACP session id — survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).
         # Its presence is the signal to resume; its absence means fresh start.
+        # ACP servers key persistence by ``cwd``; if the workspace moved we
+        # drop the id so we don't accidentally resume (or silently load) a
+        # session the server associates with a different directory.
         prior_session_id: str | None = state.agent_state.get("acp_session_id")
+        prior_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
+        if prior_session_id is not None and prior_session_cwd not in (
+            None,
+            working_dir,
+        ):
+            logger.warning(
+                "ACP session %s was created with cwd=%s; current cwd=%s differs, "
+                "starting a fresh session instead of resuming",
+                prior_session_id,
+                prior_session_cwd,
+                working_dir,
+            )
+            prior_session_id = None
 
         async def _init() -> tuple[Any, Any, Any, str, str, str]:
             # Spawn the subprocess directly so we can install a
@@ -859,6 +879,12 @@ class ACPAgent(AgentBase):
             # Resume the prior ACP session if we have its id.  If the server
             # has forgotten it (state wiped, new host, etc.) fall through to
             # new_session so the conversation still starts cleanly.
+            #
+            # We only swallow ACPRequestError here: that is the protocol-level
+            # "I don't know this session" signal and is recoverable by
+            # starting fresh.  Transport failures (broken pipe, EOF, timeout,
+            # subprocess crash) propagate — there is no working connection to
+            # fall back on, and the outer init_state handler cleans up.
             session_id: str | None = None
             if prior_session_id is not None:
                 try:
