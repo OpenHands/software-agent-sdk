@@ -612,3 +612,12 @@ def test_trinity_large_thinking_config():
     assert model["llm_config"]["model"] == "litellm_proxy/trinity-large-thinking"
     assert model["llm_config"]["temperature"] == 1.0
     assert model["llm_config"]["top_p"] == 0.95
+
+
+def test_claude_opus_4_7_config():
+    """Test that claude-opus-4-7 has correct configuration."""
+    model = MODELS["claude-opus-4-7"]
+
+    assert model["id"] == "claude-opus-4-7"
+    assert model["display_name"] == "Claude Opus 4.7"
+    assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-7"

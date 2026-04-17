@@ -112,6 +112,13 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "claude-opus-4-7": {
+        "id": "claude-opus-4-7",
+        "display_name": "Claude Opus 4.7",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-7",
+        },
+    },
     "claude-sonnet-4-6": {
         "id": "claude-sonnet-4-6",
         "display_name": "Claude Sonnet 4.6",
