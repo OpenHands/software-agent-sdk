@@ -1774,3 +1774,26 @@ def test_fork_conversation_not_found(
         assert response.status_code == 404
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_duplicate_id_returns_409(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test fork returns 409 when the requested fork ID already exists."""
+    mock_conversation_service.fork_conversation.side_effect = ValueError(
+        f"Conversation with id {sample_conversation_id} already exists"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"id": str(sample_conversation_id)},
+        )
+
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()

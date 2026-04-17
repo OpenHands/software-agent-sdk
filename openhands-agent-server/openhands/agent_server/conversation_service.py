@@ -674,9 +674,18 @@ class ConversationService:
         so the forked conversation is fully independent from the source.
 
         Returns ``None`` when *source_id* does not exist.
+
+        Raises:
+            ValueError: If *fork_id* is already taken by an active
+                conversation.
         """
         if self._event_services is None:
             raise ValueError("inactive_service")
+
+        # Reject duplicate fork IDs early to avoid clobbering an active
+        # conversation or leaking an EventService reference.
+        if fork_id is not None and fork_id in self._event_services:
+            raise ValueError(f"Conversation with id {fork_id} already exists")
 
         source_service = self._event_services.get(source_id)
         if source_service is None:
@@ -705,7 +714,14 @@ class ConversationService:
             agent=fork_agent,
             workspace=fork_workspace,
         )
-        fork_event_service = await self._start_event_service(fork_stored)
+        # If the service fails to start, clean up the orphaned persistence
+        # directory so we don't leave stale state on disk.
+        fork_dir = self.conversations_dir / fork_conv_id.hex
+        try:
+            fork_event_service = await self._start_event_service(fork_stored)
+        except Exception:
+            safe_rmtree(fork_dir)
+            raise
 
         state = await fork_event_service.get_state()
         return _compose_conversation_info_v1(fork_event_service.stored, state)

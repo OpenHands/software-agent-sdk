@@ -400,6 +400,7 @@ async def condense_conversation(
     responses={
         201: {"description": "Forked conversation created"},
         404: {"description": "Source conversation not found"},
+        409: {"description": "Fork ID already in use"},
     },
     status_code=status.HTTP_201_CREATED,
 )
@@ -414,15 +415,21 @@ async def fork_conversation(
     Calling ``run`` on the fork resumes from the copied state, meaning
     the agent has full event memory of the source conversation.
     """
-    info = await conversation_service.fork_conversation(
-        conversation_id,
-        fork_id=request.id,
-        title=request.title,
-        tags=request.tags if request.tags is not None else None,
-        reset_metrics=request.reset_metrics,
-    )
+    try:
+        info = await conversation_service.fork_conversation(
+            conversation_id,
+            fork_id=request.id,
+            title=request.title,
+            tags=request.tags if request.tags is not None else None,
+            reset_metrics=request.reset_metrics,
+        )
+    except ValueError as exc:
+        if "already exists" in str(exc):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise
     if info is None:
         raise HTTPException(
-            status.HTTP_404_NOT_FOUND, detail="Source conversation not found"
+            status.HTTP_404_NOT_FOUND,
+            detail="Source conversation not found",
         )
     return info

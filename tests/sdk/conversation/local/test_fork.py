@@ -2,6 +2,7 @@
 
 import tempfile
 import uuid
+from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
@@ -191,3 +192,61 @@ def test_fork_event_deep_copy_isolation():
         assert fork_evt.llm_message.content[0].text == "original"  # type: ignore[union-attr]
         fork_evt.llm_message.content[0].text = "mutated"  # type: ignore[union-attr]
         assert src_evt.llm_message.content[0].text == "original"  # type: ignore[union-attr]
+
+
+def test_fork_persistence_path_no_doubling():
+    """Fork persistence dir must be a sibling of source, not nested inside it.
+
+    Regression test: fork() previously computed the persistence path with
+    the conversation hex appended, but __init__ also appends it via
+    get_persistence_dir(), leading to /base/FORK_HEX/FORK_HEX.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        fork = src.fork()
+
+        assert src._state.persistence_dir is not None
+        assert fork._state.persistence_dir is not None
+        src_path = Path(src._state.persistence_dir)
+        fork_path = Path(fork._state.persistence_dir)
+
+        # Both should live directly under the same base directory
+        assert src_path.parent == fork_path.parent
+        # The fork dir should be <base>/<fork_id_hex>, not doubled
+        assert fork_path.name == fork.id.hex
+
+
+def test_fork_persisted_events_survive_reload():
+    """Events persisted by fork() should be loadable from the fork dir.
+
+    This validates the path-doubling fix end-to-end: if the fork wrote
+    events to the wrong directory, resuming from the correct path would
+    see zero events.
+    """
+    # Event IDs must be hex+dash, ≥8 chars to match EVENT_NAME_RE.
+    evt_id_1 = uuid.uuid4().hex
+    evt_id_2 = uuid.uuid4().hex
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src.state.events.append(_msg(evt_id_1, "hello"))
+        src.state.events.append(_msg(evt_id_2, "world"))
+
+        fork = src.fork()
+        fork_id = fork.id
+
+        # The fork should have the events in-memory
+        assert len(fork.state.events) == 2
+
+        # Close the fork to flush persistence, then reopen from disk
+        fork.close()
+
+        resumed = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            conversation_id=fork_id,
+        )
+        resumed_ids = [e.id for e in resumed.state.events]
+        assert evt_id_1 in resumed_ids
+        assert evt_id_2 in resumed_ids

@@ -348,54 +348,63 @@ class LocalConversation(BaseConversation):
                 self.agent.model_dump(context={"expose_secrets": True}),
             )
 
-        # Determine persistence_dir for the fork
-        source_persistence = self._state.persistence_dir
-        fork_persistence: str | None = None
-        if source_persistence is not None:
-            source_path = Path(source_persistence)
-            fork_persistence = str(source_path.parent / fork_id.hex)
+        # Hold the state lock while reading mutable state from the source
+        # conversation to avoid torn reads if run() is executing concurrently.
+        with self._state:
+            # Determine persistence_dir for the fork.
+            # Pass the *base* directory only — __init__ calls
+            # get_persistence_dir() which appends the conversation ID hex,
+            # so we must not do that here.
+            source_persistence = self._state.persistence_dir
+            fork_persistence: str | None = None
+            if source_persistence is not None:
+                source_path = Path(source_persistence)
+                fork_persistence = str(source_path.parent)
 
-        # Build the fork conversation (empty – no events yet)
-        fork_conv = LocalConversation(
-            agent=fork_agent,
-            workspace=self.workspace,
-            plugins=self._plugin_specs,
-            persistence_dir=fork_persistence,
-            conversation_id=fork_id,
-            max_iteration_per_run=self.max_iteration_per_run,
-            stuck_detection=self._stuck_detector is not None,
-            visualizer=type(self._visualizer) if self._visualizer else None,
-            delete_on_close=self.delete_on_close,
-            tags=tags,
-        )
+            # Build the fork conversation (empty – no events yet)
+            fork_conv = LocalConversation(
+                agent=fork_agent,
+                workspace=self.workspace,
+                plugins=self._plugin_specs,
+                persistence_dir=fork_persistence,
+                conversation_id=fork_id,
+                max_iteration_per_run=self.max_iteration_per_run,
+                stuck_detection=self._stuck_detector is not None,
+                visualizer=type(self._visualizer) if self._visualizer else None,
+                delete_on_close=self.delete_on_close,
+                tags=tags,
+            )
 
-        # Deep-copy events from source → fork so the source stays immutable.
-        for event in self._state.events:
-            fork_conv._state.events.append(event.model_copy(deep=True))
+            # Deep-copy events from source → fork so the source stays
+            # immutable.
+            for event in self._state.events:
+                fork_conv._state.events.append(event.model_copy(deep=True))
 
-        # Copy runtime state that accumulated during the source conversation.
-        # activated_knowledge_skills is list[str] – strings are immutable so a
-        # shallow list copy is sufficient. agent_state can hold arbitrary
-        # mutable values, so deep-copy it.
-        fork_conv._state.activated_knowledge_skills = list(
-            self._state.activated_knowledge_skills
-        )
-        fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+            # Copy runtime state that accumulated during the source
+            # conversation. activated_knowledge_skills is list[str] – strings
+            # are immutable so a shallow list copy is sufficient.
+            # agent_state can hold arbitrary mutable values, so deep-copy it.
+            fork_conv._state.activated_knowledge_skills = list(
+                self._state.activated_knowledge_skills
+            )
+            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
 
-        # Copy title via tags if provided
-        if title is not None:
-            fork_conv._state.tags = {
-                **fork_conv._state.tags,
-                "title": title,
-            }
+            # Copy title via tags if provided
+            if title is not None:
+                fork_conv._state.tags = {
+                    **fork_conv._state.tags,
+                    "title": title,
+                }
 
-        # Reset or copy metrics
-        if not reset_metrics:
-            fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+            # Reset or copy metrics
+            if not reset_metrics:
+                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+
+            event_count = len(self._state.events)
 
         logger.info(
             f"Forked conversation {self.id} → {fork_id} "
-            f"({len(self._state.events)} events copied, "
+            f"({event_count} events copied, "
             f"reset_metrics={reset_metrics})"
         )
         return fork_conv
