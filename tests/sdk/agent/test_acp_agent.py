@@ -8,6 +8,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from acp.exceptions import RequestError as ACPRequestError
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -2104,3 +2105,363 @@ class TestSerializeToolContent:
         d = {"type": "content", "text": "world"}
         result = _serialize_tool_content([model, d])
         assert result == [{"type": "diff", "path": "b.py"}, d]
+
+
+# ---------------------------------------------------------------------------
+# ACP session resume via ConversationState.agent_state (issue #2867)
+# ---------------------------------------------------------------------------
+
+
+class TestACPSessionIdPersistence:
+    """Verify that the ACP session id is stashed in ``state.agent_state`` on
+    first launch and that _start_acp_server reads it back on resume to drive
+    load_session vs. new_session.
+    """
+
+    @staticmethod
+    def _transport_patches(conn):
+        """Context manager stacking the transport-layer mocks that let
+        _start_acp_server run without spawning a real subprocess.
+        """
+        from contextlib import ExitStack
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        stack = ExitStack()
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_create_subprocess_exec,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                return_value=conn,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                new=_fake_filter,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                return_value=MagicMock(),
+            )
+        )
+        return stack
+
+    @staticmethod
+    def _patched_start_acp_server(agent, state, *, conn):
+        """Invoke the real _start_acp_server with ACP transport layers mocked."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent._executor = AsyncExecutor()
+        with TestACPSessionIdPersistence._transport_patches(conn):
+            agent._start_acp_server(state)
+
+    @staticmethod
+    def _make_conn(
+        *,
+        new_session_id: str = "sess-new",
+        load_exc: Exception | None = None,
+    ):
+        conn = MagicMock()
+
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = []
+        conn.initialize = AsyncMock(return_value=init_response)
+
+        new_response = MagicMock()
+        new_response.session_id = new_session_id
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        if load_exc is not None:
+            conn.load_session = AsyncMock(side_effect=load_exc)
+        else:
+            conn.load_session = AsyncMock(return_value=MagicMock())
+
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    def test_fresh_state_has_no_session_id(self, tmp_path):
+        """A fresh ConversationState holds no session id under agent_state."""
+        state = _make_state(tmp_path)
+        assert "acp_session_id" not in state.agent_state
+
+    def test_first_launch_calls_new_session(self, tmp_path):
+        """Empty agent_state → _start_acp_server calls new_session only."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = self._make_conn(new_session_id="fresh-sess")
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.new_session.assert_awaited_once()
+        conn.load_session.assert_not_awaited()
+        assert agent._session_id == "fresh-sess"
+
+    def test_init_state_writes_session_id_into_agent_state(self, tmp_path):
+        """init_state lands the session id in state.agent_state so
+        ConversationState's base_state.json persistence carries it forward.
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        # Short-circuit _start_acp_server: pretend the ACP handshake ran and
+        # populated the runtime attrs that init_state reads afterwards.
+        def _fake_start(self, _state):
+            self._session_id = "end-to-end-sess"
+            self._agent_name = "claude-agent-acp"
+            self._agent_version = "1.0"
+
+        with patch.object(ACPAgent, "_start_acp_server", _fake_start):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert state.agent_state["acp_session_id"] == "end-to-end-sess"
+        assert state.agent_state["acp_agent_name"] == "claude-agent-acp"
+        assert state.agent_state["acp_agent_version"] == "1.0"
+
+    def test_resume_reads_session_id_from_agent_state(self, tmp_path):
+        """Prior session id in agent_state → load_session is called with it."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        _, kwargs = conn.load_session.call_args
+        assert kwargs["session_id"] == "stored-sess"
+        assert kwargs["cwd"] == str(tmp_path)
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "stored-sess"
+
+    def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
+        """ACPRequestError on load_session → new_session is called."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stale-sess"}
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert agent._session_id == "replacement-sess"
+
+    def test_session_id_not_on_serialized_agent(self):
+        """Session id must not leak onto the agent model — it lives in
+        ConversationState.agent_state, not on the frozen ACPAgent.
+        """
+        agent = _make_agent()
+        data = json.loads(agent.model_dump_json())
+        assert "acp_session_id" not in data
+        assert not hasattr(agent, "acp_session_id")
+
+    def test_init_state_writes_cwd_alongside_session_id(self, tmp_path):
+        """init_state records the cwd the session was created under so a later
+        resume can reject cwd mismatches (ACP keys persistence by cwd).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        def _fake_start(self, _state):
+            self._session_id = "sess-123"
+            self._agent_name = "claude-agent-acp"
+            self._agent_version = "1.0"
+            self._working_dir = str(tmp_path)
+
+        with patch.object(ACPAgent, "_start_acp_server", _fake_start):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert state.agent_state["acp_session_id"] == "sess-123"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_cwd_mismatch_skips_load_and_calls_new_session(self, tmp_path, caplog):
+        """If the stored cwd differs from the current workspace cwd, resume
+        is skipped and new_session runs instead — so we never silently load
+        a session that the ACP server associated with a different directory.
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "old-sess",
+            "acp_session_cwd": "/some/other/place",
+        }
+        conn = self._make_conn(new_session_id="fresh-sess")
+
+        with caplog.at_level("WARNING"):
+            self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_not_awaited()
+        conn.new_session.assert_awaited_once()
+        assert agent._session_id == "fresh-sess"
+        assert any(
+            "cwd=/some/other/place" in rec.message and "differs" in rec.message
+            for rec in caplog.records
+        ), "expected a warning explaining the cwd mismatch"
+
+    def test_resume_without_stored_cwd_still_works(self, tmp_path):
+        """Legacy state written by an earlier version has acp_session_id but
+        no acp_session_cwd — resume should still proceed (best-effort).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "legacy-sess"}
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "legacy-sess"
+
+    def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
+        """When load_session fails and new_session runs, init_state must
+        overwrite state.agent_state['acp_session_id'] with the new id so
+        the next restart doesn't keep trying to resume the stale one.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stale-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
+        """load_session must be followed by the same set_session_model and
+        set_session_mode calls as new_session, so a resumed session honours
+        acp_model overrides and the bypass-permissions mode.
+        """
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        # Name the server "codex-acp" so _maybe_set_session_model routes
+        # acp_model through conn.set_session_model (claude-acp uses _meta,
+        # which only applies on new_session and so wouldn't exercise the
+        # protocol-level override on the resume path).
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="claude-opus-4-6",
+            session_id="stored-sess",
+        )
+        conn.set_session_mode.assert_awaited_once_with(
+            mode_id="full-access",
+            session_id="stored-sess",
+        )
+
+    def test_roundtrip_via_conversation_state_persistence(self, tmp_path):
+        """End-to-end round-trip through ConversationState persistence:
+
+        1. First Conversation with persistence_dir → init_state runs,
+           new_session is called, ``state.agent_state["acp_session_id"]`` is
+           written, autosave flushes ``base_state.json`` to disk.
+        2. Fresh ACPAgent + Conversation pointed at the same persistence_dir
+           and id → ConversationState.create() restores ``base_state.json``
+           so ``agent_state["acp_session_id"]`` survives; init_state on the
+           resumed state triggers ``load_session`` with that id.
+        """
+        import uuid as _uuid
+
+        from openhands.sdk.conversation import Conversation
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        persistence_dir = tmp_path / "persist"
+        conv_id = _uuid.uuid4()
+        workspace = tmp_path / "work"
+        workspace.mkdir()
+
+        conn1 = self._make_conn(new_session_id="roundtrip-sess")
+        agent1 = _make_agent()
+        agent1._executor = AsyncExecutor()
+        with self._transport_patches(conn1):
+            conv1 = Conversation(
+                agent=agent1,
+                workspace=str(workspace),
+                persistence_dir=str(persistence_dir),
+                conversation_id=conv_id,
+                delete_on_close=False,
+                visualizer=None,
+            )
+            conv1._ensure_agent_ready()
+            assert conv1.state.agent_state["acp_session_id"] == "roundtrip-sess"
+            conv1.close()
+
+        conn1.new_session.assert_awaited_once()
+        conn1.load_session.assert_not_awaited()
+
+        # Fresh ACPAgent with no runtime knowledge of the prior session.
+        conn2 = self._make_conn()
+        agent2 = _make_agent()
+        agent2._executor = AsyncExecutor()
+        with self._transport_patches(conn2):
+            conv2 = Conversation(
+                agent=agent2,
+                workspace=str(workspace),
+                persistence_dir=str(persistence_dir),
+                conversation_id=conv_id,
+                delete_on_close=True,
+                visualizer=None,
+            )
+            conv2._ensure_agent_ready()
+            # base_state.json restored the id into agent_state.
+            assert conv2.state.agent_state["acp_session_id"] == "roundtrip-sess"
+            conv2.close()
+
+        # Second launch took the load_session branch with the persisted id.
+        conn2.load_session.assert_awaited_once()
+        _, kwargs = conn2.load_session.call_args
+        assert kwargs["session_id"] == "roundtrip-sess"
+        assert kwargs["cwd"] == str(workspace)
+        conn2.new_session.assert_not_awaited()
+        assert agent2._session_id == "roundtrip-sess"

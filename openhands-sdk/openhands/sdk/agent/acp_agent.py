@@ -752,12 +752,22 @@ class ACPAgent(AgentBase):
 
         self._initialized = True
 
-        # Store agent info in agent_state so it's accessible from remote
-        # conversations (PrivateAttrs aren't serialized in state updates).
+        # Persist agent info + the ACP session id + its cwd in agent_state.
+        # Keeping these here (rather than on the frozen ACPAgent model) means
+        # ConversationState's existing base_state.json persistence carries
+        # them across agent-server restarts, and ``_start_acp_server`` on the
+        # next launch reads them back to call ``load_session`` instead of
+        # starting from scratch.  We record ``acp_session_cwd`` alongside the
+        # id because ACP servers key their persistence by ``cwd``: resuming
+        # in a different working directory would at best silently miss the
+        # prior session and at worst load a different session that happens to
+        # exist at the new cwd.
         state.agent_state = {
             **state.agent_state,
             "acp_agent_name": self._agent_name,
             "acp_agent_version": self._agent_version,
+            "acp_session_id": self._session_id,
+            "acp_session_cwd": self._working_dir,
         }
 
     def _start_acp_server(self, state: ConversationState) -> None:
@@ -776,6 +786,27 @@ class ACPAgent(AgentBase):
         args = list(self.acp_command[1:]) + list(self.acp_args)
 
         working_dir = str(state.workspace.working_dir)
+
+        # Prior ACP session id — survives agent-server restarts via
+        # ConversationState.agent_state (serialized into base_state.json).
+        # Its presence is the signal to resume; its absence means fresh start.
+        # ACP servers key persistence by ``cwd``; if the workspace moved we
+        # drop the id so we don't accidentally resume (or silently load) a
+        # session the server associates with a different directory.
+        prior_session_id: str | None = state.agent_state.get("acp_session_id")
+        prior_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
+        if prior_session_id is not None and prior_session_cwd not in (
+            None,
+            working_dir,
+        ):
+            logger.warning(
+                "ACP session %s was created with cwd=%s; current cwd=%s differs, "
+                "starting a fresh session instead of resuming",
+                prior_session_id,
+                prior_session_cwd,
+                working_dir,
+            )
+            prior_session_id = None
 
         async def _init() -> tuple[Any, Any, Any, str, str, str]:
             # Spawn the subprocess directly so we can install a
@@ -845,14 +876,43 @@ class ACPAgent(AgentBase):
                         [m.id for m in auth_methods],
                     )
 
-            # Build _meta content for session options (e.g. model selection).
-            # Extra kwargs to new_session() become the _meta dict in the
-            # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-            session_meta = _build_session_meta(agent_name, self.acp_model)
+            # Resume the prior ACP session if we have its id.  If the server
+            # has forgotten it (state wiped, new host, etc.) fall through to
+            # new_session so the conversation still starts cleanly.
+            #
+            # We only swallow ACPRequestError here: that is the protocol-level
+            # "I don't know this session" signal and is recoverable by
+            # starting fresh.  Transport failures (broken pipe, EOF, timeout,
+            # subprocess crash) propagate — there is no working connection to
+            # fall back on, and the outer init_state handler cleans up.
+            session_id: str | None = None
+            if prior_session_id is not None:
+                try:
+                    await conn.load_session(
+                        cwd=working_dir,
+                        session_id=prior_session_id,
+                        mcp_servers=[],
+                    )
+                    session_id = prior_session_id
+                    logger.info(
+                        "Resumed ACP session: %s (cwd=%s)",
+                        session_id,
+                        working_dir,
+                    )
+                except ACPRequestError as e:
+                    logger.warning(
+                        "ACP load_session(%s) failed (%s); starting a fresh session",
+                        prior_session_id,
+                        e,
+                    )
 
-            # Create a new session
-            response = await conn.new_session(cwd=working_dir, **session_meta)
-            session_id = response.session_id
+            if session_id is None:
+                # Build _meta content for session options (e.g. model selection).
+                # Extra kwargs to new_session() become the _meta dict in the
+                # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
+                session_meta = _build_session_meta(agent_name, self.acp_model)
+                response = await conn.new_session(cwd=working_dir, **session_meta)
+                session_id = response.session_id
             await _maybe_set_session_model(
                 conn,
                 agent_name,
