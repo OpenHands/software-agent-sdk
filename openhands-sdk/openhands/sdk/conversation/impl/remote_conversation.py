@@ -533,6 +533,12 @@ class RemoteState(ConversationStateProtocol):
         return info.get("activated_knowledge_skills", [])
 
     @property
+    def invoked_skills(self) -> list[str]:
+        """Names of progressive-disclosure skills explicitly invoked."""
+        info = self._get_conversation_info()
+        return info.get("invoked_skills", [])
+
+    @property
     def agent(self):
         """The agent configuration (fetched from remote)."""
         info = self._get_conversation_info()
@@ -1169,7 +1175,11 @@ class RemoteConversation(BaseConversation):
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the remote conversation."""
-        payload = {"security_analyzer": analyzer.model_dump() if analyzer else analyzer}
+        payload = {
+            "security_analyzer": analyzer.model_dump(mode="json")
+            if analyzer
+            else analyzer
+        }
         _send_request(
             self._client,
             "POST",

@@ -12,6 +12,7 @@ if the task is resumed for further work later.
 
 import shutil
 import tempfile
+import threading
 import uuid
 from collections.abc import Callable
 from enum import StrEnum
@@ -99,6 +100,7 @@ class TaskManager:
         self._confirmation_handler = confirmation_handler
 
         self._tasks: dict[str, Task] = {}
+        self._tasks_lock = threading.Lock()
 
         # Set once in _ensure_parent: uses the parent's subagents dir
         # when the parent persists, otherwise a temporary directory.
@@ -136,8 +138,8 @@ class TaskManager:
         if task.conversation:
             task.conversation.pause()
             task.conversation.close()
-        # evict in-memory conversation
-        self._tasks[task.id] = task.model_copy(update={"conversation": None})
+        with self._tasks_lock:
+            self._tasks[task.id] = task.model_copy(update={"conversation": None})
 
     def start_task(
         self,
@@ -180,37 +182,38 @@ class TaskManager:
 
     def _resume_task(self, resume: str, subagent_type: str) -> Task:
         """Resume a sub-agent task."""
-        if resume not in self._tasks:
-            raise ValueError(
-                f"Task '{resume}' not found. "
-                f"Available tasks: {', '.join(sorted(self._tasks))}"
+        with self._tasks_lock:
+            if resume not in self._tasks:
+                raise ValueError(
+                    f"Task '{resume}' not found. "
+                    f"Available tasks: {', '.join(sorted(self._tasks))}"
+                )
+
+            factory = get_agent_factory(subagent_type)
+            worker_agent = self._get_sub_agent_from_factory(factory)
+            conversation_id = self._tasks[resume].conversation_id
+            conversation = LocalConversation(
+                agent=worker_agent,
+                workspace=self.parent_conversation.state.workspace.working_dir,
+                persistence_dir=self._persistence_dir,
+                conversation_id=conversation_id,
+                hook_config=factory.definition.hooks,
+                delete_on_close=True,
             )
 
-        factory = get_agent_factory(subagent_type)
-        worker_agent = self._get_sub_agent_from_factory(factory)
-        conversation_id = self._tasks[resume].conversation_id
-        conversation = LocalConversation(
-            agent=worker_agent,
-            workspace=self.parent_conversation.state.workspace.working_dir,
-            persistence_dir=self._persistence_dir,
-            conversation_id=conversation_id,
-            hook_config=factory.definition.hooks,
-            delete_on_close=False,
-        )
+            self._set_confirmation_policy(
+                conversation,
+                factory.definition.get_confirmation_policy(),
+            )
 
-        self._set_confirmation_policy(
-            conversation,
-            factory.definition.get_confirmation_policy(),
-        )
+            self._tasks[resume] = self._tasks[resume].model_copy(
+                update={
+                    "conversation": conversation,
+                    "status": TaskStatus.RUNNING,
+                }
+            )
 
-        self._tasks[resume] = self._tasks[resume].model_copy(
-            update={
-                "conversation": conversation,
-                "status": TaskStatus.RUNNING,
-            }
-        )
-
-        return self._tasks[resume]
+            return self._tasks[resume]
 
     def _create_task(
         self,
@@ -223,8 +226,6 @@ class TaskManager:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. The parent conversation's ``max_iteration_per_run``
         """
-        task_id, conversation_id = self._generate_ids()
-
         factory = get_agent_factory(subagent_type)
         worker_agent = self._get_sub_agent_from_factory(factory)
 
@@ -234,27 +235,30 @@ class TaskManager:
             else self.parent_conversation.max_iteration_per_run
         )
 
-        sub_conversation = self._get_conversation(
-            description=description,
-            max_iteration_per_run=effective_max_iter,
-            task_id=task_id,
-            worker_agent=worker_agent,
-            conversation_id=conversation_id,
-            hook_config=factory.definition.hooks,
-        )
+        with self._tasks_lock:
+            task_id, conversation_id = self._generate_ids()
 
-        self._set_confirmation_policy(
-            sub_conversation,
-            factory.definition.get_confirmation_policy(),
-        )
+            sub_conversation = self._get_conversation(
+                description=description,
+                max_iteration_per_run=effective_max_iter,
+                task_id=task_id,
+                worker_agent=worker_agent,
+                conversation_id=conversation_id,
+                hook_config=factory.definition.hooks,
+            )
 
-        self._tasks[task_id] = Task(
-            id=task_id,
-            conversation_id=conversation_id,
-            conversation=sub_conversation,
-            status=TaskStatus.RUNNING,
-        )
-        return self._tasks[task_id]
+            self._set_confirmation_policy(
+                sub_conversation,
+                factory.definition.get_confirmation_policy(),
+            )
+
+            self._tasks[task_id] = Task(
+                id=task_id,
+                conversation_id=conversation_id,
+                conversation=sub_conversation,
+                status=TaskStatus.RUNNING,
+            )
+            return self._tasks[task_id]
 
     def _get_conversation(
         self,
@@ -281,7 +285,7 @@ class TaskManager:
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
             hook_config=hook_config,
-            delete_on_close=False,
+            delete_on_close=True,
         )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:
@@ -399,4 +403,5 @@ class TaskManager:
         ):
             shutil.rmtree(self._persistence_dir, ignore_errors=True)
 
-        self._tasks.clear()
+        with self._tasks_lock:
+            self._tasks.clear()

@@ -16,7 +16,7 @@ import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -32,6 +32,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -1384,3 +1385,236 @@ def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
     assert "Code review specialist" in info
 
     _reset_registry_for_tests()
+
+
+def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPatch):
+    """GET /api/conversations/{id}/agent_final_response returns the finish message.
+
+    Creates a conversation, runs the agent with a patched LLM that calls
+    ``finish(message="Task complete")``, then hits the endpoint and verifies
+    the response text.  Also checks the 404 case for an unknown conversation.
+    """
+
+    call_count = {"count": 0}
+
+    def fake_completion_with_finish(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": ('{"message": "Task complete"}'),
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message,
+            metrics=metrics_snapshot,
+            raw_response=raw_response,
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    conversation_id = conv.id
+
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # Wait for the finish action event to be persisted
+    for _ in range(50):
+        events = list(conv.state.events)
+        if any(isinstance(e, ActionEvent) and e.tool_name == "finish" for e in events):
+            break
+        time.sleep(0.1)
+
+    # Hit the endpoint and verify the agent's final response
+    with httpx.Client(base_url=server_env["host"]) as client:
+        resp = client.get(
+            f"/api/conversations/{conversation_id}/agent_final_response",
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["response"] == "Task complete"
+
+        # 404 for unknown conversation
+        from uuid import uuid4
+
+        resp_404 = client.get(
+            f"/api/conversations/{uuid4()}/agent_final_response",
+            timeout=10.0,
+        )
+        assert resp_404.status_code == 404
+
+    conv.close()
+
+
+def test_remote_state_exposes_invoked_skills(
+    server_env,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """End-to-end coverage for the `invoke_skill` tool on the remote agent-server.
+
+    Patches the LLM to emit an `invoke_skill(name=...)` tool call on the first
+    turn and a stop message on the second, then asserts:
+
+    1. The server records the invocation and `RemoteState.invoked_skills`
+       surfaces it through the REST response model.
+    2. The tool's ObservationEvent includes the location footer with the real
+       skill directory, proving the footer logic works through the remote
+       execution path (skill source resolves on disk server-side).
+    """
+    call_count = {"count": 0}
+
+    # Real on-disk SKILL.md so the footer resolves to a real directory.
+    skill_dir = tmp_path / "frobnitz-converter"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("placeholder")
+
+    def fake_completion(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_invoke",
+                            "type": "function",
+                            "function": {
+                                "name": "invoke_skill",
+                                "arguments": '{"name": "frobnitz-converter"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+    skill = Skill(
+        name="frobnitz-converter",
+        content="Convert frobs to meters.",
+        description="Fake skill for remote-server test.",
+        source=str(skill_md),
+        is_agentskills_format=True,
+    )
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[], agent_context=AgentContext(skills=[skill]))
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    assert conv.state.invoked_skills == []
+
+    conv.send_message("Please run the frobnitz-converter skill.")
+    conv.run()
+
+    # Bust the WS-populated cache so the assertion exercises the REST
+    # `ConversationInfo` response model end-to-end.
+    conv.state.refresh_from_server()
+    assert conv.state.invoked_skills == ["frobnitz-converter"]
+    assert call_count["count"] >= 2, (
+        "Expected the agent to make a follow-up LLM call after the tool "
+        "observation, proving the invoke_skill tool actually executed."
+    )
+
+    # Find the invoke_skill ObservationEvent and confirm the footer points at
+    # the skill's real on-disk directory.
+    skill_observations = [
+        e
+        for e in conv.state.events
+        if isinstance(e, ObservationEvent) and e.tool_name == "invoke_skill"
+    ]
+    assert skill_observations, "No ObservationEvent emitted for invoke_skill"
+    obs_text = skill_observations[-1].observation.text
+    assert str(skill_dir.resolve()) in obs_text, (
+        f"Footer missing skill directory {skill_dir.resolve()!s}: {obs_text!r}"
+    )
+    assert obs_text.rstrip().endswith("relative to that directory.")
+
+    conv.close()

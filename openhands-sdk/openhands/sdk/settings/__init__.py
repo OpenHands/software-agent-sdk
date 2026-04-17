@@ -14,8 +14,11 @@ from .metadata import (
 
 if TYPE_CHECKING:
     from .model import (
+        AGENT_SETTINGS_SCHEMA_VERSION,
+        CONVERSATION_SETTINGS_SCHEMA_VERSION,
         AgentSettings,
         CondenserSettings,
+        ConversationSettings,
         SettingsChoice,
         SettingsFieldSchema,
         SettingsSchema,
@@ -25,8 +28,11 @@ if TYPE_CHECKING:
     )
 
 _MODEL_EXPORTS = {
+    "AGENT_SETTINGS_SCHEMA_VERSION",
+    "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "AgentSettings",
     "CondenserSettings",
+    "ConversationSettings",
     "SettingsChoice",
     "SettingsFieldSchema",
     "SettingsSchema",
@@ -36,8 +42,11 @@ _MODEL_EXPORTS = {
 }
 
 __all__ = [
+    "AGENT_SETTINGS_SCHEMA_VERSION",
+    "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "AgentSettings",
     "CondenserSettings",
+    "ConversationSettings",
     "SETTINGS_METADATA_KEY",
     "SETTINGS_SECTION_METADATA_KEY",
     "SettingProminence",
