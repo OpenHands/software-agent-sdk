@@ -68,16 +68,24 @@ def find_mcp_config(skill_dir: Path) -> Path | None:
 def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
+    secrets: dict[str, str] | None = None,
 ) -> dict:
     """Expand variables in MCP configuration.
 
     Supports variable expansion similar to Claude Code:
-    - ${VAR} - Environment variables or provided variables
+    - ${VAR} - Environment variables, provided variables, or secrets
     - ${VAR:-default} - With default value
+
+    Resolution order:
+    1. Provided variables (e.g., SKILL_ROOT)
+    2. Secrets (per-conversation secrets from SecretRegistry)
+    3. Environment variables
+    4. Default value (if specified)
 
     Args:
         config: MCP configuration dictionary.
-        variables: Dictionary of variable names to values.
+        variables: Dictionary of variable names to values (e.g., SKILL_ROOT).
+        secrets: Optional dictionary of per-conversation secrets for expansion.
 
     Returns:
         Configuration with variables expanded.
@@ -88,13 +96,17 @@ def expand_mcp_variables(
     # Pattern for ${VAR} or ${VAR:-default}
     var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
 
+    secrets_dict = secrets or {}
+
     def replace_var(match: re.Match) -> str:
         var_name = match.group(1)
         default_value = match.group(2)
 
-        # Check provided variables first, then environment
+        # Check provided variables first, then secrets, then environment
         if var_name in variables:
             return variables[var_name]
+        if var_name in secrets_dict:
+            return secrets_dict[var_name]
         if var_name in os.environ:
             return os.environ[var_name]
         if default_value is not None:
@@ -109,12 +121,14 @@ def expand_mcp_variables(
 def load_mcp_config(
     mcp_json_path: Path,
     skill_root: Path | None = None,
+    secrets: dict[str, str] | None = None,
 ) -> dict:
     """Load and parse .mcp.json with variable expansion.
 
     Args:
         mcp_json_path: Path to the .mcp.json file.
         skill_root: Root directory of the skill (for ${SKILL_ROOT} expansion).
+        secrets: Optional dictionary of per-conversation secrets for expansion.
 
     Returns:
         Parsed MCP configuration dictionary.
@@ -140,8 +154,8 @@ def load_mcp_config(
     if skill_root:
         variables["SKILL_ROOT"] = str(skill_root)
 
-    # Expand variables
-    config = expand_mcp_variables(config, variables)
+    # Expand variables (includes secrets if provided)
+    config = expand_mcp_variables(config, variables, secrets=secrets)
 
     # Validate using MCPConfig
     try:
