@@ -2282,9 +2282,7 @@ class TestACPSessionIdPersistence:
         assert state.agent_state["acp_session_id"] == "sess-123"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
 
-    def test_cwd_mismatch_skips_load_and_calls_new_session(
-        self, tmp_path, caplog
-    ):
+    def test_cwd_mismatch_skips_load_and_calls_new_session(self, tmp_path, caplog):
         """If the stored cwd differs from the current workspace cwd, resume
         is skipped and new_session runs instead — so we never silently load
         a session that the ACP server associated with a different directory.
@@ -2305,8 +2303,7 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         assert agent._session_id == "fresh-sess"
         assert any(
-            "cwd=/some/other/place" in rec.message
-            and "differs" in rec.message
+            "cwd=/some/other/place" in rec.message and "differs" in rec.message
             for rec in caplog.records
         ), "expected a warning explaining the cwd mismatch"
 
