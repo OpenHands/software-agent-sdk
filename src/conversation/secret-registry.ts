@@ -54,8 +54,7 @@ export class CallableSecretSource implements SecretSource {
   getValue(): string | null {
     try {
       return this.getter();
-    } catch (error) {
-      console.error('Error retrieving secret from callable:', error);
+    } catch {
       return null;
     }
   }
@@ -187,15 +186,10 @@ export class SecretRegistry {
       const source = this.secretSources.get(key);
       if (!source) continue;
 
-      try {
-        const value = source.getValue();
-        if (value) {
-          envVars[key] = value;
-          // Track successfully exported values for masking
-          this.exportedValues.set(key, value);
-        }
-      } catch (error) {
-        console.error(`Failed to retrieve secret for key '${key}':`, error);
+      const value = source.getValue();
+      if (value) {
+        envVars[key] = value;
+        this.exportedValues.set(key, value);
       }
     }
 

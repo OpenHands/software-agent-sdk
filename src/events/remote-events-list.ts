@@ -102,10 +102,14 @@ export class RemoteEventsList {
     await this.addEvent(event);
   }
 
-  createDefaultCallback(): ConversationCallbackType {
+  createDefaultCallback(onError?: (error: Error) => void): ConversationCallbackType {
     return (event: Event) => {
       this.addEvent(event).catch((error) => {
-        console.error('Error adding event to cache:', error);
+        if (onError) {
+          onError(
+            error instanceof Error ? error : new Error(`Error adding event to cache: ${error}`)
+          );
+        }
       });
     };
   }

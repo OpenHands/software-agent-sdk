@@ -23,11 +23,19 @@ if (typeof window !== 'undefined' && window.WebSocket) {
   }
 }
 
+/**
+ * Error callback type for reporting non-fatal errors.
+ * Library code calls this instead of console.error so callers can handle errors.
+ */
+export type ErrorCallbackType = (error: Error) => void;
+
 export interface WebSocketClientOptions {
   host: string;
   conversationId: string;
   callback: ConversationCallbackType;
   apiKey?: string;
+  /** Optional error callback. Called for non-fatal errors (parse failures, connection issues). */
+  onError?: ErrorCallbackType;
 }
 
 export class WebSocketCallbackClient {
@@ -35,6 +43,7 @@ export class WebSocketCallbackClient {
   private conversationId: string;
   private callback: ConversationCallbackType;
   private apiKey?: string;
+  private onError?: ErrorCallbackType;
   private ws?: any; // WebSocket instance (browser or Node.js)
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
@@ -47,6 +56,7 @@ export class WebSocketCallbackClient {
     this.conversationId = options.conversationId;
     this.callback = options.callback;
     this.apiKey = options.apiKey;
+    this.onError = options.onError;
   }
 
   start(): void {
@@ -94,7 +104,11 @@ export class WebSocketCallbackClient {
           const eventData: Event = JSON.parse(message);
           this.callback(eventData);
         } catch (error) {
-          console.error('Error processing WebSocket message:', error);
+          this.reportError(
+            new Error(
+              `Error processing WebSocket message: ${error instanceof Error ? error.message : String(error)}`
+            )
+          );
         }
       };
 
@@ -111,10 +125,23 @@ export class WebSocketCallbackClient {
         }
       };
     } catch (error) {
-      console.error('Failed to create WebSocket connection:', error);
+      this.reportError(
+        new Error(
+          `Failed to create WebSocket connection: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
       if (this.shouldReconnect) {
         this.scheduleReconnect();
       }
+    }
+  }
+
+  /**
+   * Report a non-fatal error via the onError callback if provided.
+   */
+  private reportError(error: Error): void {
+    if (this.onError) {
+      this.onError(error);
     }
   }
 

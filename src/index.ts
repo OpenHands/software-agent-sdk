@@ -134,6 +134,7 @@ export {
 
 // WebSocket client for real-time events
 export { WebSocketCallbackClient } from './events/websocket-client';
+export type { ErrorCallbackType } from './events/websocket-client';
 
 // HTTP client
 export { HttpClient, HttpError } from './client/http-client';

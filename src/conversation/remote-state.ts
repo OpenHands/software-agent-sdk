@@ -92,11 +92,17 @@ export class RemoteState {
     });
   }
 
-  createStateUpdateCallback(): ConversationCallbackType {
+  createStateUpdateCallback(onError?: (error: Error) => void): ConversationCallbackType {
     return (event: Event) => {
       if (event.kind === 'ConversationStateUpdateEvent') {
         this.updateStateFromEvent(event as ConversationStateUpdateEvent).catch((error) => {
-          console.error('Error updating state from event:', error);
+          if (onError) {
+            onError(
+              error instanceof Error
+                ? error
+                : new Error(`Error updating state from event: ${error}`)
+            );
+          }
         });
       }
     };

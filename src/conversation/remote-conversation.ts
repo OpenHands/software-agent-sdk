@@ -6,7 +6,7 @@
  */
 
 import { HttpClient } from '../client/http-client';
-import { WebSocketCallbackClient } from '../events/websocket-client';
+import { WebSocketCallbackClient, ErrorCallbackType } from '../events/websocket-client';
 import { RemoteState } from './remote-state';
 import { RemoteWorkspace } from '../workspace/remote-workspace';
 import {
@@ -46,6 +46,11 @@ export interface RemoteConversationOptions extends BaseConversationOptions {
    * (PreToolUse, PostToolUse, UserPromptSubmit, Stop, etc.).
    */
   hookConfig?: HookConfig;
+  /**
+   * Optional error callback for non-fatal errors (WebSocket issues, state update failures).
+   * If not provided, these errors are silently ignored.
+   */
+  onError?: ErrorCallbackType;
 }
 
 /**
@@ -78,6 +83,7 @@ export class RemoteConversation implements IConversation {
   private client: HttpClient;
   private wsClient?: WebSocketCallbackClient;
   private callback?: ConversationCallbackType;
+  private onError?: ErrorCallbackType;
   private hookConfig?: HookConfig;
 
   constructor(
@@ -88,6 +94,7 @@ export class RemoteConversation implements IConversation {
     this.agent = agent;
     this.workspace = workspace;
     this.callback = options.callback;
+    this.onError = options.onError;
     this._conversationId = options.conversationId;
     this.hookConfig = options.hookConfig;
 
@@ -296,15 +303,23 @@ export class RemoteConversation implements IConversation {
       return;
     }
 
+    const reportError = (error: Error): void => {
+      if (this.onError) {
+        this.onError(error);
+      }
+    };
+
     // Create combined callback that handles both user callback and state updates
     const combinedCallback: ConversationCallbackType = (event) => {
       // Add event to the events list
       this.state.events.addEvent(event).catch((error) => {
-        console.error('Error adding event to events list:', error);
+        reportError(
+          error instanceof Error ? error : new Error(`Error adding event to events list: ${error}`)
+        );
       });
 
       // Update state if it's a state update event
-      const stateCallback = this.state.createStateUpdateCallback();
+      const stateCallback = this.state.createStateUpdateCallback(this.onError);
       stateCallback(event);
 
       // Call user callback if provided
@@ -318,6 +333,7 @@ export class RemoteConversation implements IConversation {
       conversationId: this.id,
       callback: combinedCallback,
       apiKey: this.workspace.apiKey,
+      onError: this.onError,
     });
 
     this.wsClient.start();
