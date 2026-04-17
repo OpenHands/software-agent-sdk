@@ -3,6 +3,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastmcp.mcp_config import StdioMCPServer
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
@@ -827,9 +828,11 @@ def test_agent_definition_to_factory_mcp_servers() -> None:
     llm = _make_test_llm()
     agent = factory(llm)
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
-    }
+    assert agent.mcp_config is not None
+    assert "fetch" in agent.mcp_config.mcpServers
+    fetch = agent.mcp_config.mcpServers["fetch"]
+    assert isinstance(fetch, StdioMCPServer)
+    assert fetch.command == "uvx"
 
 
 def test_agent_definition_to_factory_no_mcp_servers() -> None:
@@ -845,7 +848,7 @@ def test_agent_definition_to_factory_no_mcp_servers() -> None:
     llm = _make_test_llm()
     agent = factory(llm)
 
-    assert agent.mcp_config == {}
+    assert agent.mcp_config is None
 
 
 def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None:
@@ -875,6 +878,8 @@ def test_register_file_agents_passes_mcp_config_to_agent(tmp_path: Path) -> None
     llm = _make_test_llm()
     agent = factory.factory_func(llm)
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
-    }
+    assert agent.mcp_config is not None
+    assert "fetch" in agent.mcp_config.mcpServers
+    fetch = agent.mcp_config.mcpServers["fetch"]
+    assert isinstance(fetch, StdioMCPServer)
+    assert fetch.command == "uvx"

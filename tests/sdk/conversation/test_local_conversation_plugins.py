@@ -256,23 +256,21 @@ class TestLocalConversationPlugins:
         )
 
         # Before loading plugins, no MCP config should exist
-        assert (
-            conversation.agent.mcp_config is None or conversation.agent.mcp_config == {}
-        )
+        assert conversation.agent.mcp_config is None
 
         # Trigger plugin loading and agent initialization
         conversation._ensure_agent_ready()
 
         # After loading, MCP config should be merged
         assert conversation.agent.mcp_config is not None
-        assert "mcpServers" in conversation.agent.mcp_config
-        assert "test-server" in conversation.agent.mcp_config["mcpServers"]
+        assert "test-server" in conversation.agent.mcp_config.mcpServers
 
         # The agent should have been initialized with the complete MCP config
         # This verifies that create_mcp_tools was called with the plugin's MCP config
         assert len(mcp_tools_created) > 0
-        assert "mcpServers" in mcp_tools_created[-1]
-        assert "test-server" in mcp_tools_created[-1]["mcpServers"]
+        last_config = mcp_tools_created[-1]
+        assert hasattr(last_config, "mcpServers")
+        assert "test-server" in last_config.mcpServers
 
         conversation.close()
 

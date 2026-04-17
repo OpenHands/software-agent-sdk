@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fastmcp.mcp_config import MCPConfig, StdioMCPServer
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
@@ -55,7 +56,9 @@ def agent_with_mcp(mock_llm):
     return Agent(
         llm=mock_llm,
         tools=[],
-        mcp_config={"mcpServers": {"existing-server": {"command": "test"}}},
+        mcp_config=MCPConfig.model_validate(
+            {"mcpServers": {"existing-server": {"command": "test"}}}
+        ),
     )
 
 
@@ -232,8 +235,8 @@ class TestLoadPluginsSinglePlugin:
         plugins = [PluginSource(source=str(plugin_dir))]
         updated_agent, hooks = load_plugins(plugins, basic_agent)
 
-        assert "mcpServers" in updated_agent.mcp_config
-        assert "test-server" in updated_agent.mcp_config["mcpServers"]
+        assert updated_agent.mcp_config is not None
+        assert "test-server" in updated_agent.mcp_config.mcpServers
         assert hooks is None
 
     def test_load_single_plugin_with_hooks(self, tmp_path: Path, basic_agent):
@@ -302,7 +305,10 @@ class TestLoadPluginsMultiplePlugins:
         ]
         updated_agent, _ = load_plugins(plugins, basic_agent)
 
-        assert updated_agent.mcp_config["mcpServers"]["server"]["command"] == "second"
+        assert updated_agent.mcp_config is not None
+        server = updated_agent.mcp_config.mcpServers["server"]
+        assert isinstance(server, StdioMCPServer)
+        assert server.command == "second"
 
     def test_load_multiple_plugins_hooks_concatenate(self, tmp_path: Path, basic_agent):
         """Test that hooks from all plugins are concatenated."""
@@ -404,8 +410,9 @@ class TestLoadPluginsWithExistingContext:
         plugins = [PluginSource(source=str(plugin_dir))]
         updated_agent, _ = load_plugins(plugins, agent_with_mcp)
 
-        assert "existing-server" in updated_agent.mcp_config["mcpServers"]
-        assert "new-server" in updated_agent.mcp_config["mcpServers"]
+        assert updated_agent.mcp_config is not None
+        assert "existing-server" in updated_agent.mcp_config.mcpServers
+        assert "new-server" in updated_agent.mcp_config.mcpServers
 
 
 class TestLoadPluginsMaxSkills:

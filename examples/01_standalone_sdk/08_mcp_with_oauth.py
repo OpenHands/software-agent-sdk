@@ -1,5 +1,6 @@
 import os
 
+from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
 from openhands.sdk import (
@@ -37,9 +38,9 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
-mcp_config = {
-    "mcpServers": {"Notion": {"url": "https://mcp.notion.com/mcp", "auth": "oauth"}}
-}
+mcp_config = MCPConfig.model_validate(
+    {"mcpServers": {"Notion": {"url": "https://mcp.notion.com/mcp", "auth": "oauth"}}}
+)
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
 
 llm_messages = []  # collect raw LLM messages

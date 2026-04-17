@@ -8,11 +8,14 @@ from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
+from fastmcp.mcp_config import MCPConfig
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
+    field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -32,6 +35,7 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.redact import sanitize_config
 
 
 if TYPE_CHECKING:
@@ -80,9 +84,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             },
         ],
     )
-    mcp_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional MCP configuration dictionary to create MCP tools.",
+    mcp_config: MCPConfig | None = Field(
+        default=None,
+        description="Optional MCP configuration to create MCP tools.",
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
         ],
@@ -234,6 +238,39 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ),
     )
 
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _normalize_mcp_config(cls, v: Any) -> Any:
+        """Coerce dicts to MCPConfig and normalise empty values to None."""
+        if v is None or v == {}:
+            return None
+        if isinstance(v, dict):
+            return MCPConfig.model_validate(v)
+        if isinstance(v, MCPConfig) and not v.mcpServers:
+            return None
+        return v
+
+    @field_serializer("mcp_config")
+    @classmethod
+    def _sanitize_mcp_config(
+        cls,
+        v: MCPConfig | None,
+    ) -> dict[str, Any]:
+        """Sanitize MCP config during serialization to prevent secret leakage.
+
+        MCP config may contain secrets in server headers (e.g. Authorization
+        Bearer tokens), environment variables, or API keys. These must not be
+        persisted to base_state.json or emitted in ConversationStateUpdateEvents,
+        as those paths may reach shared-event endpoints or cloud storage.
+
+        The runtime agent always provides a fresh mcp_config on resume, so
+        redacting here does not break conversation restore.
+        """
+        if v is None:
+            return {}
+        raw = v.model_dump(exclude_none=True, exclude_defaults=True)
+        return sanitize_config(raw) if raw else raw
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -352,7 +389,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 futures.append(future)
 
             # Submit MCP tools creation if configured
-            if self.mcp_config:
+            if self.mcp_config and self.mcp_config.mcpServers:
                 future = executor.submit(create_mcp_tools, self.mcp_config, 30)
                 futures.append(future)
 

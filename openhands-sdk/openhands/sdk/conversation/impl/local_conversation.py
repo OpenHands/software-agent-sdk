@@ -335,7 +335,13 @@ class LocalConversation(BaseConversation):
 
             # Start with agent's existing context and MCP config
             merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+            merged_mcp = (
+                self.agent.mcp_config.model_dump(
+                    exclude_none=True, exclude_defaults=True
+                )
+                if self.agent.mcp_config
+                else {}
+            )
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -368,11 +374,17 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            # Update agent with merged content
+            # Update agent with merged content; coerce merged dict to
+            # MCPConfig so the typed field is satisfied (model_copy
+            # bypasses validators).
+            from fastmcp.mcp_config import MCPConfig
+
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
-                    "mcp_config": merged_mcp,
+                    "mcp_config": (
+                        MCPConfig.model_validate(merged_mcp) if merged_mcp else None
+                    ),
                 }
             )
 

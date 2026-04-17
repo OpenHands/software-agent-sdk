@@ -552,7 +552,7 @@ class AgentSettings(BaseModel):
         return Agent(
             llm=self.llm,
             tools=self.tools,
-            mcp_config=self._serialize_mcp_config(self.mcp_config),
+            mcp_config=self.mcp_config,
             agent_context=self.agent_context,
             condenser=self.build_condenser(self.llm),
             critic=self.build_critic(),

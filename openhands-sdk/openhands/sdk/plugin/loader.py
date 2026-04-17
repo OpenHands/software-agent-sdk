@@ -66,9 +66,14 @@ def load_plugins(
     if not plugin_specs:
         return agent, None
 
-    # Start with agent's existing context and MCP config
+    # Start with agent's existing context and MCP config (as dict for
+    # plugin merge operations, then coerced back to MCPConfig).
     merged_context: AgentContext | None = agent.agent_context
-    merged_mcp: dict[str, Any] = dict(agent.mcp_config) if agent.mcp_config else {}
+    merged_mcp: dict[str, Any] = (
+        agent.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+        if agent.mcp_config
+        else {}
+    )
     all_hooks: list[HookConfig] = []
 
     for spec in plugin_specs:
@@ -100,11 +105,16 @@ def load_plugins(
     # Combine all hook configs (concatenation semantics)
     combined_hooks = HookConfig.merge(all_hooks)
 
+    # Coerce merged dict back to MCPConfig (model_copy bypasses validators).
+    from fastmcp.mcp_config import MCPConfig
+
     # Create updated agent with merged content
     updated_agent = agent.model_copy(
         update={
             "agent_context": merged_context,
-            "mcp_config": merged_mcp,
+            "mcp_config": (
+                MCPConfig.model_validate(merged_mcp) if merged_mcp else None
+            ),
         }
     )
 
