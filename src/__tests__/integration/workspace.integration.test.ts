@@ -5,7 +5,7 @@
  * running in a Docker container with a mounted workspace volume.
  */
 
-import { RemoteWorkspace, Workspace } from '../../index';
+import { HttpError, RemoteWorkspace, Workspace } from '../../index';
 import { getTestConfig, skipIfNoConfig } from './test-config';
 import {
   readWorkspaceFile,
@@ -325,16 +325,13 @@ describe('RemoteWorkspace Integration Tests', () => {
     );
 
     it(
-      'should fail gracefully for non-existent file',
+      'should throw HttpError for non-existent file',
       async () => {
         if (SKIP_TESTS) return;
 
-        const result = await workspace.fileDownload(
-          `${config.agentWorkspaceDir}/non-existent-file-${Date.now()}.txt`
-        );
-
-        expect(result.success).toBe(false);
-        expect(result.error).toBeDefined();
+        await expect(
+          workspace.fileDownload(`${config.agentWorkspaceDir}/non-existent-file-${Date.now()}.txt`)
+        ).rejects.toBeInstanceOf(HttpError);
       },
       config?.testTimeout || 30000
     );
