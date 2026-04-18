@@ -229,11 +229,7 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         base_description = "\n".join(description_lines[:2])  # First two lines
         remaining_description = "\n".join(description_lines[2:])  # Rest of description
 
-        # Add image viewing line if the agent supports vision. Delegates to
-        # ``agent.supports_vision()`` so ACPAgent can override — its sentinel
-        # LLM ("acp-managed") is unknown to LiteLLM and would otherwise
-        # report False even when the wrapped server forwards images to a
-        # vision-capable model.
+        # Add image viewing line if the agent supports vision
         if conv_state.agent.supports_vision():
             tool_description = (
                 f"{base_description}\n"
