@@ -147,7 +147,7 @@ class SecretRegistry(OpenHandsModel):
         for name, source in self.secret_sources.items():
             try:
                 value = source.get_value()
-                if value:
+                if value is not None:
                     secrets[name] = value
             except Exception as e:
                 logger.warning(f"Failed to retrieve secret '{name}': {e}")

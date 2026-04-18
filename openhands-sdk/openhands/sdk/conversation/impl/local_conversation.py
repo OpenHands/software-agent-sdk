@@ -490,6 +490,8 @@ class LocalConversation(BaseConversation):
             agent_update_needed = True
             if secrets:
                 logger.debug(f"Expanded MCP config with {len(secrets)} secret(s)")
+            else:
+                logger.debug("Applied MCP config defaults (no secrets provided)")
 
         # Update agent with merged content if needed
         if agent_update_needed:

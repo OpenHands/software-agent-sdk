@@ -105,7 +105,9 @@ def load_plugins(
     # Expand MCP config variables with per-conversation secrets
     # This handles ${VAR} placeholders that reference secrets injected via API
     if merged_mcp and secrets:
-        merged_mcp = expand_mcp_variables(merged_mcp, {}, secrets=secrets)
+        merged_mcp = expand_mcp_variables(
+            merged_mcp, {}, secrets=secrets, expand_defaults=True
+        )
         logger.debug(f"Expanded MCP config with {len(secrets)} secret(s)")
 
     # Combine all hook configs (concatenation semantics)
