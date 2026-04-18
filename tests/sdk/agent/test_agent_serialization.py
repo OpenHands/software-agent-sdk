@@ -61,11 +61,11 @@ def test_mcp_tool_serialization():
 
 def test_agent_serialization_excludes_mcp_config_for_security() -> None:
     """Test that mcp_config is excluded from serialization for security.
-    
+
     mcp_config may contain expanded secrets (e.g., API tokens in env vars)
     after variable expansion. To prevent secret leakage to disk, WebSocket,
     and API responses, mcp_config is excluded from serialization by default.
-    
+
     See: https://github.com/OpenHands/software-agent-sdk/pull/2873
     """
     # Create a simple LLM instance and agent with mcp_config
