@@ -1770,7 +1770,7 @@ class TestAutoTitle:
 
     @pytest.mark.asyncio
     async def test_autotitle_uses_llm_profile_when_configured(self):
-        """Title generation uses the LLM loaded from the configured profile."""
+        """Profile LLM takes precedence over agent.llm when configured."""
         service = self._make_service(title_llm_profile="cheap-model")
         mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
@@ -1789,7 +1789,7 @@ class TestAutoTitle:
 
             MockStore.assert_called_once_with()
             mock_store_instance.load.assert_called_once_with("cheap-model")
-            # generate_title_from_message is invoked with the profile-loaded LLM
+            # Profile-loaded LLM wins over agent.llm
             assert mock_generate_title.called
             assert mock_generate_title.call_args.args[1] is mock_llm
 
@@ -1797,14 +1797,15 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_autotitle_falls_back_to_truncation_when_profile_not_found(self):
-        """Missing profile → title_llm is None → truncation fallback (no agent.llm)."""
+    async def test_autotitle_falls_back_to_agent_llm_when_profile_not_found(self):
+        """Missing profile → fall back to agent.llm (non-breaking behavior)."""
         service = self._make_service(title_llm_profile="nonexistent-profile")
+        agent_llm = service._conversation.agent.llm
 
         with (
             patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
             patch(
-                self._GENERATE_TITLE_PATH, return_value="Fix the login bug"
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
         ):
             mock_store_instance = MockStore.return_value
@@ -1816,41 +1817,43 @@ class TestAutoTitle:
             await subscriber(self._user_message_event())
             await asyncio.sleep(0)
 
-            # Failed profile load → title_llm is None (no fallback to agent.llm)
+            # Failed profile load → falls back to agent.llm
             assert mock_generate_title.called
-            assert mock_generate_title.call_args.args[1] is None
+            assert mock_generate_title.call_args.args[1] is agent_llm
 
-        assert service.stored.title == "Fix the login bug"
+        assert service.stored.title == "✨ Agent LLM Title"
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_autotitle_no_profile_calls_without_llm(self):
-        """No profile → generate_title_from_message is called with llm=None."""
+    async def test_autotitle_no_profile_uses_agent_llm(self):
+        """No profile configured → use agent.llm (preserves existing behavior)."""
         service = self._make_service(title_llm_profile=None)
+        agent_llm = service._conversation.agent.llm
 
         with patch(
-            self._GENERATE_TITLE_PATH, return_value="Fix the login bug"
+            self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
         ) as mock_generate_title:
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event())
             await asyncio.sleep(0)
 
-            # Decoupled from agent.llm — no profile means llm=None
+            # No profile → agent.llm is used (backwards compatible)
             assert mock_generate_title.called
-            assert mock_generate_title.call_args.args[1] is None
+            assert mock_generate_title.call_args.args[1] is agent_llm
 
-        assert service.stored.title == "Fix the login bug"
+        assert service.stored.title == "✨ Agent LLM Title"
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_autotitle_handles_profile_load_value_error(self):
-        """Profile load ValueError → title_llm is None, fallback to truncation."""
+        """Profile load ValueError → fall back to agent.llm."""
         service = self._make_service(title_llm_profile="corrupted-profile")
+        agent_llm = service._conversation.agent.llm
 
         with (
             patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
             patch(
-                self._GENERATE_TITLE_PATH, return_value="Fix the login bug"
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
         ):
             mock_store_instance = MockStore.return_value
@@ -1861,9 +1864,9 @@ class TestAutoTitle:
             await asyncio.sleep(0)
 
             assert mock_generate_title.called
-            assert mock_generate_title.call_args.args[1] is None
+            assert mock_generate_title.call_args.args[1] is agent_llm
 
-        assert service.stored.title == "Fix the login bug"
+        assert service.stored.title == "✨ Agent LLM Title"
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio

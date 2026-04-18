@@ -827,7 +827,13 @@ class AutoTitleSubscriber(Subscriber):
         if not message_text:
             return
 
+        # Precedence: title_llm_profile (if configured and loads) → agent.llm →
+        # truncation. This keeps auto-titling non-breaking for consumers who
+        # don't configure title_llm_profile.
         title_llm = self._load_title_llm()
+        if title_llm is None:
+            conversation = self.service._conversation
+            title_llm = conversation.agent.llm if conversation else None
 
         async def _generate_and_save() -> None:
             try:
@@ -857,9 +863,8 @@ class AutoTitleSubscriber(Subscriber):
 
         Returns:
             LLM instance if title_llm_profile is configured and loads
-            successfully, None otherwise. When None is returned, title
-            generation falls back to simple message truncation (title
-            generation is decoupled from the agent's LLM).
+            successfully, None otherwise. When None is returned, the caller
+            falls back to the agent's LLM (and then to message truncation).
         """
         profile_name = self.service.stored.title_llm_profile
         if not profile_name:
@@ -873,7 +878,7 @@ class AutoTitleSubscriber(Subscriber):
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
                 f"Failed to load title LLM profile '{profile_name}': {e}. "
-                "Falling back to message truncation."
+                "Falling back to the agent's LLM."
             )
             return None
 

@@ -66,24 +66,25 @@ def create_mock_llm_response(content: str) -> LLMResponse:
     )
 
 
-def test_generate_title_without_llm_uses_truncation():
-    """Test generate_title falls back to truncation when no LLM is provided.
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_without_llm_uses_agent_llm(mock_completion):
+    """Without an explicit LLM, generate_title falls back to the agent's LLM.
 
-    Title generation is decoupled from agent.llm - calling generate_title()
-    without an explicit LLM parameter falls back to simple message truncation.
+    This preserves backwards-compatible behavior for callers that don't
+    configure a dedicated title LLM.
     """
     agent = create_test_agent()
     conv = Conversation(agent=agent, visualizer=None)
 
-    # Add a user message to the conversation
     user_message = create_user_message_event("Help me create a Python script")
     conv.state.events.append(user_message)
 
-    # Generate title without providing an LLM - falls back to truncation
+    mock_completion.return_value = create_mock_llm_response("Create Python Script")
+
     title = conv.generate_title()
 
-    # Verify the title is the truncated message (no LLM call made)
-    assert title == "Help me create a Python script"
+    assert title == "Create Python Script"
+    mock_completion.assert_called_once()
 
 
 def test_generate_title_no_user_messages():
@@ -123,8 +124,9 @@ def test_generate_title_llm_error_fallback(mock_completion):
     assert title == "Fix the bug in my application"
 
 
-def test_generate_title_truncation_respects_max_length():
-    """Test generate_title truncation respects max_length parameter."""
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_truncation_respects_max_length(mock_completion):
+    """When LLM fails, truncation fallback respects max_length."""
     agent = create_test_agent()
     conv = Conversation(agent=agent, visualizer=None)
 
@@ -133,10 +135,11 @@ def test_generate_title_truncation_respects_max_length():
     user_message = create_user_message_event(long_message)
     conv.state.events.append(user_message)
 
-    # Generate title with max_length=20 (no LLM, so falls back to truncation)
+    # Force LLM failure to exercise the truncation fallback path
+    mock_completion.side_effect = Exception("LLM error")
+
     title = conv.generate_title(max_length=20)
 
-    # Verify the title was truncated
     assert len(title) <= 20
     assert title.endswith("...")
 
