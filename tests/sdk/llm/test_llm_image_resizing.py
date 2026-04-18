@@ -6,6 +6,7 @@ from PIL import Image
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
+from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 
 
 def _make_png_data_url(width: int, height: int) -> str:
@@ -39,6 +40,30 @@ def _format_for_provider(
         patch.object(LLM, "_infer_litellm_provider", return_value=provider),
     ):
         return llm.format_messages_for_llm(messages)
+
+
+def test_maybe_resize_messages_for_provider_does_not_mutate_inputs():
+    original_url = _make_png_data_url(2400, 1200)
+    original_message = Message(
+        role="user",
+        content=[
+            TextContent(text="Describe these images."),
+            ImageContent(image_urls=[original_url] * 21),
+        ],
+    )
+
+    resized_messages = maybe_resize_messages_for_provider(
+        [original_message], provider="anthropic", vision_enabled=True
+    )
+
+    resized_content = resized_messages[0].content[1]
+    assert isinstance(resized_content, ImageContent)
+    assert resized_messages[0] is not original_message
+    assert _data_url_dimensions(resized_content.image_urls[0]) == (2000, 1000)
+
+    original_content = original_message.content[1]
+    assert isinstance(original_content, ImageContent)
+    assert original_content.image_urls[0] == original_url
 
 
 def test_anthropic_many_image_requests_resize_base64_images():

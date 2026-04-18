@@ -1393,7 +1393,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         send_reasoning_content = model_features.send_reasoning_content
 
-        maybe_resize_messages_for_provider(
+        messages = maybe_resize_messages_for_provider(
             messages,
             provider=self._infer_litellm_provider(),
             vision_enabled=vision_enabled,

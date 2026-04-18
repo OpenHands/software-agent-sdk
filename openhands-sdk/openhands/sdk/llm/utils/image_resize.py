@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
-from typing import Any
 
 from openhands.sdk.llm.message import ImageContent, Message
 from openhands.sdk.logger import get_logger
@@ -21,30 +21,34 @@ ANTHROPIC_STANDARD_IMAGE_MAX_DIMENSION = 8000
 
 def maybe_resize_messages_for_provider(
     messages: list[Message], *, provider: str | None, vision_enabled: bool
-) -> None:
+) -> list[Message]:
+    """Return a detached message list with provider-specific image resizing."""
     max_dimension = _get_image_max_dimension(
         messages=messages,
         provider=provider,
         vision_enabled=vision_enabled,
     )
     if max_dimension is None:
-        return
+        return messages
 
-    image_module = _load_pillow_image_module()
-    if image_module is None:
-        return
+    try:
+        from PIL import Image  # noqa: F401
+    except ImportError:
+        logger.warning(
+            "pillow is not installed; skipping Anthropic image resizing. "
+            "Install openhands-sdk[pillow] to enable base64 image downscaling."
+        )
+        return messages
 
-    for message in messages:
+    resized_messages = copy.deepcopy(messages)
+    for message in resized_messages:
         for content_item in message.content:
             if isinstance(content_item, ImageContent):
                 content_item.image_urls = [
-                    resize_base64_data_url(
-                        url,
-                        max_dimension=max_dimension,
-                        image_module=image_module,
-                    )
+                    _resize_base64_data_url(url, max_dimension=max_dimension)
                     for url in content_item.image_urls
                 ]
+    return resized_messages
 
 
 def _get_image_max_dimension(
@@ -67,20 +71,7 @@ def _get_image_max_dimension(
     return ANTHROPIC_MANY_IMAGE_MAX_DIMENSION
 
 
-def _load_pillow_image_module() -> Any | None:
-    try:
-        from PIL import Image
-    except ImportError:
-        logger.warning(
-            "pillow is not installed; skipping Anthropic image resizing. "
-            "Install openhands-sdk[pillow] to enable base64 image downscaling."
-        )
-        return None
-
-    return Image
-
-
-def resize_base64_data_url(url: str, *, max_dimension: int, image_module: Any) -> str:
+def _resize_base64_data_url(url: str, *, max_dimension: int) -> str:
     if not url.startswith("data:image/"):
         return url
 
@@ -91,14 +82,16 @@ def resize_base64_data_url(url: str, *, max_dimension: int, image_module: Any) -
     mime_type = header.removeprefix("data:")
 
     try:
+        from PIL import Image
+
         raw_bytes = base64.b64decode(encoded)
-        with image_module.open(io.BytesIO(raw_bytes)) as image:
+        with Image.open(io.BytesIO(raw_bytes)) as image:
             if max(image.size) <= max_dimension:
                 return url
 
             image.thumbnail(
                 (max_dimension, max_dimension),
-                image_module.Resampling.LANCZOS,
+                Image.Resampling.LANCZOS,
             )
             image_format = image.format or mime_type.split("/", 1)[1].upper()
 
