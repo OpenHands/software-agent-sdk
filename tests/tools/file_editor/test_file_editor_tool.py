@@ -340,14 +340,15 @@ def test_file_editor_tool_image_viewing_line_with_vision_disabled():
 
 
 def test_file_editor_tool_image_viewing_line_for_acp_agent():
-    """ACPAgent advertises vision based on the wrapped provider, not its
-    sentinel LLM. All three providers OpenHands supports (claude-agent-acp,
-    gemini-cli, codex-acp) forward images to vision-capable models."""
+    """ACPAgent resolves vision capability through its configured acp_model,
+    which ACPAgent.model_post_init() writes into llm.model so LiteLLM can
+    look up the capability — same path as a regular Agent."""
     from openhands.sdk.agent.acp_agent import ACPAgent
 
     with tempfile.TemporaryDirectory() as temp_dir:
         agent = ACPAgent(
-            acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+            acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            acp_model="claude-sonnet-4-5",
         )
         conv_state = ConversationState.create(
             id=uuid4(),

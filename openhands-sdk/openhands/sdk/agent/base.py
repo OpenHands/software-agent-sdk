@@ -256,10 +256,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def supports_vision(self) -> bool:
         """Whether this agent can consume image content in user messages.
 
-        Default: delegate to the configured LLM. Subclasses (notably
-        ACPAgent) override this when the effective vision capability is
-        not derivable from ``self.llm.model`` — e.g. a sentinel model
-        that LiteLLM does not recognise.
+        Delegates to the configured LLM. ACPAgent shares this default —
+        its post-init writes ``acp_model`` into ``self.llm.model`` so
+        the LiteLLM capability lookup lands on the real model.
         """
         return self.llm.vision_is_active()
 

@@ -2085,66 +2085,25 @@ class TestResolveBypassMode:
 
 
 class TestACPAgentSupportsVision:
-    """All three ACP providers OpenHands supports — claude-agent-acp,
-    gemini-cli, codex-acp — declare prompt_capabilities.image=true and
-    forward images to a vision-capable underlying model."""
+    """ACPAgent inherits AgentBase.supports_vision(), which delegates to
+    llm.vision_is_active(). ACPAgent.model_post_init() writes acp_model
+    into llm.model, so LiteLLM resolves the real capability for the
+    configured model."""
 
-    def test_claude_agent_via_command(self):
+    def test_vision_capable_model(self):
         agent = ACPAgent(
-            acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
-        )
-        assert agent.supports_vision() is True
-
-    def test_gemini_cli_via_command(self):
-        agent = ACPAgent(acp_command=["gemini-cli", "--experimental-acp"])
-        assert agent.supports_vision() is True
-
-    def test_codex_acp_via_command(self):
-        agent = ACPAgent(acp_command=["codex-acp"])
-        assert agent.supports_vision() is True
-
-    def test_agent_name_resolves_opaque_launcher(self):
-        # A user can launch any of our three servers via ``node`` or a
-        # local path; the agent name from InitializeResponse still lets
-        # us identify the provider.
-        agent = ACPAgent(acp_command=["/usr/local/bin/node", "/opt/server.js"])
-        assert agent.supports_vision() is False
-        agent._agent_name = "claude-agent-acp"
-        assert agent.supports_vision() is True
-
-    def test_unknown_acp_server_defaults_to_false(self):
-        # Unknown servers may silently drop image blocks, so advertise
-        # no-vision rather than send content that gets lost.
-        agent = ACPAgent(acp_command=["echo", "test"])
-        assert agent.supports_vision() is False
-
-    def test_vision_not_derived_from_sentinel_llm(self):
-        # Without acp_model, llm.model stays "acp-managed" (unknown to
-        # LiteLLM), so the base-class llm.vision_is_active() reports
-        # False. The ACPAgent override must still return True for known
-        # providers via the server-identity fallback.
-        agent = ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"])
-        assert agent.llm.vision_is_active() is False
-        assert agent.supports_vision() is True
-
-    def test_explicit_acp_model_honours_llm_vision_check(self):
-        # When acp_model is set, llm.model carries the real model name
-        # (via ACPAgent.model_post_init) so we trust LiteLLM's answer —
-        # even when the server marker says vision-capable, the user's
-        # explicit non-vision model choice wins.
-        vision_agent = ACPAgent(
-            acp_command=["npx", "-y", "claude-agent-acp"],
+            acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
             acp_model="claude-sonnet-4-5",
         )
-        assert vision_agent.llm.vision_is_active() is True
-        assert vision_agent.supports_vision() is True
+        assert agent.supports_vision() is True
 
-        text_only_agent = ACPAgent(
+    def test_non_vision_model_is_honoured(self):
+        # User's explicit non-vision model choice wins.
+        agent = ACPAgent(
             acp_command=["codex-acp"],
             acp_model="gpt-3.5-turbo",
         )
-        assert text_only_agent.llm.vision_is_active() is False
-        assert text_only_agent.supports_vision() is False
+        assert agent.supports_vision() is False
 
 
 # ---------------------------------------------------------------------------

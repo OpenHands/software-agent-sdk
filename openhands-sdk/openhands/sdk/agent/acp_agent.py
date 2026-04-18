@@ -142,23 +142,6 @@ _BYPASS_MODE_MAP: dict[str, str] = {
 }
 _DEFAULT_BYPASS_MODE = "full-access"
 
-# ACP servers known to forward ImageContentBlock prompts to a vision-capable
-# underlying model. Verified against upstream source — all declare
-# prompt_capabilities.image=true and map ContentBlock::Image to their
-# provider's native image format:
-#   claude-agent-acp → Claude Sonnet/Opus/Haiku 3.5+
-#     src/acp-agent.ts: promptToClaude() case "image"
-#   gemini-cli       → Gemini 1.5/2.x Pro/Flash
-#     packages/cli/src/acp/acpClient.ts: #resolvePrompt() case "image"
-#   codex-acp        → GPT-5 family via Codex CLI
-#     src/thread.rs: build_prompt_items() image → UserInput::Image
-_VISION_CAPABLE_ACP_SERVERS: tuple[str, ...] = (
-    "claude-agent-acp",
-    "gemini-cli",
-    "codex-acp",
-)
-
-
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
 # required env var is set.
@@ -799,23 +782,6 @@ class ACPAgent(AgentBase):
     def agent_version(self) -> str:
         """Version of the ACP server (from InitializeResponse.agent_info)."""
         return self._agent_version
-
-    def supports_vision(self) -> bool:
-        """Whether the wrapped ACP server forwards images to a vision model.
-
-        When ``acp_model`` is set, ``self.llm.model`` carries the real
-        model name so ``llm.vision_is_active()`` gives an authoritative
-        answer via LiteLLM — honour the user's explicit model choice even
-        if it's a non-vision variant.
-
-        Without ``acp_model``, the ACP server picks a default we can't
-        see from here, so fall back to the server's identity: all three
-        ACP servers OpenHands supports default to vision-capable models.
-        """
-        if self.acp_model:
-            return self.llm.vision_is_active()
-        probe = f"{self._agent_name} {' '.join(self.acp_command)}".lower()
-        return any(marker in probe for marker in _VISION_CAPABLE_ACP_SERVERS)
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
