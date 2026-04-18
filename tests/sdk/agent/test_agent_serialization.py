@@ -59,40 +59,59 @@ def test_mcp_tool_serialization():
     assert loaded.model_dump_json() == dumped
 
 
-def test_agent_serialization_excludes_mcp_config_for_security() -> None:
-    """Test that mcp_config is excluded from serialization for security.
+def test_agent_serialization_redacts_mcp_config_secrets() -> None:
+    """Test that mcp_config secrets are redacted during serialization.
 
     mcp_config may contain expanded secrets (e.g., API tokens in env vars)
     after variable expansion. To prevent secret leakage to disk, WebSocket,
-    and API responses, mcp_config is excluded from serialization by default.
+    and API responses, sensitive fields (env, headers) are redacted during
+    serialization while keeping the output shape stable for compatibility.
 
     See: https://github.com/OpenHands/software-agent-sdk/pull/2873
     """
-    # Create a simple LLM instance and agent with mcp_config
+    # Create a simple LLM instance and agent with mcp_config containing secrets
     llm = LLM(model="test-model", usage_id="test-llm")
     mcp_config = {
         "mcpServers": {
-            "dummy": {"command": "echo", "args": ["dummy-mcp"]},
+            "dummy": {
+                "command": "echo",
+                "args": ["dummy-mcp"],
+                "env": {"API_KEY": "super-secret-key", "DEBUG": "true"},
+                "headers": {"Authorization": "Bearer secret-token"},
+            },
         }
     }
     agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
 
-    # mcp_config should be accessible in memory
+    # mcp_config should be accessible in memory with full secrets
     assert agent.mcp_config == mcp_config
-
-    # But should be EXCLUDED from serialization
-    agent_dump = agent.model_dump()
-    assert agent_dump.get("mcp_config") is None, (
-        "mcp_config should be excluded from serialization to prevent secret leakage"
+    assert (
+        agent.mcp_config["mcpServers"]["dummy"]["env"]["API_KEY"] == "super-secret-key"
     )
 
-    # Serialization round-trip should work (mcp_config defaults to empty dict)
+    # Serialized output should have mcp_config but with REDACTED secrets
+    agent_dump = agent.model_dump()
+    assert "mcp_config" in agent_dump, "mcp_config should be present"
+
+    serialized_mcp = agent_dump["mcp_config"]
+    assert serialized_mcp["mcpServers"]["dummy"]["command"] == "echo"
+    assert serialized_mcp["mcpServers"]["dummy"]["args"] == ["dummy-mcp"]
+
+    # Sensitive fields should be redacted
+    assert serialized_mcp["mcpServers"]["dummy"]["env"]["API_KEY"] == "<redacted>"
+    assert serialized_mcp["mcpServers"]["dummy"]["env"]["DEBUG"] == "<redacted>"
+    auth_header = serialized_mcp["mcpServers"]["dummy"]["headers"]["Authorization"]
+    assert auth_header == "<redacted>"
+
+    # Serialization round-trip should work (with redacted values)
     agent_json = agent.model_dump_json()
     deserialized_agent = AgentBase.model_validate_json(agent_json)
 
     assert isinstance(deserialized_agent, Agent)
-    # Deserialized agent has default empty mcp_config (not the original)
-    assert deserialized_agent.mcp_config == {}
+    # Deserialized agent has the redacted mcp_config
+    assert deserialized_agent.mcp_config["mcpServers"]["dummy"]["env"]["API_KEY"] == (
+        "<redacted>"
+    )
 
 
 def test_agent_supports_polymorphic_field_json_serialization() -> None:

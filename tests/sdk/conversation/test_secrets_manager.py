@@ -237,3 +237,54 @@ def test_get_secret_value_as_callback():
     assert get_secret("API_KEY") == "test-api-key"
     assert get_secret("TOKEN") == "test-token"
     assert get_secret("MISSING") is None
+
+
+def test_get_secret_value_tracks_for_masking():
+    """Test that get_secret_value adds secrets to _exported_values for masking.
+
+    Secrets retrieved via get_secret_value (e.g., for MCP expansion) should be
+    tracked so they can be masked in command outputs.
+    """
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_TOKEN": "super-secret-token-123",
+            "DB_PASSWORD": "db-pass-456",
+        }
+    )
+
+    # Initially, no exported values
+    assert secret_registry._exported_values == {}
+
+    # Retrieve a secret via get_secret_value
+    value = secret_registry.get_secret_value("API_TOKEN")
+    assert value == "super-secret-token-123"
+
+    # The secret should now be tracked for masking
+    assert "API_TOKEN" in secret_registry._exported_values
+    assert secret_registry._exported_values["API_TOKEN"] == "super-secret-token-123"
+
+    # Masking should work on the tracked secret
+    output = "Response: super-secret-token-123"
+    masked = secret_registry.mask_secrets_in_output(output)
+    assert masked == "Response: <secret-hidden>"
+
+    # Retrieve another secret
+    secret_registry.get_secret_value("DB_PASSWORD")
+    assert "DB_PASSWORD" in secret_registry._exported_values
+
+    # Both should be masked now
+    output2 = "API: super-secret-token-123, DB: db-pass-456"
+    masked2 = secret_registry.mask_secrets_in_output(output2)
+    assert masked2 == "API: <secret-hidden>, DB: <secret-hidden>"
+
+
+def test_get_secret_value_missing_not_tracked():
+    """Test that missing secrets don't get added to _exported_values."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"EXISTING": "value"})
+
+    # Look up a missing key
+    result = secret_registry.get_secret_value("NONEXISTENT")
+    assert result is None
+    assert "NONEXISTENT" not in secret_registry._exported_values

@@ -7,8 +7,6 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.subagent.schema import (
     AgentDefinition,
     _extract_examples,
-    _resolve_env_vars,
-    _resolve_env_vars_deep,
 )
 
 
@@ -450,11 +448,8 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         assert agent.mcp_servers is None
 
-    def test_mcp_servers_env_vars_resolved_in_env_field(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Test that ${VAR} references in env values are resolved."""
-        monkeypatch.setenv("MY_API_KEY", "secret-123")
+    def test_mcp_servers_env_vars_preserved_in_env_field(self, tmp_path: Path):
+        """Test that ${VAR} references in env values are preserved."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
@@ -474,13 +469,11 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
-        assert mcp_servers["my-server"]["env"]["API_KEY"] == "secret-123"
+        # Placeholder preserved for runtime expansion with per-conversation secrets
+        assert mcp_servers["my-server"]["env"]["API_KEY"] == "${MY_API_KEY}"
 
-    def test_mcp_servers_env_vars_resolved_in_command(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Test that ${VAR} references in command are resolved."""
-        monkeypatch.setenv("PLUGIN_ROOT", "/opt/plugins")
+    def test_mcp_servers_env_vars_preserved_in_command(self, tmp_path: Path):
+        """Test that ${VAR} references in command are preserved."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
@@ -499,18 +492,15 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
-        assert mcp_servers["my-server"]["command"] == "/opt/plugins/bin/server"
+        # Placeholders preserved for runtime expansion
+        assert mcp_servers["my-server"]["command"] == "${PLUGIN_ROOT}/bin/server"
         assert mcp_servers["my-server"]["args"] == [
             "--config",
-            "/opt/plugins/config.json",
+            "${PLUGIN_ROOT}/config.json",
         ]
 
-    def test_mcp_servers_env_vars_resolved_in_url_and_headers(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Test that ${VAR} references in url and headers are resolved."""
-        monkeypatch.setenv("API_BASE", "https://api.example.com")
-        monkeypatch.setenv("AUTH_TOKEN", "tok-abc")
+    def test_mcp_servers_env_vars_preserved_in_url_and_headers(self, tmp_path: Path):
+        """Test that ${VAR} references in url and headers are preserved."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
@@ -529,21 +519,21 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
-        assert mcp_servers["remote"]["url"] == "https://api.example.com/mcp"
-        assert mcp_servers["remote"]["headers"]["Authorization"] == "Bearer tok-abc"
+        # Placeholders preserved for runtime expansion
+        assert mcp_servers["remote"]["url"] == "${API_BASE}/mcp"
+        assert mcp_servers["remote"]["headers"]["Authorization"] == (
+            "Bearer ${AUTH_TOKEN}"
+        )
 
-    def test_mcp_servers_unset_env_var_kept_as_is(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Test that unset ${VAR} references are left unchanged."""
-        monkeypatch.delenv("NONEXISTENT_VAR", raising=False)
+    def test_mcp_servers_placeholders_preserved(self, tmp_path: Path):
+        """Test that all ${VAR} placeholders are preserved unchanged."""
         agent_md = tmp_path / "agent.md"
         agent_md.write_text(
             """---
 name: agent
 mcp_servers:
   my-server:
-    command: ${NONEXISTENT_VAR}
+    command: ${SOME_VAR}
 ---
 
 Prompt.
@@ -552,7 +542,7 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
-        assert mcp_servers["my-server"]["command"] == "${NONEXISTENT_VAR}"
+        assert mcp_servers["my-server"]["command"] == "${SOME_VAR}"
 
     def test_permission_mode_defaults_to_none(self):
         """Test that permission_mode defaults to None (inherit parent)."""
@@ -688,87 +678,89 @@ class TestExtractExamples:
         assert "Multi" in examples[0]
 
 
-@pytest.mark.parametrize(
-    ("input_val", "env_vars", "expected"),
-    [
-        ("${FOO}", {"FOO": "bar"}, "bar"),
-        (
-            "${HOST}:${PORT}",
-            {"HOST": "localhost", "PORT": "8080"},
-            "localhost:8080",
-        ),
-        ("prefix_${VAR}_suffix", {"VAR": "mid"}, "prefix_mid_suffix"),
-        ("plain text", {}, "plain text"),
-        ("${MISSING}", {}, "${MISSING}"),
-        ("$FOO", {"FOO": "bar"}, "bar"),
-        ("$FOO/path", {"FOO": "/root"}, "/root/path"),
-    ],
-    ids=[
-        "single_var",
-        "multiple_vars",
-        "var_embedded_in_text",
-        "no_vars",
-        "unset_var_unchanged",
-        "dollar_without_braces",
-        "dollar_without_braces_in_path",
-    ],
-)
-def test_resolve_env_vars(
-    monkeypatch: pytest.MonkeyPatch,
-    input_val: str,
-    env_vars: dict[str, str],
-    expected: str,
-):
-    for k, v in env_vars.items():
-        monkeypatch.setenv(k, v)
-    assert _resolve_env_vars(input_val) == expected
+class TestMcpServersPlaceholderPreservation:
+    """Tests that mcp_servers preserves variable placeholders for runtime expansion.
 
+    Variable expansion is deferred to runtime (in LocalConversation) to support
+    per-conversation secrets. The expand_mcp_variables function in skills/utils.py
+    handles the actual expansion - see test_mcp_config_expansion.py for those tests.
+    """
 
-@pytest.mark.parametrize(
-    ("input_val", "expected"),
-    [
-        (42, 42),
-        (None, None),
-        (True, True),
-        (3.14, 3.14),
-    ],
-    ids=["int", "none", "bool", "float"],
-)
-def test_resolve_env_vars_deep_non_string_passthrough(
-    input_val: object, expected: object
-):
-    assert _resolve_env_vars_deep(input_val) is expected
+    def test_mcp_servers_preserves_variable_placeholders(self, tmp_path: Path):
+        """Test that ${VAR} placeholders are preserved in mcp_servers."""
+        agent_md = tmp_path / "test-agent.md"
+        agent_md.write_text(
+            """---
+name: mcp-agent
+description: Agent with MCP config
+mcp_servers:
+  my-server:
+    command: /usr/bin/server
+    env:
+      API_TOKEN: "${SECRET_TOKEN}"
+      ENDPOINT: "${API_URL:-https://default.example.com}"
+---
+System prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
 
+        # Placeholders should be preserved, not expanded
+        assert agent.mcp_servers is not None
+        env = agent.mcp_servers["my-server"]["env"]
+        assert env["API_TOKEN"] == "${SECRET_TOKEN}"
+        assert env["ENDPOINT"] == "${API_URL:-https://default.example.com}"
 
-def test_resolve_env_vars_deep_string(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("VAL", "resolved")
-    assert _resolve_env_vars_deep("${VAL}") == "resolved"
+    def test_mcp_servers_preserves_complex_placeholders(self, tmp_path: Path):
+        """Test that nested placeholders in args and env are preserved."""
+        agent_md = tmp_path / "test-agent.md"
+        agent_md.write_text(
+            """---
+name: complex-mcp-agent
+description: Agent with complex MCP config
+mcp_servers:
+  server-a:
+    command: "${CMD:-uvx}"
+    args:
+      - "--token"
+      - "${TOKEN}"
+      - "--url"
+      - "${URL:-http://localhost:8080}"
+    env:
+      TOKEN: "${TOKEN}"
+      DEBUG: "true"
+---
+System prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
 
+        server = agent.mcp_servers["server-a"]
+        assert server["command"] == "${CMD:-uvx}"
+        assert server["args"][1] == "${TOKEN}"
+        assert server["args"][3] == "${URL:-http://localhost:8080}"
+        assert server["env"]["TOKEN"] == "${TOKEN}"
+        # Literal values unchanged
+        assert server["env"]["DEBUG"] == "true"
 
-def test_resolve_env_vars_deep_dict(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("A", "1")
-    monkeypatch.setenv("B", "2")
-    result = _resolve_env_vars_deep({"key_a": "${A}", "key_b": "${B}"})
-    assert result == {"key_a": "1", "key_b": "2"}
+    def test_mcp_servers_without_placeholders_unchanged(self, tmp_path: Path):
+        """Test that configs without placeholders work normally."""
+        agent_md = tmp_path / "test-agent.md"
+        agent_md.write_text(
+            """---
+name: static-mcp-agent
+description: Agent with static MCP config
+mcp_servers:
+  static-server:
+    command: uvx
+    args:
+      - mcp-server-fetch
+---
+System prompt.
+"""
+        )
+        agent = AgentDefinition.load(agent_md)
 
-
-def test_resolve_env_vars_deep_list(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("X", "hello")
-    result = _resolve_env_vars_deep(["${X}", "literal", "${X}"])
-    assert result == ["hello", "literal", "hello"]
-
-
-def test_resolve_env_vars_deep_nested(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("CMD", "/usr/bin/server")
-    monkeypatch.setenv("TOKEN", "secret")
-    data = {
-        "command": "${CMD}",
-        "args": ["--token", "${TOKEN}"],
-        "env": {"API_TOKEN": "${TOKEN}"},
-        "port": 8080,
-    }
-    result = _resolve_env_vars_deep(data)
-    assert result["command"] == "/usr/bin/server"
-    assert result["args"] == ["--token", "secret"]
-    assert result["env"]["API_TOKEN"] == "secret"
-    assert result["port"] == 8080  # non-string left untouched
+        server = agent.mcp_servers["static-server"]
+        assert server["command"] == "uvx"
+        assert server["args"] == ["mcp-server-fetch"]
