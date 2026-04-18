@@ -988,7 +988,6 @@ class Agent(CriticMixin, AgentBase):
         on_event(action_event)
         return action_event
 
-    @observe()
     def _execute_action_event(
         self,
         conversation: LocalConversation,
