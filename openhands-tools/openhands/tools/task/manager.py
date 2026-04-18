@@ -198,7 +198,7 @@ class TaskManager:
                 persistence_dir=self._persistence_dir,
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
-                delete_on_close=False,
+                delete_on_close=True,
             )
 
             self._set_confirmation_policy(
@@ -285,7 +285,7 @@ class TaskManager:
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
             hook_config=hook_config,
-            delete_on_close=False,
+            delete_on_close=True,
         )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:

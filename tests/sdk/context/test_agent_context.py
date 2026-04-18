@@ -94,9 +94,10 @@ class TestAgentContext:
         assert "<name>image-resize</name>" in result
         assert "Extract text from PDF files." in result
         assert "Resize and convert images." in result
-        # Verify source is included as location
-        assert "<location>pdf-tools.md</location>" in result
-        assert "<location>image-resize.md</location>" in result
+        # Source paths must NOT be exposed: invoke_skill is the only entry point.
+        assert "<location>" not in result
+        assert "pdf-tools.md" not in result
+        assert "image-resize.md" not in result
 
     def test_agentskills_format_progressive_disclosure(self):
         """Test that AgentSkills-format skills use progressive disclosure.

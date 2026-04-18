@@ -13,22 +13,32 @@ ARG PORT=8000
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
 #
-# NOTE: We use the base image's system Python (--python-preference only-system)
-# instead of uv-managed python-build-standalone. The python-build-standalone
-# builds ship libpython with an executable stack (PT_GNU_STACK PF_X).
-# Docker containers running under seccomp restrictions (e.g. GitHub Actions
-# Docker-in-Docker) reject dlopen() on such libraries with:
-#   "cannot enable executable stack as shared object requires: Invalid argument"
-# Debian's CPython packages do not have this issue.
+# SELF-CONTAINED /agent-server CONTRACT:
+# uv installs python-build-standalone into /agent-server/uv-managed-python and
+# creates .venv against it. Both live under /agent-server, so downstream
+# consumers can COPY /agent-server onto any base image and the venv works.
+#
+# uv >= 0.11.5 pulls python-build-standalone >= 20260408, which ships
+# libpython without PT_GNU_STACK PF_X (executable stack). Earlier releases
+# had this flag set due to LLVM/BOLT bugs, causing glibc >= 2.41 and
+# DinD/sysbox/seccomp to reject dlopen() with "cannot enable executable
+# stack". No sanitizer or workaround is needed on fixed releases.
+# See OpenHands/software-agent-sdk#2761.
 ####################################################################################
 FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
+ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
-COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
+# uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
+# first release with the PT_GNU_STACK fix. Pin to 0.11.6 (latest at time of
+# writing) rather than :latest so builds are reproducible.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
- && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME}
+ && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
+ && mkdir -p /agent-server/uv-managed-python \
+ && chown -R ${USERNAME}:${USERNAME} /agent-server
 USER ${USERNAME}
 WORKDIR /agent-server
 # Cache-friendly: lockfiles first
@@ -38,7 +48,10 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv venv --python-preference only-system .venv && uv sync --frozen --no-editable --extra boto3
+    uv python install 3.13 && \
+    uv venv --python-preference only-managed --python 3.13 .venv && \
+    uv sync --frozen --no-editable --managed-python --extra boto3 && \
+    readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -135,7 +148,7 @@ RUN mkdir -p /etc/claude-code && \
 
 # NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
-COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 USER ${USERNAME}
 WORKDIR /

@@ -74,6 +74,11 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
+    def invoked_skills(self) -> list[str]:
+        """Names of progressive-disclosure skills explicitly invoked."""
+        ...
+
+    @property
     def workspace(self) -> BaseWorkspace:
         """The workspace for agent operations and tool execution."""
         ...

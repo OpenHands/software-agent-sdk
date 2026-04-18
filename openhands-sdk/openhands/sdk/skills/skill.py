@@ -1142,7 +1142,9 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
         max_description_length: Maximum length for descriptions (default 1024)
 
     Returns:
-        XML string in AgentSkills format with name, description, and location
+        XML string in AgentSkills format with name and description. The
+        `<location>` field is intentionally omitted so the agent cannot
+        bypass the `invoke_skill` tool by reading the file directly.
 
     Example:
         >>> skills = [Skill(name="pdf-tools", content="...",
@@ -1153,7 +1155,6 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
           <skill>
             <name>pdf-tools</name>
             <description>Extract text from PDF files.</description>
-            <location>/path/to/skill</location>
           </skill>
         </available_skills>
     """
@@ -1191,23 +1192,22 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
             description = description[:max_description_length]
 
         if total_truncated > 0:
-            truncation_msg = f"... [{total_truncated} characters truncated"
-            if skill.source:
-                truncation_msg += f". View {skill.source} for complete information"
-            truncation_msg += "]"
+            truncation_msg = (
+                f"... [{total_truncated} characters truncated. "
+                f'Call invoke_skill(name="{skill.name}") to load the full skill]'
+            )
             description = description + truncation_msg
 
         # Escape XML special characters using standard library
         description = xml_escape(description.strip())
         name = xml_escape(skill.name.strip())
 
-        # Build skill element following AgentSkills format from skills-ref
+        # Build skill element. Note: <location> is intentionally omitted so
+        # the agent cannot bypass `invoke_skill` by reading the file directly;
+        # `invoke_skill` is the only supported invocation path.
         lines.append("  <skill>")
         lines.append(f"    <name>{name}</name>")
         lines.append(f"    <description>{description}</description>")
-        if skill.source:
-            source = xml_escape(skill.source.strip())
-            lines.append(f"    <location>{source}</location>")
         lines.append("  </skill>")
 
     lines.append("</available_skills>")

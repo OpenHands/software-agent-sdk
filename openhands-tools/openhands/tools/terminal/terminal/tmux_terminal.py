@@ -11,12 +11,33 @@ from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
+    TMUX_SOCKET_NAME,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
+from openhands.tools.terminal.terminal.interface import parse_ctrl_key
 
 
 logger = get_logger(__name__)
+
+# Map normalized special key names to tmux key names.
+_TMUX_SPECIALS: dict[str, str] = {
+    "ENTER": "Enter",
+    "TAB": "Tab",
+    "BS": "BSpace",
+    "ESC": "Escape",
+    "UP": "Up",
+    "DOWN": "Down",
+    "LEFT": "Left",
+    "RIGHT": "Right",
+    "HOME": "Home",
+    "END": "End",
+    "PGUP": "PPage",
+    "PGDN": "NPage",
+    "C-L": "C-l",
+    "C-D": "C-d",
+    "C-C": "C-c",
+}
 
 
 class TmuxTerminal(TerminalInterface):
@@ -47,7 +68,7 @@ class TmuxTerminal(TerminalInterface):
 
         env = sanitized_env()
         # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
-        self.server = libtmux.Server(socket_name="openhands", environment=env)
+        self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
@@ -113,14 +134,39 @@ class TmuxTerminal(TerminalInterface):
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send text/keys to the tmux pane.
 
+        Supports:
+          - Plain text (uses literal paste; preserves spaces/newlines)
+          - Named specials: ENTER, TAB, BS, ESC, UP, DOWN, LEFT, RIGHT,
+            HOME, END, PGUP, PGDN, C-L, C-D, C-C
+          - Generic Ctrl sequences: C-a..C-z, CTRL-x, CTRL+x
+
         Args:
             text: Text or key sequence to send
-            enter: Whether to send Enter key after the text
+            enter: Whether to send Enter key after the text.
+                   Ignored for special/ctrl keys.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys(text, enter=enter)
+        # Map normalized names to tmux key names
+        upper = text.strip().upper()
+
+        # 1) Named specials
+        if upper in _TMUX_SPECIALS:
+            self.pane.send_keys(_TMUX_SPECIALS[upper], enter=False)
+            return
+
+        # 2) Generic Ctrl-<letter>
+        ctrl = parse_ctrl_key(text)
+        if ctrl is not None:
+            self.pane.send_keys(ctrl, enter=False)
+            return
+
+        # 3) Plain text — use literal=True so tmux doesn't split on
+        #    whitespace or interpret special tokens.
+        self.pane.send_keys(text, enter=False, literal=True)
+        if enter and not text.endswith("\n"):
+            self.pane.send_keys("Enter", enter=False)
 
     def read_screen(self) -> str:
         """Read the current tmux pane content.
