@@ -116,9 +116,17 @@ _ACTIVITY_SIGNAL_INTERVAL: float = 30.0
 _TERMINAL_TOOL_CALL_STATUSES: frozenset[str] = frozenset({"completed", "failed"})
 
 
+# Stable identifier stamped onto the sentinel LLM so downstream code
+# (e.g. title_utils) can detect "this LLM cannot be called" without
+# relying on the model name — which we overwrite with the real model
+# once ``acp_model`` is known, so logs and serialized state show the
+# actual model rather than "acp-managed".
+ACP_SENTINEL_USAGE_ID = "acp-managed"
+
+
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
-    return LLM(model="acp-managed")
+    return LLM(model="acp-managed", usage_id=ACP_SENTINEL_USAGE_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -657,10 +665,13 @@ class ACPAgent(AgentBase):
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)
-        # Propagate the actual model name to metrics so that cost/token
-        # entries are attributed to the real model, not the sentinel
-        # "acp-managed" placeholder.
+        # Propagate the actual model name to the sentinel LLM and its
+        # metrics so that logs, serialized state, and cost/token entries
+        # show the real model instead of the "acp-managed" placeholder.
+        # The ACP-sentinel marker lives on ``llm.usage_id`` and is
+        # independent of the model name.
         if self.acp_model:
+            self.llm.model = self.acp_model
             self.llm.metrics.model_name = self.acp_model
             if self.llm.metrics.accumulated_token_usage is not None:
                 self.llm.metrics.accumulated_token_usage.model = self.acp_model

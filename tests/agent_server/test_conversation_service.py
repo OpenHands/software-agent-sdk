@@ -1660,10 +1660,11 @@ class TestAutoTitle:
         title: str | None = None,
         title_llm_profile: str | None = None,
         llm_model: str = "gpt-4o",
+        llm_usage_id: str = "test-llm",
     ) -> AsyncMock:
         stored = StoredConversation(
             id=uuid4(),
-            agent=Agent(llm=LLM(model=llm_model, usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model=llm_model, usage_id=llm_usage_id), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1888,7 +1889,7 @@ class TestAutoTitle:
     @pytest.mark.asyncio
     async def test_autotitle_falls_back_for_acp_managed_llm(self):
         """ACP-managed agents with no title profile → truncation fallback."""
-        service = self._make_service(llm_model="acp-managed")
+        service = self._make_service(llm_usage_id="acp-managed")
         subscriber = AutoTitleSubscriber(service=service)
 
         await subscriber(self._user_message_event("Fix the login bug"))
