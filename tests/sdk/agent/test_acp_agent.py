@@ -13,7 +13,6 @@ from acp.exceptions import RequestError as ACPRequestError
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
-    _acp_command_supports_vision,
     _build_session_meta,
     _estimate_cost_from_tokens,
     _extract_token_usage,
@@ -2081,80 +2080,41 @@ class TestResolveBypassMode:
 
 
 # ---------------------------------------------------------------------------
-# _acp_command_supports_vision + ACPAgent.supports_vision()
+# ACPAgent.supports_vision()
 # ---------------------------------------------------------------------------
 
 
-class TestACPCommandSupportsVision:
+class TestACPAgentSupportsVision:
     """All three ACP providers OpenHands supports — claude-agent-acp,
     gemini-cli, codex-acp — declare prompt_capabilities.image=true and
     forward images to a vision-capable underlying model."""
 
-    def test_claude_agent_acp_command(self):
-        assert (
-            _acp_command_supports_vision(
-                ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
-                "",
-            )
-            is True
-        )
-
-    def test_claude_agent_acp_from_agent_name(self):
-        assert _acp_command_supports_vision(["/some/opaque/binary"], "claude-agent-acp")
-        assert _acp_command_supports_vision([], "claude-agent-acp")
-
-    def test_gemini_cli_command(self):
-        assert (
-            _acp_command_supports_vision(["gemini-cli", "--experimental-acp"], "")
-            is True
-        )
-
-    def test_gemini_cli_from_agent_name(self):
-        assert _acp_command_supports_vision(["node", "server.js"], "gemini-cli")
-
-    def test_codex_acp_command(self):
-        assert _acp_command_supports_vision(["codex-acp"], "") is True
-
-    def test_codex_acp_from_agent_name(self):
-        assert _acp_command_supports_vision([], "codex-acp")
-
-    def test_agent_name_takes_precedence_over_generic_command(self):
-        # A user can launch any of our three servers via ``node`` or a
-        # local path; the agent name from InitializeResponse still lets
-        # us identify the provider.
-        assert (
-            _acp_command_supports_vision(
-                ["/usr/local/bin/node", "/opt/server.js"],
-                "claude-agent-acp",
-            )
-            is True
-        )
-
-    def test_unknown_server_defaults_to_false(self):
-        # Safe default: unknown servers may silently drop image blocks,
-        # so advertise no-vision rather than send content that gets lost.
-        assert _acp_command_supports_vision(["some-random-acp-server"], "") is False
-
-    def test_empty_inputs_default_to_false(self):
-        assert _acp_command_supports_vision([], "") is False
-
-
-class TestACPAgentSupportsVision:
-    def test_claude_agent_supports_vision(self):
+    def test_claude_agent_via_command(self):
         agent = ACPAgent(
             acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
         )
         assert agent.supports_vision() is True
 
-    def test_gemini_cli_supports_vision(self):
+    def test_gemini_cli_via_command(self):
         agent = ACPAgent(acp_command=["gemini-cli", "--experimental-acp"])
         assert agent.supports_vision() is True
 
-    def test_codex_acp_supports_vision(self):
+    def test_codex_acp_via_command(self):
         agent = ACPAgent(acp_command=["codex-acp"])
         assert agent.supports_vision() is True
 
-    def test_unknown_acp_server_does_not_claim_vision(self):
+    def test_agent_name_resolves_opaque_launcher(self):
+        # A user can launch any of our three servers via ``node`` or a
+        # local path; the agent name from InitializeResponse still lets
+        # us identify the provider.
+        agent = ACPAgent(acp_command=["/usr/local/bin/node", "/opt/server.js"])
+        assert agent.supports_vision() is False
+        agent._agent_name = "claude-agent-acp"
+        assert agent.supports_vision() is True
+
+    def test_unknown_acp_server_defaults_to_false(self):
+        # Unknown servers may silently drop image blocks, so advertise
+        # no-vision rather than send content that gets lost.
         agent = ACPAgent(acp_command=["echo", "test"])
         assert agent.supports_vision() is False
 

@@ -142,40 +142,21 @@ _BYPASS_MODE_MAP: dict[str, str] = {
 }
 _DEFAULT_BYPASS_MODE = "full-access"
 
-# ACP server identifier substrings → whether the server forwards ACP
-# ImageContentBlock prompts to a vision-capable underlying model.
-#
-# Verified against upstream source (all declare prompt_capabilities.image=true
-# and map ContentBlock::Image to their provider's native image format):
-#   claude-agent-acp → Claude Sonnet/Opus/Haiku 3.5+ (vision)
+# ACP servers known to forward ImageContentBlock prompts to a vision-capable
+# underlying model. Verified against upstream source — all declare
+# prompt_capabilities.image=true and map ContentBlock::Image to their
+# provider's native image format:
+#   claude-agent-acp → Claude Sonnet/Opus/Haiku 3.5+
 #     src/acp-agent.ts: promptToClaude() case "image"
-#   gemini-cli       → Gemini 1.5/2.x Pro/Flash (vision)
+#   gemini-cli       → Gemini 1.5/2.x Pro/Flash
 #     packages/cli/src/acp/acpClient.ts: #resolvePrompt() case "image"
-#   codex-acp        → GPT-5 family via Codex CLI (vision)
+#   codex-acp        → GPT-5 family via Codex CLI
 #     src/thread.rs: build_prompt_items() image → UserInput::Image
-_ACP_VISION_PROVIDER_MARKERS: dict[str, bool] = {
-    "claude-agent-acp": True,
-    "gemini-cli": True,
-    "codex-acp": True,
-}
-
-
-def _acp_command_supports_vision(command: list[str], agent_name: str) -> bool:
-    """Return True if the ACP server forwards inline images to a vision model.
-
-    Matches on either the runtime agent name from InitializeResponse (when
-    available) or the configured launch command (always available). Falls
-    back to False for unknown servers so we do not silently send images a
-    server may drop.
-    """
-    haystacks: list[str] = []
-    if agent_name:
-        haystacks.append(agent_name.lower())
-    haystacks.append(" ".join(command).lower())
-    for marker, supports in _ACP_VISION_PROVIDER_MARKERS.items():
-        if any(marker in h for h in haystacks):
-            return supports
-    return False
+_VISION_CAPABLE_ACP_SERVERS: tuple[str, ...] = (
+    "claude-agent-acp",
+    "gemini-cli",
+    "codex-acp",
+)
 
 
 # ACP auth method ID → environment variable that supplies the credential.
@@ -826,9 +807,11 @@ class ACPAgent(AgentBase):
         does not recognise, so the base-class ``llm.vision_is_active()``
         always returns False for ACP agents. Resolve the real capability
         from the ACP server identity (launch command or the agent name
-        reported by InitializeResponse) instead.
+        reported by InitializeResponse) instead. Unknown servers fall back
+        to False so we don't silently send images a server may drop.
         """
-        return _acp_command_supports_vision(self.acp_command, self._agent_name)
+        probe = f"{self._agent_name} {' '.join(self.acp_command)}".lower()
+        return any(marker in probe for marker in _VISION_CAPABLE_ACP_SERVERS)
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
