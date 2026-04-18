@@ -132,27 +132,27 @@ class SecretRegistry(OpenHandsModel):
             secret_infos.append({"name": name, "description": description})
         return secret_infos
 
-    def get_all_secrets(self) -> dict[str, str]:
-        """Get all secrets as a dictionary of name to value.
+    def get_secret_value(self, name: str) -> str | None:
+        """Look up a single secret value by name.
 
-        This method retrieves the current values of all registered secrets.
-        Useful for MCP config variable expansion and other contexts where
-        all secrets need to be available as a dict.
+        This method retrieves the value of a specific secret. It's designed
+        to be passed as a callback to functions that need secret lookup
+        (e.g., expand_mcp_variables) without exposing all secrets at once.
+
+        Args:
+            name: The name of the secret to retrieve.
 
         Returns:
-            Dictionary mapping secret names to their current values.
-            Secrets that fail to retrieve are excluded from the result.
+            The secret value if found and successfully retrieved, None otherwise.
         """
-        secrets: dict[str, str] = {}
-        for name, source in self.secret_sources.items():
-            try:
-                value = source.get_value()
-                if value is not None:
-                    secrets[name] = value
-            except Exception as e:
-                logger.warning(f"Failed to retrieve secret '{name}': {e}")
-                continue
-        return secrets
+        source = self.secret_sources.get(name)
+        if source is None:
+            return None
+        try:
+            return source.get_value()
+        except Exception as e:
+            logger.warning(f"Failed to retrieve secret '{name}': {e}")
+            return None
 
 
 def _wrap_secret(value: SecretValue) -> SecretSource:

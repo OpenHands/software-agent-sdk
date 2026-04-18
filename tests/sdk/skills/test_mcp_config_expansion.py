@@ -47,7 +47,7 @@ class TestExpandMcpVariables:
             del os.environ["TEST_MCP_VAR"]
 
     def test_expand_secrets(self):
-        """Test expanding variables from secrets dict."""
+        """Test expanding variables via get_secret callback."""
         config = {
             "mcpServers": {
                 "my-server": {
@@ -58,7 +58,7 @@ class TestExpandMcpVariables:
         }
         secrets = {"MCP_SECRET_TOKEN": "my-secret-value"}
 
-        result = expand_mcp_variables(config, {}, secrets=secrets)
+        result = expand_mcp_variables(config, {}, get_secret=secrets.get)
 
         assert result["mcpServers"]["my-server"]["headers"]["Authorization"] == (
             "Bearer my-secret-value"
@@ -80,7 +80,7 @@ class TestExpandMcpVariables:
             variables = {"SHARED_VAR": "variables-value"}
             secrets = {"SHARED_VAR": "secrets-value", "SECRET_VAR": "secret-value"}
 
-            result = expand_mcp_variables(config, variables, secrets=secrets)
+            result = expand_mcp_variables(config, variables, get_secret=secrets.get)
 
             # variables dict should win over secrets and env
             assert result["mcpServers"]["test-server"]["value1"] == "variables-value"
@@ -104,7 +104,7 @@ class TestExpandMcpVariables:
             }
             secrets = {"MCP_TOKEN": "secret-token"}
 
-            result = expand_mcp_variables(config, {}, secrets=secrets)
+            result = expand_mcp_variables(config, {}, get_secret=secrets.get)
 
             # secrets should win over env
             assert result["mcpServers"]["test-server"]["headers"]["Authorization"] == (
@@ -142,7 +142,7 @@ class TestExpandMcpVariables:
         }
         secrets = {"API_URL": "https://secret.example.com"}
 
-        result = expand_mcp_variables(config, {}, secrets=secrets)
+        result = expand_mcp_variables(config, {}, get_secret=secrets.get)
 
         assert (
             result["mcpServers"]["test-server"]["url"] == "https://secret.example.com"
@@ -177,14 +177,14 @@ class TestExpandMcpVariables:
         variables = {"HOST": "localhost"}
         secrets = {"PORT": "8080", "PATH": "api/v1"}
 
-        result = expand_mcp_variables(config, variables, secrets=secrets)
+        result = expand_mcp_variables(config, variables, get_secret=secrets.get)
 
         assert result["mcpServers"]["test-server"]["url"] == (
             "https://localhost:8080/api/v1"
         )
 
-    def test_empty_secrets_dict(self):
-        """Test with None secrets (default behavior)."""
+    def test_no_get_secret_callback(self):
+        """Test with no get_secret callback (default behavior)."""
         config = {
             "mcpServers": {
                 "test-server": {"url": "${SKILL_ROOT}/api"},
@@ -192,8 +192,8 @@ class TestExpandMcpVariables:
         }
         variables = {"SKILL_ROOT": "/path"}
 
-        # Should work with None secrets
-        result = expand_mcp_variables(config, variables, secrets=None)
+        # Should work without get_secret
+        result = expand_mcp_variables(config, variables, get_secret=None)
 
         assert result["mcpServers"]["test-server"]["url"] == "/path/api"
 
@@ -216,7 +216,7 @@ class TestLoadMcpConfigWithSecrets:
 
         secrets = {"API_SECRET": "my-secret-token"}
 
-        result = load_mcp_config(mcp_json, skill_root=tmp_path, secrets=secrets)
+        result = load_mcp_config(mcp_json, skill_root=tmp_path, get_secret=secrets.get)
 
         assert result["mcpServers"]["my-server"]["headers"]["Authorization"] == (
             "Bearer my-secret-token"
@@ -254,7 +254,7 @@ class TestLoadMcpConfigWithSecrets:
         # Even if secrets has SKILL_ROOT, the param should win
         secrets = {"SKILL_ROOT": "/wrong/path"}
 
-        result = load_mcp_config(mcp_json, skill_root=tmp_path, secrets=secrets)
+        result = load_mcp_config(mcp_json, skill_root=tmp_path, get_secret=secrets.get)
 
         assert result["mcpServers"]["my-server"]["command"] == f"{tmp_path}/server.py"
 
@@ -276,7 +276,7 @@ class TestLoadMcpConfigWithSecrets:
 
         secrets = {"API_KEY": "secret-key-123"}
 
-        result = load_mcp_config(mcp_json, skill_root=tmp_path, secrets=secrets)
+        result = load_mcp_config(mcp_json, skill_root=tmp_path, get_secret=secrets.get)
 
         assert result["mcpServers"]["my-server"]["command"] == f"{tmp_path}/server.py"
         assert result["mcpServers"]["my-server"]["env"]["API_KEY"] == "secret-key-123"

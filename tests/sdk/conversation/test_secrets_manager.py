@@ -154,8 +154,8 @@ def test_get_secrets_as_env_vars_handles_callable_exceptions():
     assert env_vars == {"WORKING_SECRET": "working-value"}
 
 
-def test_get_all_secrets_static_values():
-    """Test get_all_secrets with static string values."""
+def test_get_secret_value_static():
+    """Test get_secret_value with static string values."""
     secret_registry = SecretRegistry()
     secret_registry.update_secrets(
         {
@@ -164,15 +164,13 @@ def test_get_all_secrets_static_values():
         }
     )
 
-    all_secrets = secret_registry.get_all_secrets()
-    assert all_secrets == {
-        "API_KEY": "test-api-key",
-        "DATABASE_URL": "postgresql://localhost/test",
-    }
+    assert secret_registry.get_secret_value("API_KEY") == "test-api-key"
+    assert secret_registry.get_secret_value("DATABASE_URL") == "postgresql://localhost/test"
+    assert secret_registry.get_secret_value("NONEXISTENT") is None
 
 
-def test_get_all_secrets_callable_values():
-    """Test get_all_secrets with callable values."""
+def test_get_secret_value_callable():
+    """Test get_secret_value with callable values."""
     secret_registry = SecretRegistry()
 
     class MyTokenSource(SecretSource):
@@ -186,15 +184,12 @@ def test_get_all_secrets_callable_values():
         }
     )
 
-    all_secrets = secret_registry.get_all_secrets()
-    assert all_secrets == {
-        "STATIC_KEY": "static-value",
-        "DYNAMIC_TOKEN": "dynamic-token-456",
-    }
+    assert secret_registry.get_secret_value("STATIC_KEY") == "static-value"
+    assert secret_registry.get_secret_value("DYNAMIC_TOKEN") == "dynamic-token-456"
 
 
-def test_get_all_secrets_handles_exceptions():
-    """Test that get_all_secrets handles exceptions from callables gracefully."""
+def test_get_secret_value_handles_exceptions():
+    """Test that get_secret_value handles exceptions from callables gracefully."""
     secret_registry = SecretRegistry()
 
     class MyFailingTokenSource(SecretSource):
@@ -212,15 +207,30 @@ def test_get_all_secrets_handles_exceptions():
         }
     )
 
-    # Should not raise exception, should skip failing secret
-    all_secrets = secret_registry.get_all_secrets()
-
-    # Only working secret should be returned
-    assert all_secrets == {"WORKING_SECRET": "working-value"}
+    # Should not raise exception, should return None for failing secret
+    assert secret_registry.get_secret_value("FAILING_SECRET") is None
+    assert secret_registry.get_secret_value("WORKING_SECRET") == "working-value"
 
 
-def test_get_all_secrets_empty_registry():
-    """Test get_all_secrets with empty registry."""
+def test_get_secret_value_empty_registry():
+    """Test get_secret_value with empty registry."""
     secret_registry = SecretRegistry()
-    all_secrets = secret_registry.get_all_secrets()
-    assert all_secrets == {}
+    assert secret_registry.get_secret_value("ANY_KEY") is None
+
+
+def test_get_secret_value_as_callback():
+    """Test using get_secret_value as a callback for dict-like lookup."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_KEY": "test-api-key",
+            "TOKEN": "test-token",
+        }
+    )
+
+    # This is how it's used with expand_mcp_variables
+    get_secret = secret_registry.get_secret_value
+
+    assert get_secret("API_KEY") == "test-api-key"
+    assert get_secret("TOKEN") == "test-token"
+    assert get_secret("MISSING") is None
