@@ -28,6 +28,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
+toolshield = ["toolshield>=0.1.1"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
