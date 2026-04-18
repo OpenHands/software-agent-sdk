@@ -155,7 +155,6 @@ _DEFAULT_BYPASS_MODE = "full-access"
 #     src/thread.rs: build_prompt_items() image → UserInput::Image
 _ACP_VISION_PROVIDER_MARKERS: dict[str, bool] = {
     "claude-agent-acp": True,
-    "claude-code-acp": True,  # legacy name, kept for completeness
     "gemini-cli": True,
     "codex-acp": True,
 }
