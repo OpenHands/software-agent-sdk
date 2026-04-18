@@ -3,14 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, get_args, get_origin
 from uuid import UUID
 
 from fastmcp.mcp_config import MCPConfig
 from pydantic import (
     BaseModel,
+    Discriminator,
     Field,
     SecretStr,
+    Tag,
+    TypeAdapter,
     field_serializer,
     field_validator,
 )
@@ -35,7 +38,8 @@ from .metadata import (
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.agent import Agent
+    from openhands.sdk.agent import ACPAgent, Agent
+    from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
 
@@ -68,12 +72,30 @@ class SettingsFieldSchema(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     secret: bool = False
     choices: list[SettingsChoice] = Field(default_factory=list)
+    variant: str | None = Field(
+        default=None,
+        description=(
+            "When set, the field only applies to the named ``AgentSettings`` "
+            "variant (``'llm'`` or ``'acp'``). The GUI filters fields by the "
+            "user's current variant; fields with ``variant=None`` are shown "
+            "regardless."
+        ),
+    )
 
 
 class SettingsSectionSchema(BaseModel):
     key: str
     label: str
     fields: list[SettingsFieldSchema]
+    variant: str | None = Field(
+        default=None,
+        description=(
+            "When set, this section only applies to the named ``AgentSettings`` "
+            "variant (e.g. ``'llm'`` or ``'acp'``). The GUI filters sections by "
+            "the current ``agent_kind`` value; sections with ``variant=None`` "
+            "are always shown."
+        ),
+    )
 
 
 class SettingsSchema(BaseModel):
@@ -279,13 +301,14 @@ class ConversationSettings(BaseModel):
     schema_version: int = Field(default=CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
 
     # --- runtime fields (populated on-the-fly, not persisted) ---------------
-    agent_settings: AgentSettings | None = Field(
+    agent_settings: AgentSettingsConfig | None = Field(
         default=None,
         exclude=True,
         description=(
             "Agent settings used to build the Agent for the conversation. "
             "When set, create_request() will automatically build the agent "
-            "and populate secrets from agent_context."
+            "and populate secrets from agent_context. Accepts either the "
+            "``LLMAgentSettings`` or ``ACPAgentSettings`` variant."
         ),
     )
     workspace: LocalWorkspace | None = Field(
@@ -349,7 +372,7 @@ class ConversationSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Confirmation mode",
-                prominence=SettingProminence.MAJOR,
+                prominence=SettingProminence.CRITICAL,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",
@@ -405,10 +428,17 @@ class ConversationSettings(BaseModel):
         payload = dict(kwargs)
 
         # --- agent (from agent_settings) ------------------------------------
+        # Both settings variants expose a .create_agent() method; the LLM
+        # variant returns an ``Agent`` and the ACP variant returns an
+        # ``ACPAgent``. Callers that want a narrowed type should access
+        # ``self.agent_settings.create_agent()`` directly.
         if "agent" not in payload and self.agent_settings is not None:
             payload["agent"] = self.agent_settings.create_agent()
 
         # --- secrets (from agent's context) ---------------------------------
+        # ACPAgent doesn't carry an ``agent_context`` at all; its context is
+        # owned by the subprocess. ``getattr(..., None)`` keeps this no-op
+        # for the ACP variant.
         agent = payload.get("agent")
         if "secrets" not in payload and agent is not None:
             ctx = getattr(agent, "agent_context", None)
@@ -451,8 +481,41 @@ class ConversationSettings(BaseModel):
         return request_type(**self._start_request_kwargs(**kwargs))
 
 
-class AgentSettings(BaseModel):
+AgentKind = Literal["llm", "acp"]
+
+ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
+"""Known ACP backend servers the GUI can pick from.
+
+``custom`` means the user supplies the raw ``acp_command`` themselves;
+the other choices map to a default npx command (see
+:data:`_DEFAULT_ACP_COMMANDS`).
+"""
+
+
+_DEFAULT_ACP_COMMANDS: dict[str, list[str]] = {
+    "claude-code": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+    "codex": ["npx", "-y", "@zed-industries/codex-acp"],
+    # gemini-cli's ACP mode is activated via ``--acp`` (``--experimental-acp``
+    # is deprecated in the gemini-cli >=0.38 releases).
+    "gemini-cli": ["npx", "-y", "@google/gemini-cli", "--acp"],
+}
+
+
+class LLMAgentSettings(BaseModel):
+    """Settings for a standard LLM-backed :class:`Agent`.
+
+    This is the long-standing ``AgentSettings`` shape; fields here build
+    the default ``Agent`` (LLM + tools + MCP + condenser + critic).
+    """
+
     schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
+    agent_kind: Literal["llm"] = Field(
+        default="llm",
+        description=(
+            "Discriminator for the ``AgentSettings`` union. ``'llm'`` selects a "
+            "standard LLM-backed agent."
+        ),
+    )
     agent: str = Field(
         default="CodeActAgent",
         description="Agent class to use.",
@@ -460,6 +523,7 @@ class AgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Agent",
                 prominence=SettingProminence.MAJOR,
+                variant="llm",
             ).model_dump()
         },
     )
@@ -470,6 +534,7 @@ class AgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="llm",
                 label="LLM",
+                variant="llm",
             ).model_dump()
         },
     )
@@ -480,6 +545,7 @@ class AgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Tools",
                 prominence=SettingProminence.MAJOR,
+                variant="llm",
             ).model_dump()
         },
     )
@@ -490,6 +556,7 @@ class AgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="MCP configuration",
                 prominence=SettingProminence.MINOR,
+                variant="llm",
             ).model_dump()
         },
     )
@@ -504,6 +571,7 @@ class AgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="condenser",
                 label="Condenser",
+                variant="llm",
             ).model_dump()
         },
     )
@@ -514,6 +582,7 @@ class AgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",
                 label="Verification",
+                variant="llm",
             ).model_dump()
         },
     )
@@ -541,7 +610,7 @@ class AgentSettings(BaseModel):
 
         Example::
 
-            settings = AgentSettings(
+            settings = LLMAgentSettings(
                 llm=LLM(model="m", api_key="k"),
                 tools=[Tool(name="TerminalTool")],
             )
@@ -609,6 +678,374 @@ class AgentSettings(BaseModel):
         )
 
 
+class ACPAgentSettings(BaseModel):
+    """Settings for an ACP (Agent Client Protocol) agent.
+
+    ``create_agent()`` returns an :class:`ACPAgent` that delegates to a
+    subprocess ACP server.  The ACP server manages its own system prompt,
+    tools, MCP, and (primary) LLM calls; those fields from
+    :class:`LLMAgentSettings` do not apply here.
+
+    The :attr:`llm` field is kept (optional) so that cost/token metrics
+    can be attributed to a real model — ``ACPAgent`` uses this purely for
+    bookkeeping and pricing lookups, not for making LLM requests.
+    """
+
+    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
+    agent_kind: Literal["acp"] = Field(
+        default="acp",
+        description=(
+            "Discriminator for the ``AgentSettings`` union. ``'acp'`` selects "
+            "an ACP-delegating agent."
+        ),
+    )
+    acp_server: ACPServerKind = Field(
+        default="claude-code",
+        description=(
+            "Which ACP-compatible backend to launch. Each choice maps to a "
+            "default subprocess command (see ``acp_command`` to override)."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP server",
+                prominence=SettingProminence.CRITICAL,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_command: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional explicit command to launch the ACP subprocess. Leave "
+            "empty to use the default for :attr:`acp_server` (e.g. ``npx -y "
+            "@agentclientprotocol/claude-agent-acp`` for ``claude-code``). "
+            "Must be set when :attr:`acp_server` is ``'custom'``."
+        ),
+        json_schema_extra={
+            # Deliberately no ``depends_on=("acp_server",)``: the frontend's
+            # ``depends_on`` filter does a boolean check, which would evaluate
+            # to false for the string-valued ``acp_server`` and hide the
+            # field outright. Users see ``acp_command`` in the "all" view of
+            # the ACP Server page if they need to supply a custom command.
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP command (custom override)",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_args: list[str] = Field(
+        default_factory=list,
+        description="Additional arguments appended to the ACP server command.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP extra args",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Extra environment variables passed to the ACP subprocess.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP environment variables",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_model: str | None = Field(
+        default=None,
+        description=(
+            "Model identifier for the ACP server to use (e.g. "
+            "``'claude-opus-4-6'``). claude-agent-acp receives it via session "
+            "_meta; codex-acp and gemini-cli via ``set_session_model``. "
+            "Leave blank to let the server pick its default."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP model",
+                prominence=SettingProminence.CRITICAL,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_session_mode: str | None = Field(
+        default=None,
+        description=(
+            "Session mode ID (e.g. ``bypassPermissions``). Leave blank to "
+            "auto-detect from the ACP server type."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP session mode",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    acp_prompt_timeout: float = Field(
+        default=1800.0,
+        gt=0,
+        description="Timeout (seconds) for a single ACP prompt() round-trip.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP prompt timeout (seconds)",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+    llm: LLM = Field(
+        default_factory=_default_llm_settings,
+        description=(
+            "LLM identity used for cost/token attribution. The ACP subprocess "
+            "makes its own model calls; this field is kept so metrics and "
+            "pricing lookups can point at a real model id."
+        ),
+        json_schema_extra={
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="llm",
+                label="LLM (for metrics)",
+                variant="acp",
+            ).model_dump()
+        },
+    )
+
+    @classmethod
+    def export_schema(cls) -> SettingsSchema:
+        """Export a structured schema describing configurable ACP settings."""
+        return export_settings_schema(cls)
+
+    def resolve_acp_command(self) -> list[str]:
+        """Return the effective subprocess command for this settings block.
+
+        Uses :attr:`acp_command` verbatim when non-empty; otherwise looks
+        up the default for :attr:`acp_server`. Raises ``ValueError`` when
+        the server is ``'custom'`` but no explicit command is set (there
+        is no sensible default to fall back to).
+        """
+        if self.acp_command:
+            return list(self.acp_command)
+        if self.acp_server == "custom":
+            raise ValueError(
+                "ACPAgentSettings.acp_command must be set when "
+                "acp_server='custom' — there is no default to fall back to"
+            )
+        default = _DEFAULT_ACP_COMMANDS.get(self.acp_server)
+        if default is None:
+            raise ValueError(
+                f"No default ACP command for acp_server={self.acp_server!r}"
+            )
+        return list(default)
+
+    def create_agent(self) -> ACPAgent:
+        """Build an :class:`ACPAgent` from these settings.
+
+        The subprocess command is resolved via :meth:`resolve_acp_command`
+        which maps :attr:`acp_server` to a default when no explicit
+        :attr:`acp_command` is set.
+        """
+        from openhands.sdk.agent import ACPAgent
+
+        return ACPAgent(
+            llm=self.llm,
+            acp_command=self.resolve_acp_command(),
+            acp_args=list(self.acp_args),
+            acp_env=dict(self.acp_env),
+            acp_model=self.acp_model,
+            acp_session_mode=self.acp_session_mode,
+            acp_prompt_timeout=self.acp_prompt_timeout,
+        )
+
+
+def _agent_settings_discriminator(value: Any) -> str:
+    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'llm'``.
+
+    Existing persisted payloads predate ``agent_kind`` and carry only
+    LLM-agent fields. Treating a missing discriminator as ``'llm'`` lets
+    those payloads validate without a migration.
+    """
+    if isinstance(value, BaseModel):
+        return getattr(value, "agent_kind", "llm")
+    if isinstance(value, dict):
+        return value.get("agent_kind", "llm")
+    return "llm"
+
+
+AgentSettingsConfig = Annotated[
+    Annotated[LLMAgentSettings, Tag("llm")] | Annotated[ACPAgentSettings, Tag("acp")],
+    Discriminator(_agent_settings_discriminator),
+]
+"""Discriminated union over the agent-settings variants.
+
+Use :func:`validate_agent_settings` or a :class:`~pydantic.TypeAdapter`
+to validate/construct instances from raw payloads. Use
+:func:`default_agent_settings` for the default (LLM-agent) shape.
+
+Named ``AgentSettingsConfig`` rather than ``AgentSettings`` because the
+latter is retained as a (deprecated) concrete class for backwards
+compatibility with v1.17.x callers — see :class:`AgentSettings`.
+"""
+
+
+_AGENT_SETTINGS_ADAPTER: TypeAdapter[LLMAgentSettings | ACPAgentSettings] = TypeAdapter(
+    AgentSettingsConfig
+)
+
+
+def validate_agent_settings(
+    data: Any,
+) -> LLMAgentSettings | ACPAgentSettings:
+    """Validate ``data`` as an :data:`AgentSettingsConfig` discriminated union.
+
+    This is the drop-in replacement for the old
+    ``AgentSettings.model_validate(...)`` classmethod.
+    """
+    return _AGENT_SETTINGS_ADAPTER.validate_python(data)
+
+
+class AgentSettings(LLMAgentSettings):
+    """Deprecated legacy name for :class:`LLMAgentSettings`.
+
+    Before the discriminated-union redesign, ``AgentSettings`` was the
+    single concrete class for agent configuration. It is kept as a
+    :class:`LLMAgentSettings` subclass so every v1.17 attribute and
+    method (``agent``, ``llm``, ``tools``, ``mcp_config``,
+    ``condenser``, ``verification``, ``build_condenser``,
+    ``build_critic``, ``create_agent``, …) resolves through
+    inheritance — existing callers keep working, though direct
+    construction now emits a :class:`DeprecationWarning`.
+
+    For new code:
+
+    * Use :class:`LLMAgentSettings` to build an explicit LLM-backed
+      agent, or :class:`ACPAgentSettings` for an ACP-delegating one.
+    * Use :data:`AgentSettingsConfig` as the type for fields that may
+      hold either variant (FastAPI / Pydantic pick the variant from
+      the ``agent_kind`` discriminator).
+    * Use :func:`validate_agent_settings` to validate raw payloads
+      into the correct variant.
+
+    Scheduled for removal in v1.22.0 (5 minor releases after the
+    discriminated-union landing in v1.17.1).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        # ``deprecated_in`` matches the current SDK version that ships
+        # this refactor so warn_deprecated() actually fires (its gate is
+        # current_version >= deprecated_in). ``removed_in`` is 5 minor
+        # releases later per the repo's API-breakage policy.
+        warn_deprecated(
+            "AgentSettings",
+            deprecated_in="1.17.0",
+            removed_in="1.22.0",
+            details=(
+                "Use ``LLMAgentSettings`` (for an LLM agent) or "
+                "``ACPAgentSettings`` (for an ACP agent) directly; use "
+                "``AgentSettingsConfig`` as the type for fields that accept "
+                "either variant."
+            ),
+        )
+        super().__init__(*args, **kwargs)
+
+
+def default_agent_settings() -> LLMAgentSettings:
+    """Return a default :class:`LLMAgentSettings` instance.
+
+    This is the drop-in replacement for the old bare ``AgentSettings()``
+    constructor call — the default-ever-since variant is the LLM agent.
+    """
+    return LLMAgentSettings()
+
+
+def create_agent_from_settings(
+    settings: LLMAgentSettings | ACPAgentSettings,
+) -> AgentBase:
+    """Dispatch to the variant's ``create_agent()`` method.
+
+    Returns either :class:`~openhands.sdk.agent.Agent` (LLM variant) or
+    :class:`~openhands.sdk.agent.ACPAgent` (ACP variant).
+    """
+    return settings.create_agent()
+
+
+def export_agent_settings_schema() -> SettingsSchema:
+    """Export a combined schema for the :data:`AgentSettings` union.
+
+    Walks both variants, tags each non-shared section with its variant,
+    and returns a single :class:`SettingsSchema`. The discriminator
+    (``agent_kind``) is intentionally **not** emitted as a schema field
+    — each variant lives on its own settings page in the GUI, and the
+    page injects the correct ``agent_kind`` value on save. Sections
+    carry a ``variant`` tag (``'llm'``, ``'acp'``, or ``None`` for
+    shared) so the frontend can filter by the page's variant.
+    """
+    llm_schema = LLMAgentSettings.export_schema()
+    acp_schema = ACPAgentSettings.export_schema()
+
+    merged_sections: list[SettingsSectionSchema] = []
+    merged_by_key: dict[tuple[str, str | None], SettingsSectionSchema] = {}
+
+    def _merge(schema: SettingsSchema, default_variant: str) -> None:
+        for section in schema.sections:
+            # "general" is shared across variants; tag non-shared keys
+            # with the variant so the GUI can filter sections by variant.
+            if section.key == _GENERAL_SECTION_KEY and section.variant is None:
+                effective_variant: str | None = None
+            else:
+                effective_variant = section.variant or default_variant
+
+            existing = merged_by_key.get((section.key, effective_variant))
+            if existing is None:
+                merged = section.model_copy(update={"variant": effective_variant})
+                merged_by_key[(section.key, effective_variant)] = merged
+                merged_sections.append(merged)
+            else:
+                # Same (key, variant) across invocations — union fields by key.
+                seen_keys = {f.key for f in existing.fields}
+                for field in section.fields:
+                    if field.key not in seen_keys:
+                        existing.fields.append(field)
+
+    _merge(llm_schema, default_variant="llm")
+    _merge(acp_schema, default_variant="acp")
+
+    return SettingsSchema(model_name="AgentSettings", sections=merged_sections)
+
+
 def settings_section_metadata(field: FieldInfo) -> SettingsSectionMetadata | None:
     extra = field.json_schema_extra
     if not isinstance(extra, dict):
@@ -657,6 +1094,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
             key=metadata.key,
             label=metadata.label or _humanize_name(metadata.key),
             fields=[],
+            variant=getattr(metadata, "variant", None),
         )
         sections_by_key[metadata.key] = section
         sections.append(section)
@@ -704,6 +1142,13 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                         ],
                         secret=_contains_secret(nested_field.annotation),
                         choices=_extract_choices(nested_field.annotation),
+                        # Field-level variant falls back to the enclosing
+                        # section's variant — nested fields inherit their
+                        # parent section's variant by default.
+                        variant=(
+                            (metadata.variant if metadata is not None else None)
+                            or section.variant
+                        ),
                     )
                 )
             continue
@@ -731,6 +1176,9 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 depends_on=list(metadata.depends_on),
                 secret=_contains_secret(field.annotation),
                 choices=_extract_choices(field.annotation),
+                # Top-level field: use its own variant if set, otherwise
+                # fall back to the enclosing section's variant.
+                variant=metadata.variant or section.variant,
             )
         )
 

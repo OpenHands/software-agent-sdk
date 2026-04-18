@@ -931,9 +931,13 @@ class LocalConversation(BaseConversation):
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
+        If an explicit LLM is provided, it takes precedence. Otherwise the
+        agent's LLM is used. If neither is available, the title falls back to
+        simple message truncation.
+
         Args:
-            llm: Optional LLM to use for title generation. If not provided,
-                 uses self.agent.llm.
+            llm: Optional LLM to use for title generation. Takes precedence
+                 over the agent's LLM when provided.
             max_length: Maximum length of the generated title.
 
         Returns:
@@ -942,16 +946,9 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If no user messages are found in the conversation.
         """
-        # Use provided LLM or fall back to agent's LLM
-        llm_to_use = llm or self.agent.llm
-
-        # Skip LLM-based title generation for ACP agents with sentinel LLM
-        # The sentinel model "acp-managed" cannot make LLM calls directly
-        if llm_to_use.model == "acp-managed":
-            llm_to_use = None
-
+        effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=llm_to_use, max_length=max_length
+            events=self._state.events, llm=effective_llm, max_length=max_length
         )
 
     def condense(self) -> None:

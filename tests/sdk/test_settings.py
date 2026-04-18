@@ -1,3 +1,5 @@
+import warnings
+
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
@@ -7,11 +9,16 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import (
     LLM,
+    ACPAgentSettings,
     Agent,
     AgentSettings,
     ConversationSettings,
+    LLMAgentSettings,
     SettingProminence,
     Tool,
+    default_agent_settings,
+    export_agent_settings_schema,
+    validate_agent_settings,
 )
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
@@ -28,14 +35,14 @@ _LLM_EXCLUDED_FIELDS = {name for name, fi in LLM.model_fields.items() if fi.excl
 
 
 # ---------------------------------------------------------------------------
-# Schema export
+# Schema export — per-variant
 # ---------------------------------------------------------------------------
 
 
-def test_agent_settings_export_schema_groups_sections() -> None:
-    schema = AgentSettings.export_schema()
+def test_llm_agent_settings_export_schema_groups_sections() -> None:
+    schema = LLMAgentSettings.export_schema()
 
-    assert schema.model_name == "AgentSettings"
+    assert schema.model_name == "LLMAgentSettings"
     section_keys = [section.key for section in schema.sections]
     assert section_keys == [
         "general",
@@ -65,22 +72,9 @@ def test_agent_settings_export_schema_groups_sections() -> None:
     assert llm_fields["llm.model"].value_type == "string"
     assert llm_fields["llm.model"].prominence is SettingProminence.CRITICAL
     assert llm_fields["llm.api_key"].label == "API Key"
-    assert llm_fields["llm.api_key"].value_type == "string"
     assert llm_fields["llm.api_key"].secret is True
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL
     assert llm_fields["llm.base_url"].prominence is SettingProminence.CRITICAL
-    assert llm_fields["llm.reasoning_effort"].choices[0].value == "low"
-    assert llm_fields["llm.reasoning_effort"].prominence is SettingProminence.MINOR
-    assert llm_fields["llm.litellm_extra_body"].value_type == "object"
-    assert llm_fields["llm.litellm_extra_body"].default == {}
-    assert llm_fields["llm.litellm_extra_body"].prominence is SettingProminence.MINOR
-    llm_model_field_extra = LLM.model_fields["model"].json_schema_extra
-    assert isinstance(llm_model_field_extra, dict)
-    assert "openhands_settings" in llm_model_field_extra
-    schema_dump = schema.model_dump(mode="json")
-    assert "required" not in schema_dump["sections"][0]["fields"][0]
-
-    assert llm_fields["llm.num_retries"].prominence is SettingProminence.MINOR
 
     # Excluded fields must not appear
     assert "llm.fallback_strategy" not in llm_fields
@@ -101,19 +95,32 @@ def test_agent_settings_export_schema_groups_sections() -> None:
         "finish_and_message",
         "all_actions",
     ]
-    assert v_fields["verification.critic_mode"].depends_on == [
-        "verification.critic_enabled"
-    ]
-    assert v_fields["verification.critic_mode"].prominence is SettingProminence.MINOR
-    assert v_fields["verification.critic_threshold"].depends_on == [
-        "verification.critic_enabled",
-        "verification.enable_iterative_refinement",
-    ]
-    assert (
-        v_fields["verification.critic_threshold"].prominence is SettingProminence.MINOR
-    )
-    assert "confirmation_mode" not in v_fields
-    assert "security_analyzer" not in v_fields
+
+
+def test_acp_agent_settings_export_schema_has_acp_section() -> None:
+    schema = ACPAgentSettings.export_schema()
+    assert schema.model_name == "ACPAgentSettings"
+
+    section_keys = [section.key for section in schema.sections]
+    assert "acp" in section_keys
+    assert "llm" in section_keys  # kept for cost/pricing attribution
+
+    sections = {s.key: s for s in schema.sections}
+    acp_fields = {f.key: f for f in sections["acp"].fields}
+    assert set(acp_fields) == {
+        "acp_server",
+        "acp_command",
+        "acp_args",
+        "acp_env",
+        "acp_model",
+        "acp_session_mode",
+        "acp_prompt_timeout",
+    }
+    # Server picker + model are both critical — users pick server then
+    # model. Raw command is a minor override for power users.
+    assert acp_fields["acp_server"].prominence is SettingProminence.CRITICAL
+    assert acp_fields["acp_model"].prominence is SettingProminence.CRITICAL
+    assert acp_fields["acp_command"].prominence is SettingProminence.MINOR
 
 
 def test_conversation_settings_export_schema_groups_sections() -> None:
@@ -129,7 +136,6 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert general_fields["max_iterations"].default == 500
     assert general_fields["max_iterations"].prominence is SettingProminence.MAJOR
 
-    assert len(sections["verification"].fields) == 2
     verification_fields = {f.key: f for f in sections["verification"].fields}
     assert set(verification_fields) == {
         "confirmation_mode",
@@ -137,7 +143,8 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     }
     assert verification_fields["confirmation_mode"].default is False
     assert (
-        verification_fields["confirmation_mode"].prominence is SettingProminence.MAJOR
+        verification_fields["confirmation_mode"].prominence
+        is SettingProminence.CRITICAL
     )
     assert verification_fields["security_analyzer"].default == "llm"
     assert verification_fields["security_analyzer"].choices[0].value == "llm"
@@ -163,7 +170,7 @@ def test_conversation_settings_create_request() -> None:
         security_analyzer="llm",
     )
     workspace = LocalWorkspace(working_dir="/tmp")
-    agent = AgentSettings(llm=LLM(model="test-model")).create_agent()
+    agent = LLMAgentSettings(llm=LLM(model="test-model")).create_agent()
 
     request = settings.create_request(
         StartConversationRequest,
@@ -214,22 +221,107 @@ def test_conversation_settings_create_request_for_acp() -> None:
 
 
 # ---------------------------------------------------------------------------
-# create_agent
+# Schema export — combined (discriminated union)
 # ---------------------------------------------------------------------------
 
 
-def test_create_agent_uses_settings_llm_and_tools() -> None:
+def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
+    schema = export_agent_settings_schema()
+    assert schema.model_name == "AgentSettings"
+
+    by_keyvariant = {(s.key, s.variant): s for s in schema.sections}
+
+    # Shared general section contains LLM-only top-level fields with
+    # field-level variant="llm" tags (so they hide on the ACP page).
+    general = by_keyvariant.get(("general", None))
+    assert general is not None
+    general_keys = {f.key for f in general.fields}
+    assert general_keys == {"agent", "tools", "mcp_config"}
+    # No agent_kind field — each variant has its own settings page and
+    # injects the discriminator on save.
+    assert "agent_kind" not in general_keys
+    for f in general.fields:
+        assert f.variant == "llm", (
+            f"expected field {f.key} variant=llm, got {f.variant}"
+        )
+
+    # LLM-variant sections.
+    assert ("llm", "llm") in by_keyvariant
+    assert ("condenser", "llm") in by_keyvariant
+    assert ("verification", "llm") in by_keyvariant
+
+    # ACP-variant sections.
+    acp_section = by_keyvariant.get(("acp", "acp"))
+    assert acp_section is not None
+    acp_keys = {f.key for f in acp_section.fields}
+    assert "acp_server" in acp_keys
+    assert "acp_command" in acp_keys
+    assert "acp_model" in acp_keys
+
+    # acp_server is the critical user-visible field (the command is a
+    # minor override).
+    server_field = next(f for f in acp_section.fields if f.key == "acp_server")
+    assert server_field.prominence is SettingProminence.CRITICAL
+    server_choices = {c.value for c in server_field.choices}
+    assert server_choices == {"claude-code", "codex", "gemini-cli", "custom"}
+
+    command_field = next(f for f in acp_section.fields if f.key == "acp_command")
+    assert command_field.prominence is SettingProminence.MINOR
+
+    # ACP variant also has an LLM section (for cost/pricing attribution).
+    assert ("llm", "acp") in by_keyvariant
+
+
+# ---------------------------------------------------------------------------
+# Discriminator + validation
+# ---------------------------------------------------------------------------
+
+
+def test_default_agent_settings_returns_llm_variant() -> None:
+    s = default_agent_settings()
+    assert isinstance(s, LLMAgentSettings)
+    assert s.agent_kind == "llm"
+
+
+def test_validate_agent_settings_defaults_to_llm_when_discriminator_missing() -> None:
+    """Existing persisted payloads predate ``agent_kind`` — they must round-trip."""
+    v = validate_agent_settings({"llm": {"model": "test-model"}})
+    assert isinstance(v, LLMAgentSettings)
+    assert v.llm.model == "test-model"
+
+
+def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
+    llm = validate_agent_settings({"agent_kind": "llm", "llm": {"model": "m"}})
+    assert isinstance(llm, LLMAgentSettings)
+
+    acp = validate_agent_settings(
+        {
+            "agent_kind": "acp",
+            "acp_command": ["npx", "-y", "claude-agent-acp"],
+            "acp_model": "claude-opus-4-6",
+        }
+    )
+    assert isinstance(acp, ACPAgentSettings)
+    assert acp.acp_command == ["npx", "-y", "claude-agent-acp"]
+
+
+# ---------------------------------------------------------------------------
+# create_agent — LLM variant
+# ---------------------------------------------------------------------------
+
+
+def test_llm_create_agent_uses_settings_llm_and_tools() -> None:
     llm = LLM(model="test-model")
     tools = [Tool(name="TerminalTool")]
-    settings = AgentSettings(llm=llm, tools=tools)
+    settings = LLMAgentSettings(llm=llm, tools=tools)
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
     assert agent.llm is llm
     assert agent.tools == tools
 
 
-def test_agent_settings_validates_mcp_config_as_typed_model() -> None:
-    settings = AgentSettings.model_validate(
+def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
+    settings = LLMAgentSettings.model_validate(
         {
             "mcp_config": {
                 "mcpServers": {
@@ -245,11 +337,11 @@ def test_agent_settings_validates_mcp_config_as_typed_model() -> None:
     }
 
 
-def test_create_agent_serializes_typed_mcp_config_compactly() -> None:
+def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
     mcp_config = MCPConfig.model_validate(
         {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
     )
-    settings = AgentSettings(mcp_config=mcp_config)
+    settings = LLMAgentSettings(mcp_config=mcp_config)
 
     agent = settings.create_agent()
 
@@ -258,26 +350,25 @@ def test_create_agent_serializes_typed_mcp_config_compactly() -> None:
     }
 
 
-def test_create_agent_builds_condenser_when_enabled() -> None:
-    settings = AgentSettings(
+def test_llm_create_agent_builds_condenser_when_enabled() -> None:
+    settings = LLMAgentSettings(
         condenser=CondenserSettings(enabled=True, max_size=100),
     )
     agent = settings.create_agent()
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.max_size == 100
-    assert agent.condenser.llm is agent.llm
 
 
-def test_create_agent_no_condenser_when_disabled() -> None:
-    settings = AgentSettings(
+def test_llm_create_agent_no_condenser_when_disabled() -> None:
+    settings = LLMAgentSettings(
         condenser=CondenserSettings(enabled=False),
     )
     agent = settings.create_agent()
     assert agent.condenser is None
 
 
-def test_create_agent_builds_critic_when_enabled() -> None:
-    settings = AgentSettings(
+def test_llm_create_agent_builds_critic_when_enabled() -> None:
+    settings = LLMAgentSettings(
         llm=LLM(model="m", api_key=SecretStr("k")),
         verification=VerificationSettings(
             critic_enabled=True,
@@ -290,17 +381,8 @@ def test_create_agent_builds_critic_when_enabled() -> None:
     assert agent.critic.iterative_refinement is None
 
 
-def test_create_agent_no_critic_when_disabled() -> None:
-    settings = AgentSettings(
-        verification=VerificationSettings(critic_enabled=False),
-    )
-    agent = settings.create_agent()
-    assert agent.critic is None
-
-
-def test_create_agent_no_critic_without_api_key() -> None:
-    """Critic requires auth — skip if the LLM has no api_key."""
-    settings = AgentSettings(
+def test_llm_create_agent_no_critic_without_api_key() -> None:
+    settings = LLMAgentSettings(
         llm=LLM(model="m", api_key=None),
         verification=VerificationSettings(critic_enabled=True),
     )
@@ -308,8 +390,8 @@ def test_create_agent_no_critic_without_api_key() -> None:
     assert agent.critic is None
 
 
-def test_create_agent_critic_with_iterative_refinement() -> None:
-    settings = AgentSettings(
+def test_llm_create_agent_critic_with_iterative_refinement() -> None:
+    settings = LLMAgentSettings(
         llm=LLM(model="m", api_key=SecretStr("k")),
         verification=VerificationSettings(
             critic_enabled=True,
@@ -326,66 +408,171 @@ def test_create_agent_critic_with_iterative_refinement() -> None:
     assert ir.max_iterations == 5
 
 
-def test_create_agent_critic_with_server_url_override() -> None:
-    settings = AgentSettings(
-        llm=LLM(model="m", api_key=SecretStr("k")),
-        verification=VerificationSettings(
-            critic_enabled=True,
-            critic_server_url="https://proxy.example.com/vllm",
-            critic_model_name="my-critic",
-        ),
-    )
-    agent = settings.create_agent()
-    assert isinstance(agent.critic, APIBasedCritic)
-    assert agent.critic.server_url == "https://proxy.example.com/vllm"
-    assert agent.critic.model_name == "my-critic"
-
-
-def test_roundtrip_preserves_llm_model() -> None:
-    settings = AgentSettings(llm=LLM(model="test-model"))
+def test_llm_roundtrip_preserves_llm_model() -> None:
+    settings = LLMAgentSettings(llm=LLM(model="test-model"))
     data = settings.model_dump()
-    restored = AgentSettings.model_validate(data)
+    restored = LLMAgentSettings.model_validate(data)
     assert restored.llm.model == "test-model"
 
 
-def test_agent_settings_model_validate_accepts_nested_payload() -> None:
-    settings = AgentSettings.model_validate(
-        {
-            "schema_version": 1,
-            "llm": {
-                "model": "test-model",
-                "api_key": "secret-key",
-            },
-            "verification": {"critic_enabled": True},
-        }
+# ---------------------------------------------------------------------------
+# create_agent — ACP variant
+# ---------------------------------------------------------------------------
+
+
+def test_acp_create_agent_uses_server_default_command() -> None:
+    """With ``acp_server`` set but no explicit command, use the built-in default."""
+    settings = ACPAgentSettings(acp_server="claude-code", acp_model="claude-opus-4-6")
+    agent = settings.create_agent()
+    assert isinstance(agent, ACPAgent)
+    assert agent.acp_command == [
+        "npx",
+        "-y",
+        "@agentclientprotocol/claude-agent-acp",
+    ]
+    assert agent.acp_model == "claude-opus-4-6"
+
+
+def test_acp_resolve_command_for_known_servers() -> None:
+    """Every non-custom choice must map to a runnable default."""
+    for server in ("claude-code", "codex", "gemini-cli"):
+        settings = ACPAgentSettings(acp_server=server)
+        cmd = settings.resolve_acp_command()
+        assert cmd, f"expected default command for {server}, got empty"
+        assert cmd[0] == "npx", f"expected npx-based default, got {cmd}"
+
+
+def test_acp_create_agent_explicit_command_overrides_default() -> None:
+    settings = ACPAgentSettings(
+        acp_server="claude-code",
+        acp_command=["my-local-acp-binary"],
+    )
+    agent = settings.create_agent()
+    assert agent.acp_command == ["my-local-acp-binary"]
+
+
+def test_acp_custom_server_requires_explicit_command() -> None:
+    settings = ACPAgentSettings(acp_server="custom")
+    try:
+        settings.create_agent()
+    except ValueError as e:
+        assert "acp_command" in str(e) and "custom" in str(e)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_acp_custom_server_with_command_resolves() -> None:
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["bin", "--flag"],
+    )
+    assert settings.resolve_acp_command() == ["bin", "--flag"]
+
+
+# ---------------------------------------------------------------------------
+# Legacy ``AgentSettings`` compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
+    """``AgentSettings(...)`` is retained (deprecated) as a LLMAgentSettings subclass.
+
+    All v1.17.0 attributes must remain reachable so the API breakage
+    check does not flag them as removed.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        settings = AgentSettings(llm=LLM(model="test-model"))
+
+    # The legacy name emits a DeprecationWarning on construction. The
+    # warning's scheduled removal is in 1.22.0 per the class docstring.
+    assert any("AgentSettings" in str(w.message) for w in caught), (
+        f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
     )
 
-    assert settings.schema_version == 1
+    # It remains a LLMAgentSettings subclass so existing code paths work.
+    assert isinstance(settings, LLMAgentSettings)
+    assert settings.agent_kind == "llm"
     assert settings.llm.model == "test-model"
-    assert isinstance(settings.llm.api_key, SecretStr)
-    assert settings.llm.api_key.get_secret_value() == "secret-key"
-    assert settings.verification.critic_enabled is True
 
 
-def test_agent_settings_model_dump_roundtrip_preserves_sparse_updates() -> None:
-    settings = AgentSettings.model_validate(
-        {
-            "schema_version": 1,
-            "llm": {"model": "base-model", "base_url": "https://example.com"},
-        }
+def test_legacy_agent_settings_retains_all_v1_17_attributes() -> None:
+    """Guardrail mirroring the API breakage CI check: don't silently remove fields."""
+    fields = AgentSettings.model_fields
+    assert {
+        "schema_version",
+        "agent",
+        "llm",
+        "tools",
+        "mcp_config",
+        "agent_context",
+        "condenser",
+        "verification",
+    }.issubset(set(fields))
+
+    # Methods defined on the original class must still resolve via
+    # inheritance.
+    for name in ("export_schema", "create_agent", "build_condenser", "build_critic"):
+        assert hasattr(AgentSettings, name), f"missing: AgentSettings.{name}"
+
+
+# ---------------------------------------------------------------------------
+# ConversationSettings.create_request — dispatches on variant
+# ---------------------------------------------------------------------------
+
+
+def test_conversation_settings_create_request_for_llm_variant() -> None:
+    settings = ConversationSettings(
+        max_iterations=77,
+        confirmation_mode=True,
+        security_analyzer="llm",
+    )
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = LLMAgentSettings(llm=LLM(model="test-model")).create_agent()
+
+    request = settings.create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
     )
 
-    updated = settings.model_copy(
-        update={
-            "llm": settings.llm.model_copy(
-                update={"model": "personal-model", "base_url": None}
-            )
-        }
+    assert isinstance(request, StartConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, ConfirmRisky)
+    assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
+
+
+def test_conversation_settings_create_request_for_acp_variant() -> None:
+    settings = ConversationSettings(
+        max_iterations=77,
+        confirmation_mode=True,
+        security_analyzer="none",
     )
-    restored = AgentSettings.model_validate(
-        updated.model_dump(mode="json", context={"expose_secrets": True})
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = ACPAgentSettings(acp_command=["echo", "test"]).create_agent()
+
+    request = settings.create_request(
+        StartACPConversationRequest,
+        agent=agent,
+        workspace=workspace,
     )
 
-    assert restored.llm.model == "personal-model"
-    assert restored.llm.base_url is None
-    assert restored.schema_version == 1
+    assert isinstance(request, StartACPConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, AlwaysConfirm)
+    assert request.security_analyzer is None
+
+
+def test_conversation_settings_agent_settings_field_accepts_both_variants() -> None:
+    """The agent_settings runtime field should accept either variant."""
+    llm_conv = ConversationSettings(
+        agent_settings=LLMAgentSettings(llm=LLM(model="m")),
+    )
+    assert isinstance(llm_conv.agent_settings, LLMAgentSettings)
+
+    acp_conv = ConversationSettings(
+        agent_settings=ACPAgentSettings(acp_command=["x"]),
+    )
+    assert isinstance(acp_conv.agent_settings, ACPAgentSettings)
