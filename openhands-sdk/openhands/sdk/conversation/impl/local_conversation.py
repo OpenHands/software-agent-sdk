@@ -434,6 +434,9 @@ class LocalConversation(BaseConversation):
         merged_context = self.agent.agent_context
         merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
+        # Track whether we have plugins or MCP config to process
+        has_mcp_config = bool(merged_mcp)
+
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
@@ -461,6 +464,7 @@ class LocalConversation(BaseConversation):
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
                 merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+                has_mcp_config = has_mcp_config or bool(merged_mcp)
 
                 # Collect hooks
                 if plugin.hooks and not plugin.hooks.is_empty():
@@ -489,17 +493,19 @@ class LocalConversation(BaseConversation):
             else:
                 logger.debug("Applied MCP config defaults (no secrets provided)")
 
-        # Update agent with merged content (context from plugins, expanded MCP config)
-        self.agent = self.agent.model_copy(
-            update={
-                "agent_context": merged_context,
-                "mcp_config": merged_mcp,
-            }
-        )
+        # Update agent with merged content only if we have plugins or MCP config
+        # Skip update when nothing changed to avoid unnecessary agent state mutations
+        if self._plugin_specs or has_mcp_config:
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": merged_mcp,
+                }
+            )
 
-        # Also update the agent in _state so API responses reflect loaded plugins
-        with self._state:
-            self._state.agent = self.agent
+            # Also update the agent in _state so API responses reflect loaded plugins
+            with self._state:
+                self._state.agent = self.agent
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:

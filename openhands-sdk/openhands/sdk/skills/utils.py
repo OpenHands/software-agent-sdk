@@ -69,7 +69,7 @@ def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
     secrets: dict[str, str] | None = None,
-    *,
+    *,  # no positional booleans (PEP 3102)
     expand_defaults: bool = True,
 ) -> dict:
     """Expand variables in MCP configuration.
@@ -128,7 +128,7 @@ def load_mcp_config(
     mcp_json_path: Path,
     skill_root: Path | None = None,
     secrets: dict[str, str] | None = None,
-    *,
+    *,  # no positional booleans (PEP 3102)
     expand_defaults: bool = True,
 ) -> dict:
     """Load and parse .mcp.json with variable expansion.
