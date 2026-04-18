@@ -254,26 +254,20 @@ class TestMcpConfigPreservation:
             "mcp_config should retain secrets in memory for runtime use"
         )
 
-    def test_non_secret_mcp_config_values_persist(self, tmp_path):
-        """Verify that non-secret parts of mcp_config are preserved.
-
-        Commands, args, and other non-sensitive config should still
-        be serialized normally.
-        """
+    def test_non_secret_mcp_config_shape_is_sanitized(self, tmp_path):
+        """Verify serialization keeps the MCP shape but redacts string values."""
         llm = LLM(model="test-model", api_key=SecretStr("test-key"))
         mcp_config = {
             "mcpServers": {
                 "fetch": {
                     "command": "uvx",
                     "args": ["mcp-server-fetch"],
-                    # No env/secrets - should be fully preserved
                 }
             }
         }
         agent = Agent(llm=llm, mcp_config=mcp_config)
 
         workspace = LocalWorkspace(working_dir=str(tmp_path / "workspace"))
-        # Create state (triggers persistence)
         _ = ConversationState.create(
             id=uuid.uuid4(),
             agent=agent,
@@ -288,8 +282,11 @@ class TestMcpConfigPreservation:
         agent_data = persisted_json.get("agent", {})
         persisted_mcp_config = agent_data.get("mcp_config", {})
 
-        # Non-sensitive config should be preserved
-        # (This test may need adjustment based on the chosen fix strategy)
-        assert "mcpServers" in persisted_mcp_config or persisted_mcp_config == {}, (
-            "Non-secret mcp_config should be preserved or explicitly cleared"
-        )
+        assert persisted_mcp_config == {
+            "mcpServers": {
+                "fetch": {
+                    "command": "<redacted>",
+                    "args": ["<redacted>"],
+                }
+            }
+        }

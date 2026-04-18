@@ -469,7 +469,9 @@ class EventService:
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
         agent_cls = type(self.stored.agent)
         agent = agent_cls.model_validate(
-            self.stored.agent.model_dump(context={"expose_secrets": True}),
+            self.stored.agent.model_dump(
+                context={"expose_secrets": True, "raw_mcp_config": True}
+            ),
         )
 
         # Create LocalConversation with plugins and hook_config.

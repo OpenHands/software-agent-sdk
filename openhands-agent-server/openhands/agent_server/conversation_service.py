@@ -477,7 +477,10 @@ class ConversationService:
         # construct StoredConversation, not sent over the network.
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(mode="json", context={"expose_secrets": True}),
+            **request.model_dump(
+                mode="json",
+                context={"expose_secrets": True, "raw_mcp_config": True},
+            ),
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message

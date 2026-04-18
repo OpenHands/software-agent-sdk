@@ -59,16 +59,43 @@ def test_mcp_tool_serialization():
     assert loaded.model_dump_json() == dumped
 
 
-def test_agent_serialization_excludes_mcp_config_for_security() -> None:
-    """Test that mcp_config is excluded from serialization for security.
+def test_agent_serialization_sanitizes_mcp_config_for_security() -> None:
+    """Test that serialized mcp_config keeps shape but redacts string values."""
+    llm = LLM(model="test-model", usage_id="test-llm")
+    mcp_config = {
+        "mcpServers": {
+            "dummy": {
+                "command": "echo",
+                "args": ["dummy-mcp"],
+                "env": {"API_TOKEN": "secret-value"},
+            },
+        }
+    }
+    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
 
-    mcp_config may contain expanded secrets (e.g., API tokens in env vars)
-    after variable expansion. To prevent secret leakage to disk, WebSocket,
-    and API responses, mcp_config is excluded from serialization by default.
+    assert agent.mcp_config == mcp_config
 
-    See: https://github.com/OpenHands/software-agent-sdk/pull/2873
-    """
-    # Create a simple LLM instance and agent with mcp_config
+    agent_dump = agent.model_dump(mode="json")
+    serialized_mcp_config = agent_dump["mcp_config"]
+
+    assert serialized_mcp_config == {
+        "mcpServers": {
+            "dummy": {
+                "command": "<redacted>",
+                "args": ["<redacted>"],
+                "env": {"API_TOKEN": "<redacted>"},
+            }
+        }
+    }
+
+    agent_json = agent.model_dump_json()
+    deserialized_agent = AgentBase.model_validate_json(agent_json)
+
+    assert isinstance(deserialized_agent, Agent)
+    assert deserialized_agent.mcp_config == serialized_mcp_config
+
+
+def test_agent_serialization_preserves_raw_mcp_config_for_transport() -> None:
     llm = LLM(model="test-model", usage_id="test-llm")
     mcp_config = {
         "mcpServers": {
@@ -77,22 +104,18 @@ def test_agent_serialization_excludes_mcp_config_for_security() -> None:
     }
     agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
 
-    # mcp_config should be accessible in memory
-    assert agent.mcp_config == mcp_config
+    raw_dump = agent.model_dump(mode="json", context={"raw_mcp_config": True})
 
-    # But should be EXCLUDED from serialization
-    agent_dump = agent.model_dump()
-    assert agent_dump.get("mcp_config") is None, (
-        "mcp_config should be excluded from serialization to prevent secret leakage"
-    )
+    assert raw_dump["mcp_config"] == mcp_config
 
-    # Serialization round-trip should work (mcp_config defaults to empty dict)
-    agent_json = agent.model_dump_json()
-    deserialized_agent = AgentBase.model_validate_json(agent_json)
 
-    assert isinstance(deserialized_agent, Agent)
-    # Deserialized agent has default empty mcp_config (not the original)
-    assert deserialized_agent.mcp_config == {}
+def test_agent_json_schema_marks_serialized_mcp_config_deprecated() -> None:
+    schema = Agent.model_json_schema()
+    mcp_config_schema = schema["properties"]["mcp_config"]
+
+    assert mcp_config_schema["deprecated"] is True
+    assert mcp_config_schema["x-deprecated-in"] == "1.17.0"
+    assert mcp_config_schema["x-removed-in"] == "1.22.0"
 
 
 def test_agent_supports_polymorphic_field_json_serialization() -> None:

@@ -720,7 +720,8 @@ class RemoteConversation(BaseConversation):
 
             payload = {
                 "agent": agent.model_dump(
-                    mode="json", context={"expose_secrets": True}
+                    mode="json",
+                    context={"expose_secrets": True, "raw_mcp_config": True},
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,

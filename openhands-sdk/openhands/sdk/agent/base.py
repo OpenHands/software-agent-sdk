@@ -13,6 +13,8 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    SerializationInfo,
+    field_serializer,
     model_validator,
 )
 
@@ -41,6 +43,25 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
+
+
+_MCP_CONFIG_SERIALIZATION_DEPRECATED_IN = "1.17.0"
+_MCP_CONFIG_SERIALIZATION_REMOVED_IN = "1.22.0"
+_REDACTED_MCP_CONFIG_VALUE = "<redacted>"
+
+
+def _sanitize_mcp_config_for_serialization(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_mcp_config_for_serialization(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_mcp_config_for_serialization(item) for item in value]
+    if isinstance(value, str):
+        return _REDACTED_MCP_CONFIG_VALUE
+    return value
+
 
 logger = get_logger(__name__)
 
@@ -83,16 +104,33 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     )
     mcp_config: dict[str, Any] = Field(
         default_factory=dict,
-        description="Optional MCP configuration dictionary to create MCP tools.",
+        description=(
+            "Optional MCP configuration dictionary to create MCP tools. "
+            "Serialized output is sanitized for safety and should not be used as "
+            "runnable MCP configuration. Deprecated since "
+            f"v{_MCP_CONFIG_SERIALIZATION_DEPRECATED_IN} and scheduled for removal "
+            f"in v{_MCP_CONFIG_SERIALIZATION_REMOVED_IN}."
+        ),
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
         ],
-        exclude=True,  # Exclude from serialization to prevent secret leakage
-        # mcp_config may contain expanded secrets (e.g., API tokens in env vars).
-        # Since MCP tools are created at runtime and verified via the tools list
-        # on resume, there's no need to persist the config. Excluding it prevents
-        # secrets from leaking to disk, WebSocket events, and API responses.
+        json_schema_extra={
+            "deprecated": True,
+            "x-deprecated-in": _MCP_CONFIG_SERIALIZATION_DEPRECATED_IN,
+            "x-removed-in": _MCP_CONFIG_SERIALIZATION_REMOVED_IN,
+        },
     )
+
+    @field_serializer("mcp_config", when_used="always")
+    def _serialize_mcp_config(
+        self,
+        value: dict[str, Any],
+        info: SerializationInfo,
+    ) -> dict[str, Any]:
+        if info.context and info.context.get("raw_mcp_config"):
+            return value
+        return _sanitize_mcp_config_for_serialization(value)
+
     filter_tools_regex: str | None = Field(
         default=None,
         description="Optional regex to filter the tools available to the agent by name."
