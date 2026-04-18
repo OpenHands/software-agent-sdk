@@ -109,6 +109,12 @@ _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 # well below the ~20 min runtime-api kill threshold.
 _ACTIVITY_SIGNAL_INTERVAL: float = 30.0
 
+# ACP tool-call statuses that represent a terminal outcome.  Non-terminal
+# statuses (``pending``, ``in_progress``) mean the call is still in flight
+# and, if the turn aborts before it reaches a terminal state, the live-
+# emitted event on state.events will otherwise be orphaned forever.
+_TERMINAL_TOOL_CALL_STATUSES: frozenset[str] = frozenset({"completed", "failed"})
+
 
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
@@ -286,6 +292,46 @@ class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
     Implements the ``Client`` protocol from ``agent_client_protocol``.
+
+    Concurrency model — ``on_event`` / ``on_token`` / ``on_activity`` are
+    fired synchronously from ``session_update``, which runs on the
+    ``AsyncExecutor`` portal thread.  The guarantees that keep callbacks
+    serialized within a single turn rely on the combination of two things,
+    not the GIL alone:
+
+    1. ``LocalConversation.run()`` calls ``agent.step(...)`` while holding
+       the reentrant ``ConversationState`` lock (a ``FIFOLock``) — see
+       ``local_conversation.py`` where ``self.agent.step(...)`` sits inside
+       ``with self._state:``.  The caller thread owns that lock for the
+       entire duration of ``step()``, so no other thread can append to
+       ``state.events`` during the turn.
+    2. ``portal.call(_prompt)`` blocks the caller thread until ``prompt()``
+       returns.  Live ``on_event`` calls happen on the portal thread while
+       the caller thread is parked inside ``portal.call()`` still owning
+       the state lock; the final ``MessageEvent`` / ``FinishAction`` run
+       on the caller thread after ``prompt()`` returns.  The two phases
+       never overlap in time.
+
+    The caller's state-lock ownership is what excludes *other* threads
+    (hook workers, remote-conversation push layers, visualizers spawned
+    elsewhere) from racing with either phase.  The ordering between the
+    two phases is what keeps a single consumer's cross-callback state
+    (e.g. hook processors that read-then-write) consistent.
+
+    Two invariants callers rely on:
+
+    * ``on_event`` handlers MUST NOT acquire the conversation state lock
+      (``with conversation.state:``).  The bridge fires them on the portal
+      thread while the caller thread is parked inside ``portal.call()``
+      owning that lock, and ``FIFOLock`` is thread-bound — a lock-acquire
+      on the portal thread would deadlock rather than re-enter.
+    * Tool-call → final-message ordering depends on the ACP server
+      draining every ``session_update`` notification for a turn *before*
+      the prompt response returns.  Verified against
+      ``claude-agent-acp@0.29.0``; servers that interleave trailing
+      ``ToolCallProgress`` after the prompt response would invert the
+      order a consumer sees, and dedupe-by-id+"last-seen wins" would
+      treat the post-message event as authoritative.
     """
 
     def __init__(self) -> None:
@@ -293,6 +339,11 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
+        # Live event sink — fired from session_update as ACP tool-call
+        # updates arrive, so the event stream reflects real subprocess
+        # progress instead of a single end-of-turn burst. Set by
+        # ACPAgent.step() for the duration of one prompt() round-trip.
+        self.on_event: ConversationCallbackType | None = None
         # Activity heartbeat — called (throttled) during session_update to
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
@@ -317,6 +368,7 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
         self.on_token = None
+        self.on_event = None
         self.on_activity = None
         self._turn_usage_updates.clear()
         self._usage_received.clear()
@@ -378,21 +430,22 @@ class _OpenHandsACPBridge:
             if event is not None:
                 event.set()
         elif isinstance(update, ToolCallStart):
-            self.accumulated_tool_calls.append(
-                {
-                    "tool_call_id": update.tool_call_id,
-                    "title": update.title,
-                    "tool_kind": update.kind,
-                    "status": update.status,
-                    "raw_input": update.raw_input,
-                    "raw_output": update.raw_output,
-                    "content": _serialize_tool_content(update.content),
-                }
-            )
+            entry = {
+                "tool_call_id": update.tool_call_id,
+                "title": update.title,
+                "tool_kind": update.kind,
+                "status": update.status,
+                "raw_input": update.raw_input,
+                "raw_output": update.raw_output,
+                "content": _serialize_tool_content(update.content),
+            }
+            self.accumulated_tool_calls.append(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
+            self._emit_tool_call_event(entry)
             self._maybe_signal_activity()
         elif isinstance(update, ToolCallProgress):
             # Find the existing tool call entry and merge updates
+            target: dict[str, Any] | None = None
             for tc in self.accumulated_tool_calls:
                 if tc["tool_call_id"] == update.tool_call_id:
                     if update.title is not None:
@@ -407,11 +460,40 @@ class _OpenHandsACPBridge:
                         tc["raw_output"] = update.raw_output
                     if update.content is not None:
                         tc["content"] = _serialize_tool_content(update.content)
+                    target = tc
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
+            if target is not None:
+                self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def _emit_tool_call_event(self, tc: dict[str, Any]) -> None:
+        """Emit an ACPToolCallEvent reflecting the current state of ``tc``.
+
+        Called from ``session_update`` on each ``ToolCallStart`` /
+        ``ToolCallProgress`` so downstream consumers see tool cards appear
+        and update as the subprocess runs.  The same ``tool_call_id`` is
+        reused on every emission — consumers should dedupe by id and treat
+        the last-seen event as authoritative.
+        """
+        if self.on_event is None:
+            return
+        try:
+            event = ACPToolCallEvent(
+                tool_call_id=tc["tool_call_id"],
+                title=tc["title"],
+                status=tc.get("status"),
+                tool_kind=tc.get("tool_kind"),
+                raw_input=tc.get("raw_input"),
+                raw_output=tc.get("raw_output"),
+                content=tc.get("content"),
+                is_error=tc.get("status") == "failed",
+            )
+            self.on_event(event)
+        except Exception:
+            logger.debug("on_event callback failed", exc_info=True)
 
     def _maybe_signal_activity(self) -> None:
         """Signal activity to the agent-server's idle tracker (throttled).
@@ -943,6 +1025,70 @@ class ACPAgent(AgentBase):
         ) = result
         self._working_dir = working_dir
 
+    def _reset_client_for_turn(
+        self,
+        on_token: ConversationTokenCallbackType | None,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Reset per-turn client state and (re)wire live callbacks.
+
+        Called at the start of ``step()`` and again on each retry inside the
+        prompt loop so that the three callbacks (``on_token``, ``on_event``,
+        ``on_activity``) stay in sync with the fresh turn after ``reset()``
+        clears them.  ``on_event`` is fired from inside
+        ``_OpenHandsACPBridge.session_update`` as tool-call notifications
+        arrive, so consumers see ACPToolCallEvents streamed live instead of
+        a single end-of-turn burst.
+        """
+        self._client.reset()
+        self._client.on_token = on_token
+        self._client.on_event = on_event
+        self._client.on_activity = self._on_activity
+
+    def _cancel_inflight_tool_calls(self) -> None:
+        """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
+        in the accumulator that has not reached a terminal status yet.
+
+        ACP servers mint fresh ``tool_call_id``s on a retried turn, so any
+        ``pending`` / ``in_progress`` events already streamed during the
+        failed attempt would otherwise be orphaned on ``state.events`` —
+        no later notification reuses their id, and consumers that dedupe
+        by ``tool_call_id`` + "last-seen status wins" would keep them
+        spinning forever.  This method closes those cards before we wipe
+        the in-memory accumulator on retry / turn abort.
+
+        Uses the bridge's ``on_event`` directly (the same callback driving
+        live emissions); call this *before* ``_reset_client_for_turn`` so
+        the callback is still wired up.  No-op if ``on_event`` was never
+        set (e.g. during tests exercising the bridge in isolation).
+        """
+        on_event = self._client.on_event
+        if on_event is None:
+            return
+        for tc in self._client.accumulated_tool_calls:
+            status = tc.get("status")
+            if status in _TERMINAL_TOOL_CALL_STATUSES:
+                continue
+            try:
+                on_event(
+                    ACPToolCallEvent(
+                        tool_call_id=tc["tool_call_id"],
+                        title=tc["title"],
+                        status="failed",
+                        tool_kind=tc.get("tool_kind"),
+                        raw_input=tc.get("raw_input"),
+                        raw_output=tc.get("raw_output"),
+                        content=tc.get("content"),
+                        is_error=True,
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to emit supersede event for %s",
+                    tc.get("tool_call_id"),
+                    exc_info=True,
+                )
+
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
@@ -970,10 +1116,7 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        # Reset client accumulators
-        self._client.reset()
-        self._client.on_token = on_token
-        self._client.on_activity = self._on_activity
+        self._reset_client_for_turn(on_token, on_event)
 
         t0 = time.monotonic()
         try:
@@ -1031,8 +1174,8 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._client.reset()
-                        self._client.on_token = on_token
+                        self._cancel_inflight_tool_calls()
+                        self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
                 except ACPRequestError as e:
@@ -1056,8 +1199,8 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._client.reset()
-                        self._client.on_token = on_token
+                        self._cancel_inflight_tool_calls()
+                        self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
 
@@ -1073,19 +1216,11 @@ class ACPAgent(AgentBase):
                 usage_update=usage_update,
             )
 
-            # Emit ACPToolCallEvents for each accumulated tool call
-            for tc in self._client.accumulated_tool_calls:
-                tc_event = ACPToolCallEvent(
-                    tool_call_id=tc["tool_call_id"],
-                    title=tc["title"],
-                    status=tc.get("status"),
-                    tool_kind=tc.get("tool_kind"),
-                    raw_input=tc.get("raw_input"),
-                    raw_output=tc.get("raw_output"),
-                    content=tc.get("content"),
-                    is_error=tc.get("status") == "failed",
-                )
-                on_event(tc_event)
+            # ACPToolCallEvents were already emitted live from
+            # _OpenHandsACPBridge.session_update as each ToolCallStart /
+            # ToolCallProgress notification arrived — no end-of-turn fan-out
+            # here. The final MessageEvent + FinishAction still close out
+            # the turn below.
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
@@ -1161,11 +1296,16 @@ class ACPAgent(AgentBase):
                     )
                 ],
             )
+            # Close any tool cards left in flight from the timed-out attempt.
+            self._cancel_inflight_tool_calls()
             on_event(MessageEvent(source="agent", llm_message=error_message))
             state.execution_status = ConversationExecutionStatus.ERROR
         except Exception as e:
             logger.error("ACP prompt failed: %s", e, exc_info=True)
             error_str = str(e)
+
+            # Close any tool cards left in flight before surfacing the error.
+            self._cancel_inflight_tool_calls()
 
             # Emit error as an agent message (existing behavior, preserved for
             # consumers that inspect MessageEvents)
@@ -1196,6 +1336,17 @@ class ACPAgent(AgentBase):
             # breaks the loop, emits ConversationErrorEvent, and raises
             # ConversationRunError — matching how the regular Agent works
             raise
+        finally:
+            # Unwire the per-turn callbacks now that this step has finished
+            # emitting everything it's going to emit.  If the ACP subprocess
+            # later dispatches a trailing ``session_update`` (e.g. between
+            # turns), it fires on the portal thread with no FIFOLock held
+            # by anyone — firing a stale ``on_event`` there would race
+            # with other threads mutating ``state.events``.  Clearing the
+            # callbacks turns any such late update into a no-op emit.
+            self._client.on_event = None
+            self._client.on_token = None
+            self._client.on_activity = None
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""
