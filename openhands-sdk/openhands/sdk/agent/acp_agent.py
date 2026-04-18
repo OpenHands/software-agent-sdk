@@ -803,13 +803,17 @@ class ACPAgent(AgentBase):
     def supports_vision(self) -> bool:
         """Whether the wrapped ACP server forwards images to a vision model.
 
-        The sentinel ``self.llm`` uses ``model="acp-managed"`` which LiteLLM
-        does not recognise, so the base-class ``llm.vision_is_active()``
-        always returns False for ACP agents. Resolve the real capability
-        from the ACP server identity (launch command or the agent name
-        reported by InitializeResponse) instead. Unknown servers fall back
-        to False so we don't silently send images a server may drop.
+        When ``acp_model`` is set, ``self.llm.model`` carries the real
+        model name so ``llm.vision_is_active()`` gives an authoritative
+        answer via LiteLLM — honour the user's explicit model choice even
+        if it's a non-vision variant.
+
+        Without ``acp_model``, the ACP server picks a default we can't
+        see from here, so fall back to the server's identity: all three
+        ACP servers OpenHands supports default to vision-capable models.
         """
+        if self.acp_model:
+            return self.llm.vision_is_active()
         probe = f"{self._agent_name} {' '.join(self.acp_command)}".lower()
         return any(marker in probe for marker in _VISION_CAPABLE_ACP_SERVERS)
 

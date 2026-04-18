@@ -2119,12 +2119,32 @@ class TestACPAgentSupportsVision:
         assert agent.supports_vision() is False
 
     def test_vision_not_derived_from_sentinel_llm(self):
-        # The sentinel ``acp-managed`` model is unknown to LiteLLM, so
-        # the base-class llm.vision_is_active() reports False. The
-        # ACPAgent override must still return True for known providers.
+        # Without acp_model, llm.model stays "acp-managed" (unknown to
+        # LiteLLM), so the base-class llm.vision_is_active() reports
+        # False. The ACPAgent override must still return True for known
+        # providers via the server-identity fallback.
         agent = ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"])
         assert agent.llm.vision_is_active() is False
         assert agent.supports_vision() is True
+
+    def test_explicit_acp_model_honours_llm_vision_check(self):
+        # When acp_model is set, llm.model carries the real model name
+        # (via ACPAgent.model_post_init) so we trust LiteLLM's answer —
+        # even when the server marker says vision-capable, the user's
+        # explicit non-vision model choice wins.
+        vision_agent = ACPAgent(
+            acp_command=["npx", "-y", "claude-agent-acp"],
+            acp_model="claude-sonnet-4-5",
+        )
+        assert vision_agent.llm.vision_is_active() is True
+        assert vision_agent.supports_vision() is True
+
+        text_only_agent = ACPAgent(
+            acp_command=["codex-acp"],
+            acp_model="gpt-3.5-turbo",
+        )
+        assert text_only_agent.llm.vision_is_active() is False
+        assert text_only_agent.supports_vision() is False
 
 
 # ---------------------------------------------------------------------------
