@@ -735,6 +735,7 @@ System prompt.
         )
         agent = AgentDefinition.load(agent_md)
 
+        assert agent.mcp_servers is not None
         server = agent.mcp_servers["server-a"]
         assert server["command"] == "${CMD:-uvx}"
         assert server["args"][1] == "${TOKEN}"
@@ -761,6 +762,7 @@ System prompt.
         )
         agent = AgentDefinition.load(agent_md)
 
+        assert agent.mcp_servers is not None
         server = agent.mcp_servers["static-server"]
         assert server["command"] == "uvx"
         assert server["args"] == ["mcp-server-fetch"]
