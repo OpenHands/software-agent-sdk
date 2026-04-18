@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,9 @@ from openhands.sdk.skills.exceptions import SkillValidationError
 
 if TYPE_CHECKING:
     from openhands.sdk.skills.skill import Skill, SkillResources
+
+# Type alias for secret lookup functions
+SecretLookup = Callable[[str], str | None]
 
 logger = get_logger(__name__)
 
@@ -68,8 +72,8 @@ def find_mcp_config(skill_dir: Path) -> Path | None:
 def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
-    secrets: dict[str, str] | None = None,
-    *,  # no positional booleans (PEP 3102)
+    get_secret: SecretLookup | None = None,
+    *,  # keyword-only after this (PEP 3102)
     expand_defaults: bool = True,
 ) -> dict:
     """Expand variables in MCP configuration.
@@ -80,14 +84,16 @@ def expand_mcp_variables(
 
     Resolution order:
     1. Provided variables (e.g., SKILL_ROOT)
-    2. Secrets (per-conversation secrets from SecretRegistry)
+    2. Secrets (via get_secret callback, if provided)
     3. Environment variables
     4. Default value (if specified and expand_defaults=True)
 
     Args:
         config: MCP configuration dictionary.
         variables: Dictionary of variable names to values (e.g., SKILL_ROOT).
-        secrets: Optional dictionary of per-conversation secrets for expansion.
+        get_secret: Callback to look up a secret by name. We use a callback
+            rather than a dict to avoid extracting all secrets into plain text.
+            Pass `secret_registry.get_secret_value` or `{"K": "V"}.get` for tests.
         expand_defaults: If True, apply default values for unresolved variables.
             If False, preserve ${VAR:-default} as-is for later expansion.
             This allows deferred expansion when secrets are not yet available.
@@ -101,8 +107,6 @@ def expand_mcp_variables(
     # Pattern for ${VAR} or ${VAR:-default}
     var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
 
-    secrets_dict = secrets or {}
-
     def replace_var(match: re.Match) -> str:
         var_name = match.group(1)
         default_value = match.group(2)
@@ -110,8 +114,10 @@ def expand_mcp_variables(
         # Check provided variables first, then secrets, then environment
         if var_name in variables:
             return variables[var_name]
-        if var_name in secrets_dict:
-            return secrets_dict[var_name]
+        if get_secret is not None:
+            secret_value = get_secret(var_name)
+            if secret_value is not None:
+                return secret_value
         if var_name in os.environ:
             return os.environ[var_name]
         # Apply default only if expand_defaults is True
@@ -127,8 +133,8 @@ def expand_mcp_variables(
 def load_mcp_config(
     mcp_json_path: Path,
     skill_root: Path | None = None,
-    secrets: dict[str, str] | None = None,
-    *,  # no positional booleans (PEP 3102)
+    get_secret: SecretLookup | None = None,
+    *,  # keyword-only after this (PEP 3102)
     expand_defaults: bool = True,
 ) -> dict:
     """Load and parse .mcp.json with variable expansion.
@@ -136,7 +142,8 @@ def load_mcp_config(
     Args:
         mcp_json_path: Path to the .mcp.json file.
         skill_root: Root directory of the skill (for ${SKILL_ROOT} expansion).
-        secrets: Optional dictionary of per-conversation secrets for expansion.
+        get_secret: Optional callback to look up per-conversation secrets.
+            See expand_mcp_variables() for details on why this is a callback.
         expand_defaults: If True, apply default values for unresolved variables.
             If False, preserve ${VAR:-default} as-is for later expansion.
             Use False during plugin loading to defer until secrets are available.
@@ -167,7 +174,7 @@ def load_mcp_config(
 
     # Expand variables (includes secrets if provided)
     config = expand_mcp_variables(
-        config, variables, secrets=secrets, expand_defaults=expand_defaults
+        config, variables, get_secret=get_secret, expand_defaults=expand_defaults
     )
 
     # Validate using MCPConfig

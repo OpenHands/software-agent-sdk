@@ -381,15 +381,15 @@ class LocalConversation(BaseConversation):
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
         if merged_mcp:
-            secrets = self._state.secret_registry.get_all_secrets()
-            # Always expand, even if secrets is empty, to apply defaults
+            # Pass the registry's lookup method as a callback - secrets are retrieved
+            # lazily, one at a time, only when actually referenced in the config
             merged_mcp = expand_mcp_variables(
-                merged_mcp, {}, secrets=secrets, expand_defaults=True
+                merged_mcp,
+                {},
+                get_secret=self._state.secret_registry.get_secret_value,
+                expand_defaults=True,
             )
-            if secrets:
-                logger.debug(f"Expanded MCP config with {len(secrets)} secret(s)")
-            else:
-                logger.debug("Applied MCP config defaults (no secrets provided)")
+            logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if we have plugins or MCP config
         # Skip update when nothing changed to avoid unnecessary agent state mutations
