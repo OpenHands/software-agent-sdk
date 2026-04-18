@@ -93,6 +93,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
         ],
+        exclude=True,  # Exclude from serialization to prevent secret leakage
+        # mcp_config may contain expanded secrets (e.g., API tokens in env vars).
+        # Since MCP tools are created at runtime and verified via the tools list
+        # on resume, there's no need to persist the config. Excluding it prevents
+        # secrets from leaking to disk, WebSocket events, and API responses.
     )
     filter_tools_regex: str | None = Field(
         default=None,
