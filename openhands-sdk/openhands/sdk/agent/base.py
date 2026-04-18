@@ -253,6 +253,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """Returns the name of the Agent."""
         return self.__class__.__name__
 
+    def supports_vision(self) -> bool:
+        """Whether this agent can consume image content in user messages.
+
+        Default: delegate to the configured LLM. Subclasses (notably
+        ACPAgent) override this when the effective vision capability is
+        not derivable from ``self.llm.model`` — e.g. a sentinel model
+        that LiteLLM does not recognise.
+        """
+        return self.llm.vision_is_active()
+
     @property
     def static_system_message(self) -> str:
         """Compute the static portion of the system message.

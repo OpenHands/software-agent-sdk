@@ -142,6 +142,43 @@ _BYPASS_MODE_MAP: dict[str, str] = {
 }
 _DEFAULT_BYPASS_MODE = "full-access"
 
+# ACP server identifier substrings → whether the server forwards ACP
+# ImageContentBlock prompts to a vision-capable underlying model.
+#
+# Verified against upstream source (all declare prompt_capabilities.image=true
+# and map ContentBlock::Image to their provider's native image format):
+#   claude-agent-acp → Claude Sonnet/Opus/Haiku 3.5+ (vision)
+#     src/acp-agent.ts: promptToClaude() case "image"
+#   gemini-cli       → Gemini 1.5/2.x Pro/Flash (vision)
+#     packages/cli/src/acp/acpClient.ts: #resolvePrompt() case "image"
+#   codex-acp        → GPT-5 family via Codex CLI (vision)
+#     src/thread.rs: build_prompt_items() image → UserInput::Image
+_ACP_VISION_PROVIDER_MARKERS: dict[str, bool] = {
+    "claude-agent-acp": True,
+    "claude-code-acp": True,  # legacy name, kept for completeness
+    "gemini-cli": True,
+    "codex-acp": True,
+}
+
+
+def _acp_command_supports_vision(command: list[str], agent_name: str) -> bool:
+    """Return True if the ACP server forwards inline images to a vision model.
+
+    Matches on either the runtime agent name from InitializeResponse (when
+    available) or the configured launch command (always available). Falls
+    back to False for unknown servers so we do not silently send images a
+    server may drop.
+    """
+    haystacks: list[str] = []
+    if agent_name:
+        haystacks.append(agent_name.lower())
+    haystacks.append(" ".join(command).lower())
+    for marker, supports in _ACP_VISION_PROVIDER_MARKERS.items():
+        if any(marker in h for h in haystacks):
+            return supports
+    return False
+
+
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
 # required env var is set.
@@ -782,6 +819,17 @@ class ACPAgent(AgentBase):
     def agent_version(self) -> str:
         """Version of the ACP server (from InitializeResponse.agent_info)."""
         return self._agent_version
+
+    def supports_vision(self) -> bool:
+        """Whether the wrapped ACP server forwards images to a vision model.
+
+        The sentinel ``self.llm`` uses ``model="acp-managed"`` which LiteLLM
+        does not recognise, so the base-class ``llm.vision_is_active()``
+        always returns False for ACP agents. Resolve the real capability
+        from the ACP server identity (launch command or the agent name
+        reported by InitializeResponse) instead.
+        """
+        return _acp_command_supports_vision(self.acp_command, self._agent_name)
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm

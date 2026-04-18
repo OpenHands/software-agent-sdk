@@ -337,3 +337,28 @@ def test_file_editor_tool_image_viewing_line_with_vision_disabled():
         # Check that the image viewing line is NOT included in description
         assert "is an image file" not in tool.description
         assert "displays the image content" not in tool.description
+
+
+def test_file_editor_tool_image_viewing_line_for_acp_agent():
+    """ACPAgent advertises vision based on the wrapped provider, not its
+    sentinel LLM. All three providers OpenHands supports (claude-agent-acp,
+    gemini-cli, codex-acp) forward images to vision-capable models."""
+    from openhands.sdk.agent.acp_agent import ACPAgent
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        agent = ACPAgent(
+            acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+        )
+        conv_state = ConversationState.create(
+            id=uuid4(),
+            agent=agent,
+            workspace=LocalWorkspace(working_dir=temp_dir),
+        )
+
+        tools = FileEditorTool.create(conv_state)
+        tool = tools[0]
+
+        assert (
+            "If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp)"
+            in tool.description
+        )
