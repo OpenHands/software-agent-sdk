@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    field_serializer,
     model_validator,
 )
 
@@ -33,6 +34,7 @@ from openhands.sdk.tool import (
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.redact import sanitize_config
 
 
 if TYPE_CHECKING:
@@ -87,11 +89,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
         ],
-        exclude=True,  # Exclude from serialization to prevent secret leakage
-        # mcp_config may contain expanded secrets (e.g., API tokens in env vars).
-        # Since MCP tools are created at runtime and verified via the tools list
-        # on resume, there's no need to persist the config. Excluding it prevents
-        # secrets from leaking to disk, WebSocket events, and API responses.
+        # Note: mcp_config may contain expanded secrets. A field_serializer is used
+        # to redact sensitive fields (env, headers, tokens) during serialization.
+        # See _serialize_mcp_config below.
     )
     filter_tools_regex: str | None = Field(
         default=None,
@@ -201,6 +201,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "'system_prompt_filename'. Use one or the other."
             )
         return data
+
+    @field_serializer("mcp_config")
+    @classmethod
+    def _serialize_mcp_config(cls, config: dict[str, Any]) -> dict[str, Any]:
+        """Redact sensitive fields from mcp_config during serialization.
+
+        MCP config may contain expanded secrets in env vars, headers, and URLs.
+        This serializer uses sanitize_config() to redact those fields, keeping
+        the output shape stable while preventing secret leakage to disk,
+        WebSocket events, and API responses.
+        """
+        if not config:
+            return config
+        return sanitize_config(config)
 
     condenser: CondenserBase | None = Field(
         default=None,
