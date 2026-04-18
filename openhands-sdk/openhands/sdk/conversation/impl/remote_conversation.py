@@ -533,6 +533,12 @@ class RemoteState(ConversationStateProtocol):
         return info.get("activated_knowledge_skills", [])
 
     @property
+    def invoked_skills(self) -> list[str]:
+        """Names of progressive-disclosure skills explicitly invoked."""
+        info = self._get_conversation_info()
+        return info.get("invoked_skills", [])
+
+    @property
     def agent(self):
         """The agent configuration (fetched from remote)."""
         info = self._get_conversation_info()

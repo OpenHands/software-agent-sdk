@@ -121,6 +121,13 @@ class _ConversationInfoBase(BaseModel):
         default_factory=list,
         description="List of activated knowledge skills name",
     )
+    invoked_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of progressive-disclosure skills explicitly invoked via the "
+            "`invoke_skill` tool."
+        ),
+    )
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,
         description="Actions blocked by PreToolUse hooks, keyed by action ID",
