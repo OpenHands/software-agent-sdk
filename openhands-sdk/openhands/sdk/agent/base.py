@@ -35,6 +35,7 @@ from openhands.sdk.tool import (
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.redact import sanitize_config
 
 
 if TYPE_CHECKING:
@@ -47,20 +48,6 @@ if TYPE_CHECKING:
 
 _MCP_CONFIG_SERIALIZATION_DEPRECATED_IN = "1.17.0"
 _MCP_CONFIG_SERIALIZATION_REMOVED_IN = "1.22.0"
-_REDACTED_MCP_CONFIG_VALUE = "<redacted>"
-
-
-def _sanitize_mcp_config_for_serialization(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _sanitize_mcp_config_for_serialization(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_sanitize_mcp_config_for_serialization(item) for item in value]
-    if isinstance(value, str):
-        return _REDACTED_MCP_CONFIG_VALUE
-    return value
 
 
 logger = get_logger(__name__)
@@ -119,6 +106,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "x-deprecated-in": _MCP_CONFIG_SERIALIZATION_DEPRECATED_IN,
             "x-removed-in": _MCP_CONFIG_SERIALIZATION_REMOVED_IN,
         },
+        # Note: mcp_config may contain expanded secrets. A field_serializer is used
+        # to redact sensitive fields (env, headers, tokens) during serialization.
+        # See _serialize_mcp_config below.
     )
 
     @field_serializer("mcp_config", when_used="always")
@@ -129,7 +119,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     ) -> dict[str, Any]:
         if info.context and info.context.get("raw_mcp_config"):
             return value
-        return _sanitize_mcp_config_for_serialization(value)
+        if not value:
+            return value
+        return sanitize_config(value)
 
     filter_tools_regex: str | None = Field(
         default=None,

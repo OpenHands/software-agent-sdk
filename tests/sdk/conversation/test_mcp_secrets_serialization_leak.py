@@ -254,8 +254,8 @@ class TestMcpConfigPreservation:
             "mcp_config should retain secrets in memory for runtime use"
         )
 
-    def test_non_secret_mcp_config_shape_is_sanitized(self, tmp_path):
-        """Verify serialization keeps the MCP shape but redacts string values."""
+    def test_non_secret_mcp_config_values_persist(self, tmp_path):
+        """Verify non-secret MCP config values still persist in serialized state."""
         llm = LLM(model="test-model", api_key=SecretStr("test-key"))
         mcp_config = {
             "mcpServers": {
@@ -285,8 +285,8 @@ class TestMcpConfigPreservation:
         assert persisted_mcp_config == {
             "mcpServers": {
                 "fetch": {
-                    "command": "<redacted>",
-                    "args": ["<redacted>"],
+                    "command": "uvx",
+                    "args": ["mcp-server-fetch"],
                 }
             }
         }

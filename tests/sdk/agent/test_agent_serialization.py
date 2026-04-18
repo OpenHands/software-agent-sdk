@@ -59,47 +59,55 @@ def test_mcp_tool_serialization():
     assert loaded.model_dump_json() == dumped
 
 
-def test_agent_serialization_sanitizes_mcp_config_for_security() -> None:
-    """Test that serialized mcp_config keeps shape but redacts string values."""
+def test_agent_serialization_redacts_mcp_config_secrets() -> None:
+    """Test that serialized mcp_config preserves non-secret fields."""
     llm = LLM(model="test-model", usage_id="test-llm")
     mcp_config = {
         "mcpServers": {
             "dummy": {
                 "command": "echo",
                 "args": ["dummy-mcp"],
-                "env": {"API_TOKEN": "secret-value"},
+                "env": {"API_KEY": "super-secret-key", "DEBUG": "true"},
+                "headers": {"Authorization": "Bearer secret-token"},
             },
         }
     }
     agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
 
     assert agent.mcp_config == mcp_config
+    assert (
+        agent.mcp_config["mcpServers"]["dummy"]["env"]["API_KEY"] == "super-secret-key"
+    )
 
     agent_dump = agent.model_dump(mode="json")
-    serialized_mcp_config = agent_dump["mcp_config"]
+    assert "mcp_config" in agent_dump
 
-    assert serialized_mcp_config == {
-        "mcpServers": {
-            "dummy": {
-                "command": "<redacted>",
-                "args": ["<redacted>"],
-                "env": {"API_TOKEN": "<redacted>"},
-            }
-        }
-    }
+    serialized_mcp = agent_dump["mcp_config"]
+    assert serialized_mcp["mcpServers"]["dummy"]["command"] == "echo"
+    assert serialized_mcp["mcpServers"]["dummy"]["args"] == ["dummy-mcp"]
+    assert serialized_mcp["mcpServers"]["dummy"]["env"]["API_KEY"] == "<redacted>"
+    assert serialized_mcp["mcpServers"]["dummy"]["env"]["DEBUG"] == "<redacted>"
+    auth_header = serialized_mcp["mcpServers"]["dummy"]["headers"]["Authorization"]
+    assert auth_header == "<redacted>"
 
     agent_json = agent.model_dump_json()
     deserialized_agent = AgentBase.model_validate_json(agent_json)
 
     assert isinstance(deserialized_agent, Agent)
-    assert deserialized_agent.mcp_config == serialized_mcp_config
+    assert deserialized_agent.mcp_config["mcpServers"]["dummy"]["env"]["API_KEY"] == (
+        "<redacted>"
+    )
 
 
 def test_agent_serialization_preserves_raw_mcp_config_for_transport() -> None:
     llm = LLM(model="test-model", usage_id="test-llm")
     mcp_config = {
         "mcpServers": {
-            "dummy": {"command": "echo", "args": ["dummy-mcp"]},
+            "dummy": {
+                "command": "echo",
+                "args": ["dummy-mcp"],
+                "env": {"API_KEY": "super-secret-key"},
+            },
         }
     }
     agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
