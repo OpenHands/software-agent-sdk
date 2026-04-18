@@ -165,7 +165,10 @@ def test_get_secret_value_static():
     )
 
     assert secret_registry.get_secret_value("API_KEY") == "test-api-key"
-    assert secret_registry.get_secret_value("DATABASE_URL") == "postgresql://localhost/test"
+    assert (
+        secret_registry.get_secret_value("DATABASE_URL")
+        == "postgresql://localhost/test"
+    )
     assert secret_registry.get_secret_value("NONEXISTENT") is None
 
 
