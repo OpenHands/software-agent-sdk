@@ -20,6 +20,18 @@ from openhands.sdk.observability.utils import get_env
 logger = get_logger(__name__)
 
 
+def _get_int_env(key: str) -> int | None:
+    """Read an environment variable as an optional int."""
+    val = get_env(key)
+    if val is not None and val != "":
+        try:
+            return int(val)
+        except ValueError:
+            logger.warning("%s must be an integer, got %r", key, val)
+            return None
+    return None
+
+
 def maybe_init_laminar():
     """Initialize Laminar if the environment variables are set.
 
@@ -36,10 +48,17 @@ def maybe_init_laminar():
     # or
     OTEL_EXPORTER=otlp_http # or otlp_grpc
     ```
+
+    For self-hosted Laminar, set the ports via environment variables:
+    LMNR_HTTP_PORT=8000
+    LMNR_GRPC_PORT=8001
     """
     if should_enable_observability():
         if _is_otel_backend_laminar():
-            Laminar.initialize()
+            Laminar.initialize(
+                http_port=_get_int_env("LMNR_HTTP_PORT"),
+                grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+            )
         else:
             # Do not enable browser session replays for non-laminar backends
             Laminar.initialize(
@@ -71,6 +90,7 @@ def observe[**P, R](
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     preserve_global_context: bool = False,
+    rollout_entrypoint: bool = False,
     **kwargs: dict[str, Any],
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
@@ -87,6 +107,7 @@ def observe[**P, R](
             metadata=metadata,
             tags=tags,
             preserve_global_context=preserve_global_context,
+            rollout_entrypoint=rollout_entrypoint,
             **kwargs,
         )(func)
 
@@ -167,3 +188,39 @@ def end_active_span() -> None:
     except Exception:
         logger.debug("Error ending active span")
         pass
+
+
+def init_laminar_for_external():
+    """Initialize Laminar for external callers and return parent span context.
+
+    This is a convenience function for integrations (e.g., GitHub, Slack webhooks)
+    that need to:
+    1. Initialize Laminar if env vars are set (via maybe_init_laminar)
+    2. Capture the parent span context from the external trigger
+
+    Returns:
+        The parent span context if observability is enabled, None otherwise.
+
+    Example:
+        ```python
+        from openhands.sdk.observability import init_laminar_for_external
+        from lmnr import Laminar
+
+        # At the start of handling an external event (webhook, etc.)
+        laminar_span_context = init_laminar_for_external()
+
+        if laminar_span_context:
+            with Laminar.start_as_current_span(
+                name='my-integration',
+                parent_span_context=laminar_span_context,
+            ):
+                # Do work - traces will be children of the external trigger
+                await do_something()
+        else:
+            await do_something()
+        ```
+    """
+    maybe_init_laminar()
+    if should_enable_observability():
+        return Laminar.get_laminar_span_context()
+    return None

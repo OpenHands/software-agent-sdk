@@ -1,6 +1,7 @@
 """Edit tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field, PrivateAttr
@@ -8,6 +9,7 @@ from rich.text import Text
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -132,6 +134,19 @@ Examples:
 class EditTool(ToolDefinition[EditAction, EditObservation]):
     """Tool for editing files via find/replace."""
 
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        """Lock on the target file path so concurrent edits to the same
+        file are serialized, while edits to different files run in parallel.
+        """
+        assert isinstance(action, EditAction)
+        path = Path(action.file_path)
+        if not path.is_absolute():
+            assert self.meta is not None, (
+                "workspace_root required to resolve relative paths"
+            )
+            path = Path(self.meta["workspace_root"]) / path
+        return DeclaredResources(keys=(f"file:{path.resolve()}",), declared=True)
+
     @classmethod
     def create(
         cls,
@@ -166,6 +181,7 @@ class EditTool(ToolDefinition[EditAction, EditObservation]):
                     openWorldHint=False,
                 ),
                 executor=executor,
+                meta={"workspace_root": working_dir},
             )
         ]
 

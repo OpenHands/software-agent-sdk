@@ -346,7 +346,7 @@ def test_agent_definition_to_factory_skills_project_over_user(tmp_path: Path) ->
         skills=["shared-skill"],
     )
 
-    with patch("openhands.sdk.context.skills.skill.Path.home", return_value=user_home):
+    with patch("openhands.sdk.skills.skill.Path.home", return_value=user_home):
         factory = agent_definition_to_factory(agent_def, work_dir=tmp_path)
 
     llm = _make_test_llm()

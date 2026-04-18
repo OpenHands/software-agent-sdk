@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+from functools import cache
+
+from litellm import get_supported_openai_params
 
 
 def model_matches(model: str, patterns: list[str]) -> bool:
@@ -49,34 +52,39 @@ class ModelFeatures:
     supports_prompt_cache_retention: bool
 
 
-# Model lists capturing current behavior. Keep entries lowercase.
+LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
-REASONING_EFFORT_MODELS: list[str] = [
-    # Mirror main behavior exactly (no unintended expansion)
-    "o1-2024-12-17",
-    "o1",
-    "o3",
-    "o3-2025-04-16",
-    "o3-mini-2025-01-31",
-    "o3-mini",
-    "o4-mini",
-    "o4-mini-2025-04-16",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    # Gemini 3 family
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
-    "gemini-3.1-pro-preview",
-    # OpenAI GPT-5 family (includes mini variants)
-    "gpt-5",
-    "gpt-5.4",
-    # Anthropic Opus 4.5 and 4.6
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    # Nova 2 Lite
-    "nova-2-lite",
-]
+# Common deployment path prefixes used in LiteLLM proxy configurations
+DEPLOYMENT_PREFIXES = ("prod/", "dev/", "staging/", "test/")
+
+
+@cache
+def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
+    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+    if not model:
+        return frozenset()
+
+    normalized = model.strip().lower()
+    if normalized.startswith(LITELLM_PROXY_PREFIX):
+        normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
+
+    # Strip deployment prefixes (e.g., "prod/", "dev/", "staging/", "test/")
+    for prefix in DEPLOYMENT_PREFIXES:
+        if normalized.startswith(prefix):
+            normalized = normalized.removeprefix(prefix)
+            break
+
+    params = get_supported_openai_params(
+        model=normalized,
+        custom_llm_provider=None,
+    )
+    return frozenset(params or ())
+
+
+def _supports_reasoning_effort(model: str | None) -> bool:
+    """Return True if LiteLLM says the model accepts reasoning_effort."""
+    return "reasoning_effort" in _normalized_supported_openai_params(model)
+
 
 EXTENDED_THINKING_MODELS: list[str] = [
     # Anthropic model family
@@ -102,6 +110,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-sonnet-4-6",
     "claude-opus-4-5",
     "claude-opus-4-6",
+    "claude-opus-4-7",
     "claude-sonnet-4-6",
 ]
 
@@ -178,7 +187,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
     return ModelFeatures(
-        supports_reasoning_effort=model_matches(model, REASONING_EFFORT_MODELS),
+        supports_reasoning_effort=_supports_reasoning_effort(model),
         supports_extended_thinking=model_matches(model, EXTENDED_THINKING_MODELS),
         supports_prompt_cache=model_matches(model, PROMPT_CACHE_MODELS),
         supports_stop_words=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),

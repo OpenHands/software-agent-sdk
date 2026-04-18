@@ -25,6 +25,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
     "claude-opus-4-6",
+    "claude-opus-4-7",
     "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
@@ -47,7 +48,7 @@ VERIFIED_MISTRAL_MODELS = [
 ]
 
 VERIFIED_GEMINI_MODELS = [
-    "gemini-3-pro-preview",
+    "gemini-3.1-pro-preview",
 ]
 
 VERIFIED_DEEPSEEK_MODELS = [
@@ -61,16 +62,19 @@ VERIFIED_MOONSHOT_MODELS = [
 
 VERIFIED_MINIMAX_MODELS = [
     "minimax-m2.5",
+    "minimax-m2.7",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-6",
-    "claude-sonnet-4-5-20250929",
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
     "minimax-m2.5",
-    "gemini-3-pro-preview",
+    "minimax-m2.7",
+    "gemini-3.1-pro-preview",
     "deepseek-chat",
     "kimi-k2-thinking",
     "kimi-k2.5",

@@ -5,15 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from acp.exceptions import RequestError as ACPRequestError
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _build_session_meta,
+    _estimate_cost_from_tokens,
+    _extract_token_usage,
+    _maybe_set_session_model,
     _OpenHandsACPBridge,
     _resolve_bypass_mode,
     _select_auth_method,
+    _serialize_tool_content,
 )
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
@@ -78,10 +85,6 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         assert agent.acp_env == {}
 
-    def test_system_message_returns_acp_managed(self):
-        agent = _make_agent()
-        assert agent.system_message == "ACP-managed agent"
-
     def test_get_all_llms_yields_sentinel(self):
         agent = _make_agent()
         llms = list(agent.get_all_llms())
@@ -92,6 +95,26 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         with pytest.raises(Exception):
             agent.acp_command = ["other"]  # type: ignore[misc]
+
+    def test_acp_model_propagated_to_metrics(self):
+        """When acp_model is set, metrics.model_name should reflect the actual model."""
+        agent = _make_agent(acp_model="gemini-3-flash-preview")
+        assert agent.llm.metrics.model_name == "gemini-3-flash-preview"
+        assert agent.llm.metrics.accumulated_token_usage is not None
+        assert (
+            agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
+        )
+
+    def test_no_acp_model_keeps_sentinel(self):
+        """Without acp_model, metrics.model_name remains the sentinel value."""
+        agent = _make_agent()
+        assert agent.llm.metrics.model_name == "acp-managed"
+
+    def test_acp_model_used_in_cost_entries(self):
+        """Cost entries should use the actual model name, not the sentinel."""
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        agent.llm.metrics.add_cost(0.05)
+        assert agent.llm.metrics.costs[0].model == "claude-opus-4-6"
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +281,211 @@ class TestOpenHandsACPClient:
     async def test_ext_notification_is_noop(self):
         client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Activity heartbeat
+# ---------------------------------------------------------------------------
+
+
+class TestACPActivityHeartbeat:
+    """Tests for the on_activity heartbeat in _OpenHandsACPBridge."""
+
+    def test_reset_clears_on_activity(self):
+        client = _OpenHandsACPBridge()
+        client.on_activity = lambda: None
+        client.reset()
+        assert client.on_activity is None
+
+    def test_reset_preserves_last_activity_signal(self):
+        """_last_activity_signal persists across resets (like telemetry state)."""
+        client = _OpenHandsACPBridge()
+        client._last_activity_signal = 999.0
+        client.reset()
+        assert client._last_activity_signal == 999.0
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_signals_activity(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read file"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_signals_activity(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        # Need a ToolCallStart first
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Reset throttle so ToolCallProgress can fire
+        client._last_activity_signal = float("-inf")
+        signals.clear()
+
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "ok"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_agent_message_chunk_signals_activity(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "hello"
+
+        await client.session_update("sess-1", chunk)
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_activity_signal_is_throttled(self):
+        """Signals should be throttled to at most one per interval."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        signals: list[bool] = []
+        client.on_activity = lambda: signals.append(True)
+
+        for i in range(5):
+            start = MagicMock(spec=ToolCallStart)
+            start.tool_call_id = f"tc-{i}"
+            start.title = f"Tool {i}"
+            start.kind = "read"
+            start.status = "completed"
+            start.raw_input = None
+            start.raw_output = None
+            start.content = None
+            await client.session_update("sess-1", start)
+
+        # All happened within the same throttle window → only 1 signal
+        assert len(signals) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_signal_without_callback(self):
+        """No error when on_activity is None."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        assert client.on_activity is None
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_activity_callback_error_is_swallowed(self):
+        """Errors in on_activity must not break session_update."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.on_activity = MagicMock(side_effect=RuntimeError("boom"))
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Tool"
+        start.kind = "read"
+        start.status = "completed"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess-1", start)  # Should not raise
+        client.on_activity.assert_called_once()
+
+    def test_step_wires_on_activity(self, tmp_path):
+        """step() should set on_activity on the bridge from _on_activity."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        # Wire up a user message
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="sys"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="test")]),
+            ),
+        )
+
+        activity_fn = MagicMock()
+        agent._on_activity = activity_fn
+
+        # Mock the internals so step() doesn't actually call the ACP server
+        agent._client = _OpenHandsACPBridge()
+
+        # Capture on_activity while prompt() is still "running" — step()
+        # unwires the bridge callbacks in its finally block once the turn
+        # completes, so the post-return value is None by design.
+        wired_during_prompt: list = []
+
+        def _capture_run_async(_coro, **_kwargs):
+            wired_during_prompt.append(agent._client.on_activity)
+            return MagicMock(usage=None)
+
+        agent._executor = MagicMock()
+        agent._executor.run_async = _capture_run_async
+        agent._session_id = "sess-1"
+        agent._initialized = True
+
+        conversation = MagicMock()
+        conversation.state = state
+        events: list = []
+
+        agent.step(conversation, on_event=events.append)
+
+        # Verify on_activity was wired to the bridge during the turn.
+        assert wired_during_prompt == [activity_fn]
+        # And that it was cleared afterward so a late session_update
+        # cannot fire the per-turn heartbeat callback out-of-band.
+        assert agent._client.on_activity is None
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +657,12 @@ class TestACPAgentStep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
+        # Capture on_token while prompt() is still running — step() clears
+        # the per-turn callbacks in its finally block once the turn ends.
+        wired_during_prompt: list = []
+
         def _fake_run_async(_coro, **_kwargs):
+            wired_during_prompt.append(mock_client.on_token)
             mock_client.accumulated_text.append("ok")
 
         mock_executor = MagicMock()
@@ -440,8 +673,10 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None, on_token=on_token)
 
-        # Verify on_token was passed to the client
-        assert mock_client.on_token == on_token
+        # Verify on_token was wired during the turn.
+        assert wired_during_prompt == [on_token]
+        # And unwired afterward so a late token chunk is a no-op.
+        assert mock_client.on_token is None
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +855,7 @@ class TestACPAgentTelemetry:
             mock_response.usage = mock_usage
         else:
             mock_response.usage = None
+            mock_response.field_meta = None
 
         def _fake_run_async(_coro, **_kwargs):
             mock_client.accumulated_text.append("response text")
@@ -894,6 +1130,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"path": "/tmp/test.py"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -905,6 +1142,7 @@ class TestACPToolCallAccumulation:
         assert tc["status"] == "in_progress"
         assert tc["raw_input"] == {"path": "/tmp/test.py"}
         assert tc["raw_output"] is None
+        assert tc["content"] is None
 
     @pytest.mark.asyncio
     async def test_session_update_merges_tool_call_progress(self):
@@ -921,6 +1159,7 @@ class TestACPToolCallAccumulation:
         start.status = "in_progress"
         start.raw_input = {"command": "ls"}
         start.raw_output = None
+        start.content = None
 
         await client.session_update("sess-1", start)
 
@@ -932,6 +1171,7 @@ class TestACPToolCallAccumulation:
         progress.status = "completed"
         progress.raw_input = None  # not updated
         progress.raw_output = "file1.py\nfile2.py"
+        progress.content = None
 
         await client.session_update("sess-1", progress)
 
@@ -957,6 +1197,7 @@ class TestACPToolCallAccumulation:
             start.status = "completed"
             start.raw_input = None
             start.raw_output = None
+            start.content = None
             await client.session_update("sess-1", start)
 
         assert len(client.accumulated_tool_calls) == 3
@@ -985,6 +1226,381 @@ class TestACPToolCallAccumulation:
         assert client.accumulated_tool_calls == []
 
 
+class TestACPToolCallLiveEmission:
+    """Tests that ``session_update`` fires ``on_event`` live (not batched).
+
+    Closes OpenHands/software-agent-sdk#2866: tool-call events must reach
+    ``on_event`` as each ACP notification arrives, so the event stream
+    reflects real subprocess progress instead of a single end-of-turn burst.
+    """
+
+    @pytest.mark.asyncio
+    async def test_session_update_fires_on_event_live(self):
+        """Each ToolCallStart/Progress triggers an immediate on_event call."""
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read file"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = {"path": "/a"}
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess", start)
+
+        # on_event fires synchronously — event already present, not batched.
+        assert len(events) == 1
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert events[0].tool_call_id == "tc-1"
+        assert events[0].status == "in_progress"
+        assert events[0].raw_output is None
+
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "hello"
+        progress.content = None
+        await client.session_update("sess", progress)
+
+        # Same tool_call_id, evolving status/raw_output — consumer dedupes.
+        assert len(events) == 2
+        assert events[1].tool_call_id == "tc-1"
+        assert events[1].status == "completed"
+        assert events[1].raw_output == "hello"
+        assert events[1].is_error is False
+
+    @pytest.mark.asyncio
+    async def test_session_update_preserves_interleaved_order(self):
+        """Tool-call and text-chunk updates reach callbacks in arrival order.
+
+        The bridge emits on_event synchronously from session_update, so the
+        order consumers see is exactly the order the ACP subprocess sent them.
+        Text/thought chunks are routed to on_token rather than on_event, but
+        the *combined* callback stream must stay in arrival order so that
+        consumers can rebuild a coherent trace.
+        """
+        from acp.schema import (
+            AgentMessageChunk,
+            AgentThoughtChunk,
+            TextContentBlock,
+            ToolCallProgress,
+            ToolCallStart,
+        )
+
+        client = _OpenHandsACPBridge()
+        # Single timeline of callback arrivals, tagged by source.
+        observed: list[tuple[str, Any]] = []
+        client.on_event = lambda e: observed.append(("event", e))
+        client.on_token = lambda t: observed.append(("token", t))
+
+        def make_start(tc_id: str) -> Any:
+            s = MagicMock(spec=ToolCallStart)
+            s.tool_call_id = tc_id
+            s.title = f"Tool {tc_id}"
+            s.kind = "read"
+            s.status = "in_progress"
+            s.raw_input = None
+            s.raw_output = None
+            s.content = None
+            return s
+
+        def make_progress(tc_id: str, status: str) -> Any:
+            p = MagicMock(spec=ToolCallProgress)
+            p.tool_call_id = tc_id
+            p.title = None
+            p.kind = None
+            p.status = status
+            p.raw_input = None
+            p.raw_output = None
+            p.content = None
+            return p
+
+        def make_text_chunk(text: str) -> Any:
+            c = MagicMock(spec=AgentMessageChunk)
+            c.content = MagicMock(spec=TextContentBlock)
+            c.content.text = text
+            return c
+
+        def make_thought_chunk(text: str) -> Any:
+            c = MagicMock(spec=AgentThoughtChunk)
+            c.content = MagicMock(spec=TextContentBlock)
+            c.content.text = text
+            return c
+
+        sequence: list = [
+            make_thought_chunk("thinking..."),
+            make_start("tc-a"),
+            make_text_chunk("reading "),
+            make_progress("tc-a", "completed"),
+            make_start("tc-b"),
+            make_text_chunk("done"),
+            make_progress("tc-b", "completed"),
+        ]
+        for update in sequence:
+            await client.session_update("sess", update)
+
+        # Thought chunks don't fire a callback today — filter to the callback
+        # kinds we drove and confirm arrival order matches the driven sequence.
+        expected_stream = [
+            "event",  # tc-a start
+            "token",  # text chunk
+            "event",  # tc-a progress
+            "event",  # tc-b start
+            "token",  # text chunk
+            "event",  # tc-b progress
+        ]
+        assert [kind for kind, _ in observed] == expected_stream
+        tool_events = [payload for kind, payload in observed if kind == "event"]
+        assert [e.tool_call_id for e in tool_events] == [
+            "tc-a",
+            "tc-a",
+            "tc-b",
+            "tc-b",
+        ]
+        assert [e.status for e in tool_events] == [
+            "in_progress",
+            "completed",
+            "in_progress",
+            "completed",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_session_update_no_on_event_when_unset(self):
+        """When on_event is None (no active step), session_update is a no-op emit."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        assert client.on_event is None
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        # Must not raise
+        await client.session_update("sess", start)
+        # Still accumulated so step() can reference it if needed.
+        assert len(client.accumulated_tool_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_on_event_errors_are_swallowed(self):
+        """A raising on_event must not break the session_update pipeline."""
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.on_event = MagicMock(side_effect=RuntimeError("boom"))
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Read"
+        start.kind = "read"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+
+        await client.session_update("sess", start)  # must not raise
+        client.on_event.assert_called_once()
+
+    def test_reset_clears_on_event(self):
+        """reset() clears on_event so the next step wires a fresh callback."""
+        client = _OpenHandsACPBridge()
+        client.on_event = lambda _: None
+        client.reset()
+        assert client.on_event is None
+
+
+class TestACPCancelInflightToolCalls:
+    """Tests for _cancel_inflight_tool_calls — ensures ghost tool cards are
+    closed on retry / abort so the live-emission stream cannot leave an
+    orphaned pending event on ``state.events``.
+
+    Raised in PR review on #2866: ACP servers mint fresh ``tool_call_id``s
+    when the prompt is retried, so any pending event already fired for the
+    failed attempt would otherwise spin forever under dedup-by-id consumers.
+    """
+
+    @staticmethod
+    def _push_entry(
+        client: _OpenHandsACPBridge, tool_call_id: str, status: str
+    ) -> None:
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": tool_call_id,
+                "title": f"Tool {tool_call_id}",
+                "tool_kind": "read",
+                "status": status,
+                "raw_input": {"k": "v"},
+                "raw_output": None,
+                "content": None,
+            }
+        )
+
+    def test_emits_failed_event_for_pending_entries(self, tmp_path):
+        """Pending / in_progress entries get a terminal failed ACPToolCallEvent."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        emitted: list = []
+        agent._client.on_event = emitted.append
+        self._push_entry(agent._client, "tc-1", "pending")
+        self._push_entry(agent._client, "tc-2", "in_progress")
+
+        agent._cancel_inflight_tool_calls()
+
+        assert len(emitted) == 2
+        assert all(isinstance(e, ACPToolCallEvent) for e in emitted)
+        assert [e.tool_call_id for e in emitted] == ["tc-1", "tc-2"]
+        assert all(e.status == "failed" and e.is_error for e in emitted)
+
+    def test_skips_already_terminal_entries(self, tmp_path):
+        """completed / failed entries are left alone — they already closed."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        emitted: list = []
+        agent._client.on_event = emitted.append
+        self._push_entry(agent._client, "tc-done", "completed")
+        self._push_entry(agent._client, "tc-bad", "failed")
+        self._push_entry(agent._client, "tc-live", "pending")
+
+        agent._cancel_inflight_tool_calls()
+
+        # Only the pending one gets a synthetic terminal event.
+        assert [e.tool_call_id for e in emitted] == ["tc-live"]
+
+    def test_callback_errors_are_swallowed(self):
+        """A raising on_event during cancellation must not break the retry path."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        self._push_entry(agent._client, "tc-1", "pending")
+        self._push_entry(agent._client, "tc-2", "pending")
+
+        seen: list = []
+
+        def flaky(event) -> None:
+            seen.append(event)
+            raise RuntimeError("boom")
+
+        agent._client.on_event = flaky
+        agent._cancel_inflight_tool_calls()  # must not raise
+        # Both entries still attempted even though the first raised.
+        assert len(seen) == 2
+
+    def test_noop_when_on_event_unset(self):
+        """If no on_event is wired, cancellation quietly does nothing."""
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        self._push_entry(agent._client, "tc-1", "pending")
+
+        # on_event default is None — must not raise, must not iterate
+        assert agent._client.on_event is None
+        agent._cancel_inflight_tool_calls()
+
+    def test_retry_cancels_pending_events_before_reset(self, tmp_path):
+        """Full step() retry path closes pending cards before the new attempt."""
+        from acp.schema import ToolCallStart
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="sys"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="go")]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        events: list = []
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First attempt: stream a pending tool call, then fail
+                start = MagicMock(spec=ToolCallStart)
+                start.tool_call_id = "toolu_AAA"
+                start.title = "Read file"
+                start.kind = "read"
+                start.status = "pending"
+                start.raw_input = {"path": "/tmp/x"}
+                start.raw_output = None
+                start.content = None
+                asyncio.run(mock_client.session_update("sess", start))
+                raise ConnectionError("reset by peer")
+            # Retry: fresh tool call id reaches terminal state
+            start = MagicMock(spec=ToolCallStart)
+            start.tool_call_id = "toolu_BBB"
+            start.title = "Read file"
+            start.kind = "read"
+            start.status = "completed"
+            start.raw_input = {"path": "/tmp/x"}
+            start.raw_output = "ok"
+            start.content = None
+            asyncio.run(mock_client.session_update("sess", start))
+            mock_client.accumulated_text.append("done")
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2
+        tool_events = [e for e in events if isinstance(e, ACPToolCallEvent)]
+        # Expected sequence:
+        #   toolu_AAA(pending)  — live-emitted during attempt 1
+        #   toolu_AAA(failed)   — synthetic cancellation before retry reset
+        #   toolu_BBB(completed) — attempt 2
+        by_id: dict[str, list[ACPToolCallEvent]] = {}
+        for e in tool_events:
+            by_id.setdefault(e.tool_call_id, []).append(e)
+
+        assert "toolu_AAA" in by_id
+        aaa_events = by_id["toolu_AAA"]
+        # Must end in a terminal status so consumer dedupe-by-id closes the card.
+        assert aaa_events[-1].status == "failed"
+        assert aaa_events[-1].is_error is True
+
+        assert "toolu_BBB" in by_id
+        assert by_id["toolu_BBB"][-1].status == "completed"
+
+        # The toolu_AAA cancellation comes before any toolu_BBB event.
+        aaa_idx = max(
+            i for i, e in enumerate(tool_events) if e.tool_call_id == "toolu_AAA"
+        )
+        bbb_idx = min(
+            i for i, e in enumerate(tool_events) if e.tool_call_id == "toolu_BBB"
+        )
+        assert aaa_idx < bbb_idx
+
+
 class TestACPToolCallEmission:
     """Tests for ACPToolCallEvent emission in step()."""
 
@@ -1010,7 +1626,9 @@ class TestACPToolCallEmission:
         return conversation
 
     def test_step_emits_tool_call_events_before_message(self, tmp_path):
-        """step() emits ACPToolCallEvent for each tool call before the MessageEvent."""
+        """Tool-call events reach on_event live, ahead of the MessageEvent."""
+        from acp.schema import ToolCallStart
+
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
@@ -1021,27 +1639,30 @@ class TestACPToolCallEmission:
         agent._session_id = "test-session"
 
         def _fake_run_async(_coro, **_kwargs):
+            # Simulate the ACP subprocess streaming two tool-call notifications
+            # during prompt(). session_update fires on_event synchronously,
+            # so these events appear before run_async returns.
+            for tool_call_id, title, kind, status, raw_input, raw_output in [
+                (
+                    "tc-1",
+                    "Read file",
+                    "read",
+                    "completed",
+                    {"path": "/tmp/f.py"},
+                    "content",
+                ),
+                ("tc-2", "Execute bash", "execute", "failed", {"command": "ls"}, None),
+            ]:
+                start = MagicMock(spec=ToolCallStart)
+                start.tool_call_id = tool_call_id
+                start.title = title
+                start.kind = kind
+                start.status = status
+                start.raw_input = raw_input
+                start.raw_output = raw_output
+                start.content = None
+                asyncio.run(mock_client.session_update("sess", start))
             mock_client.accumulated_text.append("done")
-            mock_client.accumulated_tool_calls.extend(
-                [
-                    {
-                        "tool_call_id": "tc-1",
-                        "title": "Read file",
-                        "tool_kind": "read",
-                        "status": "completed",
-                        "raw_input": {"path": "/tmp/f.py"},
-                        "raw_output": "content",
-                    },
-                    {
-                        "tool_call_id": "tc-2",
-                        "title": "Execute bash",
-                        "tool_kind": "execute",
-                        "status": "failed",
-                        "raw_input": {"command": "ls"},
-                        "raw_output": None,
-                    },
-                ]
-            )
 
         mock_executor = MagicMock()
         mock_executor.run_async = _fake_run_async
@@ -1049,7 +1670,7 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        # Should be: 2 tool call events + 1 message event
+        # Should be: 2 tool call events (live) + 1 message event
         # + finish action + finish observation
         assert len(events) == 5
         assert isinstance(events[0], ACPToolCallEvent)
@@ -1068,6 +1689,77 @@ class TestACPToolCallEmission:
         # Verify second tool call event (failed)
         assert events[1].tool_call_id == "tc-2"
         assert events[1].is_error is True
+
+    def test_step_clears_live_callbacks_on_return(self, tmp_path):
+        """After step() returns, bridge callbacks are unwired.
+
+        A trailing ``session_update`` that lands between turns (the ACP
+        subprocess sending a late ``ToolCallProgress`` after its prompt
+        response) would otherwise fire the previous step's ``on_event``
+        on the portal thread with no FIFOLock held by anyone, racing
+        other threads appending to ``state.events``.
+        """
+        from acp.schema import ToolCallStart
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            mock_client.accumulated_text.append("done")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append, on_token=lambda _: None)
+
+        # Callbacks unwired — a late session_update is a safe no-op emit.
+        assert mock_client.on_event is None
+        assert mock_client.on_token is None
+        assert mock_client.on_activity is None
+
+        pre_count = len(events)
+        trailing = MagicMock(spec=ToolCallStart)
+        trailing.tool_call_id = "tc-late"
+        trailing.title = "Late arrival"
+        trailing.kind = "read"
+        trailing.status = "completed"
+        trailing.raw_input = None
+        trailing.raw_output = None
+        trailing.content = None
+        asyncio.run(mock_client.session_update("sess", trailing))
+        assert len(events) == pre_count  # nothing reached the stale callback
+
+    def test_step_clears_live_callbacks_on_error(self, tmp_path):
+        """Callback unwire also runs when step() raises (finally block)."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            raise RuntimeError("boom")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(RuntimeError):
+            agent.step(conversation, on_event=events.append)
+
+        assert mock_client.on_event is None
+        assert mock_client.on_token is None
+        assert mock_client.on_activity is None
 
     def test_step_emits_no_tool_call_events_when_none(self, tmp_path):
         """step() emits only MessageEvent when no tool calls accumulated."""
@@ -1358,7 +2050,7 @@ class TestResolveBypassMode:
 
     def test_claude_agent_with_scope(self):
         assert (
-            _resolve_bypass_mode("@zed-industries/claude-agent-acp")
+            _resolve_bypass_mode("@agentclientprotocol/claude-agent-acp")
             == "bypassPermissions"
         )
 
@@ -1428,6 +2120,52 @@ class TestSelectAuthMethod:
         methods = [self._make_auth_method("chatgpt")]
         env = {"OPENAI_API_KEY": "sk-test"}
         assert _select_auth_method(methods, env) is None
+
+
+# ---------------------------------------------------------------------------
+# ACP model overrides
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSessionMeta:
+    def test_claude_agent_adds_model_override(self):
+        assert _build_session_meta("claude-agent-acp", "claude-opus-4-6") == {
+            "claudeCode": {"options": {"model": "claude-opus-4-6"}}
+        }
+
+    def test_codex_agent_does_not_use_session_meta(self):
+        assert _build_session_meta("codex-acp", "gpt-5.4") == {}
+
+    def test_missing_model_does_not_add_session_meta(self):
+        assert _build_session_meta("claude-agent-acp", None) == {}
+
+
+class TestMaybeSetSessionModel:
+    @pytest.mark.asyncio
+    async def test_codex_agent_uses_protocol_model_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(conn, "codex-acp", "session-1", "gpt-5.4")
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gpt-5.4",
+            session_id="session-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_codex_agent_skips_protocol_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(
+            conn,
+            "claude-agent-acp",
+            "session-1",
+            "claude-opus-4-6",
+        )
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_model_skips_protocol_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
+        conn.set_session_model.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1601,3 +2339,601 @@ class TestACPPromptRetry:
 
         assert call_count == 4
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_retry_on_acp_server_error_then_success(self, tmp_path):
+        """Retry succeeds after transient ACP server error (JSON-RPC -32603)."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ACPRequestError(-32603, "Internal Server Error")
+            mock_client.accumulated_text.append("Success after server error retry")
+            return MagicMock(usage=None)
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 2
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert (
+            "Success after server error retry" in events[0].llm_message.content[0].text
+        )
+
+    def test_no_retry_on_non_retriable_acp_error(self, tmp_path):
+        """Non-retriable ACP error codes fail immediately."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32600, "Invalid request")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with pytest.raises(ACPRequestError, match="Invalid request"):
+            agent.step(conversation, on_event=events.append)
+
+        assert call_count == 1  # No retry for non-retriable error codes
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_max_retries_exceeded_acp_server_error(self, tmp_path):
+        """ACP server error raised after max retries exhausted."""
+        from acp.exceptions import RequestError as ACPRequestError
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        call_count = 0
+
+        def _fake_run_async(_coro, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise ACPRequestError(-32603, "Internal Server Error")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent.time.sleep"):
+            with pytest.raises(ACPRequestError, match="Internal Server Error"):
+                agent.step(conversation, on_event=events.append)
+
+        # Default max retries is 3, so 4 total attempts
+        assert call_count == 4
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+
+# ---------------------------------------------------------------------------
+# Gemini-specific tests
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiBypassMode:
+    def test_gemini_cli_uses_yolo(self):
+        assert _resolve_bypass_mode("gemini-cli") == "yolo"
+
+    def test_gemini_cli_with_version(self):
+        assert _resolve_bypass_mode("gemini-cli/0.35.3") == "yolo"
+
+
+class TestGeminiSessionModel:
+    @pytest.mark.asyncio
+    async def test_gemini_cli_uses_protocol_model_override(self):
+        conn = AsyncMock()
+        await _maybe_set_session_model(
+            conn, "gemini-cli", "session-1", "gemini-3-flash"
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gemini-3-flash",
+            session_id="session-1",
+        )
+
+
+# ---------------------------------------------------------------------------
+# _extract_token_usage
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTokenUsage:
+    def test_from_response_usage(self):
+        """claude-agent-acp, codex-acp: standard response.usage field."""
+        response = MagicMock()
+        response.usage.input_tokens = 100
+        response.usage.output_tokens = 50
+        response.usage.cached_read_tokens = 10
+        response.usage.cached_write_tokens = 5
+        response.usage.thought_tokens = 20
+        assert _extract_token_usage(response) == (100, 50, 10, 5, 20)
+
+    def test_from_field_meta_quota(self):
+        """gemini-cli: _meta.quota.token_count fallback."""
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {
+            "quota": {"token_count": {"input_tokens": 200, "output_tokens": 80}}
+        }
+        assert _extract_token_usage(response) == (200, 80, 0, 0, 0)
+
+    def test_none_response(self):
+        assert _extract_token_usage(None) == (0, 0, 0, 0, 0)
+
+    def test_no_usage_no_meta(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = None
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+    def test_empty_quota(self):
+        response = MagicMock()
+        response.usage = None
+        response.field_meta = {"quota": {}}
+        assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# _estimate_cost_from_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateCostFromTokens:
+    def test_unknown_model_returns_zero(self):
+        assert _estimate_cost_from_tokens("nonexistent-model-xyz", 100, 50) == 0.0
+
+    def test_zero_tokens_returns_zero(self):
+        assert _estimate_cost_from_tokens("gemini-3-flash-preview", 0, 0) == 0.0
+
+    def test_known_model_returns_positive(self):
+        mock_cost_map = {
+            "gemini-3-flash-preview": {
+                "input_cost_per_token": 5e-07,
+                "output_cost_per_token": 3e-06,
+            }
+        }
+        mock_litellm = MagicMock()
+        mock_litellm.model_cost = mock_cost_map
+        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+            cost = _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500)
+            assert cost == pytest.approx(1000 * 5e-07 + 500 * 3e-06)
+
+    def test_import_failure_returns_zero(self):
+        with patch.dict("sys.modules", {"litellm": None}):
+            assert (
+                _estimate_cost_from_tokens("gemini-3-flash-preview", 1000, 500) == 0.0
+            )
+
+
+# ---------------------------------------------------------------------------
+# _serialize_tool_content
+# ---------------------------------------------------------------------------
+
+
+class TestSerializeToolContent:
+    def test_none_returns_none(self):
+        assert _serialize_tool_content(None) is None
+
+    def test_empty_list_returns_none(self):
+        assert _serialize_tool_content([]) is None
+
+    def test_pydantic_model(self):
+        model = MagicMock()
+        model.model_dump.return_value = {
+            "type": "diff",
+            "path": "a.py",
+            "old_text": "x",
+            "new_text": "y",
+        }
+        result = _serialize_tool_content([model])
+        assert result == [
+            {"type": "diff", "path": "a.py", "old_text": "x", "new_text": "y"}
+        ]
+        model.model_dump.assert_called_once_with(mode="json")
+
+    def test_plain_dict_passthrough(self):
+        d = {"type": "content", "text": "hello"}
+        result = _serialize_tool_content([d])
+        assert result == [d]
+
+    def test_mixed_content(self):
+        model = MagicMock()
+        model.model_dump.return_value = {"type": "diff", "path": "b.py"}
+        d = {"type": "content", "text": "world"}
+        result = _serialize_tool_content([model, d])
+        assert result == [{"type": "diff", "path": "b.py"}, d]
+
+
+# ---------------------------------------------------------------------------
+# ACP session resume via ConversationState.agent_state (issue #2867)
+# ---------------------------------------------------------------------------
+
+
+class TestACPSessionIdPersistence:
+    """Verify that the ACP session id is stashed in ``state.agent_state`` on
+    first launch and that _start_acp_server reads it back on resume to drive
+    load_session vs. new_session.
+    """
+
+    @staticmethod
+    def _transport_patches(conn):
+        """Context manager stacking the transport-layer mocks that let
+        _start_acp_server run without spawning a real subprocess.
+        """
+        from contextlib import ExitStack
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        stack = ExitStack()
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_create_subprocess_exec,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                return_value=conn,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                new=_fake_filter,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                return_value=MagicMock(),
+            )
+        )
+        return stack
+
+    @staticmethod
+    def _patched_start_acp_server(agent, state, *, conn):
+        """Invoke the real _start_acp_server with ACP transport layers mocked."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent._executor = AsyncExecutor()
+        with TestACPSessionIdPersistence._transport_patches(conn):
+            agent._start_acp_server(state)
+
+    @staticmethod
+    def _make_conn(
+        *,
+        new_session_id: str = "sess-new",
+        load_exc: Exception | None = None,
+    ):
+        conn = MagicMock()
+
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = []
+        conn.initialize = AsyncMock(return_value=init_response)
+
+        new_response = MagicMock()
+        new_response.session_id = new_session_id
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        if load_exc is not None:
+            conn.load_session = AsyncMock(side_effect=load_exc)
+        else:
+            conn.load_session = AsyncMock(return_value=MagicMock())
+
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    def test_fresh_state_has_no_session_id(self, tmp_path):
+        """A fresh ConversationState holds no session id under agent_state."""
+        state = _make_state(tmp_path)
+        assert "acp_session_id" not in state.agent_state
+
+    def test_first_launch_calls_new_session(self, tmp_path):
+        """Empty agent_state → _start_acp_server calls new_session only."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = self._make_conn(new_session_id="fresh-sess")
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.new_session.assert_awaited_once()
+        conn.load_session.assert_not_awaited()
+        assert agent._session_id == "fresh-sess"
+
+    def test_init_state_writes_session_id_into_agent_state(self, tmp_path):
+        """init_state lands the session id in state.agent_state so
+        ConversationState's base_state.json persistence carries it forward.
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        # Short-circuit _start_acp_server: pretend the ACP handshake ran and
+        # populated the runtime attrs that init_state reads afterwards.
+        def _fake_start(self, _state):
+            self._session_id = "end-to-end-sess"
+            self._agent_name = "claude-agent-acp"
+            self._agent_version = "1.0"
+
+        with patch.object(ACPAgent, "_start_acp_server", _fake_start):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert state.agent_state["acp_session_id"] == "end-to-end-sess"
+        assert state.agent_state["acp_agent_name"] == "claude-agent-acp"
+        assert state.agent_state["acp_agent_version"] == "1.0"
+
+    def test_resume_reads_session_id_from_agent_state(self, tmp_path):
+        """Prior session id in agent_state → load_session is called with it."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        _, kwargs = conn.load_session.call_args
+        assert kwargs["session_id"] == "stored-sess"
+        assert kwargs["cwd"] == str(tmp_path)
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "stored-sess"
+
+    def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
+        """ACPRequestError on load_session → new_session is called."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stale-sess"}
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert agent._session_id == "replacement-sess"
+
+    def test_session_id_not_on_serialized_agent(self):
+        """Session id must not leak onto the agent model — it lives in
+        ConversationState.agent_state, not on the frozen ACPAgent.
+        """
+        agent = _make_agent()
+        data = json.loads(agent.model_dump_json())
+        assert "acp_session_id" not in data
+        assert not hasattr(agent, "acp_session_id")
+
+    def test_init_state_writes_cwd_alongside_session_id(self, tmp_path):
+        """init_state records the cwd the session was created under so a later
+        resume can reject cwd mismatches (ACP keys persistence by cwd).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+
+        def _fake_start(self, _state):
+            self._session_id = "sess-123"
+            self._agent_name = "claude-agent-acp"
+            self._agent_version = "1.0"
+            self._working_dir = str(tmp_path)
+
+        with patch.object(ACPAgent, "_start_acp_server", _fake_start):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert state.agent_state["acp_session_id"] == "sess-123"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_cwd_mismatch_skips_load_and_calls_new_session(self, tmp_path, caplog):
+        """If the stored cwd differs from the current workspace cwd, resume
+        is skipped and new_session runs instead — so we never silently load
+        a session that the ACP server associated with a different directory.
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "old-sess",
+            "acp_session_cwd": "/some/other/place",
+        }
+        conn = self._make_conn(new_session_id="fresh-sess")
+
+        with caplog.at_level("WARNING"):
+            self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_not_awaited()
+        conn.new_session.assert_awaited_once()
+        assert agent._session_id == "fresh-sess"
+        assert any(
+            "cwd=/some/other/place" in rec.message and "differs" in rec.message
+            for rec in caplog.records
+        ), "expected a warning explaining the cwd mismatch"
+
+    def test_resume_without_stored_cwd_still_works(self, tmp_path):
+        """Legacy state written by an earlier version has acp_session_id but
+        no acp_session_cwd — resume should still proceed (best-effort).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "legacy-sess"}
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "legacy-sess"
+
+    def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
+        """When load_session fails and new_session runs, init_state must
+        overwrite state.agent_state['acp_session_id'] with the new id so
+        the next restart doesn't keep trying to resume the stale one.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stale-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
+        """load_session must be followed by the same set_session_model and
+        set_session_mode calls as new_session, so a resumed session honours
+        acp_model overrides and the bypass-permissions mode.
+        """
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        # Name the server "codex-acp" so _maybe_set_session_model routes
+        # acp_model through conn.set_session_model (claude-acp uses _meta,
+        # which only applies on new_session and so wouldn't exercise the
+        # protocol-level override on the resume path).
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="claude-opus-4-6",
+            session_id="stored-sess",
+        )
+        conn.set_session_mode.assert_awaited_once_with(
+            mode_id="full-access",
+            session_id="stored-sess",
+        )
+
+    def test_roundtrip_via_conversation_state_persistence(self, tmp_path):
+        """End-to-end round-trip through ConversationState persistence:
+
+        1. First Conversation with persistence_dir → init_state runs,
+           new_session is called, ``state.agent_state["acp_session_id"]`` is
+           written, autosave flushes ``base_state.json`` to disk.
+        2. Fresh ACPAgent + Conversation pointed at the same persistence_dir
+           and id → ConversationState.create() restores ``base_state.json``
+           so ``agent_state["acp_session_id"]`` survives; init_state on the
+           resumed state triggers ``load_session`` with that id.
+        """
+        import uuid as _uuid
+
+        from openhands.sdk.conversation import Conversation
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        persistence_dir = tmp_path / "persist"
+        conv_id = _uuid.uuid4()
+        workspace = tmp_path / "work"
+        workspace.mkdir()
+
+        conn1 = self._make_conn(new_session_id="roundtrip-sess")
+        agent1 = _make_agent()
+        agent1._executor = AsyncExecutor()
+        with self._transport_patches(conn1):
+            conv1 = Conversation(
+                agent=agent1,
+                workspace=str(workspace),
+                persistence_dir=str(persistence_dir),
+                conversation_id=conv_id,
+                delete_on_close=False,
+                visualizer=None,
+            )
+            conv1._ensure_agent_ready()
+            assert conv1.state.agent_state["acp_session_id"] == "roundtrip-sess"
+            conv1.close()
+
+        conn1.new_session.assert_awaited_once()
+        conn1.load_session.assert_not_awaited()
+
+        # Fresh ACPAgent with no runtime knowledge of the prior session.
+        conn2 = self._make_conn()
+        agent2 = _make_agent()
+        agent2._executor = AsyncExecutor()
+        with self._transport_patches(conn2):
+            conv2 = Conversation(
+                agent=agent2,
+                workspace=str(workspace),
+                persistence_dir=str(persistence_dir),
+                conversation_id=conv_id,
+                delete_on_close=True,
+                visualizer=None,
+            )
+            conv2._ensure_agent_ready()
+            # base_state.json restored the id into agent_state.
+            assert conv2.state.agent_state["acp_session_id"] == "roundtrip-sess"
+            conv2.close()
+
+        # Second launch took the load_session branch with the persisted id.
+        conn2.load_session.assert_awaited_once()
+        _, kwargs = conn2.load_session.call_args
+        assert kwargs["session_id"] == "roundtrip-sess"
+        assert kwargs["cwd"] == str(workspace)
+        conn2.new_session.assert_not_awaited()
+        assert agent2._session_id == "roundtrip-sess"

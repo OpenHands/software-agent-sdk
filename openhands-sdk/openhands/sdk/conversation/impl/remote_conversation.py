@@ -51,6 +51,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -94,11 +95,7 @@ def _send_request(
         response.raise_for_status()
         return response
     except httpx.HTTPStatusError as e:
-        content = None
-        try:
-            content = e.response.json()
-        except Exception:
-            content = e.response.text
+        content = http_error_log_content(e.response)
         logger.error(
             "HTTP request failed (%d %s): %s",
             e.response.status_code,
@@ -536,6 +533,12 @@ class RemoteState(ConversationStateProtocol):
         return info.get("activated_knowledge_skills", [])
 
     @property
+    def invoked_skills(self) -> list[str]:
+        """Names of progressive-disclosure skills explicitly invoked."""
+        info = self._get_conversation_info()
+        return info.get("invoked_skills", [])
+
+    @property
     def agent(self):
         """The agent configuration (fetched from remote)."""
         info = self._get_conversation_info()
@@ -631,6 +634,7 @@ class RemoteConversation(BaseConversation):
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
+        tags: dict[str, str] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -657,6 +661,8 @@ class RemoteConversation(BaseConversation):
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
             secrets: Optional secrets to initialize the conversation with
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -731,6 +737,8 @@ class RemoteConversation(BaseConversation):
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
                 # Include hook_config for server-side hooks
                 "hook_config": hook_config.model_dump() if hook_config else None,
+                # Include tags if provided
+                "tags": tags or {},
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -1167,7 +1175,11 @@ class RemoteConversation(BaseConversation):
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the remote conversation."""
-        payload = {"security_analyzer": analyzer.model_dump() if analyzer else analyzer}
+        payload = {
+            "security_analyzer": analyzer.model_dump(mode="json")
+            if analyzer
+            else analyzer
+        }
         _send_request(
             self._client,
             "POST",

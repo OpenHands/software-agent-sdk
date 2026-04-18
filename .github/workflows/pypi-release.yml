@@ -10,12 +10,18 @@ on:
 
 jobs:
     publish:
+        # Skip PyPI publishing for pre-releases (e.g., release candidates).
+        # Pre-releases can still be created on GitHub for testing without
+        # pushing packages to PyPI.  Manual workflow_dispatch always runs.
+        if: >
+            github.event_name == 'workflow_dispatch' ||
+            !github.event.release.prerelease
         runs-on: ubuntu-24.04
         outputs:
             version: ${{ steps.extract_version.outputs.version }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Extract version from release tag
               id: extract_version

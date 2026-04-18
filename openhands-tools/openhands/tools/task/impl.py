@@ -34,7 +34,6 @@ class TaskExecutor(ToolExecutor):
                 subagent_type=action.subagent_type,
                 description=action.description,
                 resume=action.resume,
-                max_turns=action.max_turns,
                 conversation=conversation,
             )
             match task.status:

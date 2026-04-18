@@ -30,6 +30,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.title_utils import (
+    extract_message_text,
+    generate_title_from_message,
+)
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
@@ -92,6 +96,21 @@ def _compose_webhook_conversation_info(
     if _is_v1_conversation(stored):
         return _compose_conversation_info_v1(stored, state)
     return _compose_acp_conversation_info(stored, state)
+
+
+def _update_state_tags_sync(
+    state: ConversationState, tags: dict[str, str]
+) -> ConversationState:
+    with state:
+        state.tags = tags
+    return state
+
+
+def _compose_webhook_conversation_info_sync(
+    stored: StoredConversation, state: ConversationState
+) -> ConversationInfo | ACPConversationInfo:
+    with state:
+        return _compose_webhook_conversation_info(stored, state)
 
 
 def _register_agent_definitions(
@@ -552,7 +571,7 @@ class ConversationService:
 
         Args:
             conversation_id: The ID of the conversation to update
-            request: Request object containing fields to update (e.g., title)
+            request: Request object containing fields to update (e.g., title, tags)
 
         Returns:
             bool: True if the conversation was updated successfully, False if not found
@@ -563,22 +582,37 @@ class ConversationService:
         if event_service is None:
             return False
 
-        # Update the title and timestamp in stored conversation
-        event_service.stored.title = request.title.strip()
+        loop = asyncio.get_running_loop()
+        state = await event_service.get_state()
+        if request.title is not None:
+            event_service.stored.title = request.title.strip()
+        if request.tags is not None:
+            event_service.stored.tags = request.tags
+            # Keep the persisted ConversationState update under the state lock so
+            # autosave and state-change callbacks observe a consistent mutation.
+            state = await loop.run_in_executor(
+                None, _update_state_tags_sync, state, request.tags
+            )
         event_service.stored.updated_at = utc_now()
         # Save the updated metadata to disk
         await event_service.save_meta()
 
-        # Notify conversation webhooks about the updated conversation
-        state = await event_service.get_state()
-        conversation_info = _compose_webhook_conversation_info(
-            event_service.stored, state
+        # Notify conversation webhooks about the updated conversation. Compose the
+        # full-state snapshot under the state lock, but do the synchronous wait in a
+        # worker thread so metadata updates cannot block the FastAPI event loop.
+        conversation_info = await loop.run_in_executor(
+            None, _compose_webhook_conversation_info_sync, event_service.stored, state
         )
         await self._notify_conversation_webhooks(conversation_info)
 
+        updated_fields = []
+        if request.title is not None:
+            updated_fields.append(f"title: {request.title}")
+        if request.tags is not None:
+            updated_fields.append(f"tags: {request.tags}")
         logger.info(
             f"Successfully updated conversation {conversation_id} "
-            f"with title: {request.title}"
+            f"with {', '.join(updated_fields)}"
         )
         return True
 
@@ -786,10 +820,25 @@ class AutoTitleSubscriber(Subscriber):
         if self.service.stored.title is not None:
             return
 
+        # Extract the message text now, before spawning the background task,
+        # to avoid a race where the event hasn't been persisted to the events
+        # list yet when title generation tries to read it.
+        message_text = extract_message_text(event)
+        if not message_text:
+            return
+
+        title_llm = self._load_title_llm()
+
         async def _generate_and_save() -> None:
             try:
-                title_llm = self._load_title_llm()
-                title = await self.service.generate_title(llm=title_llm)
+                loop = asyncio.get_running_loop()
+                title = await loop.run_in_executor(
+                    None,
+                    generate_title_from_message,
+                    message_text,
+                    title_llm,
+                    50,
+                )
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
                     self.service.stored.updated_at = utc_now()
@@ -807,8 +856,10 @@ class AutoTitleSubscriber(Subscriber):
         """Load the LLM for title generation from profile store.
 
         Returns:
-            LLM instance if title_llm_profile is configured, None otherwise.
-            If profile loading fails, returns None to fall back to agent.llm.
+            LLM instance if title_llm_profile is configured and loads
+            successfully, None otherwise. When None is returned, title
+            generation falls back to simple message truncation (title
+            generation is decoupled from the agent's LLM).
         """
         profile_name = self.service.stored.title_llm_profile
         if not profile_name:
@@ -822,7 +873,7 @@ class AutoTitleSubscriber(Subscriber):
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
                 f"Failed to load title LLM profile '{profile_name}': {e}. "
-                "Falling back to agent's LLM."
+                "Falling back to message truncation."
             )
             return None
 

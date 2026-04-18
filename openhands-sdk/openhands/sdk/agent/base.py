@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    model_validator,
 )
 
 from openhands.sdk.context.agent_context import AgentContext
@@ -30,7 +31,7 @@ from openhands.sdk.tool import (
     ToolDefinition,
     resolve_tool,
 )
-from openhands.sdk.utils.deprecation import deprecated
+from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -136,6 +137,19 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
+    system_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Inline system prompt string.  When provided, the agent uses this "
+            "text verbatim as the system message instead of rendering from "
+            "`system_prompt_filename`.  Mutually exclusive with a non-default "
+            "`system_prompt_filename`.\n\n"
+            "**Warning**: This is not recommended unless you know what you are "
+            "doing (e.g. customising agent behaviour for a completely different "
+            "task).  Setting this will override OpenHands' built-in system "
+            "instructions that govern default agent behaviour."
+        ),
+    )
     system_prompt_filename: str = Field(
         default="system_prompt.j2",
         description=(
@@ -151,7 +165,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "Security policy template filename. Can be either:\n"
             "- A relative filename (e.g., 'security_policy.j2') loaded from the "
             "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+            "- Empty string to disable security policy"
         ),
     )
     system_prompt_kwargs: dict[str, object] = Field(
@@ -159,6 +174,28 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
         examples=[{"cli_mode": True}],
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_system_prompt_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if (
+            "security_policy_filename" in data
+            and data["security_policy_filename"] is None
+        ):
+            data["security_policy_filename"] = ""
+        has_inline = data.get("system_prompt") is not None
+        has_custom_filename = (
+            "system_prompt_filename" in data
+            and data["system_prompt_filename"] != "system_prompt.j2"
+        )
+        if has_inline and has_custom_filename:
+            raise ValueError(
+                "Cannot set both 'system_prompt' and a non-default "
+                "'system_prompt_filename'. Use one or the other."
+            )
+        return data
 
     condenser: CondenserBase | None = Field(
         default=None,
@@ -187,6 +224,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         examples=[{"kind": "AgentFinishedCritic"}],
     )
 
+    tool_concurrency_limit: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of tool calls to execute concurrently within a single "
+            "agent step. Default is 1 (sequential). Values > 1 enable parallel "
+            "execution; concurrent tools share the conversation object, filesystem, "
+            "and working directory, so mutations to shared state may race."
+        ),
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -213,10 +261,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
+        When ``system_prompt`` is set, that string is returned verbatim,
+        bypassing Jinja2 template rendering entirely.
+
         Returns:
             The rendered system prompt template without dynamic context.
         """
+        if self.system_prompt is not None:
+            return self.system_prompt
+
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Auto-detect browser tools from the tool spec list
+        template_kwargs.setdefault(
+            "enable_browser",
+            any(t.name == "browser_tool_set" for t in self.tools),
+        )
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
@@ -260,41 +319,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             llm_model=self.llm.model,
             llm_model_canonical=self.llm.model_canonical_name,
         )
-
-    @property
-    @deprecated(
-        deprecated_in="1.11.0",
-        removed_in="1.16.0",
-        details=(
-            "Use static_system_message for the cacheable system prompt and "
-            "dynamic_context for per-conversation content. Using system_message "
-            "DISABLES cross-conversation prompt caching because it combines static "
-            "and dynamic content into a single string."
-        ),
-    )
-    def system_message(self) -> str:
-        """Return the combined system message (static + dynamic).
-
-        .. deprecated:: 1.11.0
-            Use :attr:`static_system_message` for the cacheable system prompt and
-            :attr:`dynamic_context` for per-conversation content. This separation
-            enables cross-conversation prompt caching. Will be removed in 1.16.0.
-
-        .. warning::
-            Using this property DISABLES cross-conversation prompt caching because
-            it combines static and dynamic content into a single string. Use
-            :attr:`static_system_message` and :attr:`dynamic_context` separately
-            to enable caching.
-        """
-        logger.warning(
-            "Accessing system_message property disables cross-conversation prompt "
-            "caching. Use static_system_message and dynamic_context separately."
-        )
-        system_message = self.static_system_message
-        dynamic = self.dynamic_context
-        if dynamic:
-            system_message += "\n\n" + dynamic
-        return system_message
 
     def init_state(
         self,
@@ -351,7 +375,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Include default tools from include_default_tools; not subject to regex
         # filtering. Use explicit mapping to resolve tool class names.
-        for tool_name in self.include_default_tools:
+        # Auto-attach `InvokeSkillTool` iff an AgentSkills-format skill is
+        # loaded and the user hasn't already opted in explicitly.
+        has_agentskills = bool(
+            self.agent_context
+            and any(s.is_agentskills_format for s in self.agent_context.skills)
+        )
+        default_tool_names = list(self.include_default_tools)
+        if has_agentskills and InvokeSkillTool.__name__ not in default_tool_names:
+            default_tool_names.append(InvokeSkillTool.__name__)
+            logger.debug(
+                "Auto-attached %s (AgentSkills-format skill present in agent_context)",
+                InvokeSkillTool.__name__,
+            )
+
+        for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
                 raise ValueError(

@@ -26,6 +26,7 @@ from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
     split_bash_commands,
 )
+from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
 
 
 logger = get_logger(__name__)
@@ -79,6 +80,24 @@ class TerminalSession(TerminalSessionBase):
         # Store the last command for interactive input handling
         self.prev_status = None
         self.prev_output = ""
+        # Stateful filter for terminal query sequences (handles split sequences)
+        self._query_filter = TerminalQueryFilter()
+
+    @classmethod
+    def attach_to_existing(
+        cls,
+        terminal: TerminalInterface,
+        no_change_timeout_seconds: int | None = None,
+    ) -> "TerminalSession":
+        """Create a TerminalSession for an already-initialized terminal.
+
+        Use this instead of ``__init__`` + ``initialize()`` when the
+        terminal has already been set up (e.g. by a pane pool) and
+        calling ``initialize()`` again would create a duplicate session.
+        """
+        session = cls(terminal, no_change_timeout_seconds)
+        session._initialized = True
+        return session
 
     def initialize(self) -> None:
         """Initialize the terminal backend."""
@@ -119,8 +138,22 @@ class TerminalSession(TerminalSessionBase):
         raw_command_output: str,
         metadata: CmdOutputMetadata,
         continue_prefix: str = "",
+        is_final: bool = False,
     ) -> str:
-        """Get the command output with the previous command output removed."""
+        """Get the command output with the previous command output removed.
+
+        Also filters terminal query sequences that could cause visible escape
+        code garbage when the output is displayed. Uses stateful filtering to
+        handle escape sequences that may be split across incremental outputs.
+        See: https://github.com/OpenHands/software-agent-sdk/issues/2244
+
+        Args:
+            command: The command being executed
+            raw_command_output: Raw output from terminal
+            metadata: Output metadata to populate
+            continue_prefix: Prefix for continuation output
+            is_final: If True, flush any pending filter state (command completed)
+        """
         # remove the previous command output from the new output if any
         if self.prev_output:
             command_output = raw_command_output.removeprefix(self.prev_output)
@@ -129,6 +162,15 @@ class TerminalSession(TerminalSessionBase):
             command_output = raw_command_output
         self.prev_output = raw_command_output  # update current command output anyway
         command_output = _remove_command_prefix(command_output, command)
+
+        # Filter terminal query sequences that would cause the terminal to
+        # respond when displayed, producing visible garbage.
+        # The filter is stateful to handle sequences split across chunks.
+        command_output = self._query_filter.filter(command_output)
+        if is_final:
+            # Flush any pending bytes when command completes
+            command_output += self._query_filter.flush()
+
         return command_output.rstrip()
 
     def _handle_completed_command(
@@ -184,6 +226,7 @@ class TerminalSession(TerminalSessionBase):
             command,
             raw_command_output,
             metadata,
+            is_final=True,  # Command completed, flush filter state
         )
         command_output = maybe_truncate(
             command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
@@ -191,6 +234,7 @@ class TerminalSession(TerminalSessionBase):
 
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""  # Reset previous command output
+        self._query_filter.reset()  # Reset filter for next command
         self._ready_for_next_command()
         return TerminalObservation.from_text(
             command=command,
