@@ -59,8 +59,16 @@ def test_mcp_tool_serialization():
     assert loaded.model_dump_json() == dumped
 
 
-def test_agent_serialization_should_include_mcp_tool() -> None:
-    # Create a simple LLM instance and agent with empty tools
+def test_agent_serialization_excludes_mcp_config_for_security() -> None:
+    """Test that mcp_config is excluded from serialization for security.
+    
+    mcp_config may contain expanded secrets (e.g., API tokens in env vars)
+    after variable expansion. To prevent secret leakage to disk, WebSocket,
+    and API responses, mcp_config is excluded from serialization by default.
+    
+    See: https://github.com/OpenHands/software-agent-sdk/pull/2873
+    """
+    # Create a simple LLM instance and agent with mcp_config
     llm = LLM(model="test-model", usage_id="test-llm")
     mcp_config = {
         "mcpServers": {
@@ -69,17 +77,22 @@ def test_agent_serialization_should_include_mcp_tool() -> None:
     }
     agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
 
-    # Serialize to JSON (excluding non-serializable fields)
-    agent_dump = agent.model_dump()
-    assert agent_dump.get("mcp_config") == mcp_config
-    agent_json = agent.model_dump_json()
+    # mcp_config should be accessible in memory
+    assert agent.mcp_config == mcp_config
 
-    # Deserialize from JSON using the base class
+    # But should be EXCLUDED from serialization
+    agent_dump = agent.model_dump()
+    assert agent_dump.get("mcp_config") is None, (
+        "mcp_config should be excluded from serialization to prevent secret leakage"
+    )
+
+    # Serialization round-trip should work (mcp_config defaults to empty dict)
+    agent_json = agent.model_dump_json()
     deserialized_agent = AgentBase.model_validate_json(agent_json)
 
-    # Should deserialize to the correct type and have same core fields
     assert isinstance(deserialized_agent, Agent)
-    assert deserialized_agent.model_dump_json() == agent.model_dump_json()
+    # Deserialized agent has default empty mcp_config (not the original)
+    assert deserialized_agent.mcp_config == {}
 
 
 def test_agent_supports_polymorphic_field_json_serialization() -> None:
