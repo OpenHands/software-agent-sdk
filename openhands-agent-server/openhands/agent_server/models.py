@@ -329,7 +329,7 @@ class ForkConversationRequest(BaseModel):
         ),
     )
     reset_metrics: bool = Field(
-        default=True,
+        default=False,
         description=(
             "If true, cost/token stats start fresh on the fork. "
             "If false, metrics are copied from the source."
