@@ -151,6 +151,14 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
             shutil.rmtree(cwd_conversations)
 
 
+def test_health_endpoints_return_ok_json(server_env):
+    with httpx.Client() as client:
+        for endpoint in ("/alive", "/health"):
+            response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+
+
 @pytest.fixture
 def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch LLM.completion to a deterministic assistant message response."""

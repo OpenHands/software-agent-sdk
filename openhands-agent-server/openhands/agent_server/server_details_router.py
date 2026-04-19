@@ -71,9 +71,9 @@ async def alive():
 
 
 @server_details_router.get("/health")
-async def health() -> str:
+async def health() -> dict[str, str]:
     """Basic health check - returns OK if the server process is running."""
-    return "OK"
+    return {"status": "ok"}
 
 
 @server_details_router.get("/ready")
