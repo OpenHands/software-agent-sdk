@@ -1,5 +1,4 @@
 import atexit
-import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -375,19 +374,24 @@ class LocalConversation(BaseConversation):
                 tags=tags,
             )
 
-            # Deep-copy events from source → fork so the source stays
-            # immutable.
-            for event in self._state.events:
-                fork_conv._state.events.append(event.model_copy(deep=True))
-
-            # Copy runtime state that accumulated during the source
-            # conversation. activated_knowledge_skills is list[str] – strings
-            # are immutable so a shallow list copy is sufficient.
-            # agent_state can hold arbitrary mutable values, so deep-copy it.
-            fork_conv._state.activated_knowledge_skills = list(
-                self._state.activated_knowledge_skills
+            # Delegate deep-copy semantics to ConversationState.snapshot().
+            # Use the fork's own FileStore so events are persisted to the
+            # correct directory.
+            cloned = self._state.snapshot(
+                conversation_id=fork_id,
+                file_store=fork_conv._state._fs,
+                reset_metrics=reset_metrics,
             )
-            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+
+            # Adopt the cloned EventLog (already backed by fork's FileStore)
+            # and runtime state fields from the clone.
+            fork_conv._state._events = cloned._events
+            fork_conv._state.activated_knowledge_skills = (
+                cloned.activated_knowledge_skills
+            )
+            fork_conv._state.invoked_skills = cloned.invoked_skills
+            fork_conv._state.agent_state = cloned.agent_state
+            fork_conv._state.stats = cloned.stats
 
             # Copy title via tags if provided
             if title is not None:
@@ -395,10 +399,6 @@ class LocalConversation(BaseConversation):
                     **fork_conv._state.tags,
                     "title": title,
                 }
-
-            # Reset or copy metrics
-            if not reset_metrics:
-                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
 
             event_count = len(self._state.events)
 

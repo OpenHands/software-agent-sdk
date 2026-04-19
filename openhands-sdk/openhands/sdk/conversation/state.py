@@ -1,4 +1,5 @@
 # state.py
+import copy
 import json
 from collections.abc import Sequence
 from enum import Enum
@@ -254,6 +255,86 @@ class ConversationState(OpenHandsModel):
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
         fs.write(BASE_STATE, payload)
+
+    # ===== State cloning =====
+    def snapshot(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        file_store: FileStore | None = None,
+        reset_metrics: bool = False,
+    ) -> "ConversationState":
+        """Create an independent copy of this state with its own identity.
+
+        Field-by-field copy semantics:
+        - **events**: deep-copied via ``event.model_copy(deep=True)``
+        - **agent_state**: deep-copied via ``copy.deepcopy()``
+        - **stats**: ``model_copy(deep=True)`` unless *reset_metrics* is set
+        - **activated_knowledge_skills**, **invoked_skills**: shallow list
+          copy (immutable ``str`` elements)
+        - **tags**, **blocked_actions**, **blocked_messages**: shallow dict
+          copy (immutable ``str`` keys/values)
+        - **agent**, **workspace**, **confirmation_policy**,
+          **security_analyzer**, **hook_config**: shared references
+          (immutable Pydantic models or config objects)
+        - Private attrs (``_lock``, ``_on_state_change``) get fresh defaults;
+          ``_cipher`` is shared.
+
+        Args:
+            conversation_id: ID for the new state.  Auto-generated UUID if
+                ``None``.
+            file_store: ``FileStore`` backing the new state's event log and
+                persistence.  Falls back to an ``InMemoryFileStore`` when
+                ``None``.
+            reset_metrics: When ``True`` (default ``False``), the copy starts
+                with fresh ``ConversationStats``.
+
+        Returns:
+            A new ``ConversationState`` that is independent of the source.
+        """
+        import uuid
+
+        new_id = conversation_id if conversation_id is not None else uuid.uuid4()
+        fs = file_store or InMemoryFileStore()
+
+        new_state = type(self)(
+            id=new_id,
+            agent=self.agent,
+            workspace=self.workspace,
+            persistence_dir=self.persistence_dir,
+            max_iterations=self.max_iterations,
+            stuck_detection=self.stuck_detection,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=self.confirmation_policy,
+            security_analyzer=self.security_analyzer,
+            activated_knowledge_skills=list(self.activated_knowledge_skills),
+            invoked_skills=list(self.invoked_skills),
+            blocked_actions=dict(self.blocked_actions),
+            blocked_messages=dict(self.blocked_messages),
+            last_user_message_id=self.last_user_message_id,
+            stats=(
+                ConversationStats()
+                if reset_metrics
+                else self.stats.model_copy(deep=True)
+            ),
+            secret_registry=self.secret_registry,
+            tags=dict(self.tags),
+            agent_state=copy.deepcopy(self.agent_state),
+            hook_config=self.hook_config,
+        )
+
+        # Private attrs
+        new_state._fs = fs
+        new_state._events = EventLog(fs, dir_path=EVENTS_DIR)
+        new_state._cipher = self._cipher
+
+        # Deep-copy events into the new event log
+        for event in self._events:
+            new_state._events.append(event.model_copy(deep=True))
+
+        new_state._save_base_state(fs)
+        new_state._autosave_enabled = True
+        return new_state
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
