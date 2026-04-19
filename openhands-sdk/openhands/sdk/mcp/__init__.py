@@ -7,12 +7,14 @@ from openhands.sdk.mcp.tool import (
     MCPToolDefinition,
     MCPToolExecutor,
 )
+from openhands.sdk.mcp.merge import merge_mcp_configs
 from openhands.sdk.mcp.utils import (
     create_mcp_tools,
 )
 
 
 __all__ = [
+    "merge_mcp_configs",
     "MCPClient",
     "MCPToolDefinition",
     "MCPToolAction",

@@ -2,6 +2,7 @@ import atexit
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
@@ -42,6 +43,8 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.mcp.merge import merge_mcp_configs
+from openhands.sdk.mcp.project_config import load_project_mcp_config
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -78,6 +81,7 @@ class LocalConversation(BaseConversation):
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
+    _trust_project_mcp: bool
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -106,6 +110,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        trust_project_mcp: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -147,6 +152,9 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            trust_project_mcp: When True, load ``.openhands/.mcp.json`` or root
+                ``.mcp.json`` from the workspace and merge under user/agent MCP
+                settings.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -160,6 +168,7 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
+        self._trust_project_mcp = trust_project_mcp
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -307,6 +316,25 @@ class LocalConversation(BaseConversation):
         """
         return self._resolved_plugins
 
+    def _load_project_mcp_config(self) -> dict[str, Any] | None:
+        """Load project ``.mcp.json`` if trusted; update agent when merged differs.
+
+        Call only while holding ``self._state`` (same thread as other agent updates).
+        """
+        if not self._trust_project_mcp:
+            return None
+
+        project_dir = Path(self.workspace.working_dir)
+        project_mcp = load_project_mcp_config(project_dir)
+        if project_mcp is None:
+            return None
+
+        merged = merge_mcp_configs(project_mcp, self.agent.mcp_config)
+        if merged != self.agent.mcp_config:
+            self.agent = self.agent.model_copy(update={"mcp_config": merged})
+            self._state.agent = self.agent
+        return merged
+
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
 
@@ -328,14 +356,14 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
+        merged_mcp = dict(self.agent.mcp_config)
+
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
 
-            # Start with agent's existing context and MCP config
             merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -443,10 +471,11 @@ class LocalConversation(BaseConversation):
         Performs one-time lazy initialization on the first `send_message()`
         or `run()` call.  The steps executed (in order) are:
 
-        1. Load plugins (merges skills, MCP config, and hooks).
-        2. Register file-based agents into the agent registry.
-        3. Initialize the agent with complete plugin config and hooks.
-        4. Register LLMs in the LLM registry.
+        1. Load project MCP config when trusted (merges under user settings).
+        2. Load plugins (merges skills, MCP config, and hooks).
+        3. Register file-based agents into the agent registry.
+        4. Initialize the agent with complete configuration and hooks.
+        5. Register LLMs in the LLM registry.
 
         This preserves the design principle that constructors should not perform
         I/O or error-prone operations, while eliminating double initialization.
@@ -467,7 +496,7 @@ class LocalConversation(BaseConversation):
             if self._agent_ready:
                 return
 
-            # Load plugins first (merges skills, MCP config, hooks)
+            self._load_project_mcp_config()
             self._ensure_plugins_loaded()
 
             # register file-based agents

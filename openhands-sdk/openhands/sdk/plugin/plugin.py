@@ -16,12 +16,6 @@ from openhands.sdk.plugin.types import (
     PluginAuthor,
     PluginManifest,
 )
-from openhands.sdk.skills.skill import Skill
-from openhands.sdk.skills.utils import (
-    discover_skill_resources,
-    find_skill_md,
-    load_mcp_config,
-)
 from openhands.sdk.subagent.schema import AgentDefinition
 
 
@@ -201,36 +195,24 @@ class Plugin(BaseModel):
         if base_config is None and plugin_config is None:
             return {}
         if base_config is None:
-            return dict(plugin_config) if plugin_config else {}
+            return dict(plugin_config) if plugin_config is not None else {}
         if plugin_config is None:
             return dict(base_config)
 
-        # Shallow copy to avoid mutating inputs
-        result = dict(base_config)
-
-        # Merge mcpServers by server name (Claude Code compatible behavior)
         if "mcpServers" in plugin_config:
-            existing_servers = result.get("mcpServers", {})
+            existing_servers = base_config.get("mcpServers", {})
             for server_name in plugin_config["mcpServers"]:
                 if server_name in existing_servers:
                     logger.warning(
                         f"Plugin MCP server '{server_name}' overrides existing server"
                     )
-            result["mcpServers"] = {
-                **existing_servers,
-                **plugin_config["mcpServers"],
-            }
-
-        # Other top-level keys: plugin wins (shallow override)
         for key, value in plugin_config.items():
-            if key != "mcpServers":
-                if key in result:
-                    logger.warning(
-                        f"Plugin MCP config key '{key}' overrides existing value"
-                    )
-                result[key] = value
+            if key != "mcpServers" and key in base_config:
+                logger.warning(
+                    f"Plugin MCP config key '{key}' overrides existing value"
+                )
 
-        return result
+        return merge_mcp_configs(base_config, plugin_config)
 
     @classmethod
     def fetch(
