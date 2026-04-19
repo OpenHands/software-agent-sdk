@@ -330,7 +330,7 @@ class LocalConversation(BaseConversation):
                 source agent.
             title: Optional title for the forked conversation.
             tags: Optional tags for the forked conversation.
-            reset_metrics: If ``True``, cost/token stats start
+            reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
 
         Returns:
