@@ -32,6 +32,13 @@ def test_alive_and_health_return_ok_status(client):
         assert response.json() == {"status": "ok"}
 
 
+def test_health_accepts_text_plain_for_backward_compatibility(client):
+    response = client.get("/health", headers={"accept": "text/plain"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "OK"
+
+
 def test_ready_returns_503_before_init(client):
     """The /ready endpoint should return 503 while initialization is not complete."""
     response = client.get("/ready")

@@ -4,7 +4,8 @@ import sys
 import time
 from importlib.metadata import version
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +20,10 @@ def _package_version(dist_name: str) -> str:
         return version(dist_name)
     except Exception:
         return "unknown"
+
+
+class HealthStatus(BaseModel):
+    status: str
 
 
 class ServerInfo(BaseModel):
@@ -65,15 +70,18 @@ def mark_initialization_complete() -> None:
 
 
 @server_details_router.get("/alive")
-async def alive():
+async def alive() -> HealthStatus:
     """Basic liveness check - returns OK if the server process is running."""
-    return {"status": "ok"}
+    return HealthStatus(status="ok")
 
 
-@server_details_router.get("/health")
-async def health() -> dict[str, str]:
+@server_details_router.get("/health", response_model=str | HealthStatus)
+async def health(request: Request) -> Response | HealthStatus:
     """Basic health check - returns OK if the server process is running."""
-    return {"status": "ok"}
+    accept = request.headers.get("accept", "")
+    if "text/plain" in accept and "application/json" not in accept:
+        return PlainTextResponse("OK")
+    return HealthStatus(status="ok")
 
 
 @server_details_router.get("/ready")
