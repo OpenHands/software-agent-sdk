@@ -315,7 +315,7 @@ class LocalConversation(BaseConversation):
         agent: AgentBase | None = None,
         title: str | None = None,
         tags: dict[str, str] | None = None,
-        reset_metrics: bool = True,
+        reset_metrics: bool = False,
     ) -> "LocalConversation":
         """Deep-copy this conversation with a new ID.
 
