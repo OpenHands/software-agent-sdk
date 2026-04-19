@@ -81,22 +81,6 @@ class MessageToolCall(BaseModel):
             origin="responses",
         )
 
-    def _safe_arguments(self) -> str:
-        """Return arguments as a valid JSON string.
-
-        LLMs may produce malformed JSON in tool call arguments. When
-        these invalid arguments are included in conversation history,
-        some inference servers (e.g. llama-server) reject the entire
-        prompt because they try to parse the arguments field. This
-        method ensures the serialized value is always valid JSON so the
-        conversation can continue.
-        """
-        try:
-            json.loads(self.arguments)
-            return self.arguments
-        except (json.JSONDecodeError, TypeError):
-            return "{}"
-
     def to_chat_dict(self) -> dict[str, Any]:
         """Serialize to OpenAI Chat Completions tool_calls format."""
         return {
@@ -104,7 +88,7 @@ class MessageToolCall(BaseModel):
             "type": "function",
             "function": {
                 "name": self.name,
-                "arguments": self._safe_arguments(),
+                "arguments": self.arguments,
             },
         }
 
@@ -112,12 +96,18 @@ class MessageToolCall(BaseModel):
         """Serialize to OpenAI Responses 'function_call' input item format."""
         # Responses requires ids to begin with 'fc'
         resp_id = self.id if str(self.id).startswith("fc") else f"fc_{self.id}"
+        # Responses requires arguments to be a JSON string
+        args_str = (
+            self.arguments
+            if isinstance(self.arguments, str)
+            else json.dumps(self.arguments)
+        )
         return {
             "type": "function_call",
             "id": resp_id,
             "call_id": resp_id,
             "name": self.name,
-            "arguments": self._safe_arguments(),
+            "arguments": args_str,
         }
 
 

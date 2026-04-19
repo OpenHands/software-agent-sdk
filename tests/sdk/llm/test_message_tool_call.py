@@ -95,47 +95,10 @@ def test_to_responses_dict_prefix_and_stringify_arguments():
     d2 = mtc2.to_responses_dict()
     assert d2["id"] == "fc_99" and d2["call_id"] == "fc_99"
 
-
-def test_malformed_arguments_sanitized_in_to_chat_dict():
-    """Malformed JSON arguments must be replaced with '{}' in to_chat_dict.
-
-    llama-server (and potentially other inference backends) parse the
-    arguments field of tool calls in conversation history. If the arguments
-    are invalid JSON, the server rejects the entire prompt causing an
-    infinite retry loop (see issue #2887).
-    """
-    malformed = '{"command":"create","path":"/tmp/x","file_text":"unterminated'
-    mtc = MessageToolCall(
-        id="call_bad", name="file_editor", arguments=malformed, origin="completion"
+    # Ensure dict arguments are stringified
+    mtc3 = MessageToolCall.model_construct(
+        id="5", name="do", arguments={"a": 1}, origin="responses"
     )
-    d = mtc.to_chat_dict()
-    # Must be valid JSON
-    args_str = d["function"]["arguments"]
-    parsed = json.loads(args_str)
-    assert isinstance(parsed, dict)
-    assert args_str == "{}"
-
-
-def test_malformed_arguments_sanitized_in_to_responses_dict():
-    """Same as above but for the Responses API serialization path."""
-    malformed = '{"key": "value'
-    mtc = MessageToolCall(
-        id="fc_bad", name="tool", arguments=malformed, origin="responses"
-    )
-    d = mtc.to_responses_dict()
-    parsed = json.loads(d["arguments"])
-    assert isinstance(parsed, dict)
-    assert d["arguments"] == "{}"
-
-
-def test_valid_arguments_unchanged_in_serialization():
-    """Valid JSON arguments must pass through untouched."""
-    valid = json.dumps({"command": "view", "path": "/tmp"})
-    mtc = MessageToolCall(
-        id="call_ok", name="file_editor", arguments=valid, origin="completion"
-    )
-    assert mtc.to_chat_dict()["function"]["arguments"] == valid
-    mtc2 = MessageToolCall(
-        id="fc_ok", name="file_editor", arguments=valid, origin="responses"
-    )
-    assert mtc2.to_responses_dict()["arguments"] == valid
+    d3 = mtc3.to_responses_dict()
+    assert isinstance(d3["arguments"], str)
+    assert json.loads(d3["arguments"]) == {"a": 1}
