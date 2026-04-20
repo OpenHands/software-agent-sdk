@@ -305,35 +305,33 @@ class ConversationState(OpenHandsModel):
         new_id = conversation_id if conversation_id is not None else uuid.uuid4()
         fs = file_store or InMemoryFileStore()
 
-        # Base field values with proper copy semantics.
-        defaults: dict[str, Any] = {
-            "id": new_id,
-            "agent": self.agent,
-            "workspace": self.workspace,
-            "persistence_dir": self.persistence_dir,
-            "max_iterations": self.max_iterations,
-            "stuck_detection": self.stuck_detection,
-            "execution_status": ConversationExecutionStatus.IDLE,
-            "confirmation_policy": self.confirmation_policy,
-            "security_analyzer": self.security_analyzer,
-            "activated_knowledge_skills": list(self.activated_knowledge_skills),
-            "invoked_skills": list(self.invoked_skills),
-            "blocked_actions": dict(self.blocked_actions),
-            "blocked_messages": dict(self.blocked_messages),
-            "last_user_message_id": self.last_user_message_id,
-            "stats": (
-                ConversationStats()
-                if reset_metrics
-                else self.stats.model_copy(deep=True)
-            ),
-            "secret_registry": self.secret_registry,
-            "tags": dict(self.tags),
-            "agent_state": copy.deepcopy(self.agent_state),
-            "hook_config": self.hook_config,
+        # Start from all current field values (shared references by
+        # default — safe for immutable Pydantic models).  Then apply
+        # field-specific copy semantics where mutability requires it.
+        fields: dict[str, Any] = {
+            name: getattr(self, name) for name in type(self).model_fields
         }
-        defaults.update(overrides)
 
-        new_state = type(self)(**defaults)
+        # Identity & execution
+        fields["id"] = new_id
+        fields["execution_status"] = ConversationExecutionStatus.IDLE
+
+        # Deep-copied mutable data
+        fields["agent_state"] = copy.deepcopy(self.agent_state)
+        fields["stats"] = (
+            ConversationStats() if reset_metrics else self.stats.model_copy(deep=True)
+        )
+
+        # Shallow-copied collections (immutable str elements)
+        for list_field in ("activated_knowledge_skills", "invoked_skills"):
+            fields[list_field] = list(fields[list_field])
+        for dict_field in ("blocked_actions", "blocked_messages", "tags"):
+            fields[dict_field] = dict(fields[dict_field])
+
+        # Caller overrides replace values outright.
+        fields.update(overrides)
+
+        new_state = type(self)(**fields)
 
         # Private attrs
         new_state._fs = fs
