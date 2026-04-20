@@ -1414,12 +1414,13 @@ class RemoteConversation(BaseConversation):
         observation_data = result.get("observation", {})
         is_error = result.get("is_error", False)
 
-        # Extract text from the observation data
-        text = observation_data.get("text", "")
-        if not text:
-            content = observation_data.get("content", [])
-            if content and isinstance(content, list):
-                text = content[0].get("text", "") if content else ""
+        # Server returns observation.model_dump(mode="json") which has:
+        #   {"content": [{"text": "...", "kind": "text"}, ...], "is_error": bool}
+        # Extract text from the content array.
+        text = ""
+        content = observation_data.get("content", [])
+        if content and isinstance(content, list) and len(content) > 0:
+            text = content[0].get("text", "")
 
         # Use a concrete subclass since Observation is abstract
         class _RemoteObservation(Observation):
