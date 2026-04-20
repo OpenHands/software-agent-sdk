@@ -264,75 +264,76 @@ class ConversationState(OpenHandsModel):
         conversation_id: ConversationID | None = None,
         file_store: FileStore | None = None,
         reset_metrics: bool = False,
-        agent: AgentBase | None = None,
-        persistence_dir: str | None = None,
-        tags: dict[str, str] | None = None,
+        **overrides: Any,
     ) -> "ConversationState":
         """Create an independent copy of this state with its own identity.
 
-        Field-by-field copy semantics:
-        - **events**: deep-copied via ``event.model_copy(deep=True)``
-        - **agent_state**: deep-copied via ``copy.deepcopy()``
-        - **stats**: ``model_copy(deep=True)`` unless *reset_metrics* is set
-        - **activated_knowledge_skills**, **invoked_skills**: shallow list
-          copy (immutable ``str`` elements)
-        - **tags**, **blocked_actions**, **blocked_messages**: shallow dict
-          copy (immutable ``str`` keys/values)
-        - **agent**, **workspace**, **confirmation_policy**,
-          **security_analyzer**, **hook_config**: shared references
-          (immutable Pydantic models or config objects)
-        - Private attrs (``_lock``, ``_on_state_change``) get fresh defaults;
-          ``_cipher`` is shared.
+        Field-by-field copy semantics applied to the *base* (pre-override)
+        values:
+
+        - **Deep-copied**: ``agent_state`` (``copy.deepcopy``),
+          ``stats`` (``model_copy(deep=True)`` unless *reset_metrics*).
+        - **Shallow list/dict copy**: ``activated_knowledge_skills``,
+          ``invoked_skills``, ``tags``, ``blocked_actions``,
+          ``blocked_messages``.
+        - **Shared references**: ``agent``, ``workspace``,
+          ``confirmation_policy``, ``security_analyzer``, ``hook_config``.
+        - **Events**: each event is deep-copied into a fresh ``EventLog``.
+        - **Private attrs**: ``_lock`` and ``_on_state_change`` get fresh
+          defaults; ``_cipher`` is shared.
+
+        Any public ``ConversationState`` field can be overridden via
+        ``**overrides`` (e.g. ``agent=``, ``persistence_dir=``,
+        ``tags=``).  Overrides replace the copied value outright — no
+        additional deep/shallow copy is applied to them.
 
         Args:
-            conversation_id: ID for the new state.  Auto-generated UUID if
-                ``None``.
-            file_store: ``FileStore`` backing the new state's event log and
-                persistence.  Falls back to an ``InMemoryFileStore`` when
-                ``None``.
-            reset_metrics: When ``True`` (default ``False``), the copy starts
-                with fresh ``ConversationStats``.
-            agent: Override the agent on the copy.  Defaults to the source's
-                agent when not provided.
-            persistence_dir: Override the persistence directory on the copy.
-                Defaults to the source's ``persistence_dir`` when not
-                provided.
-            tags: Override the tags dict on the copy.  Defaults to a shallow
-                copy of the source's tags when not provided.
+            conversation_id: ID for the new state.  Auto-generated UUID
+                if ``None``.
+            file_store: ``FileStore`` backing the new state's event log
+                and persistence.  Falls back to ``InMemoryFileStore``
+                when ``None``.
+            reset_metrics: When ``True`` (default ``False``), the copy
+                starts with fresh ``ConversationStats``.
+            **overrides: Any ``ConversationState`` field to override on
+                the copy (e.g. ``agent=``, ``persistence_dir=``,
+                ``tags=``).
 
         Returns:
             A new ``ConversationState`` that is independent of the source.
-        """  # noqa: E501
+        """
         new_id = conversation_id if conversation_id is not None else uuid.uuid4()
         fs = file_store or InMemoryFileStore()
 
-        new_state = type(self)(
-            id=new_id,
-            agent=agent if agent is not None else self.agent,
-            workspace=self.workspace,
-            persistence_dir=(
-                persistence_dir if persistence_dir is not None else self.persistence_dir
-            ),
-            max_iterations=self.max_iterations,
-            stuck_detection=self.stuck_detection,
-            execution_status=ConversationExecutionStatus.IDLE,
-            confirmation_policy=self.confirmation_policy,
-            security_analyzer=self.security_analyzer,
-            activated_knowledge_skills=list(self.activated_knowledge_skills),
-            invoked_skills=list(self.invoked_skills),
-            blocked_actions=dict(self.blocked_actions),
-            blocked_messages=dict(self.blocked_messages),
-            last_user_message_id=self.last_user_message_id,
-            stats=(
+        # Base field values with proper copy semantics.
+        defaults: dict[str, Any] = {
+            "id": new_id,
+            "agent": self.agent,
+            "workspace": self.workspace,
+            "persistence_dir": self.persistence_dir,
+            "max_iterations": self.max_iterations,
+            "stuck_detection": self.stuck_detection,
+            "execution_status": ConversationExecutionStatus.IDLE,
+            "confirmation_policy": self.confirmation_policy,
+            "security_analyzer": self.security_analyzer,
+            "activated_knowledge_skills": list(self.activated_knowledge_skills),
+            "invoked_skills": list(self.invoked_skills),
+            "blocked_actions": dict(self.blocked_actions),
+            "blocked_messages": dict(self.blocked_messages),
+            "last_user_message_id": self.last_user_message_id,
+            "stats": (
                 ConversationStats()
                 if reset_metrics
                 else self.stats.model_copy(deep=True)
             ),
-            secret_registry=self.secret_registry,
-            tags=dict(tags) if tags is not None else dict(self.tags),
-            agent_state=copy.deepcopy(self.agent_state),
-            hook_config=self.hook_config,
-        )
+            "secret_registry": self.secret_registry,
+            "tags": dict(self.tags),
+            "agent_state": copy.deepcopy(self.agent_state),
+            "hook_config": self.hook_config,
+        }
+        defaults.update(overrides)
+
+        new_state = type(self)(**defaults)
 
         # Private attrs
         new_state._fs = fs
