@@ -121,6 +121,13 @@ class _ConversationInfoBase(BaseModel):
         default_factory=list,
         description="List of activated knowledge skills name",
     )
+    invoked_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of progressive-disclosure skills explicitly invoked via the "
+            "`invoke_skill` tool."
+        ),
+    )
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,
         description="Actions blocked by PreToolUse hooks, keyed by action ID",
@@ -305,6 +312,34 @@ class UpdateConversationRequest(BaseModel):
             "Key-value tags to set on the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters. "
             "Replaces all existing tags when provided."
+        ),
+    )
+
+
+class ForkConversationRequest(BaseModel):
+    """Payload to fork a conversation."""
+
+    id: UUID | None = Field(
+        default=None,
+        description="ID for the forked conversation (auto-generated if null)",
+    )
+    title: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Optional title for the forked conversation",
+    )
+    tags: ConversationTags | None = Field(
+        default=None,
+        description=(
+            "Optional tags for the forked conversation. Keys must be "
+            "lowercase alphanumeric."
+        ),
+    )
+    reset_metrics: bool = Field(
+        default=True,
+        description=(
+            "If true, cost/token stats start fresh on the fork. "
+            "If false, metrics are copied from the source."
         ),
     )
 

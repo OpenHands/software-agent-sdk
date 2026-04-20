@@ -74,6 +74,11 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
+    def invoked_skills(self) -> list[str]:
+        """Names of progressive-disclosure skills explicitly invoked."""
+        ...
+
+    @property
     def workspace(self) -> BaseWorkspace:
         """The workspace for agent operations and tool execution."""
         ...
@@ -301,6 +306,38 @@ class BaseConversation(ABC):
         Raises:
             KeyError: If the tool is not found in the agent's tools
             NotImplementedError: If the tool has no executor
+        """
+        ...
+
+    @abstractmethod
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: "AgentBase | None" = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "BaseConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new conversation that shares the same event history but has
+            its own identity and independent state going forward.
         """
         ...
 
