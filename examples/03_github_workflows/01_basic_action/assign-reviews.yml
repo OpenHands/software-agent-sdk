@@ -99,12 +99,21 @@ jobs:
                 3. Were created more than 1 day ago.
                 4. CI is passing and there are no merge conflicts.
 
-                For each of these pull requests, read the git blame information for the files,
-                and find the most recent and active contributors to the file/location of the changes.
-                Assign one of these people as a reviewer, but try not to assign too many reviews to
-                any single person. Add this message:
+                For each of these pull requests:
+                1. Build reviewer candidates ONLY from human users who appear in git blame for the changed files or changed hunks on the base branch.
+                   Never invent or guess a reviewer who does not appear in blame for at least one changed file.
+                2. Before requesting review, verify that each candidate:
+                   - Is not a bot or app and is not the PR author.
+                   - Has write access or higher on the repository.
+                   - Has authored at least one commit in this repository in the last 12 months.
+                   - Has authored at least one commit touching at least one changed file in the last 12 months.
+                3. NEVER assign someone solely because they are a maintainer or collaborator. If they have write access but zero qualifying commits, they are NOT eligible.
+                4. For bot-authored PRs (for example dependabot[bot]), be stricter: only assign a reviewer if they have a qualifying recent commit touching a changed
+                   file. If no one qualifies, leave the PR unassigned and do NOT comment.
+                5. If multiple eligible reviewers qualify, avoid assigning too many reviews to any single person.
+                6. Add this message:
 
-                [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame information.
+                [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame and recent commit history.
                 Thanks in advance for the help!
 
             LLM_MODEL: <YOUR_LLM_MODEL>
