@@ -119,6 +119,8 @@ If the updated package was uploaded **within the last 7 days**, treat it as a re
 - **Persistence Paths**: Code that computes persistence directories must not double-append the conversation hex — see the [Persistence Paths](#persistence-path-construction) section below
 - **Server-Side Cleanup**: Endpoints that create persistent state (directories, files) must have rollback logic for partial failures — see the [Server Error Handling](#server-side-error-handling) section below
 - **Cross-File Data Flow**: When new code calls existing APIs (constructors, factory methods), trace 1–2 levels into those APIs to verify the caller uses them correctly. Bugs often hide at layer boundaries where the caller's assumptions don't match the callee's behavior
+- **Create-Then-Override**: If code constructs an object and immediately mutates fields on it, those values should be parameters of the constructor or factory method instead — see the [Create-Then-Override](#create-then-override-anti-pattern) section below
+- **Hard-Coded Field Lists**: If code manually enumerates a model's fields (e.g., building a dict of every field by name), it should derive from the model itself (e.g., `model_fields`) so new fields are picked up automatically — see the [Hard-Coded Field Lists](#hard-coded-field-lists) section below
 
 ## Event Type Deprecation - Critical Review Checkpoint
 
@@ -209,6 +211,65 @@ When reviewing server endpoints that create conversations or persistent artifact
 1. Identify the "point of no return" where state is written to disk.
 2. Check that subsequent operations are wrapped in try/except with cleanup.
 3. For client-supplied IDs, verify there's a duplicate check before creating state (return 409 Conflict if taken).
+
+### Create-Then-Override Anti-Pattern
+
+When code constructs an object and then immediately overwrites fields on it, those values should be passed through the constructor or factory method instead. The create-then-override pattern:
+
+1. Creates a window where the object exists in an inconsistent state
+2. Bypasses any validation the constructor performs
+3. Forces callers to know which fields need fixing up, duplicating internal knowledge
+
+**Bad:**
+```python
+state = original.snapshot(conversation_id=new_id, file_store=fs)
+state.agent = different_agent          # why wasn't this a param?
+state.persistence_dir = "/other/path"  # same question
+```
+
+**Good:**
+```python
+state = original.snapshot(
+    conversation_id=new_id,
+    file_store=fs,
+    agent=different_agent,
+    persistence_dir="/other/path",
+)
+```
+
+The same applies to objects that hold references to the constructed object. If replacing an object requires fixing up references in other objects (e.g., `detector.state = new_state`), question whether the replacement pattern itself can be avoided.
+
+When reviewing code that constructs Pydantic models, factory results, or clones:
+1. Look for field assignments immediately after construction.
+2. If found, check whether the factory/constructor already accepts those as parameters.
+3. If not, suggest widening the factory's interface (e.g., `**overrides`) rather than mutating after the fact.
+
+### Hard-Coded Field Lists
+
+Code that manually enumerates every field of a Pydantic model by name (e.g., to build a copy, a dict, or a serialized form) will silently drop fields when the model evolves. Derive the field list from the model itself.
+
+**Bad:**
+```python
+defaults = {
+    "id": self.id,
+    "agent": self.agent,
+    "workspace": self.workspace,
+    # ... every other field ...
+}
+```
+
+**Good:**
+```python
+fields = {name: getattr(self, name) for name in type(self).model_fields}
+# then override only the fields that need special treatment
+fields["id"] = new_id
+fields["agent_state"] = copy.deepcopy(self.agent_state)
+```
+
+When reviewing code that copies or serializes model state:
+1. Check whether the field names are hard-coded in a dict literal or argument list.
+2. If so, ask whether it could derive from `model_fields` (or `model_dump()` if serialized values are acceptable).
+3. Exception: explicit field lists are fine when only a small, fixed subset of fields is intentionally selected (e.g., a projection for an API response).
 
 ## What NOT to Comment On
 
