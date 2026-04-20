@@ -13,6 +13,11 @@ import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+from openhands.sdk.agent.response_dispatch import (
+    LLMResponseType,
+    ResponseDispatchMixin,
+    classify_response,
+)
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
@@ -232,7 +237,7 @@ class _ActionBatch:
             mark_finished()
 
 
-class Agent(CriticMixin, AgentBase):
+class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
@@ -576,117 +581,26 @@ class Agent(CriticMixin, AgentBase):
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
+        response_type = classify_response(message)
 
-        # Check if this is a reasoning-only response (e.g., from reasoning models)
-        # or a message-only response without tool calls
-        has_reasoning = (
-            message.responses_reasoning_item is not None
-            or message.reasoning_content is not None
-            or (message.thinking_blocks and len(message.thinking_blocks) > 0)
-        )
-        has_content = any(
-            isinstance(c, TextContent) and c.text.strip() for c in message.content
-        )
-
-        if message.tool_calls and len(message.tool_calls) > 0:
-            if not all(isinstance(c, TextContent) for c in message.content):
-                logger.warning(
-                    "LLM returned tool calls but message content is not all "
-                    "TextContent - ignoring non-text content"
+        match response_type:
+            case LLMResponseType.TOOL_CALLS:
+                self._handle_tool_calls(
+                    message, llm_response, conversation, state, on_event
                 )
-
-            # Generate unique batch ID for this LLM response
-            thought_content = [c for c in message.content if isinstance(c, TextContent)]
-
-            action_events: list[ActionEvent] = []
-            for i, tool_call in enumerate(message.tool_calls):
-                action_event = self._get_action_event(
-                    tool_call,
-                    conversation=conversation,
-                    llm_response_id=llm_response.id,
-                    on_event=on_event,
-                    security_analyzer=state.security_analyzer,
-                    thought=thought_content
-                    if i == 0
-                    else [],  # Only first gets thought
-                    # Only first gets reasoning content
-                    reasoning_content=message.reasoning_content if i == 0 else None,
-                    # Only first gets thinking blocks
-                    thinking_blocks=list(message.thinking_blocks) if i == 0 else [],
-                    responses_reasoning_item=message.responses_reasoning_item
-                    if i == 0
-                    else None,
+            case LLMResponseType.CONTENT:
+                self._handle_content_response(
+                    message, llm_response, conversation, state, on_event
                 )
-                if action_event is None:
-                    continue
-                action_events.append(action_event)
-
-            # Handle confirmation mode - exit early if actions need confirmation
-            if self._requires_user_confirmation(state, action_events):
-                return
-
-            if action_events:
-                self._execute_actions(conversation, action_events, on_event)
-
-            # Emit VLLM token ids if enabled before returning
-            self._maybe_emit_vllm_tokens(llm_response, on_event)
-            return
-
-        # No tool calls - emit message event for reasoning or content responses
-        if not has_reasoning and not has_content:
-            logger.warning("LLM produced empty response - continuing agent loop")
-
-        msg_event = MessageEvent(
-            source="agent",
-            llm_message=message,
-            llm_response_id=llm_response.id,
-        )
-        # Run critic evaluation if configured for finish_and_message mode
-        if self.critic is not None and self.critic.mode == "finish_and_message":
-            critic_result = self._evaluate_with_critic(conversation, msg_event)
-            if critic_result is not None:
-                # Create new event with critic result
-                msg_event = msg_event.model_copy(
-                    update={"critic_result": critic_result}
+            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                self._handle_no_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    response_type=response_type,
                 )
-        on_event(msg_event)
-
-        # Emit VLLM token ids if enabled
-        self._maybe_emit_vllm_tokens(llm_response, on_event)
-
-        # Finish conversation if LLM produced content (awaits user input)
-        # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
-        if has_content:
-            logger.debug("LLM produced a message response - awaits user input")
-            state.execution_status = ConversationExecutionStatus.FINISHED
-            return
-
-        # When the LLM produced no tool call and no user-facing content,
-        # inject corrective feedback so the model knows it must act.
-        # This prevents the monologue stuck-detector from firing when the
-        # model simply forgot to emit a function call (common with Qwen,
-        # which sometimes places tool-call XML inside reasoning_content).
-        if not has_content:
-            logger.warning(
-                "LLM response contained no tool call and no content"
-                " - sending corrective feedback"
-            )
-            nudge = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[
-                        TextContent(
-                            text=(
-                                "Your last response did not include a "
-                                "function call or a message. Please "
-                                "use a tool to proceed with the task."
-                            )
-                        )
-                    ],
-                ),
-            )
-            on_event(nudge)
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]

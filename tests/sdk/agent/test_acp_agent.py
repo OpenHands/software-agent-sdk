@@ -105,6 +105,18 @@ class TestACPAgentInstantiation:
             agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
         )
 
+    def test_acp_model_propagated_to_llm_model(self):
+        """acp_model overrides the sentinel model name so logs/state show
+        the real model. The ACP-sentinel marker lives on usage_id."""
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        assert agent.llm.model == "claude-opus-4-6"
+        assert agent.llm.usage_id == "acp-managed"
+
+    def test_sentinel_usage_id_without_acp_model(self):
+        agent = _make_agent()
+        assert agent.llm.model == "acp-managed"
+        assert agent.llm.usage_id == "acp-managed"
+
     def test_no_acp_model_keeps_sentinel(self):
         """Without acp_model, metrics.model_name remains the sentinel value."""
         agent = _make_agent()

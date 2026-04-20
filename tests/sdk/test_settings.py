@@ -141,6 +141,83 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
         "confirmation_mode",
         "security_analyzer",
     }
+    assert verification_fields["confirmation_mode"].default is False
+    assert (
+        verification_fields["confirmation_mode"].prominence
+        is SettingProminence.CRITICAL
+    )
+    assert verification_fields["security_analyzer"].default == "llm"
+    assert verification_fields["security_analyzer"].choices[0].value == "llm"
+    assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
+
+
+def test_conversation_settings_model_dump_roundtrip() -> None:
+    settings = ConversationSettings(
+        max_iterations=42,
+        confirmation_mode=True,
+        security_analyzer="none",
+    )
+
+    restored = ConversationSettings.model_validate(settings.model_dump(mode="json"))
+
+    assert restored == settings
+
+
+def test_conversation_settings_create_request() -> None:
+    settings = ConversationSettings(
+        max_iterations=77,
+        confirmation_mode=True,
+        security_analyzer="llm",
+    )
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = LLMAgentSettings(llm=LLM(model="test-model")).create_agent()
+
+    request = settings.create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+    )
+
+    assert isinstance(request, StartConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, ConfirmRisky)
+    assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
+
+    overridden_request = settings.create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=workspace,
+        max_iterations=5,
+        confirmation_policy=AlwaysConfirm(),
+        security_analyzer=None,
+    )
+
+    assert overridden_request.max_iterations == 5
+    assert isinstance(overridden_request.confirmation_policy, AlwaysConfirm)
+    assert overridden_request.security_analyzer is None
+
+
+def test_conversation_settings_create_request_for_acp() -> None:
+    settings = ConversationSettings(
+        max_iterations=77,
+        confirmation_mode=True,
+        security_analyzer="none",
+    )
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = ACPAgent(acp_command=["echo", "test"])
+
+    request = settings.create_request(
+        StartACPConversationRequest,
+        agent=agent,
+        workspace=workspace,
+    )
+
+    assert isinstance(request, StartACPConversationRequest)
+    assert request.workspace == workspace
+    assert request.max_iterations == 77
+    assert isinstance(request.confirmation_policy, AlwaysConfirm)
+    assert request.security_analyzer is None
 
 
 # ---------------------------------------------------------------------------
