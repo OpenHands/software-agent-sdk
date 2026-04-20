@@ -10,6 +10,7 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.remote_conversation import RemoteState
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 
@@ -136,6 +137,23 @@ def test_remote_state_confirmation_policy(mock_client, conversation_id, mock_age
     assert isinstance(policy, AlwaysConfirm)
 
 
+def test_remote_state_hook_config(mock_client, conversation_id, mock_agent):
+    """Test hook_config property."""
+    conversation_info = create_mock_conversation_info(
+        conversation_id,
+        mock_agent,
+        hook_config={"stop": [{"matcher": "*", "hooks": [{"command": "echo test"}]}]},
+    )
+    setup_mock_responses(mock_client, conversation_info)
+
+    state = RemoteState(mock_client, conversation_id)
+
+    assert isinstance(state.hook_config, HookConfig)
+    assert state.hook_config is not None
+    assert state.hook_config.stop is not None
+    assert state.hook_config.stop[0].hooks[0].command == "echo test"
+
+
 def test_remote_state_activated_knowledge_skills(
     mock_client, conversation_id, mock_agent
 ):
@@ -249,3 +267,26 @@ def test_remote_state_api_error_handling(mock_client, conversation_id):
 
     with pytest.raises(httpx.HTTPStatusError):
         _ = state.execution_status
+
+
+def test_remote_state_refresh_from_server_uses_configured_base_path(
+    mock_client, conversation_id, mock_agent
+):
+    """Test refresh_from_server respects the configured conversation base path."""
+    conversation_info = create_mock_conversation_info(conversation_id, mock_agent)
+    setup_mock_responses(mock_client, conversation_info)
+
+    state = RemoteState(
+        mock_client,
+        conversation_id,
+        conversation_info_base_path="/api/acp/conversations",
+    )
+    state._cached_state = None
+
+    refreshed = state.refresh_from_server()
+
+    assert refreshed == conversation_info
+    assert mock_client.request.call_args_list[-1][0] == (
+        "GET",
+        f"/api/acp/conversations/{conversation_id}",
+    )

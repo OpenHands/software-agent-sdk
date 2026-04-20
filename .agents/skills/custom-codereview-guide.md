@@ -45,7 +45,7 @@ Examples of straightforward and low-risk PRs you should approve (non-exhaustive)
 - **Documentation-only changes**: Docstring updates, clarifying notes, API documentation improvements
 - **Simple additions**: Adding entries to lists/dictionaries following existing patterns
 - **Test-only changes**: Adding or updating tests without changing production code
-- **Dependency updates**: Version bumps with passing CI
+- **Dependency updates**: Version bumps with passing CI, unless the updated package is newer than the repo's 7-day freshness guardrail described in the Security section below
 
 ### When NOT to APPROVE - Blocking Issues
 
@@ -54,6 +54,7 @@ Examples of straightforward and low-risk PRs you should approve (non-exhaustive)
 - **Package version bumps in non-release PRs**: If any `pyproject.toml` file has changes to the `version` field (e.g., `version = "1.12.0"` → `version = "1.13.0"`), and the PR is NOT explicitly a release PR (title/description doesn't indicate it's a release), **DO NOT APPROVE**. Version numbers should only be changed in dedicated release PRs managed by maintainers.
   - Check: Look for changes to `version = "..."` in any `*/pyproject.toml` files
   - Exception: PRs with titles like "release: v1.x.x" or "chore: bump version to 1.x.x" from maintainers
+- **Too-new dependency uploads**: If a dependency bump pulls in a package uploaded within the repo's 7-day freshness window, **DO NOT APPROVE**. See the Security section below for the exact review instructions and the Dependabot / `tool.uv.exclude-newer` caveat.
 
 Examples:
 - A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates
@@ -71,6 +72,30 @@ Use COMMENT when you have feedback or concerns:
 
 If there are significant issues, leave detailed comments explaining the concerns—but let a human maintainer decide whether to block the PR.
 
+## Security
+
+### Dependency freshness / supply-chain guardrail
+
+This repository intentionally uses a workspace-wide `uv` resolver guardrail:
+
+- Root `pyproject.toml`: `[tool.uv] exclude-newer = "7 days"`
+
+**Important:** Dependabot does **not** currently honor that `uv` guardrail when it opens `uv.lock` update PRs for this repo's workspace setup. A Dependabot PR can therefore bump to a version that was uploaded **less than 7 days ago**, even though a local `uv lock` would normally exclude it.
+
+When reviewing dependency update PRs (`uv.lock`, `pyproject.toml`, `requirements*.txt`, etc.), explicitly check for **too-new package uploads**:
+
+1. Check the package upload timestamp on the package index.
+2. For `uv.lock`, use the per-file `upload-time` metadata in the changed package entry.
+3. Treat `upload-time` as the upload time of that specific distribution file to the package index (for example, the wheel uploaded to PyPI) — not the Git tag time or GitHub release time.
+4. Compare that timestamp against the current date and the repo's 7-day freshness window.
+
+If the updated package was uploaded **within the last 7 days**, treat it as a real security / supply-chain concern:
+
+- Do **NOT** approve the PR.
+- Leave a **COMMENT** review that clearly calls out the package name, version, upload time, and that it is newer than the repo's 7-day guardrail.
+- Explain that this can happen because Dependabot currently ignores `tool.uv.exclude-newer` for this repo's workspace updates.
+- Ask a human maintainer to decide whether to wait until the package ages past the guardrail or to merge intentionally despite the freshness risk.
+
 ## Core Principles
 
 1. **Simplicity First**: Question complexity. If something feels overcomplicated, ask "what's the use case?" and seek simpler alternatives. Features should solve real problems, not imaginary ones.
@@ -84,12 +109,16 @@ If there are significant issues, leave detailed comments explaining the concerns
 ## What to Check
 
 - **Complexity**: Over-engineered solutions, unnecessary abstractions, complex logic that could be refactored
-- **Testing**: Duplicate test coverage, tests for library features, missing edge case coverage
+- **Testing**: Duplicate test coverage, tests for library features, missing edge case coverage. For code that writes to disk, verify that tests cover the **persistence round-trip** (write → close → reopen → verify), not just in-memory state
 - **Type Safety**: `# type: ignore` usage, missing type annotations, `getattr`/`hasattr` guards, mocking non-existent arguments
 - **Breaking Changes**: API changes affecting users, removed public fields/methods, changed defaults
 - **Code Quality**: Code duplication, missing comments for non-obvious decisions, inline imports (unless necessary for circular deps)
 - **Repository Conventions**: Use `pyright` not `mypy`, put fixtures in `conftest.py`, avoid `sys.path.insert` hacks
 - **Event Type Deprecation**: Changes to event types (Pydantic models used in serialization) must handle deprecated fields properly
+- **Thread Safety**: New methods in `LocalConversation` that read or write `self._state` must use `with self._state:` — see the [Concurrency](#concurrency---localconversation-state-lock) section below
+- **Persistence Paths**: Code that computes persistence directories must not double-append the conversation hex — see the [Persistence Paths](#persistence-path-construction) section below
+- **Server-Side Cleanup**: Endpoints that create persistent state (directories, files) must have rollback logic for partial failures — see the [Server Error Handling](#server-side-error-handling) section below
+- **Cross-File Data Flow**: When new code calls existing APIs (constructors, factory methods), trace 1–2 levels into those APIs to verify the caller uses them correctly. Bugs often hide at layer boundaries where the caller's assumptions don't match the callee's behavior
 
 ## Event Type Deprecation - Critical Review Checkpoint
 
@@ -136,6 +165,50 @@ pydantic_core.ValidationError: Extra inputs are not permitted
 ```
 
 **This is a production-breaking change.** Do not approve PRs that modify event types without proper backward compatibility handling and tests.
+
+## SDK Architecture Conventions
+
+These conventions codify patterns that are easy to violate when adding new features. Each was learned from a real bug.
+
+### Concurrency - LocalConversation State Lock
+
+`LocalConversation` protects mutable state with a FIFOLock accessed via `with self._state:`. **Every** method that reads or writes `self._state.events`, `self._state.stats`, `self._state.agent_state`, `self._state.activated_knowledge_skills`, or any other mutable field on `ConversationState` must hold this lock. There are currently ~13 call sites using this pattern.
+
+When reviewing a PR that adds a new method to `LocalConversation`:
+1. Check whether it accesses any `self._state.*` field.
+2. If yes, verify the access is inside a `with self._state:` block.
+3. If not, flag it — the method is unsafe for concurrent use with `run()`.
+
+### Persistence Path Construction
+
+`BaseConversation.get_persistence_dir(base, conversation_id)` returns `str(Path(base) / conversation_id.hex)`. The `LocalConversation.__init__` constructor calls this automatically when `persistence_dir` is provided.
+
+**Rule:** Callers that pass `persistence_dir` to `LocalConversation()` must pass only the **base directory** (e.g., `/data/conversations/`). The constructor appends the conversation hex. Passing a pre-constructed full path (e.g., `/data/conversations/abc123`) causes double-appending: `/data/conversations/abc123/abc123`.
+
+When reviewing code that creates a new `LocalConversation` (fork, resume, migration):
+1. Check what value is passed as `persistence_dir`.
+2. Verify it does **not** already include the conversation ID hex.
+
+### Server-Side Error Handling
+
+Server endpoints in `conversation_service.py` that create persistent state (writing directories, files, or calling `fork()` which writes to disk) and then perform follow-up operations (like `_start_event_service`) must handle partial failure.
+
+**Pattern:** If the follow-up operation fails, clean up the already-written persistent state so it doesn't become an orphaned directory that confuses future startups.
+
+```python
+# Good: rollback on failure
+fork_dir = self.conversations_dir / fork_conv_id.hex
+try:
+    fork_event_service = await self._start_event_service(fork_stored)
+except Exception:
+    safe_rmtree(fork_dir)
+    raise
+```
+
+When reviewing server endpoints that create conversations or persistent artifacts:
+1. Identify the "point of no return" where state is written to disk.
+2. Check that subsequent operations are wrapped in try/except with cleanup.
+3. For client-supplied IDs, verify there's a duplicate check before creating state (return 409 Conflict if taken).
 
 ## What NOT to Comment On
 

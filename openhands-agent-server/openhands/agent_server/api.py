@@ -1,9 +1,13 @@
 import asyncio
 import traceback
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from typing import Any
+from urllib.parse import urlparse
 
+import libtmux
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
@@ -14,6 +18,7 @@ from openhands.agent_server.config import (
     get_default_config,
 )
 from openhands.agent_server.conversation_router import conversation_router
+from openhands.agent_server.conversation_router_acp import conversation_router_acp
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
@@ -31,6 +36,7 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
 from openhands.agent_server.sockets import sockets_router
 from openhands.agent_server.tool_preload_service import get_tool_preload_service
@@ -38,13 +44,48 @@ from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.utils.redact import sanitize_dict
+from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
 
 logger = get_logger(__name__)
 
 
+def _cleanup_stale_tmux_sessions() -> None:
+    """Clean up any stale tmux sessions on server startup.
+
+    Tmux sessions live in a separate process that survives agent-server restarts.
+    This function kills all existing sessions on the shared OpenHands tmux socket
+    to prevent accumulation of orphaned sessions.
+    """
+    try:
+        server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
+        sessions = server.sessions
+        if not sessions:
+            logger.debug("No tmux sessions found on %s socket", TMUX_SOCKET_NAME)
+            return
+
+        logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
+
+        for session in sessions:
+            try:
+                logger.debug("Killing tmux session: %s", session.name)
+                session.kill()
+            except Exception as e:
+                logger.warning("Failed to kill tmux session %s: %s", session.name, e)
+
+        logger.info("Tmux cleanup completed")
+
+    except Exception as e:
+        # Don't let tmux cleanup failures prevent server startup
+        logger.warning("Failed to cleanup tmux sessions: %s", e)
+
+
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
+    # Clean up stale tmux sessions from previous server runs
+    _cleanup_stale_tmux_sessions()
+
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
@@ -139,7 +180,15 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
 
-def _create_fastapi_instance() -> FastAPI:
+def _get_root_path(config: Config) -> str:
+    root_path = ""
+    if config.web_url:
+        web_url = urlparse(config.web_url)
+        root_path = web_url.path.rstrip("/")
+    return root_path
+
+
+def _create_fastapi_instance(config: Config) -> FastAPI:
     """Create the basic FastAPI application instance.
 
     Returns:
@@ -151,6 +200,7 @@ def _create_fastapi_instance() -> FastAPI:
             "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
         ),
         lifespan=api_lifespan,
+        root_path=_get_root_path(config),
     )
 
 
@@ -189,6 +239,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
+    api_router.include_router(conversation_router_acp)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)
@@ -198,6 +249,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(skills_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(settings_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 
@@ -216,7 +268,7 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
         and config.static_files_path.is_dir()
     ):
         # Map the root path to server info if there are no static files
-        app.get("/")(get_server_info)
+        app.get("/", tags=["Server Details"])(get_server_info)
         return
 
     # Mount static files directory
@@ -240,8 +292,56 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
             return RedirectResponse(url="/static/", status_code=302)
 
 
+def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
+    """Sanitize validation error details to remove sensitive input values.
+
+    FastAPI's default 422 response includes the raw request ``input`` in each
+    validation error dict.  If the request contained secret-bearing fields
+    (e.g. ``agent.llm.api_key``, ``agent.acp_env``), those values would be
+    echoed back to the caller.  This helper redacts them.
+
+    Args:
+        errors: The list of error dicts produced by ``exc.errors()``.
+
+    Returns:
+        A new list with ``input`` values sanitized through ``sanitize_dict``.
+    """
+    sanitized: list[dict] = []
+    for error in errors:
+        error = dict(error)  # shallow copy so we don't mutate the original
+        if "input" in error:
+            error["input"] = sanitize_dict(error["input"])
+        sanitized.append(error)
+    return sanitized
+
+
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
+
+    @api.exception_handler(RequestValidationError)
+    async def _validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Handle request validation errors, sanitizing sensitive input.
+
+        FastAPI's default 422 handler echoes the raw request body inside the
+        ``detail[].input`` field.  When the request contains secrets (e.g.
+        ``agent.llm.api_key``, ``agent.acp_env``), this would leak credentials
+        in the error response.  We intercept the error, redact secret-bearing
+        fields, and return a safe 422 response.
+
+        Refs: OpenHands/evaluation#385
+        """
+        logger.info(
+            "Validation error on %s %s: %d error(s)",
+            request.method,
+            request.url.path,
+            len(exc.errors()),
+        )
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _sanitize_validation_errors(exc.errors())},
+        )
 
     @api.exception_handler(Exception)
     async def _unhandled_exception_handler(
@@ -343,7 +443,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     """
     if config is None:
         config = get_default_config()
-    app = _create_fastapi_instance()
+    app = _create_fastapi_instance(config)
     app.state.config = config
 
     _add_api_routes(app, config)

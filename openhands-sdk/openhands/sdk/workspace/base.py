@@ -28,9 +28,11 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
     support the context manager protocol for safe resource management.
 
     Example:
-        >>> with workspace:
-        ...     result = workspace.execute_command("echo 'hello'")
-        ...     content = workspace.read_file("example.txt")
+        ```python
+        with workspace:
+            result = workspace.execute_command("echo 'hello'")
+            content = workspace.read_file("example.txt")
+        ```
     """
 
     working_dir: Annotated[

@@ -1,16 +1,29 @@
-import json
+from __future__ import annotations
 
-from pydantic import ValidationError, model_validator
+import json
+import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from pydantic import PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
+from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+from openhands.sdk.agent.response_dispatch import (
+    LLMResponseType,
+    ResponseDispatchMixin,
+    classify_response,
+)
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
+    normalize_tool_call,
+    parse_tool_call_arguments,
     prepare_llm_messages,
-    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -22,6 +35,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Event,
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
@@ -44,6 +58,7 @@ from openhands.sdk.llm import (
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContextWindowExceedError,
+    LLMMalformedConversationHistoryError,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
@@ -57,6 +72,11 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
     FinishTool,
@@ -67,12 +87,157 @@ from openhands.sdk.tool.builtins import (
 logger = get_logger(__name__)
 maybe_init_laminar()
 
+
+def _tool_has_summary_param(tool: ToolDefinition) -> bool:
+    """Return True if the tool's own schema declares ``summary`` as a parameter.
+
+    Checks both regular tool action_type model_fields and MCP tool inputSchema
+    so that ``_extract_summary`` can avoid popping the field when it belongs
+    to the tool (e.g. Jira's ticket title).
+    """
+    if "summary" in tool.action_type.model_fields:
+        return True
+    if isinstance(tool, MCPToolDefinition):
+        props = tool.mcp_tool.inputSchema.get("properties", {})
+        if "summary" in props:
+            return True
+    return False
+
+
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
-class Agent(CriticMixin, AgentBase):
+@dataclass(frozen=True, slots=True)
+class _ActionBatch:
+    """Immutable result of preparing a batch of actions for execution.
+
+    Owns the full lifecycle of a tool-call batch: preparation (truncation,
+    blocked-action partitioning, execution), event emission, and post-batch
+    state transitions. Agent-specific logic (iterative refinement, state
+    mutation) is injected via callables so the batch stays decoupled from
+    the Agent class.
+    """
+
+    action_events: list[ActionEvent]
+    has_finish: bool
+    blocked_reasons: dict[str, str] = field(default_factory=dict)
+    results_by_id: dict[str, list[Event]] = field(default_factory=dict)
+
+    @staticmethod
+    def _truncate_at_finish(
+        action_events: list[ActionEvent],
+    ) -> tuple[list[ActionEvent], bool]:
+        """
+        Return (events[:finish+1], True) or (events, False).
+        Discards and logs any calls after FinishTool.
+        """
+        finish_idx = next(
+            (
+                i
+                for i, ae in enumerate(action_events)
+                if ae.tool_name == FinishTool.name
+            ),
+            None,
+        )
+        if finish_idx is None:
+            return action_events, False
+
+        discarded = action_events[finish_idx + 1 :]
+        if discarded:
+            names = [ae.tool_name for ae in discarded]
+            logger.warning(
+                f"Discarding {len(discarded)} tool call(s) "
+                f"after FinishTool: {', '.join(names)}"
+            )
+        return action_events[: finish_idx + 1], True
+
+    @classmethod
+    def prepare(
+        cls,
+        action_events: list[ActionEvent],
+        state: ConversationState,
+        executor: ParallelToolExecutor,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tools: dict[str, ToolDefinition] | None = None,
+    ) -> _ActionBatch:
+        """Truncate, partition blocked actions, execute the rest, return the batch."""
+        action_events, has_finish = cls._truncate_at_finish(action_events)
+
+        blocked_reasons: dict[str, str] = {}
+        executable: list[ActionEvent] = []
+        for ae in action_events:
+            reason = state.pop_blocked_action(ae.id)
+            if reason is not None:
+                blocked_reasons[ae.id] = reason
+            else:
+                executable.append(ae)
+
+        executed_results = executor.execute_batch(executable, tool_runner, tools)
+        results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+
+        return cls(
+            action_events=action_events,
+            has_finish=has_finish,
+            blocked_reasons=blocked_reasons,
+            results_by_id=results_by_id,
+        )
+
+    def emit(self, on_event: ConversationCallbackType) -> None:
+        """Emit all events in original action order."""
+        for ae in self.action_events:
+            reason = self.blocked_reasons.get(ae.id)
+            if reason is not None:
+                logger.info(f"Action '{ae.tool_name}' blocked by hook: {reason}")
+                on_event(
+                    UserRejectObservation(
+                        action_id=ae.id,
+                        tool_name=ae.tool_name,
+                        tool_call_id=ae.tool_call_id,
+                        rejection_reason=reason,
+                        rejection_source="hook",
+                    )
+                )
+            else:
+                for event in self.results_by_id[ae.id]:
+                    on_event(event)
+
+    def finalize(
+        self,
+        on_event: ConversationCallbackType,
+        check_iterative_refinement: Callable[[ActionEvent], tuple[bool, str | None]],
+        mark_finished: Callable[[], None],
+    ) -> None:
+        """Transition state after FinishTool, or inject iterative-refinement followup.
+
+        Args:
+            on_event: Callback for emitting events.
+            check_iterative_refinement: Returns (should_continue, followup)
+                for a FinishTool action event.
+            mark_finished: Called to set the conversation execution status
+                to FINISHED when the agent is done.
+        """
+        # Nothing to finalise: no FinishTool, or it was blocked by a hook.
+        if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+            return
+
+        should_continue, followup = check_iterative_refinement(self.action_events[-1])
+        if should_continue and followup:
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[TextContent(text=followup)],
+                    ),
+                )
+            )
+        else:
+            mark_finished()
+
+
+class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
@@ -80,12 +245,48 @@ class Agent(CriticMixin, AgentBase):
     AgentBase and implements the agent execution logic. Critic-related functionality
     is provided by CriticMixin.
 
+    Attributes:
+        llm: The language model instance used for reasoning.
+        tools: List of tools available to the agent.
+        system_prompt: Inline system prompt string. When provided the agent
+            uses this text verbatim instead of rendering from a template.
+            Mutually exclusive with a non-default ``system_prompt_filename``.
+            **Not recommended** unless you know what you are doing (e.g.
+            customising agent behaviour for a completely different task) —
+            this will override OpenHands' built-in system instructions.
+        system_prompt_filename: Jinja2 template filename resolved relative to
+            the agent's prompts directory, or an absolute path. Defaults to
+            ``"system_prompt.j2"``.
+        system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
+
     Example:
-        >>> from openhands.sdk import LLM, Agent, Tool
-        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
-        >>> agent = Agent(llm=llm, tools=tools)
+        ```python
+        from openhands.sdk import LLM, Agent, Tool
+        from pydantic import SecretStr
+
+        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        agent = Agent(llm=llm, tools=tools)
+        ```
+
+        To override the system prompt entirely::
+
+            agent = Agent(
+                llm=llm,
+                tools=tools,
+                system_prompt="You are a helpful coding assistant.",
+            )
     """
+
+    _parallel_executor: ParallelToolExecutor = PrivateAttr(
+        default_factory=ParallelToolExecutor
+    )
+
+    def model_post_init(self, __context: object) -> None:
+        super().model_post_init(__context)
+        self._parallel_executor = ParallelToolExecutor(
+            max_workers=self.tool_concurrency_limit
+        )
 
     @model_validator(mode="before")
     @classmethod
@@ -248,9 +449,28 @@ class Agent(CriticMixin, AgentBase):
         conversation: LocalConversation,
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
-    ):
-        for action_event in action_events:
-            self._execute_action_event(conversation, action_event, on_event=on_event)
+    ) -> None:
+        """Prepare a batch, emit results, and handle finish."""
+        state = conversation.state
+        batch = _ActionBatch.prepare(
+            action_events,
+            state=state,
+            executor=self._parallel_executor,
+            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
+        )
+        batch.emit(on_event)
+        batch.finalize(
+            on_event=on_event,
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
+            ),
+            mark_finished=lambda: setattr(
+                state,
+                "execution_status",
+                ConversationExecutionStatus.FINISHED,
+            ),
+        )
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -320,6 +540,30 @@ class Agent(CriticMixin, AgentBase):
             )
             on_event(error_message)
             return
+        except LLMMalformedConversationHistoryError as e:
+            # The provider rejected the current message history as structurally
+            # invalid (for example, broken tool_use/tool_result pairing). Route
+            # this into condensation recovery, but keep the logs distinct from
+            # true context-window exhaustion so upstream event-stream bugs remain
+            # visible.
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised malformed conversation history error, "
+                    "triggering condensation retry with condensed history: "
+                    f"{e}"
+                )
+                on_event(CondensationRequest())
+                return
+            logger.warning(
+                "LLM raised malformed conversation history error but no "
+                "condenser can handle condensation requests. This usually "
+                "indicates an upstream event-stream or resume bug: "
+                f"{e}"
+            )
+            raise e
         except LLMContextWindowExceedError as e:
             # If condenser is available and handles requests, trigger condensation
             if (
@@ -337,90 +581,26 @@ class Agent(CriticMixin, AgentBase):
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
+        response_type = classify_response(message)
 
-        # Check if this is a reasoning-only response (e.g., from reasoning models)
-        # or a message-only response without tool calls
-        has_reasoning = (
-            message.responses_reasoning_item is not None
-            or message.reasoning_content is not None
-            or (message.thinking_blocks and len(message.thinking_blocks) > 0)
-        )
-        has_content = any(
-            isinstance(c, TextContent) and c.text.strip() for c in message.content
-        )
-
-        if message.tool_calls and len(message.tool_calls) > 0:
-            if not all(isinstance(c, TextContent) for c in message.content):
-                logger.warning(
-                    "LLM returned tool calls but message content is not all "
-                    "TextContent - ignoring non-text content"
+        match response_type:
+            case LLMResponseType.TOOL_CALLS:
+                self._handle_tool_calls(
+                    message, llm_response, conversation, state, on_event
                 )
-
-            # Generate unique batch ID for this LLM response
-            thought_content = [c for c in message.content if isinstance(c, TextContent)]
-
-            action_events: list[ActionEvent] = []
-            for i, tool_call in enumerate(message.tool_calls):
-                action_event = self._get_action_event(
-                    tool_call,
-                    conversation=conversation,
-                    llm_response_id=llm_response.id,
-                    on_event=on_event,
-                    security_analyzer=state.security_analyzer,
-                    thought=thought_content
-                    if i == 0
-                    else [],  # Only first gets thought
-                    # Only first gets reasoning content
-                    reasoning_content=message.reasoning_content if i == 0 else None,
-                    # Only first gets thinking blocks
-                    thinking_blocks=list(message.thinking_blocks) if i == 0 else [],
-                    responses_reasoning_item=message.responses_reasoning_item
-                    if i == 0
-                    else None,
+            case LLMResponseType.CONTENT:
+                self._handle_content_response(
+                    message, llm_response, conversation, state, on_event
                 )
-                if action_event is None:
-                    continue
-                action_events.append(action_event)
-
-            # Handle confirmation mode - exit early if actions need confirmation
-            if self._requires_user_confirmation(state, action_events):
-                return
-
-            if action_events:
-                self._execute_actions(conversation, action_events, on_event)
-
-            # Emit VLLM token ids if enabled before returning
-            self._maybe_emit_vllm_tokens(llm_response, on_event)
-            return
-
-        # No tool calls - emit message event for reasoning or content responses
-        if not has_reasoning and not has_content:
-            logger.warning("LLM produced empty response - continuing agent loop")
-
-        msg_event = MessageEvent(
-            source="agent",
-            llm_message=message,
-            llm_response_id=llm_response.id,
-        )
-        # Run critic evaluation if configured for finish_and_message mode
-        if self.critic is not None and self.critic.mode == "finish_and_message":
-            critic_result = self._evaluate_with_critic(conversation, msg_event)
-            if critic_result is not None:
-                # Create new event with critic result
-                msg_event = msg_event.model_copy(
-                    update={"critic_result": critic_result}
+            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                self._handle_no_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    response_type=response_type,
                 )
-        on_event(msg_event)
-
-        # Emit VLLM token ids if enabled
-        self._maybe_emit_vllm_tokens(llm_response, on_event)
-
-        # Finish conversation if LLM produced content (awaits user input)
-        # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
-        if has_content:
-            logger.debug("LLM produced a message response - awaits user input")
-            state.execution_status = ConversationExecutionStatus.FINISHED
-            return
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
@@ -503,20 +683,43 @@ class Agent(CriticMixin, AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
-    def _extract_summary(self, tool_name: str, arguments: dict) -> str:
+    def _extract_summary(
+        self,
+        tool_name: str,
+        arguments: dict,
+        tool: ToolDefinition | None = None,
+    ) -> str:
         """Extract and validate the summary field from tool arguments.
 
         Summary field is always requested but optional - if LLM doesn't provide
         it or provides invalid data, we generate a default summary using the
         tool name and arguments.
 
+        When the tool's own schema declares ``summary`` as a real parameter
+        (e.g. Jira's ticket title), the value is **read but not removed** so
+        that ``action_from_arguments`` validation still succeeds.  The tool's
+        own ``summary`` value is reused as the event-level summary because it
+        is usually descriptive (e.g. a Jira ticket title).
+
         Args:
             tool_name: Name of the tool being called
             arguments: Dictionary of tool arguments from LLM
+            tool: The tool definition (used to check if "summary" is a
+                declared parameter of the tool's schema)
 
         Returns:
             The summary string - either from LLM or a default generated one
         """
+        if tool is not None and _tool_has_summary_param(tool):
+            # "summary" belongs to the tool — read it but don't pop it.
+            # Reuse the tool's own value as the event summary (e.g. a Jira
+            # ticket title is a reasonable description of the action).
+            summary = arguments.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+            args_str = json.dumps(arguments)
+            return f"{tool_name}: {args_str}"
+
         summary = arguments.pop("summary", None)
 
         # If valid summary provided by LLM, use it
@@ -526,6 +729,40 @@ class Agent(CriticMixin, AgentBase):
         # Generate default summary: {tool_name}: {arguments}
         args_str = json.dumps(arguments)
         return f"{tool_name}: {args_str}"
+
+    def _emit_tool_error(
+        self,
+        *,
+        error: str,
+        tool_name: str,
+        tool_call: MessageToolCall,
+        llm_response_id: str,
+        on_event: ConversationCallbackType,
+        thought: list[TextContent] | None = None,
+        reasoning_content: str | None = None,
+        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
+        responses_reasoning_item: ReasoningItemModel | None = None,
+    ) -> None:
+        tc_event = ActionEvent(
+            source="agent",
+            thought=thought or [],
+            reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks or [],
+            responses_reasoning_item=responses_reasoning_item,
+            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
+            llm_response_id=llm_response_id,
+            action=None,
+        )
+        on_event(tc_event)
+        on_event(
+            AgentErrorEvent(
+                error=error,
+                tool_name=tool_name,
+                tool_call_id=tool_call.id,
+            )
+        )
 
     def _get_action_event(
         self,
@@ -543,45 +780,51 @@ class Agent(CriticMixin, AgentBase):
 
         NOTE: state will be mutated in-place.
         """
-        tool_name = tool_call.name
-        tool = self.tools_map.get(tool_name, None)
-        # Handle non-existing tools
-        if tool is None:
-            available = list(self.tools_map.keys())
-            err = f"Tool '{tool_name}' not found. Available: {available}"
-            logger.error(err)
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
-                error=err,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
-            )
-            on_event(event)
-            return
+        # Track the originally-requested tool name (before normalization) for
+        # error messages when the tool is not found or validation fails.
+        requested_tool_name = tool_call.name
+        tool: ToolDefinition | None = None
+        # Store the normalized tool call to persist correct name/args in events.
+        normalized_tool_call = tool_call
+        arguments: dict[str, object] | None = None
 
-        # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            # Sanitize raw control characters (U+0000–U+001F) that some
-            # models emit as literal bytes instead of JSON escape sequences.
-            sanitized_args = sanitize_json_control_chars(tool_call.arguments)
-            arguments = json.loads(sanitized_args)
+            # Parse arguments inside the try block so JSONDecodeError is caught.
+            arguments = parse_tool_call_arguments(tool_call.arguments)
 
-            # Fix malformed arguments (e.g., JSON strings for list/dict fields)
+            # Normalize tool call (handles aliasing, terminal fallback, etc.)
+            tool_name, arguments = normalize_tool_call(
+                requested_tool_name,
+                arguments,
+                self.tools_map.keys(),
+            )
+
+            tool = self.tools_map.get(tool_name, None)
+            if tool is None:
+                available = list(self.tools_map.keys())
+                err = f"Tool '{tool_name}' not found. Available: {available}"
+                logger.error(err)
+                self._emit_tool_error(
+                    error=err,
+                    tool_name=tool_name,
+                    tool_call=tool_call,
+                    llm_response_id=llm_response_id,
+                    on_event=on_event,
+                    thought=thought,
+                    reasoning_content=reasoning_content,
+                    thinking_blocks=thinking_blocks,
+                    responses_reasoning_item=responses_reasoning_item,
+                )
+                return
+
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
+            normalized_tool_call = tool_call.model_copy(
+                update={
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments),
+                }
+            )
             security_risk = self._extract_security_risk(
                 arguments,
                 tool.name,
@@ -592,34 +835,44 @@ class Agent(CriticMixin, AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
-            summary = self._extract_summary(tool.name, arguments)
+            summary = self._extract_summary(tool.name, arguments, tool=tool)
 
             action: Action = tool.action_from_arguments(arguments)
-        except (json.JSONDecodeError, ValidationError, ValueError) as e:
-            err = (
-                f"Error validating args {tool_call.arguments} for tool "
-                f"'{tool.name}': {e}"
+
+        except (ValueError, json.JSONDecodeError, ValidationError) as e:
+            # normalize_tool_call or Pydantic validation raised an error.
+            # Build concise error message with parameter names only (not values).
+            # Try to extract keys for the error message, but gracefully handle
+            # truly unparseable JSON by showing "unparseable JSON" instead.
+
+            # When normalize_tool_call raises about file_editor "Cannot infer",
+            # the error message contains the alias target (e.g. "file_editor"),
+            # not the original tool name. Extract it so error messages match.
+            err_str = str(e)
+            display_tool_name = requested_tool_name
+            if "Cannot infer" in err_str:
+                match = re.search(r"for tool '([^']+)'", err_str)
+                if match:
+                    display_tool_name = match.group(1)
+
+            keys = list(arguments.keys()) if isinstance(arguments, dict) else None
+            params = (
+                f"Parameters provided: {keys}"
+                if keys is not None
+                else "Arguments: unparseable JSON"
             )
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
+            err = f"Error validating tool '{display_tool_name}': {e}. {params}"
+            self._emit_tool_error(
                 error=err,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
+                tool_name=display_tool_name,
+                tool_call=tool_call,
+                llm_response_id=llm_response_id,
+                on_event=on_event,
+                thought=thought,
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks,
+                responses_reasoning_item=responses_reasoning_item,
             )
-            on_event(event)
             return
 
         # Create initial action event
@@ -630,8 +883,8 @@ class Agent(CriticMixin, AgentBase):
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
             tool_name=tool.name,
-            tool_call_id=tool_call.id,
-            tool_call=tool_call,
+            tool_call_id=normalized_tool_call.id,
+            tool_call=normalized_tool_call,
             llm_response_id=llm_response_id,
             security_risk=security_risk,
             summary=summary,
@@ -649,38 +902,25 @@ class Agent(CriticMixin, AgentBase):
         on_event(action_event)
         return action_event
 
-    @observe(ignore_inputs=["state", "on_event"])
     def _execute_action_event(
         self,
         conversation: LocalConversation,
         action_event: ActionEvent,
-        on_event: ConversationCallbackType,
-    ):
-        """Execute an action event and update the conversation state.
+    ) -> list[Event]:
+        """Execute a single tool and return the resulting events.
 
-        It will call the tool's executor and update the state & call callback fn
-        with the observation.
+        Called from parallel threads by _execute_actions. This method must
+        not mutate shared conversation state (blocked_actions,
+        execution_status) — those transitions are handled by the caller
+        on the main thread.
 
-        If the action was blocked by a PreToolUse hook (recorded in
-        state.blocked_actions), a UserRejectObservation is emitted instead
-        of executing the action.
+        Note: the tool itself receives ``conversation`` and may mutate it
+        (e.g. filesystem, working directory). Thread safety of individual
+        tools is the tool's responsibility.
+
+        Returns a list of events (observation or error). Events are NOT
+        emitted here — the caller is responsible for emitting them in order.
         """
-        state = conversation.state
-
-        # Check if this action was blocked by a PreToolUse hook
-        reason = state.pop_blocked_action(action_event.id)
-        if reason is not None:
-            logger.info(f"Action '{action_event.tool_name}' blocked by hook: {reason}")
-            rejection = UserRejectObservation(
-                action_id=action_event.id,
-                tool_name=action_event.tool_name,
-                tool_call_id=action_event.tool_call_id,
-                rejection_reason=reason,
-                rejection_source="hook",
-            )
-            on_event(rejection)
-            return rejection
-
         tool = self.tools_map.get(action_event.tool_name, None)
         if tool is None:
             raise RuntimeError(
@@ -710,8 +950,7 @@ class Agent(CriticMixin, AgentBase):
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
             )
-            on_event(error_event)
-            return error_event
+            return [error_event]
 
         obs_event = ObservationEvent(
             observation=observation,
@@ -719,27 +958,7 @@ class Agent(CriticMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
-        on_event(obs_event)
-
-        # Set conversation state
-        if tool.name == FinishTool.name:
-            # Check if iterative refinement should continue
-            should_continue, followup = self._check_iterative_refinement(
-                conversation, action_event
-            )
-            if should_continue and followup:
-                # Send follow-up message and continue agent loop
-                followup_msg = MessageEvent(
-                    source="user",
-                    llm_message=Message(
-                        role="user", content=[TextContent(text=followup)]
-                    ),
-                )
-                on_event(followup_msg)
-                # Don't set FINISHED - let the agent continue
-            else:
-                state.execution_status = ConversationExecutionStatus.FINISHED
-        return obs_event
+        return [obs_event]
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType

@@ -36,6 +36,7 @@ from openhands.sdk.subagent.load import (
     load_user_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
@@ -188,7 +189,7 @@ def agent_definition_to_factory(
     # Priority: project skills override user skills (handled by load_available_skills).
     resolved_skills: list = []
     if agent_def.skills:
-        from openhands.sdk.context.skills import load_available_skills
+        from openhands.sdk.skills import load_available_skills
 
         available = load_available_skills(
             work_dir, include_user=True, include_project=True, include_public=False
@@ -358,10 +359,25 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     Raises:
         ValueError: If no agent factory with the given name is found
     """
-    if name is None or name == "":
-        factory_name = "default"
+    # Map old names to new names for backward compatibility
+    _DEPRECATED_NAMES = {
+        "default": "general-purpose",
+        "default cli mode": "general-purpose",
+        "explore": "code-explorer",
+        "bash": "bash-runner",
+    }
+
+    if name in _DEPRECATED_NAMES:
+        new_name = _DEPRECATED_NAMES[name]
+        warn_deprecated(
+            f"Agent name '{name}'",
+            deprecated_in="1.12.0",
+            removed_in="2.0.0",
+            details=f"Use '{new_name}' instead.",
+        )
+        factory_name = new_name
     else:
-        factory_name = name
+        factory_name = "general-purpose" if not name else name
 
     with _registry_lock:
         factory = _agent_factories.get(factory_name)
@@ -385,11 +401,14 @@ def get_factory_info() -> str:
     if not user_factories:
         return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
-    info_lines = []
-    for name, factory in sorted(user_factories.items()):
-        info_lines.append(f"- **{name}**: {factory.definition.description}")
+    def get_agent_info(name, factory):
+        defn = factory.definition
+        tools = f" (tools: {', '.join(defn.tools)})" if defn.tools else ""
+        return f"- **{name}**: {defn.description}{tools}"
 
-    return "\n".join(info_lines)
+    return "\n".join(
+        get_agent_info(name, f) for name, f in sorted(user_factories.items())
+    )
 
 
 def get_registered_agent_definitions() -> list[AgentDefinition]:

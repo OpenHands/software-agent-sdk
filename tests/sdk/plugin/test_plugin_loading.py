@@ -38,6 +38,21 @@ class TestPluginManifest:
         assert manifest.author.name == "Test Author"
         assert manifest.author.email == "test@example.com"
 
+    def test_manifest_with_entry_command(self):
+        """Test parsing manifest with entry_command field."""
+        manifest = PluginManifest(
+            name="city-weather",
+            version="1.0.0",
+            entry_command="now",
+        )
+        assert manifest.name == "city-weather"
+        assert manifest.entry_command == "now"
+
+    def test_manifest_without_entry_command(self):
+        """Test that entry_command defaults to None."""
+        manifest = PluginManifest(name="test-plugin")
+        assert manifest.entry_command is None
+
 
 class TestPluginLoading:
     """Tests for Plugin.load() functionality."""
@@ -229,9 +244,43 @@ Review the specified code and provide feedback.
         assert "Read" in command.allowed_tools
         assert "Review the specified code" in command.content
 
+    def test_load_plugin_with_entry_command(self, tmp_path: Path):
+        """Test loading a plugin with entry_command in manifest."""
+        plugin_dir = tmp_path / "city-weather"
+        plugin_dir.mkdir()
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+
+        # Write manifest with entry_command
+        manifest_file = manifest_dir / "plugin.json"
+        manifest_file.write_text(
+            """{
+            "name": "city-weather",
+            "version": "1.0.0",
+            "description": "Get current weather for any city",
+            "entry_command": "now"
+        }"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.name == "city-weather"
+        assert plugin.manifest.entry_command == "now"
+        assert plugin.entry_slash_command == "/city-weather:now"
+
+    def test_load_plugin_without_entry_command(self, tmp_path: Path):
+        """Test that entry_slash_command returns None when no entry_command is set."""
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.manifest.entry_command is None
+        assert plugin.entry_slash_command is None
+
     def test_command_to_skill_conversion(self, tmp_path: Path):
         """Test converting a command to a keyword-triggered skill."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "city-weather"
         plugin_dir.mkdir()
@@ -278,7 +327,7 @@ Fetch and display the current weather for the specified city.
 
     def test_get_all_skills_with_commands(self, tmp_path: Path):
         """Test get_all_skills returns both skills and command-derived skills."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "test-plugin"
         plugin_dir.mkdir()
@@ -492,6 +541,22 @@ class TestPluginAuthor:
         author = PluginAuthor.from_string("  John Doe  <  john@example.com  >  ")
         assert author.name == "John Doe"
         assert author.email == "john@example.com"
+
+    def test_with_url(self):
+        """Test PluginAuthor with url field."""
+        author = PluginAuthor(
+            name="John Doe",
+            email="john@example.com",
+            url="https://github.com/johndoe",
+        )
+        assert author.name == "John Doe"
+        assert author.email == "john@example.com"
+        assert author.url == "https://github.com/johndoe"
+
+    def test_url_defaults_to_none(self):
+        """Test that url field defaults to None."""
+        author = PluginAuthor(name="John Doe")
+        assert author.url is None
 
 
 class TestCommandDefinition:

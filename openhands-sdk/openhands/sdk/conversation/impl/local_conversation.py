@@ -1,8 +1,10 @@
 import atexit
+import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -104,6 +106,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -143,6 +146,8 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -181,6 +186,7 @@ class LocalConversation(BaseConversation):
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
+            tags=tags,
         )
 
         # Default callback: persist every event to state
@@ -301,6 +307,107 @@ class LocalConversation(BaseConversation):
         resume uses the exact same plugin versions.
         """
         return self._resolved_plugins
+
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: AgentBase | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "LocalConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``LocalConversation`` that shares the same event history
+            but has its own identity and independent state going forward.
+        """
+        fork_id = conversation_id or uuid.uuid4()
+        if agent is not None:
+            fork_agent = agent
+        else:
+            # Round-trip via JSON to produce a deep copy that avoids
+            # thread-lock pickling issues with model_copy(deep=True).
+            agent_cls = type(self.agent)
+            fork_agent = agent_cls.model_validate(
+                self.agent.model_dump(context={"expose_secrets": True}),
+            )
+
+        # Hold the state lock while reading mutable state from the source
+        # conversation to avoid torn reads if run() is executing concurrently.
+        with self._state:
+            # Determine persistence_dir for the fork.
+            # Pass the *base* directory only — __init__ calls
+            # get_persistence_dir() which appends the conversation ID hex,
+            # so we must not do that here.
+            source_persistence = self._state.persistence_dir
+            fork_persistence: str | None = None
+            if source_persistence is not None:
+                source_path = Path(source_persistence)
+                fork_persistence = str(source_path.parent)
+
+            # Build the fork conversation (empty – no events yet)
+            fork_conv = LocalConversation(
+                agent=fork_agent,
+                workspace=self.workspace,
+                plugins=self._plugin_specs,
+                persistence_dir=fork_persistence,
+                conversation_id=fork_id,
+                max_iteration_per_run=self.max_iteration_per_run,
+                stuck_detection=self._stuck_detector is not None,
+                visualizer=type(self._visualizer) if self._visualizer else None,
+                delete_on_close=self.delete_on_close,
+                tags=tags,
+            )
+
+            # Deep-copy events from source → fork so the source stays
+            # immutable.
+            for event in self._state.events:
+                fork_conv._state.events.append(event.model_copy(deep=True))
+
+            # Copy runtime state that accumulated during the source
+            # conversation. activated_knowledge_skills is list[str] – strings
+            # are immutable so a shallow list copy is sufficient.
+            # agent_state can hold arbitrary mutable values, so deep-copy it.
+            fork_conv._state.activated_knowledge_skills = list(
+                self._state.activated_knowledge_skills
+            )
+            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+
+            # Copy title via tags if provided
+            if title is not None:
+                fork_conv._state.tags = {
+                    **fork_conv._state.tags,
+                    "title": title,
+                }
+
+            # Reset or copy metrics
+            if not reset_metrics:
+                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+
+            event_count = len(self._state.events)
+
+        logger.info(
+            f"Forked conversation {self.id} → {fork_id} "
+            f"({event_count} events copied, "
+            f"reset_metrics={reset_metrics})"
+        )
+        return fork_conv
 
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
@@ -480,6 +587,16 @@ class LocalConversation(BaseConversation):
 
             self._agent_ready = True
 
+    def _should_initialize_agent_on_send_message(self) -> bool:
+        """Return whether send_message() should eagerly initialize the agent.
+
+        ACPAgent startup is substantially heavier than regular agent
+        initialization because it launches and handshakes with an external ACP
+        subprocess. Deferring that work to run() keeps send_message() fast and
+        avoids HTTP client read timeouts on the remote conversation endpoint.
+        """
+        return not isinstance(self.agent, ACPAgent)
+
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a named profile.
 
@@ -516,8 +633,12 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
-        # Ensure agent is fully initialized (loads plugins and initializes agent)
-        self._ensure_agent_ready()
+        # ACPAgent startup can take much longer than a normal send_message()
+        # round-trip because it launches and initializes a subprocess-backed
+        # session. Defer that work to run() so enqueueing the user message
+        # remains fast for remote callers.
+        if self._should_initialize_agent_on_send_message():
+            self._ensure_agent_ready()
 
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
@@ -673,6 +794,14 @@ class LocalConversation(BaseConversation):
                         break
 
                     if iteration >= self.max_iteration_per_run:
+                        # If the agent finished on this final iteration,
+                        # preserve the FINISHED status rather than
+                        # overwriting it with ERROR.
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        ):
+                            break
                         error_msg = (
                             f"Agent reached maximum iterations limit "
                             f"({self.max_iteration_per_run})."
@@ -805,6 +934,11 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
+        # Clean up agent resources (e.g., ACPAgent subprocess)
+        try:
+            self.agent.close()
+        except Exception as e:
+            logger.warning(f"Error closing agent: {e}")
         if self.delete_on_close:
             try:
                 tools_map = self.agent.tools_map
@@ -899,9 +1033,13 @@ class LocalConversation(BaseConversation):
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
+        If an explicit LLM is provided, it takes precedence. Otherwise the
+        agent's LLM is used. If neither is available, the title falls back to
+        simple message truncation.
+
         Args:
-            llm: Optional LLM to use for title generation. If not provided,
-                 uses self.agent.llm.
+            llm: Optional LLM to use for title generation. Takes precedence
+                 over the agent's LLM when provided.
             max_length: Maximum length of the generated title.
 
         Returns:
@@ -910,11 +1048,9 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If no user messages are found in the conversation.
         """
-        # Use provided LLM or fall back to agent's LLM
-        llm_to_use = llm or self.agent.llm
-
+        effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=llm_to_use, max_length=max_length
+            events=self._state.events, llm=effective_llm, max_length=max_length
         )
 
     def condense(self) -> None:

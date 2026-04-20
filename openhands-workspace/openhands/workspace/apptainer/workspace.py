@@ -1,6 +1,7 @@
 """Apptainer-based remote workspace implementation."""
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -88,6 +89,10 @@ class ApptainerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to expose additional ports (VSCode, VNC).",
     )
+    enable_gpu: bool = Field(
+        default=False,
+        description="Whether to enable GPU support with --nv.",
+    )
     cache_dir: str | None = Field(
         default=None,
         description=(
@@ -122,6 +127,11 @@ class ApptainerWorkspace(RemoteWorkspace):
             "https://apptainer.org/docs/user/main/bind_paths_and_mounts.html. "
             "Specify locations to disable mounts for custom Apptainer behavior."
         ),
+    )
+    health_check_timeout: float = Field(
+        default=120.0,
+        gt=0.0,
+        description="Timeout in seconds to wait for container health check to pass.",
     )
 
     _instance_name: str | None = PrivateAttr(default=None)
@@ -192,7 +202,7 @@ class ApptainerWorkspace(RemoteWorkspace):
         object.__setattr__(self, "api_key", session_api_key)
 
         # Wait for container to be healthy
-        self._wait_for_health()
+        self._wait_for_health(timeout=self.health_check_timeout)
         logger.info("Apptainer workspace is ready at %s", self.host)
 
         # Now initialize the parent RemoteWorkspace with the container URL
@@ -259,6 +269,8 @@ class ApptainerWorkspace(RemoteWorkspace):
             container_opts.append("--fakeroot")
         if self.enable_docker_compat:
             container_opts.append("--compat")
+        if self.enable_gpu:
+            container_opts.append("--nv")
         if self.disable_mount_locations:
             for loc in self.disable_mount_locations:
                 container_opts += [
@@ -282,12 +294,13 @@ class ApptainerWorkspace(RemoteWorkspace):
             str(self.host_port),
         ]
 
-        # Start the server process in the background
+        # Start the server process in the background in separate process group
         self._process = subprocess.Popen(
             server_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
 
         # Optionally stream logs in background
@@ -314,7 +327,7 @@ class ApptainerWorkspace(RemoteWorkspace):
             except Exception:
                 pass
 
-    def _wait_for_health(self, timeout: float = 120.0) -> None:
+    def _wait_for_health(self, *, timeout: float) -> None:
         """Wait for the container to become healthy."""
         start = time.time()
         health_url = f"http://127.0.0.1:{self.host_port}/health"
@@ -364,12 +377,15 @@ class ApptainerWorkspace(RemoteWorkspace):
             if self._process:
                 try:
                     logger.info("Terminating Apptainer process...")
-                    self._process.terminate()
+                    pgid = os.getpgid(self._process.pid)
+                    os.killpg(pgid, signal.SIGTERM)
                     self._process.wait(timeout=5)
                 except Exception as e:
                     logger.warning("Error terminating process: %s", e)
                     try:
-                        self._process.kill()
+                        pgid = os.getpgid(self._process.pid)
+                        os.killpg(pgid, signal.SIGKILL)
+                        self._process.wait(timeout=2)
                     except Exception:
                         pass
 
