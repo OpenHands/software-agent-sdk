@@ -5,6 +5,8 @@ These tests cover:
 - That a forked skill calls ``run_skill_forked`` instead of inlining the content.
 - That an inline skill (default) still injects content directly.
 - That a forked skill without agent/working_dir falls back to inline with a warning.
+- End-to-end: a fork-context skill really forks a subagent, returns its output
+  to the parent, and the parent keeps going — using ``TestLLM`` for both sides.
 """
 
 from pathlib import Path
@@ -12,10 +14,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from openhands.sdk import Agent
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.skills.fork import run_skill_forked
+from openhands.sdk.testing import TestLLM
 
 
 def _make_context(skill: Skill) -> AgentContext:
@@ -243,3 +249,88 @@ def test_subagent_context_keeps_inline_skills_drops_forks():
     sub_ctx = agent_copy_kwargs["update"]["agent_context"]
     assert [s.name for s in sub_ctx.skills] == ["inline_helper"]
     assert sub_ctx.system_message_suffix == "preserve me"
+
+
+def test_fork_end_to_end_with_test_llm(tmp_path):
+    """End-to-end: trigger keyword → fork subagent runs → output reaches parent.
+
+    This exercises the real pipeline (no mocks on ``run_skill_forked`` or
+    ``Conversation``): ``LocalConversation`` + ``Agent`` + fork-context
+    ``Skill`` + real ``run_skill_forked``, with both the parent and the
+    forked subagent driven by a single shared ``TestLLM``.
+
+    Because ``run_skill_forked`` builds the sub-conversation with
+    ``agent.model_copy``, the sub-agent reuses the parent's LLM — so one
+    scripted queue serves both: first response is consumed by the fork,
+    second by the parent.
+    """
+    fork_output = "FORK_SUBAGENT_OUTPUT_SENTINEL"
+    parent_reply = "parent acknowledges the fork result"
+
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text=fork_output)]),
+            Message(role="assistant", content=[TextContent(text=parent_reply)]),
+        ]
+    )
+
+    skill = Skill(
+        name="ddebug",
+        content="Investigate the datadog error and return a summary.",
+        trigger=KeywordTrigger(keywords=["datadog"]),
+        context="fork",
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        include_default_tools=[],
+        agent_context=AgentContext(skills=[skill]),
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    persistence_dir = tmp_path / "persist"
+
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=workspace,
+        persistence_dir=persistence_dir,
+        visualizer=None,
+    )
+    try:
+        conversation.send_message("please look into the datadog error")
+        conversation.run()
+
+        # Both sides of the fork ran exactly once each.
+        assert llm.call_count == 2
+
+        # The user MessageEvent carries the augmented content (the fork's
+        # final output) and records the skill as activated.
+        user_events = [
+            e
+            for e in conversation.state.events
+            if isinstance(e, MessageEvent) and e.source == "user"
+        ]
+        assert len(user_events) == 1
+        user_event = user_events[0]
+        assert "ddebug" in user_event.activated_skills
+        extended_text = "".join(c.text for c in user_event.extended_content)
+        assert fork_output in extended_text
+        # The raw skill content must NOT be injected (fork replaces it).
+        assert "Investigate the datadog error" not in extended_text
+
+        # The parent produced its own final message after seeing the fork output.
+        agent_events = [
+            e
+            for e in conversation.state.events
+            if isinstance(e, MessageEvent) and e.source == "agent"
+        ]
+        assert agent_events, "parent conversation produced no agent messages"
+        last_agent_text = "".join(
+            c.text
+            for c in agent_events[-1].llm_message.content
+            if isinstance(c, TextContent)
+        )
+        assert parent_reply in last_agent_text
+    finally:
+        conversation.close()

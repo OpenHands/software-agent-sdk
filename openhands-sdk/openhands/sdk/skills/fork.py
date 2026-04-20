@@ -81,7 +81,7 @@ def run_skill_forked(
         workspace=str(working_dir),
         persistence_dir=fork_persistence_dir,
         visualizer=None,
-        stuck_detection=False,
+        stuck_detection=True,
         delete_on_close=True,
     )
     try:
