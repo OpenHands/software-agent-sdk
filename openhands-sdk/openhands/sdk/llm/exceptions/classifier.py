@@ -4,6 +4,7 @@ from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
     ContextWindowExceededError,
+    InternalServerError,
     OpenAIError,
 )
 
@@ -42,6 +43,9 @@ MALFORMED_HISTORY_PATTERNS: list[str] = [
         "each `tool_result` block must have a corresponding `tool_use` block "
         "in the previous message"
     ),
+    # Inference servers (e.g. llama-server) reject prompts containing tool
+    # calls with malformed JSON arguments in conversation history (#2887).
+    "failed to parse tool call arguments",
 ]
 
 
@@ -63,7 +67,12 @@ def looks_like_malformed_conversation_history_error(exception: Exception) -> boo
     if isinstance(exception, LLMMalformedConversationHistoryError):
         return True
 
-    if not isinstance(exception, (BadRequestError, OpenAIError, APIConnectionError)):
+    # InternalServerError covers servers (e.g. llama-server) that return 500
+    # when conversation history contains malformed tool-call arguments.
+    if not isinstance(
+        exception,
+        (BadRequestError, OpenAIError, APIConnectionError, InternalServerError),
+    ):
         return False
 
     s = str(exception).lower()
