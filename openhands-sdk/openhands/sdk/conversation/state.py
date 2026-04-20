@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -13,9 +13,20 @@ from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
-from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTags,
+)
+from openhands.sdk.event import (
+    ActionEvent,
+    AgentErrorEvent,
+    ObservationEvent,
+    UserRejectObservation,
+)
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.types import EventID
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 
@@ -50,6 +61,25 @@ class ConversationExecutionStatus(str, Enum):
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
     DELETING = "deleting"  # Conversation is in the process of being deleted
+
+    def is_terminal(self) -> bool:
+        """Check if this status represents a terminal state.
+
+        Terminal states indicate the run has completed and the agent is no longer
+        actively processing. These are: FINISHED, ERROR, STUCK.
+
+        Note: IDLE is NOT a terminal state - it's the initial state of a conversation
+        before any run has started. Including IDLE would cause false positives when
+        the WebSocket delivers the initial state update during connection.
+
+        Returns:
+            True if this is a terminal status, False otherwise.
+        """
+        return self in (
+            ConversationExecutionStatus.FINISHED,
+            ConversationExecutionStatus.ERROR,
+            ConversationExecutionStatus.STUCK,
+        )
 
 
 class ConversationState(OpenHandsModel):
@@ -104,6 +134,15 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
+    invoked_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of progressive-disclosure skills explicitly invoked via the "
+            "`invoke_skill` tool. Parallel to `activated_knowledge_skills`, "
+            "which tracks trigger-based activations."
+        ),
+    )
+
     # Hook-blocked actions: action_id -> blocking reason
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,
@@ -116,6 +155,17 @@ class ConversationState(OpenHandsModel):
         description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
     )
 
+    # Track the most recent user MessageEvent ID to avoid event log scans.
+    last_user_message_id: EventID | None = Field(
+        default=None,
+        description=(
+            "Most recent user MessageEvent id for hook block checks. "
+            "Updated when user messages are emitted so Agent.step can pop "
+            "blocked_messages without scanning the event log. If None, "
+            "hook-blocked checks are skipped (legacy conversations)."
+        ),
+    )
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -126,6 +176,35 @@ class ConversationState(OpenHandsModel):
     secret_registry: SecretRegistry = Field(
         default_factory=SecretRegistry,
         description="Registry for handling secrets and sensitive data",
+    )
+
+    # User-defined tags (key-value metadata)
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description="User-defined key-value tags for the conversation. "
+        "Keys must be lowercase alphanumeric. Values are arbitrary strings "
+        "up to 256 characters.",
+    )
+
+    # Agent-specific runtime state (simple dict for flexibility)
+    agent_state: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Dictionary for agent-specific runtime state that persists across "
+        "iterations. Agents can store feature-specific state using string keys. "
+        "To trigger autosave, always reassign: "
+        "state.agent_state = {**state.agent_state, key: value}. "
+        "See https://docs.openhands.dev/sdk/guides/convo-persistence#how-state-persistence-works",
+    )
+
+    # Hook configuration for the conversation
+    hook_config: HookConfig | None = Field(
+        default=None,
+        description=(
+            "Hook configuration for this conversation. Includes definitions for "
+            "PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd, "
+            "and Stop hooks. When set, these hooks are executed at the appropriate "
+            "points during conversation execution."
+        ),
     )
 
     # ===== Private attrs (NOT Fields) =====
@@ -141,14 +220,6 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
-
-    @model_validator(mode="before")
-    @classmethod
-    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
-        """Handle legacy 'secrets_manager' field name for backward compatibility."""
-        if isinstance(data, dict) and "secrets_manager" in data:
-            data["secret_registry"] = data.pop("secrets_manager")
-        return data
 
     @property
     def events(self) -> EventLog:
@@ -209,6 +280,7 @@ class ConversationState(OpenHandsModel):
         stuck_detection: bool = True,
         llm_registry: "LLMRegistry | None" = None,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -242,6 +314,8 @@ class ConversationState(OpenHandsModel):
                     persisted state. If provided, secrets are encrypted when
                     saving and decrypted when loading. If not provided, secrets
                     are redacted (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
 
         Returns:
             ConversationState ready for use
@@ -345,6 +419,7 @@ class ConversationState(OpenHandsModel):
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
+            tags=tags or {},
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
@@ -434,8 +509,12 @@ class ConversationState(OpenHandsModel):
         """Find actions in the event history that don't have matching observations.
 
         This method identifies ActionEvents that don't have corresponding
-        ObservationEvents or UserRejectObservations, which typically indicates
-        actions that are pending confirmation or execution.
+        ObservationEvents, UserRejectObservations, or AgentErrorEvents,
+        which typically indicates actions that are pending confirmation or execution.
+
+        Note: AgentErrorEvent is matched by tool_call_id (not action_id) because
+        it doesn't have an action_id field. This is important for crash recovery
+        scenarios where an error event is emitted after a server restart.
 
         Args:
             events: List of events to search through
@@ -444,15 +523,24 @@ class ConversationState(OpenHandsModel):
             List of ActionEvent objects that don't have corresponding observations,
             in chronological order
         """
-        observed_action_ids = set()
+        observed_action_ids: set[EventID] = set()
+        observed_tool_call_ids: set[str] = set()
         unmatched_actions = []
         # Search in reverse - recent events are more likely to be unmatched
         for event in reversed(events):
             if isinstance(event, (ObservationEvent, UserRejectObservation)):
                 observed_action_ids.add(event.action_id)
+            elif isinstance(event, AgentErrorEvent):
+                # AgentErrorEvent doesn't have action_id, match by tool_call_id
+                observed_tool_call_ids.add(event.tool_call_id)
             elif isinstance(event, ActionEvent):
                 # Only executable actions (validated) are considered pending
-                if event.action is not None and event.id not in observed_action_ids:
+                # Check both action_id and tool_call_id for matching
+                if (
+                    event.action is not None
+                    and event.id not in observed_action_ids
+                    and event.tool_call_id not in observed_tool_call_ids
+                ):
                     # Insert at beginning to maintain chronological order in result
                     unmatched_actions.insert(0, event)
 

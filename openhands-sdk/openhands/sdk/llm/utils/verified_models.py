@@ -1,5 +1,7 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-5.4",
     "gpt-5.2",
+    "gpt-5.2-codex",
     "gpt-5.1",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
@@ -22,6 +24,9 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
     "claude-opus-4-1-20250805",
@@ -42,18 +47,43 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-medium-2512",
 ]
 
+VERIFIED_GEMINI_MODELS = [
+    "gemini-3.1-pro-preview",
+]
+
+VERIFIED_DEEPSEEK_MODELS = [
+    "deepseek-chat",
+]
+
+VERIFIED_MOONSHOT_MODELS = [
+    "kimi-k2-thinking",
+    "kimi-k2.5",
+]
+
+VERIFIED_MINIMAX_MODELS = [
+    "minimax-m2.5",
+    "minimax-m2.7",
+]
+
 VERIFIED_OPENHANDS_MODELS = [
-    "claude-opus-4-5-20251101",
-    "claude-sonnet-4-5-20250929",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "gpt-5.4",
     "gpt-5.2",
+    "gpt-5.2-codex",
+    "minimax-m2.5",
+    "minimax-m2.7",
+    "gemini-3.1-pro-preview",
+    "deepseek-chat",
+    "kimi-k2-thinking",
+    "kimi-k2.5",
+    "devstral-medium-2512",
+    "devstral-2512",
+    "claude-opus-4-5-20251101",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
     "gpt-5.1",
-    "gemini-3-pro-preview",
-    "deepseek-chat",
-    "kimi-k2-thinking",
-    "devstral-medium-2512",
-    "devstral-2512",
 ]
 
 
@@ -62,4 +92,8 @@ VERIFIED_MODELS = {
     "anthropic": VERIFIED_ANTHROPIC_MODELS,
     "openai": VERIFIED_OPENAI_MODELS,
     "mistral": VERIFIED_MISTRAL_MODELS,
+    "gemini": VERIFIED_GEMINI_MODELS,
+    "deepseek": VERIFIED_DEEPSEEK_MODELS,
+    "moonshot": VERIFIED_MOONSHOT_MODELS,
+    "minimax": VERIFIED_MINIMAX_MODELS,
 }

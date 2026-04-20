@@ -224,6 +224,31 @@ def test_user_reject_observation_is_frozen():
     with pytest.raises(Exception):
         event.rejection_reason = "Modified rejection"
 
+    with pytest.raises(Exception):
+        event.rejection_source = "hook"
+
+
+def test_user_reject_observation_rejection_source():
+    """Test that UserRejectObservation rejection_source field works correctly."""
+    # Default should be "user"
+    user_event = UserRejectObservation(
+        action_id="test_action_id",
+        tool_name="test_tool",
+        tool_call_id="test_call_id",
+        rejection_reason="User rejected",
+    )
+    assert user_event.rejection_source == "user"
+
+    # Hook rejection should have "hook" source
+    hook_event = UserRejectObservation(
+        action_id="test_action_id",
+        tool_name="test_tool",
+        tool_call_id="test_call_id",
+        rejection_reason="Blocked by hook",
+        rejection_source="hook",
+    )
+    assert hook_event.rejection_source == "hook"
+
 
 def test_agent_error_event_is_frozen():
     """Test that AgentErrorEvent instances are frozen."""

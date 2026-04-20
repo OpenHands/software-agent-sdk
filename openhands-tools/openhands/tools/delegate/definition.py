@@ -1,4 +1,9 @@
-"""Delegate tool definitions for OpenHands agents."""
+"""Delegate tool definitions for OpenHands agents.
+
+.. deprecated:: 1.16.0
+    DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
+    sub-agent delegation. DelegateTool will be removed in version 1.23.0.
+"""
 
 import pathlib
 from collections.abc import Sequence
@@ -14,10 +19,12 @@ from openhands.sdk.tool.tool import (
     ToolAnnotations,
     ToolDefinition,
 )
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.tools.delegate.impl import ConfirmationHandler
 
 
 PROMPT_DIR = pathlib.Path(__file__).parent / "templates"
@@ -60,26 +67,47 @@ class DelegateObservation(Observation):
 
 
 class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
-    """A ToolDefinition subclass that automatically initializes a DelegateExecutor."""
+    """A ToolDefinition subclass that automatically initializes a DelegateExecutor.
+
+    .. deprecated:: 1.16.0
+        DelegateTool is deprecated in favor of TaskToolSet. Use TaskToolSet for
+        sub-agent delegation. DelegateTool will be removed in version 1.23.0.
+    """
 
     @classmethod
     def create(
         cls,
         conv_state: "ConversationState",
         max_children: int = 5,
+        confirmation_handler: "ConfirmationHandler | None" = None,
     ) -> Sequence["DelegateTool"]:
         """Initialize DelegateTool with a DelegateExecutor.
+
+        .. deprecated:: 1.16.0
+            Use TaskToolSet instead. DelegateTool will be removed in version 1.23.0.
 
         Args:
             conv_state: Conversation state (used to get workspace location)
             max_children: Maximum number of concurrent sub-agents (default: 5)
+            confirmation_handler: Optional callback invoked when a sub-agent's
+                confirmation policy requires user approval.  Receives
+                `(agent_id, pending_actions)` and must return `True` to
+                approve or `False` to reject.  When `None`, pending actions
+                are auto-approved.
 
         Returns:
             List containing a single delegate tool definition
         """
+        warn_deprecated(
+            "DelegateTool",
+            deprecated_in="1.16.0",
+            removed_in="1.23.0",
+            details="Use TaskToolSet instead for sub-agent delegation.",
+        )
+
         # Import here to avoid circular imports
+        from openhands.sdk.subagent import get_factory_info
         from openhands.tools.delegate.impl import DelegateExecutor
-        from openhands.tools.delegate.registration import get_factory_info
 
         # Get agent info
         agent_types_info = get_factory_info()
@@ -95,7 +123,10 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
 
         # Initialize the executor without parent conversation
         # (will be set on first call)
-        executor = DelegateExecutor(max_children=max_children)
+        executor = DelegateExecutor(
+            max_children=max_children,
+            confirmation_handler=confirmation_handler,
+        )
 
         # Initialize the parent Tool with the executor
         return [

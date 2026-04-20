@@ -6,10 +6,8 @@ import pytest
 
 from openhands.sdk.plugin import Plugin, PluginManifest
 from openhands.sdk.plugin.types import (
-    AgentDefinition,
     CommandDefinition,
     PluginAuthor,
-    _extract_examples,
 )
 
 
@@ -39,6 +37,21 @@ class TestPluginManifest:
         assert manifest.author is not None
         assert manifest.author.name == "Test Author"
         assert manifest.author.email == "test@example.com"
+
+    def test_manifest_with_entry_command(self):
+        """Test parsing manifest with entry_command field."""
+        manifest = PluginManifest(
+            name="city-weather",
+            version="1.0.0",
+            entry_command="now",
+        )
+        assert manifest.name == "city-weather"
+        assert manifest.entry_command == "now"
+
+    def test_manifest_without_entry_command(self):
+        """Test that entry_command defaults to None."""
+        manifest = PluginManifest(name="test-plugin")
+        assert manifest.entry_command is None
 
 
 class TestPluginLoading:
@@ -231,9 +244,43 @@ Review the specified code and provide feedback.
         assert "Read" in command.allowed_tools
         assert "Review the specified code" in command.content
 
+    def test_load_plugin_with_entry_command(self, tmp_path: Path):
+        """Test loading a plugin with entry_command in manifest."""
+        plugin_dir = tmp_path / "city-weather"
+        plugin_dir.mkdir()
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+
+        # Write manifest with entry_command
+        manifest_file = manifest_dir / "plugin.json"
+        manifest_file.write_text(
+            """{
+            "name": "city-weather",
+            "version": "1.0.0",
+            "description": "Get current weather for any city",
+            "entry_command": "now"
+        }"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.name == "city-weather"
+        assert plugin.manifest.entry_command == "now"
+        assert plugin.entry_slash_command == "/city-weather:now"
+
+    def test_load_plugin_without_entry_command(self, tmp_path: Path):
+        """Test that entry_slash_command returns None when no entry_command is set."""
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.manifest.entry_command is None
+        assert plugin.entry_slash_command is None
+
     def test_command_to_skill_conversion(self, tmp_path: Path):
         """Test converting a command to a keyword-triggered skill."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "city-weather"
         plugin_dir.mkdir()
@@ -280,7 +327,7 @@ Fetch and display the current weather for the specified city.
 
     def test_get_all_skills_with_commands(self, tmp_path: Path):
         """Test get_all_skills returns both skills and command-derived skills."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "test-plugin"
         plugin_dir.mkdir()
@@ -495,147 +542,21 @@ class TestPluginAuthor:
         assert author.name == "John Doe"
         assert author.email == "john@example.com"
 
-
-class TestExtractExamples:
-    """Tests for _extract_examples function."""
-
-    def test_extract_single_example(self):
-        """Test extracting single example (lines 42-44)."""
-        description = "A tool. <example>Use when X</example>"
-        examples = _extract_examples(description)
-        assert examples == ["Use when X"]
-
-    def test_extract_multiple_examples(self):
-        """Test extracting multiple examples."""
-        description = "<example>First</example> text <example>Second</example>"
-        examples = _extract_examples(description)
-        assert examples == ["First", "Second"]
-
-    def test_extract_no_examples(self):
-        """Test when no examples present."""
-        description = "A tool without examples"
-        examples = _extract_examples(description)
-        assert examples == []
-
-    def test_extract_multiline_example(self):
-        """Test extracting multiline example."""
-        description = """<example>
-        Multi
-        Line
-        </example>"""
-        examples = _extract_examples(description)
-        assert len(examples) == 1
-        assert "Multi" in examples[0]
-
-
-class TestAgentDefinition:
-    """Tests for AgentDefinition loading."""
-
-    def test_load_agent_basic(self, tmp_path: Path):
-        """Test loading a basic agent definition (lines 99-126)."""
-        agent_md = tmp_path / "test-agent.md"
-        agent_md.write_text(
-            """---
-name: test-agent
-description: A test agent
-model: gpt-4
-tools:
-  - Read
-  - Write
----
-
-You are a test agent.
-"""
+    def test_with_url(self):
+        """Test PluginAuthor with url field."""
+        author = PluginAuthor(
+            name="John Doe",
+            email="john@example.com",
+            url="https://github.com/johndoe",
         )
+        assert author.name == "John Doe"
+        assert author.email == "john@example.com"
+        assert author.url == "https://github.com/johndoe"
 
-        agent = AgentDefinition.load(agent_md)
-
-        assert agent.name == "test-agent"
-        assert agent.description == "A test agent"
-        assert agent.model == "gpt-4"
-        assert agent.tools == ["Read", "Write"]
-        assert agent.system_prompt == "You are a test agent."
-
-    def test_load_agent_with_examples(self, tmp_path: Path):
-        """Test loading agent with when_to_use examples."""
-        agent_md = tmp_path / "helper.md"
-        agent_md.write_text(
-            """---
-name: helper
-description: A helper. <example>When user needs help</example>
----
-
-Help the user.
-"""
-        )
-
-        agent = AgentDefinition.load(agent_md)
-        assert len(agent.when_to_use_examples) == 1
-        assert "When user needs help" in agent.when_to_use_examples[0]
-
-    def test_load_agent_with_color(self, tmp_path: Path):
-        """Test loading agent with color."""
-        agent_md = tmp_path / "colored.md"
-        agent_md.write_text(
-            """---
-name: colored
-color: blue
----
-
-Content.
-"""
-        )
-
-        agent = AgentDefinition.load(agent_md)
-        assert agent.color == "blue"
-
-    def test_load_agent_with_tools_as_string(self, tmp_path: Path):
-        """Test loading agent with tools as single string."""
-        agent_md = tmp_path / "single-tool.md"
-        agent_md.write_text(
-            """---
-name: single-tool
-tools: Read
----
-
-Content.
-"""
-        )
-
-        agent = AgentDefinition.load(agent_md)
-        assert agent.tools == ["Read"]
-
-    def test_load_agent_defaults(self, tmp_path: Path):
-        """Test agent defaults when fields not provided."""
-        agent_md = tmp_path / "minimal.md"
-        agent_md.write_text(
-            """---
----
-
-Just content.
-"""
-        )
-
-        agent = AgentDefinition.load(agent_md)
-        assert agent.name == "minimal"  # From filename
-        assert agent.model == "inherit"
-        assert agent.tools == []
-
-    def test_load_agent_with_metadata(self, tmp_path: Path):
-        """Test loading agent with extra metadata."""
-        agent_md = tmp_path / "meta.md"
-        agent_md.write_text(
-            """---
-name: meta-agent
-custom_field: custom_value
----
-
-Content.
-"""
-        )
-
-        agent = AgentDefinition.load(agent_md)
-        assert agent.metadata.get("custom_field") == "custom_value"
+    def test_url_defaults_to_none(self):
+        """Test that url field defaults to None."""
+        author = PluginAuthor(name="John Doe")
+        assert author.url is None
 
 
 class TestCommandDefinition:

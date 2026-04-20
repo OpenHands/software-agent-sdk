@@ -100,21 +100,74 @@ When reviewing code, provide constructive feedback:
 
 **Next Steps**: [Clear action items]
 </ROLE>
+
+## Repository Memory
+- Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Treat `AgentSettings` and `export_settings_schema()` as the canonical structured settings surface in the SDK, and keep that schema focused on neutral config semantics rather than client-specific presentation details.
+- `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
+- `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
+- `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
+- Persisted SDK settings should use the direct `model_dump()` shape with a top-level `schema_version`; avoid adding wrapped payload formats or legacy migration shims in `openhands/sdk/settings/model.py`.
+- Because persisted settings are not in production yet, prefer removing temporary compatibility fields and serializers outright instead of carrying legacy settings shims in the SDK.
+- Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
+- `ConversationSettings` owns the conversation-scoped confirmation controls directly (`confirmation_mode`, `security_analyzer`); keep those fields top-level on the model and grouped into the exported `verification` section via schema metadata rather than nested helper models, and prefer the direct settings-model constructor `create_request(...)` over separate request-wrapper helpers.
+- Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
+- AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
+- Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
+- `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
+- Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
+- `LocalConversation.switch_profile()` still uses the public `LLMProfileStore` compatibility path (`~/.openhands/profiles` by default), while persisted `profile_ref` restoration flows through `LLMRegistry` (`LLM_PROFILES_DIR` / `~/.openhands/llm-profiles`). Treat them as separate compatibility surfaces unless you deliberately migrate both together.
+
+
+
+## Package-specific guidance
+When reviewing or modifying code, read the closest AGENTS file for the
+package(s) containing the changed files. If a PR spans multiple packages,
+consult each relevant package-level AGENTS.md.
+
+- SDK: [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md)
+- Subagents: [openhands-sdk/openhands/sdk/subagent/AGENTS.md](openhands-sdk/openhands/sdk/subagent/AGENTS.md)
+- Tools: [openhands-tools/openhands/tools/AGENTS.md](openhands-tools/openhands/tools/AGENTS.md)
+- Workspace: [openhands-workspace/openhands/workspace/AGENTS.md](openhands-workspace/openhands/workspace/AGENTS.md)
+- Agent server: [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md)
+- Eval config: [.github/run-eval/AGENTS.md](.github/run-eval/AGENTS.md)
+
+## API compatibility pointers
+
+- For SDK Python API deprecation/removal policy, read
+  [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
+  Public API removals require deprecation metadata with a removal target at
+  least **5 minor releases** after `deprecated_in`, and breaking SDK API
+  changes require at least a **MINOR** SemVer bump.
+- The SDK API breakage checker should treat metadata-only changes to
+  Pydantic `Field(...)` declarations as non-breaking, including adding,
+  removing, or editing `description`, `title`, `examples`,
+  `json_schema_extra`, and `deprecated` kwargs.
+- The SDK API breakage checker compares stringified `Field(...)` values by
+  parsing them as Python expressions after escaping literal newlines inside
+  quoted strings; this avoids false positives on multiline descriptions that
+  include embedded quotes like `'security_policy.j2'`.
+- For public REST APIs, read
+  [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
+  REST contract breaks need a deprecation notice and a runway of
+  **5 minor releases** before removing the old contract or making an
+  incompatible replacement mandatory.
+
 <DEV_SETUP>
-- Make sure you `make build` to configure the dependency first
+- Make sure you `make build` to configure the dependencies first
 - We use pre-commit hooks `.pre-commit-config.yaml` that includes:
   - type check through pyright
   - linting and formatter with `uv ruff`
 - NEVER USE `mypy`!
-- Do NOT commit ALL the file, just commit the relavant file you've changed!
-- in every commit message, you should add "Co-authored-by: openhands <openhands@all-hands.dev>"
+- Do NOT commit ALL the file, just commit the relevant file you've changed!
+- In every commit message, you should add "Co-authored-by: openhands <openhands@all-hands.dev>"
 - You can run pytest with `uv run pytest`
 
 # Instruction for fixing "E501 Line too long"
 
-- If it is just code, you can modify it so it spans multiple lne.
+- If it is just code, you can modify it so it spans multiple lines.
 - If it is a single-line string, you can break it into a multi-line string by doing "ABC" -> ("A"\n"B"\n"C")
 - If it is a long multi-line string (e.g., docstring), you should just add type ignore AFTER the ending """. You should NEVER ADD IT INSIDE the docstring.
+
 
 </DEV_SETUP>
 
@@ -157,6 +210,75 @@ mkdir -p .pr
 - Any analysis that helps reviewers understand the PR but isn't needed long-term
 </PR_ARTIFACTS>
 
+<REVIEW_HANDLING>
+- Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
+  - Does it fix a real bug or improve clarity significantly?
+  - Does it align with the project's engineering principles (simplicity, maintainability)?
+  - Is the suggested change proportional to the benefit, or does it add unnecessary complexity?
+- It's acceptable to respectfully decline suggestions that add verbosity without clear benefit, over-engineer for hypothetical edge cases, or contradict the project's pragmatic approach.
+- After addressing (or deciding not to address) inline review comments, mark the corresponding review threads as resolved.
+- Before resolving a thread, leave a reply comment that either explains the reason for dismissing the feedback or references the specific commit (e.g., commit SHA) that addressed the issue.
+- Prefer resolving threads only once fixes are pushed or a clear decision is documented.
+- Use the GitHub GraphQL API to reply to and resolve review threads (see below).
+
+## Resolving Review Threads via GraphQL
+
+The CI check `Review Thread Gate/unresolved-review-threads` will fail if there are unresolved review threads. To resolve threads programmatically:
+
+1. Get the thread IDs (replace `<OWNER>`, `<REPO>`, `<PR_NUMBER>`):
+```bash
+gh api graphql -f query='
+{
+  repository(owner: "<OWNER>", name: "<REPO>") {
+    pullRequest(number: <PR_NUMBER>) {
+      reviewThreads(first: 20) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body }
+          }
+        }
+      }
+    }
+  }
+}'
+```
+
+2. Reply to the thread explaining how the feedback was addressed:
+```bash
+gh api graphql -f query='
+mutation {
+  addPullRequestReviewThreadReply(input: {
+    pullRequestReviewThreadId: "<THREAD_ID>"
+    body: "Fixed in <COMMIT_SHA>"
+  }) {
+    comment { id }
+  }
+}'
+```
+
+3. Resolve the thread:
+```bash
+gh api graphql -f query='
+mutation {
+  resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+    thread { isResolved }
+  }
+}'
+```
+
+4. Get the failed workflow run ID and rerun it:
+```bash
+# Find the run ID from the failed check URL, or use:
+gh run list --repo <OWNER>/<REPO> --branch <BRANCH> --limit 5
+
+# Rerun failed jobs
+gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
+```
+</REVIEW_HANDLING>
+
+
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
 - Use existing packages/libraries instead of implementing yourselves whenever possible.
@@ -176,10 +298,11 @@ mkdir -p .pr
 - AFTER you edit ONE file, you should run pre-commit hook on that file via `uv run pre-commit run --files [filepath]` to make sure you didn't break it.
 - Don't write TOO MUCH test, you should write just enough to cover edge cases.
 - Check how we perform tests in .github/workflows/tests.yml
-- You should put unit tests in the corresponding test folder. For example, to test `openhands.sdk.tool/tool.py`, you should put tests under `openhands.sdk.tests/tool/test_tool.py`.
+- Put unit tests under the corresponding domain folder in `tests/` (e.g., `tests/sdk`, `tests/tools`, `tests/workspace`). For example, changes to `openhands-sdk/openhands/sdk/tool/tool.py` should be covered in `tests/sdk/tool/test_tool.py`.
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
+- For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
 # Behavior Tests
 
@@ -188,35 +311,25 @@ Behavior tests (prefix `b##_*`) in `tests/integration/tests/` are designed to ve
 Before adding or modifying behavior tests, review `tests/integration/BEHAVIOR_TESTS.md` for the latest workflow, expectations, and examples.
 </TESTING>
 
-<DOCUMENTATION_WORKFLOW>
-# Documentation Repository
+<AGENT_TMP_DIRECTORY>
+# Agent Temporary Directory Convention
 
-Documentation lives in **github.com/OpenHands/docs** under the `sdk/` folder. When adding features or modifying APIs, you MUST update documentation there.
+When tools need to store observation files (e.g., browser session recordings, task tracker data), use `.agent_tmp` as the directory name for consistency.
 
-## Workflow
+The browser session recording tool saves recordings to `.agent_tmp/observations/recording-{timestamp}/`.
 
-1. Clone docs repo: `git clone https://github.com/OpenHands/docs.git /workspace/project/openhands-docs`
-2. Create matching branch in both repos
-3. Update documentation in `openhands-docs/sdk/` folder
-4. **If you are creating a PR to `OpenHands/agent-sdk`**, you must also create a corresponding PR to `OpenHands/docs` with documentation updates in the `sdk/` folder
-5. Cross-reference both PRs in their descriptions
+This convention ensures tool-generated observation files are stored in a predictable location that can be easily:
+- Added to `.gitignore`
+- Cleaned up after agent sessions
+- Identified as agent-generated artifacts
 
-Example:
-```bash
-cd /workspace/project/openhands-docs
-git checkout -b <feature-name>
-# Edit files in sdk/ folder
-git add sdk/
-git commit -m "Document <feature>
-
-Co-authored-by: openhands <openhands@all-hands.dev>"
-git push -u origin <feature-name>
-```
-</DOCUMENTATION_WORKFLOW>
+Note: This is separate from `persistence_dir` which is used for conversation state persistence.
+</AGENT_TMP_DIRECTORY>
 
 <REPO>
 <PROJECT_STRUCTURE>
-- `openhands-sdk/` core SDK; `openhands-tools/` built-in tools; `openhands-workspace/` workspace management; `openhands-agent-server/` server runtime; `examples/` runnable patterns; `tests/` split by domain (`tests/sdk`, `tests/tools`, `tests/agent_server`, etc.).
+- This is a `uv`-managed Python monorepo (single `uv.lock` at repo root) with multiple distributable packages: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- `examples/` contains runnable patterns; `tests/` is split by domain (`tests/sdk`, `tests/tools`, `tests/workspace`, `tests/agent_server`, etc.).
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 </PROJECT_STRUCTURE>
 
@@ -226,12 +339,16 @@ git push -u origin <feature-name>
 - Run tests: `uv run pytest`
 - Build agent-server: `make build-server` (output: `dist/agent-server/`)
 - Clean caches: `make clean`
-- Run an example: `uv run python examples/01_standalone_sdk/main.py`
+- Run SDK examples: see [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
+- The example workflow runs `uv run pytest tests/examples/test_examples.py --run-examples`; each successful example must print an `EXAMPLE_COST: ...` line to stdout (use `EXAMPLE_COST: 0` for non-LLM examples).
+- Conversation plugins passed via `plugins=[...]` are lazy-loaded on the first `send_message()` or `run()`, so example code should inspect plugin-added skills or `resolved_plugins` only after that first interaction.
+- Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Keep the exported schema focused on neutral config structure and semantics; downstream apps should own client-specific ordering, icons, widgets, and slash-command presentation.
 </QUICK_COMMANDS>
 
 <REPO_CONFIG_NOTES>
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
-- Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
+- Repository guidance lives in the project root AGENTS.md (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
+
 </REPO>

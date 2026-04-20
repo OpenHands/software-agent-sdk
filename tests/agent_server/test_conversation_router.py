@@ -1,6 +1,6 @@
 """Tests for conversation_router.py endpoints."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationContractMismatchError,
+    ConversationService,
+)
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -485,6 +488,7 @@ def test_start_conversation_new(
         # Create request data with proper serialization
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -531,6 +535,7 @@ def test_start_conversation_existing(
         # Create request data with proper serialization
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -549,6 +554,43 @@ def test_start_conversation_existing(
 
         # Verify service was called
         mock_conversation_service.start_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_contract_mismatch_returns_409(
+    client, mock_conversation_service
+):
+    mock_conversation_service.start_conversation.side_effect = (
+        ConversationContractMismatchError(
+            "Conversation 123 exists but is only available through the ACP "
+            "conversation contract. Use /api/acp/conversations or attach with "
+            "ACPAgent."
+        )
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "kind": "Agent",
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 409
+        assert "ACP conversation contract" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
@@ -590,6 +632,7 @@ def test_start_conversation_minimal_request(
         # Create minimal valid request
         minimal_request = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -605,6 +648,41 @@ def test_start_conversation_minimal_request(
         assert response.status_code == 201
         data = response.json()
         assert data["id"] == str(sample_conversation_info.id)
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_legacy_request_without_agent_kind(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """v1 conversation creation should preserve the pre-ACP agent shape."""
+
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        mock_conversation_service.start_conversation.assert_called_once()
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1047,7 +1125,6 @@ def test_generate_conversation_title_success(
 ):
     """Test generate_conversation_title endpoint with successful generation."""
 
-    # Mock the service response
     mock_conversation_service.generate_conversation_title.return_value = (
         "Generated Title"
     )
@@ -1068,12 +1145,11 @@ def test_generate_conversation_title_success(
         data = response.json()
         assert data["title"] == "Generated Title"
 
-        # Verify service was called with correct parameters
         mock_conversation_service.generate_conversation_title.assert_called_once()
         call_args = mock_conversation_service.generate_conversation_title.call_args
         assert call_args[0][0] == sample_conversation_id
-        assert call_args[0][1] == 30  # max_length
-        assert call_args[0][2] is None  # llm (default)
+        assert call_args[0][1] == 30
+        assert call_args[0][2] is None
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1083,7 +1159,6 @@ def test_generate_conversation_title_with_llm(
 ):
     """Test generate_conversation_title endpoint with custom LLM."""
 
-    # Mock the service response
     mock_conversation_service.generate_conversation_title.return_value = (
         "Custom LLM Title"
     )
@@ -1111,12 +1186,11 @@ def test_generate_conversation_title_with_llm(
         data = response.json()
         assert data["title"] == "Custom LLM Title"
 
-        # Verify service was called
         mock_conversation_service.generate_conversation_title.assert_called_once()
         call_args = mock_conversation_service.generate_conversation_title.call_args
         assert call_args[0][0] == sample_conversation_id
-        assert call_args[0][1] == 40  # max_length
-        assert call_args[0][2] is not None  # llm provided
+        assert call_args[0][1] == 40
+        assert call_args[0][2] is not None
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1126,7 +1200,6 @@ def test_generate_conversation_title_failure(
 ):
     """Test generate_conversation_title endpoint with generation failure."""
 
-    # Mock the service response - generation failed
     mock_conversation_service.generate_conversation_title.return_value = None
 
     client.app.dependency_overrides[get_conversation_service] = (
@@ -1141,9 +1214,7 @@ def test_generate_conversation_title_failure(
             json=request_data,
         )
 
-        assert response.status_code == 500  # Internal Server Error
-
-        # Verify service was called
+        assert response.status_code == 500
         mock_conversation_service.generate_conversation_title.assert_called_once()
     finally:
         client.app.dependency_overrides.clear()
@@ -1159,23 +1230,34 @@ def test_generate_conversation_title_invalid_params(
     )
 
     try:
-        # Test with max_length too low
         request_data = {"max_length": 0}
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/generate_title",
             json=request_data,
         )
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 422
 
-        # Test with max_length too high
         request_data = {"max_length": 201}
         response = client.post(
             f"/api/conversations/{sample_conversation_id}/generate_title",
             json=request_data,
         )
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 422
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_generate_title_endpoint_is_deprecated_in_openapi(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    openapi_schema = response.json()
+    operation = openapi_schema["paths"][
+        "/api/conversations/{conversation_id}/generate_title"
+    ]["post"]
+
+    assert operation.get("deprecated") is True
+    assert "scheduled for removal" in operation["description"]
 
 
 def test_start_conversation_with_tool_module_qualnames(
@@ -1197,6 +1279,7 @@ def test_start_conversation_with_tool_module_qualnames(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1257,6 +1340,7 @@ def test_start_conversation_without_tool_module_qualnames(
     try:
         request_data = {
             "agent": {
+                "kind": "Agent",
                 "llm": {
                     "model": "gpt-4o",
                     "api_key": "test-key",
@@ -1280,6 +1364,77 @@ def test_start_conversation_without_tool_module_qualnames(
         assert hasattr(request_arg, "tool_module_qualnames")
         # Should default to empty dict
         assert request_arg.tool_module_qualnames == {}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_autotitle_defaults_to_true(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """autotitle defaults to True when not supplied in the request."""
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "kind": "Agent",
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert request_arg.autotitle is True
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_autotitle_false(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """autotitle=False is forwarded correctly to the service."""
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "kind": "Agent",
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "autotitle": False,
+        }
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert request_arg.autotitle is False
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1461,5 +1616,184 @@ def test_update_secrets_with_mixed_formats(
         assert "STATIC_SECRET" in secrets_dict
         assert "LOOKUP_SECRET" in secrets_dict
 
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+# --- switch_profile endpoint tests ---
+
+
+def test_switch_conversation_profile_success(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test switch_conversation_profile endpoint with a valid profile."""
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_profile",
+            json={"profile_name": "gpt"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+
+        mock_conversation_service.get_event_service.assert_called_once_with(
+            sample_conversation_id
+        )
+        mock_event_service.get_conversation.assert_called_once()
+        mock_conversation.switch_profile.assert_called_once_with("gpt")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_profile_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test switch_conversation_profile endpoint when conversation is not found."""
+    mock_conversation_service.get_event_service.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_profile",
+            json={"profile_name": "gpt"},
+        )
+
+        assert response.status_code == 404
+        mock_conversation_service.get_event_service.assert_called_once_with(
+            sample_conversation_id
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_profile_nonexistent_profile(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test switch_conversation_profile when the profile does not exist on disk."""
+    mock_conversation = MagicMock()
+    mock_conversation.switch_profile.side_effect = FileNotFoundError(
+        "Profile 'missing' not found"
+    )
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_profile",
+            json={"profile_name": "missing"},
+        )
+
+        assert response.status_code == 404
+        assert "missing" in response.json()["detail"]
+        mock_conversation.switch_profile.assert_called_once_with("missing")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_profile_corrupted_profile(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test switch_conversation_profile when the profile is corrupted or invalid."""
+    mock_conversation = MagicMock()
+    mock_conversation.switch_profile.side_effect = ValueError("Invalid profile format")
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_profile",
+            json={"profile_name": "corrupted"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid profile format" in response.json()["detail"]
+        mock_conversation.switch_profile.assert_called_once_with("corrupted")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_success(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """Test fork endpoint returns 201 with forked conversation info."""
+    mock_conversation_service.fork_conversation.return_value = sample_conversation_info
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"title": "Forked", "reset_metrics": True},
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+        mock_conversation_service.fork_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test fork returns 404 when source conversation doesn't exist."""
+    mock_conversation_service.fork_conversation.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_duplicate_id_returns_409(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """Test fork returns 409 when the requested fork ID already exists."""
+    mock_conversation_service.fork_conversation.side_effect = ValueError(
+        f"Conversation with id {sample_conversation_id} already exists"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"id": str(sample_conversation_id)},
+        )
+
+        assert response.status_code == 409
     finally:
         client.app.dependency_overrides.clear()

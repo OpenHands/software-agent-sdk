@@ -88,7 +88,7 @@ agent_context = AgentContext(
     # user_message_suffix is appended to each user message
     user_message_suffix="The first character of your response should be 'I'",
     # You can also enable automatic load skills from
-    # public registry at https://github.com/OpenHands/skills
+    # public registry at https://github.com/OpenHands/extensions
     load_public_skills=True,
 )
 

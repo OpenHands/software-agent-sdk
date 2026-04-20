@@ -2,21 +2,22 @@ from __future__ import annotations
 
 import pathlib
 from collections.abc import Mapping
+from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.prompts import render_template
-from openhands.sdk.context.skills import (
-    Skill,
-    SkillKnowledge,
-    load_public_skills,
-    load_user_skills,
-    to_prompt,
-)
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue
+from openhands.sdk.skills import (
+    Skill,
+    SkillKnowledge,
+    load_available_skills,
+    to_prompt,
+)
+from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
 
 
 logger = get_logger(__name__)
@@ -67,8 +68,15 @@ class AgentContext(BaseModel):
         default=False,
         description=(
             "Whether to automatically load skills from the public OpenHands "
-            "skills repository at https://github.com/OpenHands/skills. "
+            "skills repository at https://github.com/OpenHands/extensions. "
             "This allows you to get the latest skills without SDK updates."
+        ),
+    )
+    marketplace_path: str | None = Field(
+        default=DEFAULT_MARKETPLACE_PATH,
+        description=(
+            "Relative marketplace JSON path within the public skills repository. "
+            "Set to None to load all public skills without marketplace filtering."
         ),
     )
     secrets: Mapping[str, SecretValue] | None = Field(
@@ -78,6 +86,16 @@ class AgentContext(BaseModel):
             "Secrets are used for authentication and sensitive data handling. "
             "Values can be either strings or SecretSource instances "
             "(str | SecretSource)."
+        ),
+    )
+    current_datetime: datetime | str | None = Field(
+        default_factory=datetime.now,
+        description=(
+            "Current date and time information to provide to the agent. "
+            "Can be a datetime object (which will be formatted as ISO 8601) "
+            "or a pre-formatted string. When provided, this information is "
+            "included in the system prompt to give the agent awareness of "
+            "the current time context. Defaults to the current datetime."
         ),
     )
 
@@ -95,50 +113,31 @@ class AgentContext(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _load_user_skills(self):
-        """Load user skills from home directory if enabled."""
-        if not self.load_user_skills:
+    def _load_auto_skills(self):
+        """Load user and/or public skills if enabled."""
+        if not self.load_user_skills and not self.load_public_skills:
             return self
 
-        try:
-            user_skills = load_user_skills()
-            # Merge user skills with explicit skills, avoiding duplicates
-            existing_names = {skill.name for skill in self.skills}
-            for user_skill in user_skills:
-                if user_skill.name not in existing_names:
-                    self.skills.append(user_skill)
-                else:
-                    logger.warning(
-                        f"Skipping user skill '{user_skill.name}' "
-                        f"(already in explicit skills)"
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to load user skills: {str(e)}")
+        auto_skills = load_available_skills(
+            work_dir=None,
+            include_user=self.load_user_skills,
+            include_project=False,
+            include_public=self.load_public_skills,
+            marketplace_path=self.marketplace_path,
+        )
+
+        existing_names = {skill.name for skill in self.skills}
+        for name, skill in auto_skills.items():
+            if name not in existing_names:
+                self.skills.append(skill)
+            else:
+                logger.warning(
+                    f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
+                )
 
         return self
 
-    @model_validator(mode="after")
-    def _load_public_skills(self):
-        """Load public skills from OpenHands skills repository if enabled."""
-        if not self.load_public_skills:
-            return self
-        try:
-            public_skills = load_public_skills()
-            # Merge public skills with explicit skills, avoiding duplicates
-            existing_names = {skill.name for skill in self.skills}
-            for public_skill in public_skills:
-                if public_skill.name not in existing_names:
-                    self.skills.append(public_skill)
-                else:
-                    logger.warning(
-                        f"Skipping public skill '{public_skill.name}' "
-                        f"(already in existing skills)"
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to load public skills: {str(e)}")
-        return self
-
-    def get_secret_infos(self) -> list[dict[str, str]]:
+    def get_secret_infos(self) -> list[dict[str, str | None]]:
         """Get secret information (name and description) from the secrets field.
 
         Returns:
@@ -148,7 +147,7 @@ class AgentContext(BaseModel):
         """
         if not self.secrets:
             return []
-        secret_infos = []
+        secret_infos: list[dict[str, str | None]] = []
         for name, secret_value in self.secrets.items():
             description = None
             if isinstance(secret_value, SecretSource):
@@ -156,10 +155,25 @@ class AgentContext(BaseModel):
             secret_infos.append({"name": name, "description": description})
         return secret_infos
 
+    def get_formatted_datetime(self) -> str | None:
+        """Get formatted datetime string for inclusion in prompts.
+
+        Returns:
+            Formatted datetime string, or None if current_datetime is not set.
+            If current_datetime is a datetime object, it's formatted as ISO 8601.
+            If current_datetime is already a string, it's returned as-is.
+        """
+        if self.current_datetime is None:
+            return None
+        if isinstance(self.current_datetime, datetime):
+            return self.current_datetime.isoformat()
+        return self.current_datetime
+
     def get_system_message_suffix(
         self,
         llm_model: str | None = None,
         llm_model_canonical: str | None = None,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
     ) -> str | None:
         """Get the system message with repo skill content and custom suffix.
 
@@ -169,6 +183,13 @@ class AgentContext(BaseModel):
         - Conversation instructions (e.g., user preferences, task details)
         - Repository-specific instructions (collected from repo skills)
         - Available skills list (for AgentSkills-format and triggered skills)
+
+        Args:
+            llm_model: Optional LLM model name for vendor-specific skill filtering.
+            llm_model_canonical: Optional canonical LLM model name.
+            additional_secret_infos: Optional list of additional secret info dicts
+                (with 'name' and 'description' keys) to merge with agent_context
+                secrets. Typically passed from conversation's secret_registry.
 
         Skill categorization:
         - AgentSkills-format (SKILL.md): Always in <available_skills> (progressive
@@ -225,12 +246,21 @@ class AgentContext(BaseModel):
             )
 
         # Build the workspace context information
+        # Merge agent_context secrets with additional secrets from registry
         secret_infos = self.get_secret_infos()
+        if additional_secret_infos:
+            # Merge: additional secrets override agent_context secrets by name
+            secret_dict = {s["name"]: s for s in secret_infos}
+            for additional in additional_secret_infos:
+                secret_dict[additional["name"]] = additional
+            secret_infos = list(secret_dict.values())
+        formatted_datetime = self.get_formatted_datetime()
         has_content = (
             repo_skills
             or self.system_message_suffix
             or secret_infos
             or available_skills_prompt
+            or formatted_datetime
         )
         if has_content:
             formatted_text = render_template(
@@ -240,6 +270,7 @@ class AgentContext(BaseModel):
                 system_message_suffix=self.system_message_suffix or "",
                 secret_infos=secret_infos,
                 available_skills_prompt=available_skills_prompt,
+                current_datetime=formatted_datetime,
             ).strip()
             return formatted_text
         elif self.system_message_suffix and self.system_message_suffix.strip():

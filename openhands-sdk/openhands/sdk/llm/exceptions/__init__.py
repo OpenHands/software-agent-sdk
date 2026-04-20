@@ -1,4 +1,8 @@
-from .classifier import is_context_window_exceeded, looks_like_auth_error
+from .classifier import (
+    is_context_window_exceeded,
+    looks_like_auth_error,
+    looks_like_malformed_conversation_history_error,
+)
 from .mapping import map_provider_exception
 from .types import (
     FunctionCallConversionError,
@@ -7,8 +11,10 @@ from .types import (
     LLMAuthenticationError,
     LLMBadRequestError,
     LLMContextWindowExceedError,
+    LLMContextWindowTooSmallError,
     LLMError,
     LLMMalformedActionError,
+    LLMMalformedConversationHistoryError,
     LLMNoActionError,
     LLMNoResponseError,
     LLMRateLimitError,
@@ -31,6 +37,8 @@ __all__ = [
     "FunctionCallNotExistsError",
     "LLMNoResponseError",
     "LLMContextWindowExceedError",
+    "LLMMalformedConversationHistoryError",
+    "LLMContextWindowTooSmallError",
     "LLMAuthenticationError",
     "LLMRateLimitError",
     "LLMTimeoutError",
@@ -41,5 +49,6 @@ __all__ = [
     # Helpers
     "is_context_window_exceeded",
     "looks_like_auth_error",
+    "looks_like_malformed_conversation_history_error",
     "map_provider_exception",
 ]

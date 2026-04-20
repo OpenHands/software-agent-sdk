@@ -25,7 +25,7 @@ def test_model_canonical_name_used_for_capabilities(monkeypatch):
     def fake_get_model_info(secret_api_key, base_url, model):
         model_info_calls.append(model)
         if model == "openai/gpt-5-mini":
-            return {"supports_vision": True, "max_input_tokens": 1024}
+            return {"supports_vision": True, "max_input_tokens": 128000}
         return None
 
     def fake_supports_vision(model: str) -> bool:
@@ -48,7 +48,7 @@ def test_model_canonical_name_used_for_capabilities(monkeypatch):
     )
 
     # Model info and vision support come from the canonical model name
-    assert real_llm.model_info == {"supports_vision": True, "max_input_tokens": 1024}
+    assert real_llm.model_info == {"supports_vision": True, "max_input_tokens": 128000}
     assert proxy_llm.model_info == real_llm.model_info
     assert real_llm.vision_is_active() is True
     assert proxy_llm.vision_is_active() is True

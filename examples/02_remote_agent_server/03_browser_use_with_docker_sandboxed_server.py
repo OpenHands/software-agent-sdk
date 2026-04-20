@@ -31,18 +31,32 @@ def detect_platform():
     return "linux/amd64"
 
 
+def get_server_image():
+    """Get the server image tag, using PR-specific image in CI."""
+    platform_str = detect_platform()
+    arch = "arm64" if "arm64" in platform_str else "amd64"
+    # SDK_SHA is the canonical commit SHA set by CI workflows (avoids the
+    # built-in GITHUB_SHA which resolves to the merge-commit on PRs).
+    sha = os.getenv("SDK_SHA") or os.getenv("GITHUB_SHA")
+    if sha:
+        return f"ghcr.io/openhands/agent-server:{sha[:7]}-python-{arch}"
+    return "ghcr.io/openhands/agent-server:latest-python"
+
+
 # Create a Docker-based remote workspace with extra ports for browser access.
 # Use `DockerWorkspace` with a pre-built image or `DockerDevWorkspace` to
 # automatically build the image on-demand.
 #    with DockerDevWorkspace(
 #        # dynamically build agent-server image
-#        base_image="nikolaik/python-nodejs:python3.13-nodejs22",
+#        base_image="nikolaik/python-nodejs:python3.13-nodejs22-slim",
 #        host_port=8010,
 #        platform=detect_platform(),
 #    ) as workspace:
+server_image = get_server_image()
+logger.info(f"Using server image: {server_image}")
 with DockerWorkspace(
-    server_image="ghcr.io/openhands/agent-server:latest-python",
-    host_port=8011,
+    server_image=server_image,
+    # host_port auto-selects an available port when not specified
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
 ) as workspace:

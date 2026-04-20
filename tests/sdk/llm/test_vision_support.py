@@ -12,12 +12,12 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         # Plain model names
         "claude-sonnet-4-5-20250929",
         "gemini-2.5-flash",
-        "gemini-3-pro-preview",
+        "gemini-3.1-pro-preview",
         # With provider/proxy prefixes
         "anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/gemini-2.5-flash",
-        "litellm_proxy/gemini-3-pro-preview",
+        "litellm_proxy/gemini-3.1-pro-preview",
     ],
 )
 def test_vision_is_active_supported_models(model):
@@ -56,7 +56,7 @@ def _has_input_image(item: dict) -> bool:
     [
         "claude-sonnet-4-5-20250929",
         "gemini-2.5-flash",
-        "gemini-3-pro-preview",
+        "gemini-3.1-pro-preview",
     ],
 )
 def test_chat_serializes_images_when_vision_supported(model):
@@ -112,6 +112,40 @@ def test_message_with_image_does_not_enable_vision_for_text_only_model(
     )
 
 
+def test_disable_vision_overrides_litellm_detection():
+    """Test that disable_vision=True overrides LiteLLM's vision capability detection.
+
+    This is important for models like glm-4.7 where LiteLLM incorrectly reports
+    vision support but the actual API (OpenRouter) only accepts text input.
+    """
+    # glm-4.7 via OpenRouter is reported by LiteLLM as vision-capable,
+    # but we explicitly disable vision to prevent API errors
+    llm = LLM(
+        model="litellm_proxy/openrouter/z-ai/glm-4.7",
+        api_key=SecretStr("k"),
+        usage_id="t",
+        disable_vision=True,
+    )
+
+    # Vision should be disabled despite LiteLLM reporting support
+    assert llm.vision_is_active() is False
+
+    # Messages with images should not include image_url parts
+    msg = Message(
+        role="user",
+        content=[
+            TextContent(text="see image"),
+            ImageContent(image_urls=["https://example.com/image.png"]),
+        ],
+    )
+    formatted = llm.format_messages_for_llm([msg])
+    assert isinstance(formatted, list) and len(formatted) == 1
+
+    # Verify no image_url parts in formatted message
+    parts = _collect_image_url_parts(formatted[0])
+    assert len(parts) == 0
+
+
 @patch(
     "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": False},
@@ -140,7 +174,7 @@ def test_message_with_image_in_responses_does_not_include_input_image(
     [
         "claude-sonnet-4-5-20250929",
         "gemini-2.5-flash",
-        "gemini-3-pro-preview",
+        "gemini-3.1-pro-preview",
     ],
 )
 def test_responses_serializes_images_when_vision_supported(model):

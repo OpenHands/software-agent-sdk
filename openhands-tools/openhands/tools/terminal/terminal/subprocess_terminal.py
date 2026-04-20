@@ -1,16 +1,25 @@
 """PTY-based terminal backend implementation (replaces pipe-based subprocess)."""
 
-import fcntl
 import os
-import pty
+import platform
 import re
-import select
 import shutil
 import signal
 import subprocess
 import threading
 import time
 from collections import deque
+
+
+if platform.system() == "Windows":
+    raise ImportError(
+        "SubprocessTerminal is not supported on Windows "
+        "(requires Unix-only modules: fcntl, pty, select)"
+    )
+
+import fcntl
+import pty
+import select
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
@@ -21,11 +30,31 @@ from openhands.tools.terminal.constants import (
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
+from openhands.tools.terminal.terminal.interface import parse_ctrl_key
 
 
 logger = get_logger(__name__)
 
 ENTER = b"\n"
+
+# Map normalized special key names to ANSI escape bytes for PTY.
+_SUBPROCESS_SPECIALS: dict[str, bytes] = {
+    "ENTER": ENTER,
+    "TAB": b"\t",
+    "BS": b"\x7f",  # Backspace (DEL)
+    "ESC": b"\x1b",
+    "UP": b"\x1b[A",
+    "DOWN": b"\x1b[B",
+    "RIGHT": b"\x1b[C",
+    "LEFT": b"\x1b[D",
+    "HOME": b"\x1b[H",
+    "END": b"\x1b[F",
+    "PGUP": b"\x1b[5~",
+    "PGDN": b"\x1b[6~",
+    "C-L": b"\x0c",  # Ctrl+L
+    "C-D": b"\x04",  # Ctrl+D (EOF)
+    "C-C": b"\x03",  # Ctrl+C (SIGINT)
+}
 
 
 def _normalize_eols(raw: bytes) -> bytes:
@@ -307,6 +336,24 @@ class SubprocessTerminal(TerminalInterface):
 
     # ------------------------- Public API -------------------------
 
+    # Threshold for multi-line commands that need flow-controlled sending.
+    # Commands with more lines than this use paced line-by-line sending to avoid
+    # overwhelming the shell's input processing (see GitHub issue #2181).
+    # Value chosen based on empirical testing: shell input overflow typically
+    # occurs around 50+ lines on macOS, so 20 provides safety margin.
+    _MULTILINE_THRESHOLD: int = 20
+
+    # Timeout for select() when waiting for PTY to be writable (seconds).
+    _SELECT_WRITE_TIMEOUT: float = 0.05
+
+    # Small delay between lines for pacing (seconds). This delay is intentional
+    # and cannot be replaced by select() alone: select() only checks kernel
+    # buffer availability, but the PTY is almost always writable. The actual
+    # bottleneck is the shell's line discipline which can't process input fast
+    # enough. Without this delay, long heredocs hang on macOS even though
+    # select() reports the fd as writable. (See GitHub issue #2181)
+    _LINE_PACING_DELAY: float = 0.002
+
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send keystrokes to the PTY.
 
@@ -314,47 +361,36 @@ class SubprocessTerminal(TerminalInterface):
           - Plain text
           - Ctrl sequences: 'C-a'..'C-z' (Ctrl+C sends ^C byte)
           - Special names: 'ENTER','TAB','BS','ESC','UP','DOWN','LEFT','RIGHT',
-                           'HOME','END','PGUP','PGDN','C-L','C-D'
+                           'HOME','END','PGUP','PGDN','C-L','C-D','C-C'
+
+        For multi-line commands exceeding _MULTILINE_THRESHOLD lines, sends
+        line-by-line with pacing to prevent overwhelming the shell's input
+        processing (fixes heredoc hang issue on macOS, see #2181).
         """
         if not self._initialized:
             raise RuntimeError("PTY terminal is not initialized")
-
-        specials = {
-            "ENTER": ENTER,
-            "TAB": b"\t",
-            "BS": b"\x7f",  # Backspace (DEL)
-            "ESC": b"\x1b",
-            "UP": b"\x1b[A",
-            "DOWN": b"\x1b[B",
-            "RIGHT": b"\x1b[C",
-            "LEFT": b"\x1b[D",
-            "HOME": b"\x1b[H",
-            "END": b"\x1b[F",
-            "PGUP": b"\x1b[5~",
-            "PGDN": b"\x1b[6~",
-            "C-L": b"\x0c",  # Ctrl+L
-            "C-D": b"\x04",  # Ctrl+D (EOF)
-        }
 
         upper = text.upper().strip()
         payload: bytes | None = None
 
         # Named specials
-        if upper in specials:
-            payload = specials[upper]
+        if upper in _SUBPROCESS_SPECIALS:
+            payload = _SUBPROCESS_SPECIALS[upper]
             # Do NOT auto-append another EOL; special already includes it when needed.
             append_eol = False
-        # Generic Ctrl-<letter>, including C-C (preferred over sending SIGINT directly)
-        elif upper.startswith(("C-", "CTRL-", "CTRL+")):
-            # last char after dash/plus is the key
-            key = upper.split("-", 1)[-1].split("+", 1)[-1]
-            if len(key) == 1 and "A" <= key <= "Z":
-                payload = bytes([ord(key) & 0x1F])
-            else:
-                # Unknown form; fall back to raw text
-                payload = text.encode("utf-8", "ignore")
-            append_eol = False  # ctrl combos are “instant”
+        # Generic Ctrl-<letter>
+        elif (ctrl := parse_ctrl_key(text)) is not None:
+            # ctrl is "C-x" — extract the letter
+            key_char = ctrl[-1].upper()
+            payload = bytes([ord(key_char) & 0x1F])
+            append_eol = False  # ctrl combos are "instant"
         else:
+            # Check if this is a long multi-line command that needs chunked sending
+            input_lines = text.split("\n")
+            if len(input_lines) > self._MULTILINE_THRESHOLD:
+                self._send_multiline_with_flow_control(input_lines, enter)
+                return
+
             raw = text.encode("utf-8", "ignore")
             payload = _normalize_eols(raw) if enter else raw
             append_eol = enter and not payload.endswith(ENTER)
@@ -366,6 +402,42 @@ class SubprocessTerminal(TerminalInterface):
         self._current_command_running = self._current_command_running or (
             append_eol or payload.endswith(ENTER)
         )
+
+    def _wait_for_pty_writable(self, timeout: float) -> bool:
+        """Wait for the PTY to be ready for writing using select().
+
+        Returns True if the PTY is writable, False if timeout occurred.
+        """
+        if self._pty_master_fd is None:
+            return False
+        _, writable, _ = select.select([], [self._pty_master_fd], [], timeout)
+        return len(writable) > 0
+
+    def _send_multiline_with_flow_control(self, lines: list[str], enter: bool) -> None:
+        """Send multi-line command with flow control and pacing.
+
+        Uses select() to ensure the PTY is writable, plus a small inter-line
+        delay for pacing. The delay is necessary because select() only checks
+        kernel buffer space, not shell input processing capacity.
+        """
+        for i, line in enumerate(lines):
+            is_last = i == len(lines) - 1
+            payload = line.encode("utf-8", "ignore")
+
+            # Add newline between lines, and at the end if enter=True
+            if not is_last or enter:
+                payload += ENTER
+
+            # Wait for PTY to be writable (handles kernel buffer backpressure)
+            self._wait_for_pty_writable(self._SELECT_WRITE_TIMEOUT)
+
+            self._write_pty(payload)
+
+            # Add small pacing delay between lines (handles shell processing)
+            if not is_last:
+                time.sleep(self._LINE_PACING_DELAY)
+
+        self._current_command_running = True
 
     def read_screen(self) -> str:
         """Read the current terminal screen content.

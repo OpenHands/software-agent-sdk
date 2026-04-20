@@ -7,12 +7,37 @@ import libtmux
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
-from openhands.tools.terminal.constants import HISTORY_LIMIT
+from openhands.tools.terminal.constants import (
+    HISTORY_LIMIT,
+    TMUX_SESSION_HEIGHT,
+    TMUX_SESSION_WIDTH,
+    TMUX_SOCKET_NAME,
+)
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
+from openhands.tools.terminal.terminal.interface import parse_ctrl_key
 
 
 logger = get_logger(__name__)
+
+# Map normalized special key names to tmux key names.
+_TMUX_SPECIALS: dict[str, str] = {
+    "ENTER": "Enter",
+    "TAB": "Tab",
+    "BS": "BSpace",
+    "ESC": "Escape",
+    "UP": "Up",
+    "DOWN": "Down",
+    "LEFT": "Left",
+    "RIGHT": "Right",
+    "HOME": "Home",
+    "END": "End",
+    "PGUP": "PPage",
+    "PGDN": "NPage",
+    "C-L": "C-l",
+    "C-D": "C-d",
+    "C-C": "C-c",
+}
 
 
 class TmuxTerminal(TerminalInterface):
@@ -42,7 +67,8 @@ class TmuxTerminal(TerminalInterface):
             return
 
         env = sanitized_env()
-        self.server = libtmux.Server(environment=env)
+        # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
+        self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
@@ -56,8 +82,8 @@ class TmuxTerminal(TerminalInterface):
             session_name=session_name,
             start_directory=self.work_dir,
             kill_session=True,
-            x=1000,
-            y=1000,
+            x=TMUX_SESSION_WIDTH,
+            y=TMUX_SESSION_HEIGHT,
         )
         for k, v in env.items():
             self.session.set_environment(k, v)
@@ -108,14 +134,39 @@ class TmuxTerminal(TerminalInterface):
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send text/keys to the tmux pane.
 
+        Supports:
+          - Plain text (uses literal paste; preserves spaces/newlines)
+          - Named specials: ENTER, TAB, BS, ESC, UP, DOWN, LEFT, RIGHT,
+            HOME, END, PGUP, PGDN, C-L, C-D, C-C
+          - Generic Ctrl sequences: C-a..C-z, CTRL-x, CTRL+x
+
         Args:
             text: Text or key sequence to send
-            enter: Whether to send Enter key after the text
+            enter: Whether to send Enter key after the text.
+                   Ignored for special/ctrl keys.
         """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys(text, enter=enter)
+        # Map normalized names to tmux key names
+        upper = text.strip().upper()
+
+        # 1) Named specials
+        if upper in _TMUX_SPECIALS:
+            self.pane.send_keys(_TMUX_SPECIALS[upper], enter=False)
+            return
+
+        # 2) Generic Ctrl-<letter>
+        ctrl = parse_ctrl_key(text)
+        if ctrl is not None:
+            self.pane.send_keys(ctrl, enter=False)
+            return
+
+        # 3) Plain text — use literal=True so tmux doesn't split on
+        #    whitespace or interpret special tokens.
+        self.pane.send_keys(text, enter=False, literal=True)
+        if enter and not text.endswith("\n"):
+            self.pane.send_keys("Enter", enter=False)
 
     def read_screen(self) -> str:
         """Read the current tmux pane content.
@@ -136,11 +187,19 @@ class TmuxTerminal(TerminalInterface):
         return content
 
     def clear_screen(self) -> None:
-        """Clear the tmux pane screen and history."""
+        """Clear the tmux pane screen and history.
+
+        We intentionally avoid sending ``C-l`` (Ctrl+L) because the form-feed
+        control character (``^L``) can leak into the shell input buffer over SSH
+        connections.
+
+        Instead, we run the ``clear`` command to clear the visible screen, then
+        use tmux's ``clear-history`` to remove the scrollback buffer.
+        """
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        self.pane.send_keys("C-l", enter=False)
+        self.pane.send_keys("clear", enter=True)
         time.sleep(0.1)
         self.pane.cmd("clear-history")
 

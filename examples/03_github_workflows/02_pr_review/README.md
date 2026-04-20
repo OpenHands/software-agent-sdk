@@ -2,11 +2,11 @@
 
 This example demonstrates how to set up a GitHub Actions workflow for automated pull request reviews using the OpenHands agent SDK. When a PR is labeled with `review-this` or when openhands-agent is added as a reviewer, OpenHands will analyze the changes and provide detailed, constructive feedback.
 
+**Note**: The actual review scripts now live in the [OpenHands/extensions](https://github.com/OpenHands/extensions/tree/main/plugins/pr-review) repository. This directory contains an example workflow that references those scripts.
+
 ## Files
 
-- **`workflow.yml`**: GitHub Actions workflow file that triggers on PR labels
-- **`agent_script.py`**: Python script that runs the OpenHands agent for PR review
-- **`prompt.py`**: The prompt asking the agent to write the PR review
+- **`workflow.yml`**: Example GitHub Actions workflow file that runs the PR review agent
 - **`README.md`**: This documentation file
 
 ## Features
@@ -18,7 +18,13 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - See exactly which lines the feedback refers to
   - Address issues one by one
   - Have focused discussions on specific code sections
-- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
+- **Review Context Awareness**: The agent considers previous review history:
+  - **Previous reviews**: Sees all past review decisions (APPROVED, CHANGES_REQUESTED, etc.)
+  - **Review threads**: Fetches all review threads including their resolution status
+  - **Smart commenting**: Avoids repeating issues that have already been raised and addressed
+  - **Unresolved focus**: Prioritizes unresolved threads that may still need attention
+  - **Pagination limits**: Fetches up to 100 threads per page (with pagination) and up to 50 comments per thread. For PRs with extensive review history exceeding these limits, older threads/comments may be omitted.
+- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/extensions>:
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
 - **Complete Diff Upfront**: The agent receives the complete git diff in the initial message for efficient review
@@ -32,6 +38,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - Potential issues and security concerns
   - Specific improvement suggestions
 - **GitHub API Integration**: Uses the GitHub API to post inline review comments directly on specific lines of code
+- **Version Control**: Use `extensions-version` to pin to a specific version tag or branch of the extensions repository
 
 ## Setup
 
@@ -54,18 +61,20 @@ Set the following secrets in your GitHub repository settings:
 
 ### 3. Customize the workflow (optional)
 
-Edit `.github/workflows/pr-review-by-openhands.yml` to customize the configuration in the `env` section:
+Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
 
 ```yaml
-env:
-    # Optional: Use a different LLM model
-    LLM_MODEL: openhands/claude-sonnet-4-5-20250929
-    # Optional: Use a custom LLM base URL
-    # LLM_BASE_URL: 'https://custom-api.example.com'
-    # Optional: Choose review style ('standard' or 'roasted')
-    # - 'standard': Pragmatic, constructive feedback (default)
-    # - 'roasted': Linus Torvalds style brutally honest review
-    REVIEW_STYLE: standard
+            - name: Run PR Review
+              uses: OpenHands/extensions/plugins/pr-review@main
+              with:
+                  # Customize these inputs as needed
+                  llm-model: anthropic/claude-sonnet-4-5-20250929
+                  llm-base-url: ''
+                  review-style: roasted
+                  # Secrets
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  lmnr-api-key: ${{ secrets.LMNR_PROJECT_API_KEY }}
 ```
 
 ### 4. Create the review label
@@ -100,4 +109,137 @@ There are two ways to trigger an automated review of a pull request:
 4. The workflow will automatically start and analyze the changes
 5. Review comments will be posted to the PR when complete
 
-**Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
+**Note**: Adding labels or requesting a *new* reviewer requires write access. GitHub may still allow PR authors to use "Re-request review" for a reviewer who has already reviewed.
+
+## Customizing the Code Review
+
+Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.agents/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
+
+### How It Works
+
+The PR review agent uses skills from the [OpenHands/extensions](https://github.com/OpenHands/extensions) repository by default. When you add a `.agents/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
+
+### Example: Custom Code Review Skill
+
+Create `.agents/skills/code-review.md` in your repository:
+
+```markdown
+---
+name: code-review
+description: Custom code review guidelines for my project
+triggers:
+- /codereview
+---
+
+# My Project Code Review Guidelines
+
+You are a code reviewer for this project. Follow these guidelines:
+
+## Review Decisions
+
+- **APPROVE** straightforward changes (config updates, typo fixes, documentation)
+- **COMMENT** when you have feedback or concerns
+
+## What to Check
+
+- Code follows our project conventions
+- Tests are included for new functionality
+- No security vulnerabilities introduced
+- Documentation is updated if needed
+
+## Communication Style
+
+- Be direct and constructive
+- Use GitHub suggestion syntax for code fixes
+- Approve quickly when code is good
+```
+
+### Benefits of Custom Skills
+
+1. **No forking required**: Keep using the official SDK while customizing behavior
+2. **Version controlled**: Your review guidelines live in your repository
+3. **Easy updates**: SDK updates don't overwrite your customizations
+4. **Team alignment**: Everyone uses the same review standards
+
+### Reference Example
+
+See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.agents/skills/code-review.md) for a complete example of a custom code review skill.
+
+## Workflow Configuration
+
+The workflow is configured using inputs to the `OpenHands/extensions/plugins/pr-review` action.
+
+### Action Inputs
+
+| Input | Description | Default Example |
+|-------|-------------|---------|
+| `llm-model` | LLM model(s) - can be comma-separated for A/B testing | `anthropic/claude-sonnet-4-5-20250929` |
+| `llm-base-url` | LLM base URL (optional) | `''` |
+| `review-style` | Review style: 'standard' or 'roasted' | `roasted` |
+| `llm-api-key` | LLM API key | `${{ secrets.LLM_API_KEY }}` |
+| `github-token` | GitHub token for API access | `${{ secrets.GITHUB_TOKEN }}` |
+| `lmnr-api-key` | Laminar API key for observability (optional) | `${{ secrets.LMNR_PROJECT_API_KEY }}` |
+
+To use a specific version of the extensions repository, modify the `uses` line in the workflow file, e.g., `uses: OpenHands/extensions/plugins/pr-review@v1.0.0`.
+
+## A/B Testing with Multiple Models
+
+The PR review workflow supports A/B testing different LLM models. When multiple models are specified, one is randomly selected for each review.
+
+### Configuration
+
+Specify multiple models as a comma-separated list in the `llm-model` input:
+
+```yaml
+            - name: Run PR Review
+              uses: OpenHands/extensions/plugins/pr-review@main
+              with:
+                  # Multiple models for A/B testing - one will be randomly selected
+                  llm-model: 'anthropic/claude-sonnet-4-5-20250929,gpt-4'
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  # ... other inputs
+```
+
+### Observability
+
+When Laminar observability is enabled, the selected model is automatically logged to the trace metadata:
+
+- **Trace metadata**: The `model` field is added to Laminar trace metadata
+- **Trace JSON**: The selected model is recorded in `laminar_trace_info.json`
+- **GitHub logs**: The selected model is printed to workflow logs
+
+This enables filtering and comparing review effectiveness across different models in Laminar dashboards.
+
+## Review Evaluation (Observability)
+
+When Laminar observability is enabled (`lmnr-api-key` input is provided), the workflow captures trace data that enables delayed evaluation of review effectiveness.
+
+### How It Works
+
+1. **During Review**: The agent script captures the Laminar trace ID and stores it as a GitHub artifact
+2. **On PR Close/Merge**: The evaluation workflow (`pr-review-evaluation.yml`) runs automatically:
+   - Downloads the trace ID from the artifact
+   - Fetches all PR comments and the final diff from GitHub
+   - Creates an evaluation trace in Laminar with the review context
+   - Optionally scores the original review trace
+
+### Evaluation Metrics
+
+The evaluation script provides:
+- **Review Engagement Score**: Preliminary score based on human responses to agent comments
+- **Comment Analysis**: Structured data for signal processing (which comments were addressed)
+- **Final Diff Context**: The actual code changes for comparison
+
+### Laminar Signal Integration
+
+Configure a Laminar signal to analyze the evaluation traces:
+
+1. Create a signal named `pr_review_effectiveness`
+2. Filter by tag: `pr-review-evaluation`
+3. Use the signal prompt to analyze:
+   - Which agent comments were addressed in the final patch
+   - Which comments received human responses
+   - Overall review effectiveness score
+
+See [GitHub Issue #1953](https://github.com/OpenHands/software-agent-sdk/issues/1953) for the full implementation details.

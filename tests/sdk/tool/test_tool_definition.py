@@ -84,6 +84,21 @@ class ComplexObservation(Observation):
         return [TextContent(text=f"Data: {self.data}, Count: {self.count}")]
 
 
+class RequiredFieldsObservation(Observation):
+    """Observation with required fields for validation testing.
+
+    Note: Defined at module level to ensure a stable qualified name for
+    JSON serialization/deserialization.
+    """
+
+    message: str = Field(description="Required message field")
+    value: int = Field(description="Required value field")
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=f"{self.message}: {self.value}")]
+
+
 class MockTestTool(ToolDefinition[ToolMockAction, ToolMockObservation]):
     """Concrete mock tool for testing."""
 
@@ -423,28 +438,20 @@ class TestTool:
     def test_executor_with_observation_validation(self):
         """Test that executor return values are validated."""
 
-        class StrictObservation(Observation):
-            message: str = Field(description="Required message field")
-            value: int = Field(description="Required value field")
-
-            @property
-            def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-                return [TextContent(text=f"{self.message}: {self.value}")]
-
         class ValidExecutor(ToolExecutor):
-            def __call__(self, action, conversation=None) -> StrictObservation:
-                return StrictObservation(message="success", value=42)
+            def __call__(self, action, conversation=None) -> RequiredFieldsObservation:
+                return RequiredFieldsObservation(message="success", value=42)
 
         tool = MockTestTool(
-            description="Tool with strict observation",
+            description="Tool with required fields observation",
             action_type=ToolMockAction,
-            observation_type=StrictObservation,
+            observation_type=RequiredFieldsObservation,
             executor=ValidExecutor(),
         )
 
         action = ToolMockAction(command="test")
         result = tool(action)
-        assert isinstance(result, StrictObservation)
+        assert isinstance(result, RequiredFieldsObservation)
         assert result.message == "success"
         assert result.value == 42
 
@@ -675,6 +682,34 @@ class TestTool:
         # Verify security_risk is present and required
         assert "security_risk" in writable_function_params["properties"]
         assert "security_risk" in writable_function_params["required"]
+
+    def test_security_risk_precedes_content_params_in_schema(self):
+        """Test that security_risk appears before content parameters in the schema.
+
+        When the LLM exhausts its output token budget, truncation should cut
+        content parameters rather than the required security_risk field.
+        See https://github.com/OpenHands/software-agent-sdk/issues/1911
+        """
+        tool = MockTestTool(
+            description="A test tool",
+            action_type=ToolMockAction,
+            observation_type=ToolMockObservation,
+        )
+
+        schema = tool._get_tool_schema(add_security_risk_prediction=True)
+        keys = list(schema["properties"].keys())
+
+        assert keys[0] == "security_risk"
+        assert keys[1] == "summary"
+        # Original action fields must come after
+        assert keys.index("command") > keys.index("security_risk")
+
+        # Verify all original fields are still present (exclude discriminator
+        # fields like 'kind' which are stripped by to_mcp_schema)
+        original_schema = ToolMockAction.to_mcp_schema()
+        original_keys = set(original_schema["properties"].keys())
+        schema_keys = set(keys)
+        assert original_keys.issubset(schema_keys)
 
     def test_as_executable_with_executor(self):
         """Test as_executable() method with a tool that has an executor."""

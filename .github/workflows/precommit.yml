@@ -10,11 +10,11 @@ on:
 
 jobs:
     pre-commit:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Set up Python
               uses: actions/setup-python@v6

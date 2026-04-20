@@ -9,6 +9,7 @@ from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
+from openhands.sdk import ConversationStats, RegistryEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
@@ -76,6 +77,32 @@ def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
     assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
     # Note: mock_get may be cached from previous test due to @lru_cache
     # The important assertion is that base_url is set correctly
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_kimi_k2_5_uses_provider_defaults(mock_get):
+    """Test that kimi-k2.5 uses provider defaults (None) for temperature and top_p."""
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    llm = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-kimi-llm",
+    )
+    # Both temperature and top_p should be None (use provider defaults)
+    assert llm.temperature is None
+    assert llm.top_p is None
+
+    # Explicit values should still be respected
+    llm_explicit = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-kimi-llm-explicit",
+        top_p=0.8,
+        temperature=0.5,
+    )
+    assert llm_explicit.top_p == 0.8
+    assert llm_explicit.temperature == 0.5
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
@@ -637,7 +664,7 @@ def test_llm_local_detection_based_on_model_name(default_llm):
 
     # Test basic model configuration
     assert llm.model == "gpt-4o"
-    assert llm.temperature == 0.0
+    assert llm.temperature is None  # Uses provider default
 
     # Test with localhost base_url
     local_llm = default_llm.model_copy(update={"base_url": "http://localhost:8000"})
@@ -948,6 +975,361 @@ def test_unmapped_model_with_logging_enabled(mock_transport):
         assert isinstance(token_usage["context_window"], int)
         # Should default to 0 when max_input_tokens is None
         assert token_usage["context_window"] == 0
+
+
+# Context Window Validation Tests
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_llm_raises_error_on_small_context_window(mock_get_model_info):
+    """Test that LLM raises error when context window is too small."""
+    from openhands.sdk.llm.exceptions import LLMContextWindowTooSmallError
+    from openhands.sdk.llm.llm import MIN_CONTEXT_WINDOW_TOKENS
+
+    mock_get_model_info.return_value = {"max_input_tokens": 2048}
+
+    with pytest.raises(LLMContextWindowTooSmallError) as exc_info:
+        LLM(
+            model="ollama/test-model",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        )
+
+    assert exc_info.value.context_window == 2048
+    assert exc_info.value.min_required == MIN_CONTEXT_WINDOW_TOKENS
+    assert "docs.openhands.dev" in str(exc_info.value)
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
+    """Test that ALLOW_SHORT_CONTEXT_WINDOWS env var bypasses validation."""
+    import os
+
+    from openhands.sdk.llm.llm import ENV_ALLOW_SHORT_CONTEXT_WINDOWS
+
+    mock_get_model_info.return_value = {"max_input_tokens": 2048}
+
+    # Set the environment variable
+    with patch.dict(os.environ, {ENV_ALLOW_SHORT_CONTEXT_WINDOWS: "true"}):
+        # Should not raise
+        llm = LLM(
+            model="ollama/test-model",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        )
+        assert llm.max_input_tokens == 2048
+
+
+# LLM model_copy Tests
+
+
+def test_llm_model_copy_preserves_configuration():
+    """Test that model_copy preserves the LLM configuration."""
+    # Create original LLM with custom configuration
+    original = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="original-llm",
+        temperature=0.5,
+        max_output_tokens=1000,
+        caching_prompt=False,
+    )
+
+    # Copy with updated usage_id
+    copied = original.model_copy(update={"usage_id": "copied-llm"})
+
+    # Verify configuration is preserved
+    assert copied.model == original.model
+    assert copied.temperature == original.temperature
+    assert copied.max_output_tokens == original.max_output_tokens
+    assert copied.caching_prompt == original.caching_prompt
+
+    # Verify usage_id was updated
+    assert copied.usage_id == "copied-llm"
+    assert original.usage_id == "original-llm"
+
+
+def test_llm_reset_metrics():
+    """Test that reset_metrics creates fresh metrics and telemetry instances."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Access metrics to trigger lazy initialization
+    original_metrics = llm.metrics
+    original_telemetry = llm.telemetry
+    original_metrics.add_cost(1.0)
+
+    # Reset metrics
+    llm.reset_metrics()
+
+    # Verify new metrics are created
+    assert llm.metrics is not original_metrics
+    assert llm.telemetry is not original_telemetry
+    assert llm.metrics.accumulated_cost == 0.0
+
+
+def test_issue_2459_restore_metrics_syncs_telemetry():
+    """Restore metrics must update telemetry's reference to avoid desync.
+
+    After restore_metrics(), llm.telemetry.metrics must point to the same
+    object as llm.metrics. Otherwise post-resume LLM calls record
+    tokens/cost into a stale metrics object and accounting data is lost.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2459
+    """
+    llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+    )
+
+    # Force telemetry creation (simulates normal init before resume)
+    _ = llm.telemetry
+
+    restored = Metrics(model_name=llm.model)
+    llm.restore_metrics(restored)
+
+    assert llm.metrics is restored
+    assert llm.telemetry.metrics is restored
+    assert llm.telemetry.metrics is llm.metrics
+
+
+@pytest.fixture
+def llm():
+    """Create a minimal SDK LLM for testing."""
+    return LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-service",
+    )
+
+
+def test_cost_recorded_in_restored_metrics(llm):
+    """Costs added via telemetry after restore must land in the restored Metrics."""
+    restored = Metrics(model_name="openai/gpt-4o")
+    restored.add_cost(5.00)
+    llm.restore_metrics(restored)
+
+    llm.telemetry.metrics.add_cost(0.50)
+
+    assert llm.metrics.accumulated_cost == 5.50
+    assert len(llm.metrics.costs) == 2
+
+
+def test_stale_metrics_not_updated(llm):
+    """The original (pre-restore) Metrics must not receive new costs."""
+    original_metrics = llm.metrics
+
+    restored = Metrics(model_name="openai/gpt-4o")
+    restored.add_cost(2.00)
+    llm.restore_metrics(restored)
+
+    llm.telemetry.metrics.add_cost(0.75)
+
+    assert original_metrics.accumulated_cost == 0.0
+    assert llm.metrics.accumulated_cost == 2.75
+
+
+def test_restore_metrics_telemetry_none():
+    """restore_metrics() must not crash when telemetry has not been initialized."""
+    llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-service",
+    )
+    llm._telemetry = None
+
+    restored = Metrics(model_name="openai/gpt-4o")
+    restored.add_cost(1.00)
+    llm.restore_metrics(restored)
+
+    assert llm.metrics is restored
+    assert llm.metrics.accumulated_cost == 1.00
+
+
+def test_conversation_stats_restore_then_track():
+    """End-to-end: ConversationStats restores metrics, then new costs are tracked."""
+    saved_metrics = Metrics(model_name="openai/gpt-4o")
+    saved_metrics.add_cost(10.00)
+
+    stats = ConversationStats(usage_to_metrics={"agent": saved_metrics})
+
+    with patch("openhands.sdk.llm.llm.litellm_completion"):
+        llm = LLM(
+            model="openai/gpt-4o",
+            api_key=SecretStr("test-key"),
+            usage_id="agent",
+        )
+        event = RegistryEvent(llm=llm)
+        stats.register_llm(event)
+
+        assert llm.metrics.accumulated_cost == 10.00
+
+        # Simulate a new LLM response adding cost via telemetry
+        llm.telemetry.metrics.add_cost(0.25)
+
+        assert llm.metrics.accumulated_cost == 10.25
+        assert stats.get_combined_metrics().accumulated_cost == 10.25
+
+
+# max_output_tokens Capping Tests
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_info):
+    """Test that max_output_tokens is capped when falling back to max_tokens.
+
+    Some providers (e.g., OpenRouter) set max_tokens to the context window size
+    rather than the output limit. Without capping, this could request output
+    that exceeds the context window.
+
+    See: https://github.com/OpenHands/software-agent-sdk/pull/2264
+    """
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    # Simulate a model where max_tokens = context window (200k) but
+    # max_output_tokens is not set
+    mock_get_model_info.return_value = {
+        "max_tokens": 200000,  # This is the context window, not output limit
+        "max_output_tokens": None,
+        "max_input_tokens": 200000,
+    }
+
+    llm = LLM(
+        model="openrouter/anthropic/claude-3-haiku",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # max_output_tokens should be capped, not set to 200000
+    assert llm.max_output_tokens is not None
+    assert llm.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    assert llm.max_output_tokens < 200000
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info):
+    """Test that actual max_output_tokens is used when available."""
+    # Simulate a model with proper max_output_tokens
+    mock_get_model_info.return_value = {
+        "max_tokens": 8192,
+        "max_output_tokens": 8192,
+        "max_input_tokens": 200000,
+    }
+
+    llm = LLM(
+        model="anthropic/claude-3-5-sonnet-latest",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Should use the actual max_output_tokens, not capped
+    assert llm.max_output_tokens == 8192
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
+    """Test that small max_tokens fallback is not unnecessarily capped."""
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    # Simulate a model where max_tokens is small (actual output limit)
+    mock_get_model_info.return_value = {
+        "max_tokens": 4096,  # This is the actual output limit
+        "max_output_tokens": None,
+        "max_input_tokens": None,
+    }
+
+    llm = LLM(
+        model="openrouter/test/small-model",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    # Should use the actual value since it's below the cap
+    assert llm.max_output_tokens == 4096
+    assert llm.max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+
+def test_explicit_max_output_tokens_not_overridden():
+    """Test that explicitly set max_output_tokens is respected."""
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        max_output_tokens=32768,  # Explicitly set higher than cap
+    )
+
+    # Should respect the explicit value
+    assert llm.max_output_tokens == 32768
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_equal_to_context_window(
+    mock_get_model_info,
+):
+    """max_output_tokens == context window leaves zero input headroom.
+
+    Strict providers (e.g. AWS Bedrock) reject every call when
+    max_output_tokens fills the entire context window.
+    """
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 262144,
+        "max_input_tokens": 262144,
+    }
+
+    llm = LLM(
+        model="litellm_proxy/test-model-equal-windows",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 262144 // 2
+    assert llm.max_input_tokens == 262144
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_equal_to_max_tokens(
+    mock_get_model_info,
+):
+    """max_output_tokens == max_tokens should also be halved.
+
+    Some registries only provide max_tokens (context window) without
+    max_input_tokens. The guard should still fire.
+    """
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 131072,
+        "max_tokens": 131072,
+        "max_input_tokens": None,
+    }
+
+    llm = LLM(
+        model="litellm_proxy/test-model-max-tokens-only",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 131072 // 2
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_not_capped_when_below_context_window(
+    mock_get_model_info,
+):
+    """max_output_tokens < context window should be used as-is."""
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 8192,
+        "max_input_tokens": 200000,
+    }
+
+    llm = LLM(
+        model="anthropic/claude-3-5-sonnet-latest",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.max_output_tokens == 8192
 
 
 # LLM Registry Tests

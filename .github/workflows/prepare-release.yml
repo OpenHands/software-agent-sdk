@@ -11,7 +11,7 @@ on:
 
 jobs:
     prepare-release:
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Validate version format
               run: |
@@ -22,9 +22,9 @@ jobs:
                   echo "✅ Version format is valid: ${{ inputs.version }}"
 
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
-                  token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  token: ${{ secrets.PAT_TOKEN }}
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -49,6 +49,9 @@ jobs:
                   echo "🔧 Setting version to ${{ inputs.version }}"
                   make set-package-version version=${{ inputs.version }}
 
+            - name: Update sdk_ref default in run-eval workflow
+              run: python3 .github/scripts/update_sdk_ref_default.py "${{ inputs.version }}"
+
             - name: Commit version changes
               run: |
                   git add .
@@ -66,7 +69,7 @@ jobs:
 
             - name: Create Pull Request
               env:
-                  GH_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  GH_TOKEN: ${{ secrets.PAT_TOKEN }}
               run: |
                   cat > pr_body.txt << 'EOF'
                   ## Release v${{ inputs.version }}

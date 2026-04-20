@@ -1,17 +1,24 @@
+import asyncio
 import tempfile
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_service import (
+    AutoTitleSubscriber,
+    ConversationContractMismatchError,
     ConversationService,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ACPConversationInfo,
+    ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
     StartConversationRequest,
@@ -19,11 +26,14 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Message
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -41,7 +51,7 @@ def sample_stored_conversation():
     """Create a sample StoredConversation for testing."""
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -124,7 +134,7 @@ class TestConversationServiceSearchConversations:
         ):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -176,7 +186,7 @@ class TestConversationServiceSearchConversations:
         for i in range(3):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -253,7 +263,7 @@ class TestConversationServiceSearchConversations:
         for i in range(5):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -323,7 +333,7 @@ class TestConversationServiceSearchConversations:
         for status, created_at in conversations_data:
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -440,7 +450,7 @@ class TestConversationServiceCountConversations:
         for i, status in enumerate(statuses):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -484,6 +494,46 @@ class TestConversationServiceCountConversations:
         )
         assert result == 0
 
+    @pytest.mark.asyncio
+    async def test_count_acp_conversations_includes_legacy_and_acp(
+        self, conversation_service
+    ):
+        legacy_conversation = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        acp_conversation = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 13, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 13, 30, 0, tzinfo=UTC),
+        )
+
+        for stored_conv in (legacy_conversation, acp_conversation):
+            mock_service = AsyncMock(spec=EventService)
+            mock_service.stored = stored_conv
+            mock_service.get_state.return_value = ConversationState(
+                id=stored_conv.id,
+                agent=stored_conv.agent,
+                workspace=stored_conv.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored_conv.confirmation_policy,
+            )
+            conversation_service._event_services[stored_conv.id] = mock_service
+
+        assert await conversation_service.count_conversations() == 1
+        assert await conversation_service.count_acp_conversations() == 2
+
 
 class TestConversationServiceStartConversation:
     """Test cases for ConversationService.start_conversation method."""
@@ -502,7 +552,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 secrets=test_secrets,
@@ -565,7 +615,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request without secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
             )
@@ -619,7 +669,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -637,7 +687,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -648,7 +698,7 @@ class TestConversationServiceStartConversation:
             assert is_new
 
             duplicate_request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -668,11 +718,21 @@ class TestConversationServiceStartConversation:
         # Create a mock event service that exists but is not open
         mock_event_service = AsyncMock(spec=EventService)
         mock_event_service.is_open.return_value = False
+        mock_event_service.stored = StoredConversation(
+            id=custom_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
         conversation_service._event_services[custom_id] = mock_event_service
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -720,7 +780,7 @@ class TestConversationServiceStartConversation:
         mock_event_service.is_open.return_value = True
         mock_event_service.stored = StoredConversation(
             id=custom_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -740,7 +800,7 @@ class TestConversationServiceStartConversation:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -758,12 +818,51 @@ class TestConversationServiceStartConversation:
                 mock_start.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_start_conversation_rejects_existing_acp_conversation_id(
+        self, conversation_service
+    ):
+        custom_id = uuid4()
+
+        mock_event_service = AsyncMock(spec=EventService)
+        mock_event_service.is_open.return_value = True
+        mock_event_service.stored = StoredConversation(
+            id=custom_id,
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        conversation_service._event_services[custom_id] = mock_event_service
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            with patch.object(
+                conversation_service, "_start_event_service"
+            ) as mock_start:
+                with pytest.raises(
+                    ConversationContractMismatchError,
+                    match="only available through the ACP conversation contract",
+                ):
+                    await conversation_service.start_conversation(request)
+
+                mock_start.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_start_event_service_failure_cleanup(self, conversation_service):
         """Test that event service is cleaned up when startup fails."""
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -799,7 +898,7 @@ class TestConversationServiceStartConversation:
         with tempfile.TemporaryDirectory() as temp_dir:
             stored = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -898,6 +997,106 @@ class TestConversationServiceUpdateConversation:
         mock_service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_update_conversation_tags_uses_state_lock(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Test that tag updates hold the ConversationState lock."""
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        acquire_spy = MagicMock(wraps=mock_state._lock.acquire)
+        release_spy = MagicMock(wraps=mock_state._lock.release)
+        mock_state._lock.acquire = acquire_spy
+        mock_state._lock.release = release_spy
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        request = UpdateConversationRequest(tags={"env": "prod"})
+        result = await conversation_service.update_conversation(
+            conversation_id, request
+        )
+
+        assert result is True
+        assert mock_service.stored.tags == {"env": "prod"}
+        assert mock_state.tags == {"env": "prod"}
+        assert acquire_spy.call_count >= 2
+        assert release_spy.call_count == acquire_spy.call_count
+
+    @pytest.mark.asyncio
+    async def test_update_conversation_tags_wait_does_not_block_event_loop(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Waiting on the state lock must not stall unrelated async work."""
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        lock_acquired = threading.Event()
+        release_lock = threading.Event()
+        timings: dict[str, float] = {}
+
+        def hold_state_lock() -> None:
+            with state:
+                timings["lock_start"] = time.monotonic()
+                lock_acquired.set()
+                release_lock.wait(timeout=1.0)
+                timings["lock_end"] = time.monotonic()
+
+        holder = threading.Thread(target=hold_state_lock, daemon=True)
+        holder.start()
+        assert lock_acquired.wait(timeout=1.0)
+
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.05)
+            timings["heartbeat"] = time.monotonic()
+
+        async def release_after_delay() -> None:
+            await asyncio.sleep(0.2)
+            release_lock.set()
+
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ):
+            await asyncio.wait_for(
+                asyncio.gather(
+                    conversation_service.update_conversation(
+                        conversation_id,
+                        UpdateConversationRequest(tags={"env": "prod"}),
+                    ),
+                    heartbeat(),
+                    release_after_delay(),
+                ),
+                timeout=1.0,
+            )
+
+        holder.join(timeout=1.0)
+        assert not holder.is_alive()
+        assert mock_service.stored.tags == {"env": "prod"}
+        assert state.tags == {"env": "prod"}
+        assert timings["heartbeat"] < timings["lock_end"], (
+            "update_conversation blocked the async loop while waiting for the "
+            "state lock"
+        )
+
+    @pytest.mark.asyncio
     async def test_update_conversation_not_found(self, conversation_service):
         """Test updating a non-existent conversation returns False."""
         non_existent_id = uuid4()
@@ -954,6 +1153,48 @@ class TestConversationServiceUpdateConversation:
             call_args = mock_notify.call_args[0]
             conversation_info = call_args[0]
             assert conversation_info.title == new_title
+            assert isinstance(conversation_info, ConversationInfo)
+
+    @pytest.mark.asyncio
+    async def test_update_acp_conversation_notifies_webhooks_with_acp_shape(
+        self, conversation_service
+    ):
+        stored_conversation = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = stored_conversation
+        mock_state = ConversationState(
+            id=stored_conversation.id,
+            agent=stored_conversation.agent,
+            workspace=stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ) as mock_notify:
+            result = await conversation_service.update_conversation(
+                conversation_id, UpdateConversationRequest(title="ACP Title")
+            )
+
+            assert result is True
+            mock_notify.assert_called_once()
+            conversation_info = mock_notify.call_args[0][0]
+            assert isinstance(conversation_info, ACPConversationInfo)
+            assert conversation_info.agent.kind == "ACPAgent"
 
     @pytest.mark.asyncio
     async def test_update_conversation_persists_changes(
@@ -1033,6 +1274,37 @@ class TestConversationServiceUpdateConversation:
         # Verify save_meta was called three times
         assert mock_service.save_meta.call_count == 3
 
+    @pytest.mark.asyncio
+    async def test_update_conversation_sets_updated_at(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Test that update_conversation advances updated_at.
+
+        Renaming a conversation is a meaningful change; the timestamp must
+        reflect when it happened rather than staying at the value set at
+        conversation creation time.
+        """
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        original_updated_at = mock_service.stored.updated_at
+
+        request = UpdateConversationRequest(title="New Title")
+        await conversation_service.update_conversation(conversation_id, request)
+
+        assert mock_service.stored.updated_at > original_updated_at
+
 
 class TestConversationServiceDeleteConversation:
     """Test cases for ConversationService.delete_conversation method."""
@@ -1061,7 +1333,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1153,6 +1425,7 @@ class TestConversationServiceDeleteConversation:
                     conversation_info.execution_status
                     == ConversationExecutionStatus.DELETING
                 )
+                assert isinstance(conversation_info, ConversationInfo)
 
                 # Verify event service was closed
                 mock_service.close.assert_called_once()
@@ -1170,7 +1443,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1213,7 +1486,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1263,7 +1536,7 @@ class TestConversationServiceDeleteConversation:
         mock_service.conversation_dir = "/tmp/test_conversation"
         mock_service.stored = StoredConversation(
             id=conversation_id,
-            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -1373,3 +1646,373 @@ class TestSafeRmtree:
             result = _safe_rmtree(str(test_dir), "test directory")
             assert result is True
             assert not test_dir.exists()
+
+
+class TestAutoTitle:
+    """Tests for AutoTitleSubscriber."""
+
+    _GENERATE_TITLE_PATH = (
+        "openhands.agent_server.conversation_service.generate_title_from_message"
+    )
+
+    def _make_service(
+        self,
+        title: str | None = None,
+        title_llm_profile: str | None = None,
+        llm_model: str = "gpt-4o",
+        llm_usage_id: str = "test-llm",
+    ) -> AsyncMock:
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model=llm_model, usage_id=llm_usage_id), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            title=title,
+            title_llm_profile=title_llm_profile,
+        )
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+
+        mock_conversation = MagicMock()
+        mock_conversation.agent.llm = stored.agent.llm
+        service._conversation = mock_conversation
+        return service
+
+    def _user_message_event(self, text: str = "Fix the login bug") -> MessageEvent:
+        from openhands.sdk.llm.message import TextContent
+
+        return MessageEvent(
+            id="evt-1",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text=text)]),
+        )
+
+    @staticmethod
+    async def _drain_title_task(
+        predicate=lambda: True, max_iterations: int = 50, step: float = 0.02
+    ) -> None:
+        """Yield to the event loop until the background title task completes.
+
+        `AutoTitleSubscriber` schedules generation via `run_in_executor`, so a
+        single `await asyncio.sleep(0)` is not enough to let the executor
+        thread finish. Poll with a short sleep until `predicate()` becomes
+        truthy or the timeout elapses.
+        """
+        for _ in range(max_iterations):
+            await asyncio.sleep(step)
+            if predicate():
+                return
+
+    @pytest.mark.asyncio
+    async def test_autotitle_sets_title_on_first_user_message(self):
+        """Title is generated and saved when the first user message arrives."""
+        service = self._make_service()
+
+        with patch(self._GENERATE_TITLE_PATH, return_value="✨ Generated Title"):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
+
+        assert service.stored.title == "✨ Generated Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_non_user_events(self):
+        """Non-user events do not trigger title generation.
+
+        Covers ConversationStateUpdateEvent and assistant MessageEvents.
+        """
+        service = self._make_service()
+        subscriber = AutoTitleSubscriber(service=service)
+
+        # ConversationStateUpdateEvent should be ignored
+        await subscriber(
+            ConversationStateUpdateEvent(key="execution_status", value="IDLE")
+        )
+        # Assistant MessageEvent should be ignored
+        await subscriber(
+            MessageEvent(
+                id="evt-2", source="agent", llm_message=Message(role="assistant")
+            )
+        )
+
+        await asyncio.sleep(0)
+        assert service.stored.title is None
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_when_title_already_set(self):
+        """No LLM call is made when the conversation already has a title."""
+        service = self._make_service(title="Existing Title")
+        subscriber = AutoTitleSubscriber(service=service)
+
+        with patch(self._GENERATE_TITLE_PATH) as mock_generate_title:
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
+            mock_generate_title.assert_not_called()
+
+        assert service.stored.title == "Existing Title"
+
+    @pytest.mark.asyncio
+    async def test_autotitle_handles_generate_title_failure(self):
+        """A failed title generation is logged as a warning and not re-raised."""
+        service = self._make_service()
+
+        with patch(self._GENERATE_TITLE_PATH, side_effect=Exception("LLM unavailable")):
+            subscriber = AutoTitleSubscriber(service=service)
+            # Should not raise
+            await subscriber(self._user_message_event())
+            await asyncio.sleep(0)
+
+        # Title remains unset; save_meta was never called
+        assert service.stored.title is None
+        service.save_meta.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_empty_message(self):
+        """No title generation if the user message has no text content."""
+        service = self._make_service()
+        event = MessageEvent(
+            id="evt-1", source="user", llm_message=Message(role="user")
+        )
+
+        with patch(self._GENERATE_TITLE_PATH) as mock_generate_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(event)
+            await asyncio.sleep(0)
+            mock_generate_title.assert_not_called()
+
+        assert service.stored.title is None
+
+    @pytest.mark.asyncio
+    async def test_autotitle_uses_llm_profile_when_configured(self):
+        """Profile LLM takes precedence over agent.llm when configured."""
+        service = self._make_service(title_llm_profile="cheap-model")
+        mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.return_value = mock_llm
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            MockStore.assert_called_once_with()
+            mock_store_instance.load.assert_called_once_with("cheap-model")
+            # Profile-loaded LLM wins over agent.llm
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is mock_llm
+
+        assert service.stored.title == "✨ Profile LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_falls_back_to_agent_llm_when_profile_not_found(self):
+        """Missing profile → fall back to agent.llm (non-breaking behavior)."""
+        service = self._make_service(title_llm_profile="nonexistent-profile")
+        agent_llm = service._conversation.agent.llm
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.side_effect = FileNotFoundError(
+                "Profile 'nonexistent-profile' not found"
+            )
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            # Failed profile load → falls back to agent.llm
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_no_profile_uses_agent_llm(self):
+        """No profile configured → use agent.llm (preserves existing behavior)."""
+        service = self._make_service(title_llm_profile=None)
+        agent_llm = service._conversation.agent.llm
+
+        with patch(
+            self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+        ) as mock_generate_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            # No profile → agent.llm is used (backwards compatible)
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_handles_profile_load_value_error(self):
+        """Profile load ValueError → fall back to agent.llm."""
+        service = self._make_service(title_llm_profile="corrupted-profile")
+        agent_llm = service._conversation.agent.llm
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.side_effect = ValueError("Invalid profile format")
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_falls_back_for_acp_managed_llm(self):
+        """ACP-managed agents with no title profile → truncation fallback."""
+        service = self._make_service(llm_usage_id="acp-managed")
+        subscriber = AutoTitleSubscriber(service=service)
+
+        await subscriber(self._user_message_event("Fix the login bug"))
+        await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert service.stored.title == "Fix the login bug"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_integration_routes_through_profile_store(self, tmp_path):
+        """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
+
+        Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
+        to LLM.completion. Only the network boundary (LLM.completion) is mocked,
+        so this catches regressions in profile loading, LLM passthrough, and the
+        agent-server → SDK integration — the unit tests above only exercise
+        AutoTitleSubscriber in isolation.
+        """
+        from litellm.types.utils import (
+            Choices,
+            Message as LiteLLMMessage,
+            ModelResponse,
+            Usage,
+        )
+
+        from openhands.sdk.llm import LLMResponse, MetricsSnapshot
+        from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+        # Persist a real LLM profile to disk with a distinctive usage_id so we
+        # can tell the title LLM apart from the agent's LLM in the assertion.
+        profile_dir = tmp_path / "profiles"
+        title_llm_on_disk = LLM(
+            usage_id="title-llm",
+            model="claude-haiku-4-5",
+            api_key=SecretStr("title-key"),
+        )
+        LLMProfileStore(base_dir=profile_dir).save(
+            "title-fast", title_llm_on_disk, include_secrets=True
+        )
+
+        service = self._make_service(title_llm_profile="title-fast")
+
+        calls: list[str] = []
+
+        def fake_completion(self_llm, _messages, **_kwargs):
+            calls.append(self_llm.usage_id)
+            msg = LiteLLMMessage(content="✨ Generated", role="assistant")
+            choice = Choices(finish_reason="stop", index=0, message=msg)
+            raw = ModelResponse(
+                id="resp-1",
+                choices=[choice],
+                created=0,
+                model=self_llm.model,
+                object="chat.completion",
+                usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            )
+            return LLMResponse(
+                message=Message.from_llm_chat_message(choice["message"]),
+                metrics=MetricsSnapshot(
+                    model_name=self_llm.model,
+                    accumulated_cost=0.0,
+                    max_budget_per_task=None,
+                    accumulated_token_usage=None,
+                ),
+                raw_response=raw,
+            )
+
+        # Point LLMProfileStore() (no args) at our tmp dir so the real
+        # _load_title_llm code path finds our on-disk profile.
+        with (
+            patch(
+                "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR", profile_dir
+            ),
+            patch(
+                "openhands.sdk.llm.llm.LLM.completion",
+                autospec=True,
+                side_effect=fake_completion,
+            ),
+        ):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            # Wait for the background executor task to complete. The production
+            # code uses run_in_executor, so sleep(0) is not enough.
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if service.stored.title is not None:
+                    break
+
+        # The profile's LLM (usage_id="title-llm") was called — not agent.llm
+        # (usage_id="test-llm"). This is the regression-sensitive assertion.
+        assert calls == ["title-llm"], (
+            f"Expected only the title profile LLM to be called, got: {calls}"
+        )
+        assert service.stored.title == "✨ Generated"
+        service.save_meta.assert_called_once()
+
+
+class TestACPActivityHeartbeatWiring:
+    """Tests for _setup_acp_activity_heartbeat in EventService."""
+
+    def test_acp_agent_gets_on_activity_wired(self):
+        """_setup_acp_activity_heartbeat should set _on_activity on ACPAgent."""
+        from openhands.agent_server.event_service import EventService
+        from openhands.agent_server.server_details_router import (
+            update_last_execution_time,
+        )
+
+        service = AsyncMock(spec=EventService)
+        # Call the real method
+        agent = ACPAgent(acp_command=["echo", "test"])
+        assert agent._on_activity is None
+
+        EventService._setup_acp_activity_heartbeat(service, agent)
+
+        assert agent._on_activity is update_last_execution_time
+
+    def test_non_acp_agent_unchanged(self):
+        """_setup_acp_activity_heartbeat is a no-op for non-ACP agents."""
+        from openhands.agent_server.event_service import EventService
+
+        service = AsyncMock(spec=EventService)
+        agent = Agent(llm=LLM(model="test-model"))
+
+        # Should not raise and should not set any attribute
+        EventService._setup_acp_activity_heartbeat(service, agent)
+        assert not hasattr(agent, "_on_activity")

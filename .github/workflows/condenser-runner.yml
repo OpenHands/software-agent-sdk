@@ -46,7 +46,7 @@ jobs:
                 ) ||
                 github.event_name == 'workflow_dispatch'
             )
-        runs-on: blacksmith-4vcpu-ubuntu-2204
+        runs-on: ubuntu-22.04
         permissions:
             contents: read
             id-token: write
@@ -69,7 +69,7 @@ jobs:
                           model: litellm_proxy/gpt-5.1-codex-max
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   # For pull_request_target: checkout fork PR code (requires explicit repository)
                   # For other events: fallback to current repository and ref
@@ -127,7 +127,7 @@ jobs:
                   tar -czvf ../../../condenser_tests_${{ matrix.job-config.run-suffix }}_${TIMESTAMP}.tar.gz *${{ matrix.job-config.run-suffix }}* # Include result directories for this model
 
             - name: Upload evaluation results as artifact
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               id: upload_results_artifact
               with:
                   name: condenser-test-outputs-${{ matrix.job-config.run-suffix }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -148,7 +148,7 @@ jobs:
                   fi
 
             - name: Upload test results summary
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: test-results-${{ matrix.job-config.run-suffix }}
                   path: test_results_summary/${{ matrix.job-config.run-suffix }}_results.json
@@ -163,13 +163,13 @@ jobs:
                 ) ||
                 github.event_name == 'workflow_dispatch'
             )
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             pull-requests: write
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   # When using pull_request_target, explicitly checkout the PR branch
                   # This ensures we use the scripts from the actual PR code
@@ -186,14 +186,14 @@ jobs:
                   uv sync --dev
 
             - name: Download all test results
-              uses: actions/download-artifact@v6
+              uses: actions/download-artifact@v8
               with:
                   pattern: test-results-*
                   merge-multiple: true
                   path: all_results
 
             - name: Download all condenser test artifacts
-              uses: actions/download-artifact@v6
+              uses: actions/download-artifact@v8
               with:
                   pattern: condenser-test-outputs-*
                   path: artifacts
@@ -221,7 +221,7 @@ jobs:
                     --output-file consolidated_report.md
 
             - name: Upload consolidated report
-              uses: actions/upload-artifact@v5
+              uses: actions/upload-artifact@v7
               with:
                   name: consolidated-condenser-report
                   path: consolidated_report.md

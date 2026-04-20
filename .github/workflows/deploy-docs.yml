@@ -10,14 +10,14 @@ on:
     workflow_dispatch:
 jobs:
     dispatch:
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         permissions:
             contents: write
         steps:
             - name: Trigger docs repo sync
               uses: peter-evans/repository-dispatch@v4
               with:
-                  token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  token: ${{ secrets.PAT_TOKEN }}
                   repository: OpenHands/docs
                   event-type: update
                   client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

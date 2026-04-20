@@ -14,7 +14,7 @@ from openhands.agent_server.skills_service import (
     merge_skills,
     sync_public_skills,
 )
-from openhands.sdk.context.skills import Skill
+from openhands.sdk.skills import Skill
 
 
 class TestExposedUrlData:
@@ -215,23 +215,11 @@ class TestLoadOrgSkillsFromUrl:
 class TestLoadAllSkills:
     """Tests for load_all_skills function."""
 
+    _PATCH_TARGET = "openhands.agent_server.skills_service.load_available_skills"
+
     def test_load_all_skills_returns_skill_load_result(self):
         """Test that load_all_skills returns a SkillLoadResult."""
-        with (
-            patch(
-                "openhands.agent_server.skills_service.load_public_skills"
-            ) as mock_public,
-            patch(
-                "openhands.agent_server.skills_service.load_user_skills"
-            ) as mock_user,
-            patch(
-                "openhands.agent_server.skills_service.load_project_skills"
-            ) as mock_project,
-        ):
-            mock_public.return_value = []
-            mock_user.return_value = []
-            mock_project.return_value = []
-
+        with patch(self._PATCH_TARGET, return_value={}):
             result = load_all_skills(
                 load_public=True,
                 load_user=True,
@@ -248,21 +236,14 @@ class TestLoadAllSkills:
         skill1 = Skill(name="public1", content="c1", trigger=None)
         skill2 = Skill(name="user1", content="c2", trigger=None)
 
-        with (
-            patch(
-                "openhands.agent_server.skills_service.load_public_skills"
-            ) as mock_public,
-            patch(
-                "openhands.agent_server.skills_service.load_user_skills"
-            ) as mock_user,
-            patch(
-                "openhands.agent_server.skills_service.load_project_skills"
-            ) as mock_project,
+        # First call returns sdk_base (public+user), second returns project
+        with patch(
+            self._PATCH_TARGET,
+            side_effect=[
+                {"public1": skill1, "user1": skill2},  # sdk_base
+                {},  # project
+            ],
         ):
-            mock_public.return_value = [skill1]
-            mock_user.return_value = [skill2]
-            mock_project.return_value = []
-
             result = load_all_skills(
                 load_public=True,
                 load_user=True,
@@ -270,25 +251,32 @@ class TestLoadAllSkills:
                 load_org=False,
             )
 
-            assert result.sources["public"] == 1
-            assert result.sources["user"] == 1
+            assert result.sources["sdk_base"] == 2
             assert result.sources["sandbox"] == 0
             assert result.sources["org"] == 0
             assert result.sources["project"] == 0
 
+    def test_load_all_skills_passes_marketplace_path_to_sdk_base(self):
+        """Test that marketplace_path is forwarded to SDK public skill loading."""
+        with patch(self._PATCH_TARGET, side_effect=[{}, {}]) as mock_avail:
+            load_all_skills(
+                load_public=True,
+                load_user=True,
+                load_project=False,
+                load_org=False,
+                marketplace_path="marketplaces/custom.json",
+            )
+
+        sdk_base_call = mock_avail.call_args_list[0]
+        assert sdk_base_call.kwargs["include_public"] is True
+        assert sdk_base_call.kwargs["marketplace_path"] == "marketplaces/custom.json"
+
+        project_call = mock_avail.call_args_list[1]
+        assert project_call.kwargs["include_public"] is False
+
     def test_load_all_skills_disabled_sources(self):
         """Test that disabled sources are not loaded."""
-        with (
-            patch(
-                "openhands.agent_server.skills_service.load_public_skills"
-            ) as mock_public,
-            patch(
-                "openhands.agent_server.skills_service.load_user_skills"
-            ) as mock_user,
-        ):
-            mock_public.return_value = []
-            mock_user.return_value = []
-
+        with patch(self._PATCH_TARGET, return_value={}) as mock_avail:
             result = load_all_skills(
                 load_public=False,
                 load_user=False,
@@ -296,10 +284,10 @@ class TestLoadAllSkills:
                 load_org=False,
             )
 
-            mock_public.assert_not_called()
-            mock_user.assert_not_called()
-            assert result.sources["public"] == 0
-            assert result.sources["user"] == 0
+            # Called twice (sdk_base + project), both with disabled flags
+            assert mock_avail.call_count == 2
+            assert result.sources["sdk_base"] == 0
+            assert result.sources["project"] == 0
 
     def test_load_all_skills_with_sandbox_urls(self):
         """Test loading skills with sandbox URLs."""
@@ -307,17 +295,7 @@ class TestLoadAllSkills:
             ExposedUrlData(name="WORKER_8080", url="http://localhost:8080", port=8080),
         ]
 
-        with (
-            patch(
-                "openhands.agent_server.skills_service.load_public_skills"
-            ) as mock_public,
-            patch(
-                "openhands.agent_server.skills_service.load_user_skills"
-            ) as mock_user,
-        ):
-            mock_public.return_value = []
-            mock_user.return_value = []
-
+        with patch(self._PATCH_TARGET, return_value={}):
             result = load_all_skills(
                 load_public=False,
                 load_user=False,
@@ -332,19 +310,18 @@ class TestLoadAllSkills:
 
     def test_load_all_skills_handles_exceptions(self):
         """Test that exceptions from skill loaders are handled gracefully."""
-        with (
-            patch(
-                "openhands.agent_server.skills_service.load_public_skills"
-            ) as mock_public,
-            patch(
-                "openhands.agent_server.skills_service.load_user_skills"
-            ) as mock_user,
-        ):
-            mock_public.side_effect = Exception("Network error")
-            mock_user.return_value = [
-                Skill(name="user1", content="content", trigger=None)
-            ]
+        user_skill = Skill(name="user1", content="content", trigger=None)
 
+        # load_available_skills handles exceptions internally and returns
+        # whatever it can. Simulate: first call returns user skill only
+        # (public failed internally), second call returns empty project.
+        with patch(
+            self._PATCH_TARGET,
+            side_effect=[
+                {"user1": user_skill},  # sdk_base (public error handled inside)
+                {},  # project
+            ],
+        ):
             result = load_all_skills(
                 load_public=True,
                 load_user=True,
@@ -352,31 +329,21 @@ class TestLoadAllSkills:
                 load_org=False,
             )
 
-            # Should still return results from successful loaders
-            assert result.sources["public"] == 0
-            assert result.sources["user"] == 1
+            assert result.sources["sdk_base"] == 1
 
     def test_load_all_skills_merge_precedence(self):
         """Test that skills are merged with correct precedence."""
-        public_skill = Skill(name="shared", content="public", trigger=None)
-        user_skill = Skill(name="shared", content="user", trigger=None)
+        base_skill = Skill(name="shared", content="user", trigger=None)
         project_skill = Skill(name="shared", content="project", trigger=None)
 
-        with (
-            patch(
-                "openhands.agent_server.skills_service.load_public_skills"
-            ) as mock_public,
-            patch(
-                "openhands.agent_server.skills_service.load_user_skills"
-            ) as mock_user,
-            patch(
-                "openhands.agent_server.skills_service.load_project_skills"
-            ) as mock_project,
+        # sdk_base returns user version, project returns project version
+        with patch(
+            self._PATCH_TARGET,
+            side_effect=[
+                {"shared": base_skill},  # sdk_base
+                {"shared": project_skill},  # project
+            ],
         ):
-            mock_public.return_value = [public_skill]
-            mock_user.return_value = [user_skill]
-            mock_project.return_value = [project_skill]
-
             result = load_all_skills(
                 load_public=True,
                 load_user=True,
@@ -385,7 +352,7 @@ class TestLoadAllSkills:
                 project_dir="/workspace",
             )
 
-            # Project should override user which overrides public
+            # Project should override user/public
             shared_skills = [s for s in result.skills if s.name == "shared"]
             assert len(shared_skills) == 1
             assert shared_skills[0].content == "project"

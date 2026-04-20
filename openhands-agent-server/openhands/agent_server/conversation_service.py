@@ -3,16 +3,21 @@ import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import httpx
+from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ACPConversationInfo,
+    ACPConversationPage,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    StartACPConversationRequest,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -20,20 +25,43 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Event, Message
+from openhands.sdk import LLM, Agent, Event, Message
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.title_utils import (
+    extract_message_text,
+    generate_title_from_message,
+)
+from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.utils.cipher import Cipher
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.subagent.schema import AgentDefinition
 
 
 logger = logging.getLogger(__name__)
 
 
-def _compose_conversation_info(
+class ConversationContractMismatchError(ValueError):
+    """Raised when a conversation ID exists under a different REST contract."""
+
+
+def _conversation_contract_mismatch_message(conversation_id: UUID) -> str:
+    return (
+        f"Conversation {conversation_id} exists but is only available through the "
+        "ACP conversation contract. Use /api/acp/conversations or attach with "
+        "ACPAgent."
+    )
+
+
+def _compose_conversation_info_v1(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
+    assert isinstance(stored.agent, Agent)
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
@@ -43,6 +71,80 @@ def _compose_conversation_info(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+    )
+
+
+def _compose_acp_conversation_info(
+    stored: StoredConversation, state: ConversationState
+) -> ACPConversationInfo:
+    return ACPConversationInfo(
+        **state.model_dump(mode="json"),
+        title=stored.title,
+        metrics=stored.metrics,
+        created_at=stored.created_at,
+        updated_at=stored.updated_at,
+    )
+
+
+def _is_v1_conversation(stored: StoredConversation) -> bool:
+    return isinstance(stored.agent, Agent)
+
+
+def _compose_webhook_conversation_info(
+    stored: StoredConversation, state: ConversationState
+) -> ConversationInfo | ACPConversationInfo:
+    if _is_v1_conversation(stored):
+        return _compose_conversation_info_v1(stored, state)
+    return _compose_acp_conversation_info(stored, state)
+
+
+def _update_state_tags_sync(
+    state: ConversationState, tags: dict[str, str]
+) -> ConversationState:
+    with state:
+        state.tags = tags
+    return state
+
+
+def _compose_webhook_conversation_info_sync(
+    stored: StoredConversation, state: ConversationState
+) -> ConversationInfo | ACPConversationInfo:
+    with state:
+        return _compose_webhook_conversation_info(stored, state)
+
+
+def _register_agent_definitions(
+    agent_defs: list["AgentDefinition"],
+    *,
+    context: str,
+) -> None:
+    """Register agent definitions into the subagent registry.
+
+    Used both when creating new conversations (definitions forwarded from the
+    client) and when resuming persisted ones (definitions stored in meta.json).
+    """
+    from openhands.sdk.subagent.registry import (
+        agent_definition_to_factory,
+        register_agent_if_absent,
+    )
+
+    registered = 0
+    for agent_def in agent_defs:
+        try:
+            factory = agent_definition_to_factory(agent_def)
+            register_agent_if_absent(
+                name=agent_def.name,
+                factory_func=factory,
+                description=agent_def,
+            )
+            registered += 1
+        except Exception as e:
+            logger.warning(
+                f"Failed to register agent definition "
+                f"'{agent_def.name}' ({context}): {e}"
+            )
+    logger.info(
+        f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
     )
 
 
@@ -68,8 +170,21 @@ class ConversationService:
         event_service = self._event_services.get(conversation_id)
         if event_service is None:
             return None
+        if not _is_v1_conversation(event_service.stored):
+            return None
         state = await event_service.get_state()
-        return _compose_conversation_info(event_service.stored, state)
+        return _compose_conversation_info_v1(event_service.stored, state)
+
+    async def get_acp_conversation(
+        self, conversation_id: UUID
+    ) -> ACPConversationInfo | None:
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+        state = await event_service.get_state()
+        return _compose_acp_conversation_info(event_service.stored, state)
 
     async def search_conversations(
         self,
@@ -78,14 +193,60 @@ class ConversationService:
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
     ) -> ConversationPage:
+        items, next_page_id = await self._search_conversations(
+            page_id=page_id,
+            limit=limit,
+            execution_status=execution_status,
+            sort_order=sort_order,
+            include_acp=False,
+        )
+        return ConversationPage(
+            items=cast(list[ConversationInfo], items),
+            next_page_id=next_page_id,
+        )
+
+    async def search_acp_conversations(
+        self,
+        page_id: str | None = None,
+        limit: int = 100,
+        execution_status: ConversationExecutionStatus | None = None,
+        sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
+    ) -> ACPConversationPage:
+        items, next_page_id = await self._search_conversations(
+            page_id=page_id,
+            limit=limit,
+            execution_status=execution_status,
+            sort_order=sort_order,
+            include_acp=True,
+        )
+        return ACPConversationPage(
+            items=cast(list[ACPConversationInfo], items),
+            next_page_id=next_page_id,
+        )
+
+    async def _search_conversations(
+        self,
+        page_id: str | None,
+        limit: int,
+        execution_status: ConversationExecutionStatus | None,
+        sort_order: ConversationSortOrder,
+        *,
+        include_acp: bool,
+    ) -> tuple[list[ConversationInfo | ACPConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
         # Collect all conversations with their info
         all_conversations = []
         for id, event_service in self._event_services.items():
+            if not include_acp and not _is_v1_conversation(event_service.stored):
+                continue
             state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
+            conversation_info = (
+                _compose_acp_conversation_info(event_service.stored, state)
+                if include_acp
+                else _compose_conversation_info_v1(event_service.stored, state)
+            )
             # Apply status filter if provided
             if (
                 execution_status is not None
@@ -126,11 +287,31 @@ class ConversationService:
                 break
             items.append(all_conversations[i][1])
 
-        return ConversationPage(items=items, next_page_id=next_page_id)
+        return items, next_page_id
 
     async def count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None = None,
+    ) -> int:
+        return await self._count_conversations(
+            execution_status=execution_status,
+            include_acp=False,
+        )
+
+    async def count_acp_conversations(
+        self,
+        execution_status: ConversationExecutionStatus | None = None,
+    ) -> int:
+        return await self._count_conversations(
+            execution_status=execution_status,
+            include_acp=True,
+        )
+
+    async def _count_conversations(
+        self,
+        execution_status: ConversationExecutionStatus | None,
+        *,
+        include_acp: bool,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
@@ -138,6 +319,8 @@ class ConversationService:
 
         count = 0
         for event_service in self._event_services.values():
+            if not include_acp and not _is_v1_conversation(event_service.stored):
+                continue
             state = await event_service.get_state()
 
             # Apply status filter if provided
@@ -164,7 +347,18 @@ class ConversationService:
         )
         return results
 
-    async def _notify_conversation_webhooks(self, conversation_info: ConversationInfo):
+    async def batch_get_acp_conversations(
+        self, conversation_ids: list[UUID]
+    ) -> list[ACPConversationInfo | None]:
+        results = await asyncio.gather(
+            *[
+                self.get_acp_conversation(conversation_id)
+                for conversation_id in conversation_ids
+            ]
+        )
+        return results
+
+    async def _notify_conversation_webhooks(self, conversation_info: BaseModel):
         """Notify all conversation webhook subscribers about conversation changes."""
         if not self._conversation_webhook_subscribers:
             return
@@ -199,16 +393,41 @@ class ConversationService:
     async def start_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
+        conversation_info, is_new = await self._start_conversation(request)
+        assert isinstance(conversation_info, ConversationInfo)
+        return conversation_info, is_new
+
+    async def start_acp_conversation(
+        self, request: StartACPConversationRequest
+    ) -> tuple[ACPConversationInfo, bool]:
+        conversation_info, is_new = await self._start_conversation(request)
+        assert isinstance(conversation_info, ACPConversationInfo)
+        return conversation_info, is_new
+
+    async def _start_conversation(
+        self, request: StartConversationRequest | StartACPConversationRequest
+    ) -> tuple[ConversationInfo | ACPConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
+        use_acp_contract = isinstance(request, StartACPConversationRequest)
 
         existing_event_service = self._event_services.get(conversation_id)
+        if (
+            existing_event_service is not None
+            and not use_acp_contract
+            and not _is_v1_conversation(existing_event_service.stored)
+        ):
+            raise ConversationContractMismatchError(
+                _conversation_contract_mismatch_message(conversation_id)
+            )
         if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
-            conversation_info = _compose_conversation_info(
-                existing_event_service.stored, state
+            conversation_info = (
+                _compose_acp_conversation_info(existing_event_service.stored, state)
+                if use_acp_contract
+                else _compose_conversation_info_v1(existing_event_service.stored, state)
             )
             return conversation_info, False
 
@@ -238,6 +457,13 @@ class ConversationService:
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
 
+        # Register subagent definitions forwarded from the client
+        if request.agent_definitions:
+            _register_agent_definitions(
+                request.agent_definitions,
+                context=f"conversation {conversation_id}",
+            )
+
         # Plugin loading is now handled lazily by LocalConversation.
         # Just pass the plugin specs through to StoredConversation.
         # LocalConversation will:
@@ -262,10 +488,16 @@ class ConversationService:
             await event_service.send_message(message, True)
 
         state = await event_service.get_state()
-        conversation_info = _compose_conversation_info(event_service.stored, state)
+        conversation_info = (
+            _compose_acp_conversation_info(event_service.stored, state)
+            if use_acp_contract
+            else _compose_conversation_info_v1(event_service.stored, state)
+        )
 
         # Notify conversation webhooks about the started conversation
-        await self._notify_conversation_webhooks(conversation_info)
+        await self._notify_conversation_webhooks(
+            _compose_webhook_conversation_info(event_service.stored, state)
+        )
 
         return conversation_info, True
 
@@ -277,7 +509,9 @@ class ConversationService:
             await event_service.pause()
             # Notify conversation webhooks about the paused conversation
             state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
+            conversation_info = _compose_webhook_conversation_info(
+                event_service.stored, state
+            )
             await self._notify_conversation_webhooks(conversation_info)
         return bool(event_service)
 
@@ -297,7 +531,7 @@ class ConversationService:
             # Notify conversation webhooks about the stopped conversation before closing
             try:
                 state = await event_service.get_state()
-                conversation_info = _compose_conversation_info(
+                conversation_info = _compose_webhook_conversation_info(
                     event_service.stored, state
                 )
                 conversation_info.execution_status = (
@@ -337,7 +571,7 @@ class ConversationService:
 
         Args:
             conversation_id: The ID of the conversation to update
-            request: Request object containing fields to update (e.g., title)
+            request: Request object containing fields to update (e.g., title, tags)
 
         Returns:
             bool: True if the conversation was updated successfully, False if not found
@@ -348,19 +582,37 @@ class ConversationService:
         if event_service is None:
             return False
 
-        # Update the title in stored conversation
-        event_service.stored.title = request.title.strip()
+        loop = asyncio.get_running_loop()
+        state = await event_service.get_state()
+        if request.title is not None:
+            event_service.stored.title = request.title.strip()
+        if request.tags is not None:
+            event_service.stored.tags = request.tags
+            # Keep the persisted ConversationState update under the state lock so
+            # autosave and state-change callbacks observe a consistent mutation.
+            state = await loop.run_in_executor(
+                None, _update_state_tags_sync, state, request.tags
+            )
+        event_service.stored.updated_at = utc_now()
         # Save the updated metadata to disk
         await event_service.save_meta()
 
-        # Notify conversation webhooks about the updated conversation
-        state = await event_service.get_state()
-        conversation_info = _compose_conversation_info(event_service.stored, state)
+        # Notify conversation webhooks about the updated conversation. Compose the
+        # full-state snapshot under the state lock, but do the synchronous wait in a
+        # worker thread so metadata updates cannot block the FastAPI event loop.
+        conversation_info = await loop.run_in_executor(
+            None, _compose_webhook_conversation_info_sync, event_service.stored, state
+        )
         await self._notify_conversation_webhooks(conversation_info)
 
+        updated_fields = []
+        if request.title is not None:
+            updated_fields.append(f"title: {request.title}")
+        if request.tags is not None:
+            updated_fields.append(f"tags: {request.tags}")
         logger.info(
             f"Successfully updated conversation {conversation_id} "
-            f"with title: {request.title}"
+            f"with {', '.join(updated_fields)}"
         )
         return True
 
@@ -407,6 +659,73 @@ class ConversationService:
         await event_service.condense()
         return True
 
+    async def fork_conversation(
+        self,
+        source_id: UUID,
+        *,
+        fork_id: UUID | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> ConversationInfo | None:
+        """Fork an existing conversation, deep-copying its event history.
+
+        The fork is persisted to disk and then loaded as a new EventService,
+        so the forked conversation is fully independent from the source.
+
+        Returns ``None`` when *source_id* does not exist.
+
+        Raises:
+            ValueError: If *fork_id* is already taken by an active
+                conversation.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        # Reject duplicate fork IDs early to avoid clobbering an active
+        # conversation or leaking an EventService reference.
+        if fork_id is not None and fork_id in self._event_services:
+            raise ValueError(f"Conversation with id {fork_id} already exists")
+
+        source_service = self._event_services.get(source_id)
+        if source_service is None:
+            return None
+
+        source_conversation = source_service.get_conversation()
+
+        # fork() deep-copies events, state, and writes to a new persistence dir.
+        fork_conv = await asyncio.to_thread(
+            source_conversation.fork,
+            conversation_id=fork_id,
+            title=title,
+            tags=tags,
+            reset_metrics=reset_metrics,
+        )
+        # Extract the persisted data, then discard the temporary conversation.
+        fork_conv_id = fork_conv.id
+        fork_agent = cast(Agent, fork_conv.agent)
+        fork_workspace = fork_conv.workspace
+        fork_conv.delete_on_close = False
+        fork_conv.close()
+
+        # _start_event_service will resume from the persisted fork directory.
+        fork_stored = StoredConversation(
+            id=fork_conv_id,
+            agent=fork_agent,
+            workspace=fork_workspace,
+        )
+        # If the service fails to start, clean up the orphaned persistence
+        # directory so we don't leave stale state on disk.
+        fork_dir = self.conversations_dir / fork_conv_id.hex
+        try:
+            fork_event_service = await self._start_event_service(fork_stored)
+        except Exception:
+            safe_rmtree(fork_dir)
+            raise
+
+        state = await fork_event_service.get_state()
+        return _compose_conversation_info_v1(fork_event_service.stored, state)
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
@@ -450,6 +769,12 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
+                # Register agent definitions when resuming
+                if stored.agent_definitions:
+                    _register_agent_definitions(
+                        stored.agent_definitions,
+                        context=f"resuming conversation {stored.id}",
+                    )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(
@@ -503,6 +828,10 @@ class ConversationService:
         )
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
+        if stored.autotitle and stored.title is None:
+            await event_service.subscribe_to_events(
+                AutoTitleSubscriber(service=event_service)
+            )
         asyncio.gather(
             *[
                 event_service.subscribe_to_events(
@@ -536,8 +865,89 @@ class _EventSubscriber(Subscriber):
     service: EventService
 
     async def __call__(self, _event: Event):
+        # Skip updating timestamp for ConversationStateUpdateEvent, which is
+        # published during startup/state changes and doesn't represent actual
+        # conversation activity. This prevents updated_at from being reset
+        # on every server restart.
+        if isinstance(_event, ConversationStateUpdateEvent):
+            return
         self.service.stored.updated_at = utc_now()
         update_last_execution_time()
+
+
+@dataclass
+class AutoTitleSubscriber(Subscriber):
+    service: EventService
+
+    async def __call__(self, event: Event) -> None:
+        # Only act on incoming user messages
+        if not isinstance(event, MessageEvent) or event.source != "user":
+            return
+        # Guard: skip if a title was already set (e.g. by a concurrent task)
+        if self.service.stored.title is not None:
+            return
+
+        # Extract the message text now, before spawning the background task,
+        # to avoid a race where the event hasn't been persisted to the events
+        # list yet when title generation tries to read it.
+        message_text = extract_message_text(event)
+        if not message_text:
+            return
+
+        # Precedence: title_llm_profile (if configured and loads) → agent.llm →
+        # truncation. This keeps auto-titling non-breaking for consumers who
+        # don't configure title_llm_profile.
+        title_llm = self._load_title_llm()
+        if title_llm is None:
+            conversation = self.service._conversation
+            title_llm = conversation.agent.llm if conversation else None
+
+        async def _generate_and_save() -> None:
+            try:
+                loop = asyncio.get_running_loop()
+                title = await loop.run_in_executor(
+                    None,
+                    generate_title_from_message,
+                    message_text,
+                    title_llm,
+                    50,
+                )
+                if title and self.service.stored.title is None:
+                    self.service.stored.title = title
+                    self.service.stored.updated_at = utc_now()
+                    await self.service.save_meta()
+            except Exception:
+                logger.warning(
+                    f"Auto-title generation failed for "
+                    f"conversation {self.service.stored.id}",
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_generate_and_save())
+
+    def _load_title_llm(self) -> LLM | None:
+        """Load the LLM for title generation from profile store.
+
+        Returns:
+            LLM instance if title_llm_profile is configured and loads
+            successfully, None otherwise. When None is returned, the caller
+            falls back to the agent's LLM (and then to message truncation).
+        """
+        profile_name = self.service.stored.title_llm_profile
+        if not profile_name:
+            return None
+
+        try:
+            from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+            profile_store = LLMProfileStore()
+            return profile_store.load(profile_name)
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning(
+                f"Failed to load title LLM profile '{profile_name}': {e}. "
+                "Falling back to the agent's LLM."
+            )
+            return None
 
 
 @dataclass
@@ -648,7 +1058,7 @@ class ConversationWebhookSubscriber:
     spec: WebhookSpec
     session_api_key: str | None = None
 
-    async def post_conversation_info(self, conversation_info: ConversationInfo):
+    async def post_conversation_info(self, conversation_info: BaseModel):
         """Post conversation info to the webhook immediately (no batching)."""
         # Prepare headers
         headers = self.spec.headers.copy()
@@ -662,6 +1072,7 @@ class ConversationWebhookSubscriber:
         conversation_data = conversation_info.model_dump(mode="json")
 
         # Retry logic
+        response = None
         for attempt in range(self.spec.num_retries + 1):
             try:
                 async with httpx.AsyncClient() as client:
@@ -685,10 +1096,14 @@ class ConversationWebhookSubscriber:
                 if attempt < self.spec.num_retries:
                     await asyncio.sleep(self.spec.retry_delay)
                 else:
+                    # Log response content for debugging failures
+                    response_content = (
+                        response.text if response is not None else "No response"
+                    )
                     logger.error(
                         f"Failed to post conversation info to webhook "
                         f"{conversations_url} after {self.spec.num_retries + 1} "
-                        "attempts"
+                        f"attempts. Response: {response_content}"
                     )
 
 

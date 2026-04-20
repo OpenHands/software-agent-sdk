@@ -2,6 +2,7 @@
 
 import platform
 import subprocess
+import warnings
 from typing import Literal
 
 from openhands.sdk.logger import get_logger
@@ -120,6 +121,13 @@ def create_terminal_session(
                 SubprocessTerminal,
             )
 
-            logger.info("Auto-detected: Using SubprocessTerminal (tmux not available)")
+            _tmux_warning = (
+                "tmux is not installed. Falling back to subprocess-based"
+                " terminal, which may be less stable. For best agent"
+                " performance, install tmux (e.g. `apt-get install tmux`"
+                " or `brew install tmux`)."
+            )
+            logger.warning(_tmux_warning)
+            warnings.warn(_tmux_warning, stacklevel=2)
             terminal = SubprocessTerminal(work_dir, username, shell_path)
             return TerminalSession(terminal, no_change_timeout_seconds)

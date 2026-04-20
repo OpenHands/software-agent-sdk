@@ -1,11 +1,12 @@
 """Tests for MCP schema generation in openhands.sdk.tool.schema."""
 
+import json
 from collections.abc import Sequence
 
 from pydantic import Field
 
 from openhands.sdk.llm import ImageContent, TextContent
-from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.tool.schema import Action, Observation, Schema, _process_schema_node
 
 
 class MCPSchemaTestAction(Action):
@@ -138,3 +139,250 @@ def test_kind_field_works_for_discriminated_union():
     restored = MCPSchemaTestAction.model_validate(data)
     assert restored.command == "test"
     assert restored.kind == "MCPSchemaTestAction"
+
+
+class TestCircularSchemaHandling:
+    """Tests for handling circular $ref schemas in tool schemas.
+
+    These tests verify that circular schemas are handled gracefully without
+    RecursionError. When a circular reference is detected, a generic
+    {"type": "object"} placeholder is returned.
+
+    Related: Datadog logs from conversation ab9909a07571431a86ab6f1be36f555f
+    """
+
+    def test_circular_ref_returns_generic_object(self):
+        """Test that circular ref handling returns a generic object.
+
+        When a circular reference is detected, the function returns a simple
+        {"type": "object"} placeholder to prevent infinite recursion.
+        """
+        circular_schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "children": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/TreeNode"},
+                },
+            },
+            "$defs": {
+                "TreeNode": {
+                    "type": "object",
+                    "description": "A tree node",
+                    "properties": {
+                        "name": {"type": "string", "description": "Node name"},
+                        "children": {
+                            "type": "array",
+                            "items": {"$ref": "#/$defs/TreeNode"},
+                            "description": "Child nodes",
+                        },
+                    },
+                }
+            },
+        }
+
+        defs = circular_schema.get("$defs", {})
+        result = _process_schema_node(circular_schema, defs)
+
+        # Verify basic structure
+        assert result["type"] == "object"
+        assert "properties" in result
+
+        # The top-level 'name' should be preserved
+        assert result["properties"]["name"]["type"] == "string"
+
+        # The 'children' array should be present
+        assert result["properties"]["children"]["type"] == "array"
+
+        # The items in children should be expanded TreeNodes (first level)
+        items = result["properties"]["children"]["items"]
+        assert items["type"] == "object"
+        assert "properties" in items
+
+        # The TreeNode's 'name' property should be preserved (first level)
+        assert "name" in items["properties"]
+        assert items["properties"]["name"]["type"] == "string"
+
+        # The TreeNode's 'children' should be an array
+        assert "children" in items["properties"]
+        assert items["properties"]["children"]["type"] == "array"
+
+        # The nested items (circular ref) should be a generic object
+        nested_items = items["properties"]["children"]["items"]
+        assert nested_items["type"] == "object"
+        # Description is preserved from the ref definition
+        assert nested_items.get("description") == "A tree node"
+
+        # Should be JSON serializable
+        json.dumps(result)
+
+    def test_tree_schema_to_mcp_works(self):
+        """Test that self-referential Pydantic Schema can be converted to MCP schema.
+
+        This is the real-world scenario: a Pydantic model with self-referential
+        fields (like a tree node) should be convertible without RecursionError.
+        """
+
+        class TreeNode(Schema):
+            """A tree node that can have children of the same type."""
+
+            value: str = Field(description="The value of this node")
+            children: list["TreeNode"] | None = Field(
+                default=None, description="Child nodes"
+            )
+
+        TreeNode.model_rebuild()
+
+        result = TreeNode.to_mcp_schema()
+
+        # Verify the result structure
+        assert result["type"] == "object"
+        assert "properties" in result
+
+        # The 'value' field should be fully preserved
+        assert "value" in result["properties"]
+        assert result["properties"]["value"]["type"] == "string"
+        assert result["properties"]["value"]["description"] == "The value of this node"
+
+        # The 'children' field should be present as an array
+        assert "children" in result["properties"]
+        children_prop = result["properties"]["children"]
+        assert children_prop["type"] == "array"
+
+        # The items should be objects (circular ref returns generic object)
+        assert children_prop["items"]["type"] == "object"
+
+        # Should be JSON serializable
+        json.dumps(result)
+
+    def test_deeply_nested_non_circular_schema_fully_resolved(self):
+        """Test that deeply nested but non-circular schemas are fully resolved.
+
+        This ensures we don't break valid deeply nested schemas while fixing
+        the circular reference issue.
+        """
+        deep_schema = {
+            "type": "object",
+            "properties": {
+                "level1": {
+                    "type": "object",
+                    "properties": {
+                        "level2": {
+                            "type": "object",
+                            "properties": {
+                                "level3": {
+                                    "type": "object",
+                                    "properties": {
+                                        "value": {"type": "string"},
+                                    },
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+        }
+
+        result = _process_schema_node(deep_schema, {})
+
+        # Verify full nesting is preserved
+        assert result["type"] == "object"
+        level1 = result["properties"]["level1"]
+        assert level1["type"] == "object"
+        level2 = level1["properties"]["level2"]
+        assert level2["type"] == "object"
+        level3 = level2["properties"]["level3"]
+        assert level3["type"] == "object"
+        assert level3["properties"]["value"]["type"] == "string"
+
+        json.dumps(result)
+
+    def test_non_circular_ref_fully_resolved(self):
+        """Test that schemas with non-circular $ref are fully resolved."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "address": {"$ref": "#/$defs/Address"},
+            },
+            "$defs": {
+                "Address": {
+                    "type": "object",
+                    "properties": {
+                        "street": {"type": "string"},
+                        "city": {"type": "string"},
+                    },
+                }
+            },
+        }
+
+        defs = schema.get("$defs", {})
+        result = _process_schema_node(schema, defs)
+
+        # Should resolve the $ref completely
+        assert result["type"] == "object"
+        address = result["properties"]["address"]
+        assert address["type"] == "object"
+        assert address["properties"]["street"]["type"] == "string"
+        assert address["properties"]["city"]["type"] == "string"
+
+        json.dumps(result)
+
+    def test_circular_ref_does_not_raise_recursion_error(self):
+        """Test that circular $ref does not cause RecursionError."""
+        circular_schema = {
+            "type": "object",
+            "properties": {
+                "children": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/Node"},
+                },
+            },
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "children": {
+                            "type": "array",
+                            "items": {"$ref": "#/$defs/Node"},
+                        },
+                    },
+                }
+            },
+        }
+
+        defs = circular_schema.get("$defs", {})
+
+        # Should not raise RecursionError
+        result = _process_schema_node(circular_schema, defs)
+
+        # Verify valid output
+        assert result["type"] == "object"
+        assert "properties" in result
+        json.dumps(result)
+
+    def test_linked_list_schema_to_mcp_works(self):
+        """Test that linked list Schema can be converted to MCP schema."""
+
+        class LinkedListNode(Schema):
+            """A linked list node with optional next pointer."""
+
+            value: int = Field(description="The value")
+            next: "LinkedListNode | None" = Field(default=None, description="Next node")
+
+        LinkedListNode.model_rebuild()
+
+        result = LinkedListNode.to_mcp_schema()
+
+        # Verify structure
+        assert result["type"] == "object"
+        assert "value" in result["properties"]
+        assert result["properties"]["value"]["type"] == "integer"
+        assert result["properties"]["value"]["description"] == "The value"
+
+        # 'next' should be present (as a simplified object)
+        assert "next" in result["properties"]
+        assert result["properties"]["next"]["type"] == "object"
+
+        json.dumps(result)

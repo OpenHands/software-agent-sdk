@@ -1,12 +1,17 @@
 """Browser tool executor implementation using browser-use MCP server wrapper."""
 
+from __future__ import annotations
+
+import builtins
+import functools
 import json
 import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 
 if TYPE_CHECKING:
@@ -16,9 +21,65 @@ from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
-from openhands.tools.browser_use.definition import BrowserAction, BrowserObservation
+from openhands.tools.browser_use.definition import (
+    BROWSER_RECORDING_OUTPUT_DIR,
+    BrowserAction,
+    BrowserObservation,
+)
 from openhands.tools.browser_use.server import CustomBrowserUseServer
-from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
+from openhands.tools.utils.timeout import (
+    TimeoutError as ToolTimeoutError,
+    run_with_timeout,
+)
+
+
+F = TypeVar("F", bound=Callable[..., Coroutine[Any, Any, Any]])
+
+
+def recording_aware(
+    func: Callable[..., Coroutine[Any, Any, Any]],
+) -> Callable[..., Coroutine[Any, Any, Any]]:
+    """Decorator that handles recording flush before/after navigation operations.
+
+    This decorator:
+    1. Flushes recording events before the operation (to preserve them)
+    2. Executes the operation
+    3. Restarts recording on the new page if recording was active
+
+    Error Handling Policy (see recording.py module docstring for full details):
+    - Recording is a secondary feature that should never block browser operations
+    - AttributeError: silent pass (recording not initialized - expected)
+    - Other exceptions: log at DEBUG, don't interrupt navigation
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self: BrowserToolExecutor, *args: Any, **kwargs: Any) -> Any:
+        is_recording = self._server._is_recording
+        if is_recording:
+            try:
+                await self._server._flush_recording_events()
+            except AttributeError:
+                # Recording not initialized - expected, silent pass
+                pass
+            except Exception as e:
+                # Internal operation: log at DEBUG, don't interrupt navigation
+                logger.debug(f"Recording flush before {func.__name__} skipped: {e}")
+
+        result = await func(self, *args, **kwargs)
+
+        if is_recording:
+            try:
+                await self._server._restart_recording_on_new_page()
+            except AttributeError:
+                # Recording not initialized - expected, silent pass
+                pass
+            except Exception as e:
+                # Internal operation: log at DEBUG, don't interrupt navigation
+                logger.debug(f"Recording restart after {func.__name__} skipped: {e}")
+
+        return result
+
+    return wrapper
 
 
 # Suppress browser-use logging for cleaner integration
@@ -28,6 +89,24 @@ else:
     logging.getLogger("browser_use").setLevel(logging.WARNING)
 
 logger = get_logger(__name__)
+
+DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 300.0
+
+
+def _format_browser_operation_error(
+    error: BaseException, timeout_seconds: float | None = None
+) -> str:
+    if error_detail := str(error).strip():
+        pass
+    elif isinstance(error, builtins.TimeoutError):
+        error_detail = (
+            f"Operation timed out after {int(timeout_seconds)} seconds"
+            if timeout_seconds is not None
+            else "Operation timed out"
+        )
+    else:
+        error_detail = error.__class__.__name__
+    return f"Browser operation failed: {error_detail}"
 
 
 def _install_chromium() -> bool:
@@ -82,6 +161,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+    _action_timeout_seconds: float
 
     def check_chromium_available(self) -> str | None:
         """Check if a Chromium/Chrome binary is available.
@@ -92,14 +172,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         Returns:
             Path to Chromium binary if found, None otherwise
         """
-        for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
-            if path := shutil.which(binary):
-                return path
-
-        # Check standard installation paths
+        # Check standard installation paths (prefer full Chrome installs)
         standard_paths = [
             # Linux
             "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
             "/usr/bin/chromium",
             "/usr/bin/chromium-browser",
             # macOS
@@ -111,7 +188,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             if p.exists():
                 return str(p)
 
-        # Check Playwright-installed Chromium
+        # Check Playwright-installed Chromium (preferred over PATH lookups
+        # because PATH binaries like homebrew chromium may lack CDP support)
         playwright_cache_candidates = [
             Path.home() / ".cache" / "ms-playwright",  # Linux
             Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
@@ -123,17 +201,36 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 for chromium_dir in chromium_dirs:
                     # Check platform-specific paths
                     possible_paths = [
-                        chromium_dir / "chrome-linux" / "chrome",  # Linux
+                        chromium_dir / "chrome-linux" / "chrome",  # Linux (old)
+                        chromium_dir / "chrome-linux64" / "chrome",  # Linux (new)
                         chromium_dir
                         / "chrome-mac"
                         / "Chromium.app"
                         / "Contents"
                         / "MacOS"
-                        / "Chromium",  # macOS
+                        / "Chromium",  # macOS (old)
+                        chromium_dir
+                        / "chrome-mac-arm64"
+                        / "Google Chrome for Testing.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "Google Chrome for Testing",  # macOS arm64
+                        chromium_dir
+                        / "chrome-mac"
+                        / "Google Chrome for Testing.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "Google Chrome for Testing",  # macOS x64
                     ]
                     for p in possible_paths:
                         if p.exists():
                             return str(p)
+
+        # Fallback: check PATH for any chromium-based binary
+        for binary in ("google-chrome", "chrome", "chromium", "chromium-browser"):
+            if path := shutil.which(binary):
+                return path
+
         return None
 
     def _ensure_chromium_available(self) -> str:
@@ -155,7 +252,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         allowed_domains: list[str] | None = None,
         session_timeout_minutes: int = 30,
         init_timeout_seconds: int = 30,
+        action_timeout_seconds: float = DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS,
         full_output_save_dir: str | None = None,
+        inject_scripts: list[str] | None = None,
         **config,
     ):
         """Initialize BrowserToolExecutor with timeout protection.
@@ -165,8 +264,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             allowed_domains: List of allowed domains for browser operations
             session_timeout_minutes: Browser session timeout in minutes
             init_timeout_seconds: Timeout for browser initialization in seconds
+            action_timeout_seconds: Timeout for each browser action in seconds
             full_output_save_dir: Absolute path to directory to save full output
-            logs and files, used when truncation is needed.
+                logs and files, used when truncation is needed.
+            inject_scripts: List of JavaScript code strings to inject into every
+                new document. Scripts are injected via CDP's
+                Page.addScriptToEvaluateOnNewDocument and run before page scripts.
+                Useful for injecting recording tools like rrweb.
             **config: Additional configuration options
         """
 
@@ -180,34 +284,67 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 headless = False  # Force headless off if VNC is enabled
                 logger.info("VNC is enabled - running browser in non-headless mode")
 
+            # Configure scripts to inject
+            if inject_scripts:
+                self._server.set_inject_scripts(inject_scripts)
+
+            # Chromium refuses to run as root with sandboxing enabled.
+            # Disable the sandbox when running as root so CHROME_DOCKER_ARGS
+            # (--no-sandbox, --disable-setuid-sandbox, etc.) are applied.
+            # SECURITY: Running Chrome as root without a sandbox is risky
+            # - a compromised browser has full root access. Use only in
+            # controlled environments.
+            running_as_root = os.getuid() == 0
+            if running_as_root:
+                logger.warning(
+                    "Running as root - disabling Chromium sandbox "
+                    "(required for root). This reduces security isolation."
+                )
+
             self._config = {
                 "headless": headless,
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
+                "chromium_sandbox": not running_as_root,
                 **config,
             }
 
         try:
             run_with_timeout(init_logic, init_timeout_seconds)
-        except TimeoutError:
+        except ToolTimeoutError:
             raise Exception(
                 f"Browser tool initialization timed out after {init_timeout_seconds}s"
             )
+
+        if action_timeout_seconds <= 0:
+            raise ValueError("action_timeout_seconds must be greater than 0")
 
         self.full_output_save_dir: str | None = full_output_save_dir
         self._initialized = False
         self._async_executor = AsyncExecutor()
         self._cleanup_initiated = False
+        self._action_timeout_seconds = action_timeout_seconds
 
     def __call__(
         self,
         action: BrowserAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+        conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
-        return self._async_executor.run_async(
-            self._execute_action, action, timeout=300.0
-        )
+        try:
+            return self._async_executor.run_async(
+                self._execute_action,
+                action,
+                timeout=self._action_timeout_seconds,
+            )
+        except builtins.TimeoutError as error:
+            return BrowserObservation.from_text(
+                text=_format_browser_operation_error(
+                    error, timeout_seconds=self._action_timeout_seconds
+                ),
+                is_error=True,
+                full_output_save_dir=self.full_output_save_dir,
+            )
 
     async def _execute_action(self, action):
         """Execute browser action asynchronously."""
@@ -223,6 +360,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserObservation,
             BrowserScrollAction,
             BrowserSetStorageAction,
+            BrowserStartRecordingAction,
+            BrowserStopRecordingAction,
             BrowserSwitchTabAction,
             BrowserTypeAction,
         )
@@ -256,6 +395,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.switch_tab(action.tab_id)
             elif isinstance(action, BrowserCloseTabAction):
                 result = await self.close_tab(action.tab_id)
+            elif isinstance(action, BrowserStartRecordingAction):
+                result = await self.start_recording()
+            elif isinstance(action, BrowserStopRecordingAction):
+                result = await self.stop_recording()
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
                 return BrowserObservation.from_text(
@@ -269,8 +412,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 is_error=False,
                 full_output_save_dir=self.full_output_save_dir,
             )
-        except Exception as e:
-            error_msg = f"Browser operation failed: {str(e)}"
+        except Exception as error:
+            error_msg = _format_browser_operation_error(error)
             logging.error(error_msg, exc_info=True)
             return BrowserObservation.from_text(
                 text=error_msg,
@@ -283,20 +426,26 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         if not self._initialized:
             # Initialize browser session with our config
             await self._server._init_browser_session(**self._config)
+            # Inject any configured user scripts after session is ready
+            # Note: rrweb scripts are injected lazily when recording starts
+            await self._server._inject_scripts_to_session()
             self._initialized = True
 
     # Navigation & Browser Control Methods
+    @recording_aware
     async def navigate(self, url: str, new_tab: bool = False) -> str:
         """Navigate to a URL."""
         await self._ensure_initialized()
         return await self._server._navigate(url, new_tab)
 
+    @recording_aware
     async def go_back(self) -> str:
         """Go back in browser history."""
         await self._ensure_initialized()
         return await self._server._go_back()
 
     # Page Interaction
+    @recording_aware
     async def click(self, index: int, new_tab: bool = False) -> str:
         """Click an element by index."""
         await self._ensure_initialized()
@@ -376,6 +525,29 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             extract_links=extract_links, start_from_char=start_from_char
         )
 
+    # Session Recording
+    async def start_recording(self) -> str:
+        """Start recording the browser session using rrweb.
+
+        Recording events are periodically flushed to timestamped JSON files
+        in a session subfolder under BROWSER_RECORDING_OUTPUT_DIR.
+        Events are flushed every 5 seconds.
+        """
+        await self._ensure_initialized()
+        return await self._server._start_recording(
+            output_dir=BROWSER_RECORDING_OUTPUT_DIR
+        )
+
+    async def stop_recording(self) -> str:
+        """Stop recording and save remaining events to file.
+
+        Stops the periodic flush, collects any remaining events, and saves
+        them to a final numbered JSON file. Returns a summary message with
+        the total events and file count.
+        """
+        await self._ensure_initialized()
+        return await self._server._stop_recording()
+
     async def close_browser(self) -> str:
         """Close the browser session."""
         if self._initialized:
@@ -387,9 +559,16 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     async def cleanup(self):
         """Cleanup browser resources."""
         try:
-            await self.close_browser()
+            # Use _close_all_sessions instead of close_browser because it calls
+            # session.kill() which properly stops the event bus and drains
+            # pending events (including BrowserKillEvent that terminates the
+            # Chromium subprocess). close_browser() alone dispatches
+            # BrowserKillEvent fire-and-forget and returns before it's processed,
+            # which can leave the browser process alive.
             if hasattr(self._server, "_close_all_sessions"):
                 await self._server._close_all_sessions()
+            else:
+                await self.close_browser()
         except Exception as e:
             logger.warning(f"Error during browser cleanup: {e}")
 

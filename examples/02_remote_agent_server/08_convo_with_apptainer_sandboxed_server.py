@@ -36,15 +36,29 @@ def detect_platform():
     return "linux/amd64"
 
 
+def get_server_image():
+    """Get the server image tag, using PR-specific image in CI."""
+    platform_str = detect_platform()
+    arch = "arm64" if "arm64" in platform_str else "amd64"
+    # SDK_SHA is the canonical commit SHA set by CI workflows (avoids the
+    # built-in GITHUB_SHA which resolves to the merge-commit on PRs).
+    sha = os.getenv("SDK_SHA") or os.getenv("GITHUB_SHA")
+    if sha:
+        return f"ghcr.io/openhands/agent-server:{sha[:7]}-python-{arch}"
+    return "ghcr.io/openhands/agent-server:latest-python"
+
+
 # 2) Create an Apptainer-based remote workspace that will set up and manage
 #    the Apptainer container automatically. Use `ApptainerWorkspace` with a
 #    pre-built agent server image.
 #    Apptainer (formerly Singularity) doesn't require root access, making it
 #    ideal for HPC and shared computing environments.
+server_image = get_server_image()
+logger.info(f"Using server image: {server_image}")
 with ApptainerWorkspace(
     # use pre-built image for faster startup
-    server_image="ghcr.io/openhands/agent-server:latest-python",
-    host_port=8010,
+    server_image=server_image,
+    # host_port auto-selects an available port when not specified
     platform=detect_platform(),
 ) as workspace:
     # 3) Create agent
