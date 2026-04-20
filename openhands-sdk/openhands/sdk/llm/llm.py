@@ -1141,9 +1141,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # cached_tokens, etc.) are not silently discarded by
                 # litellm's streaming handler.
                 if enable_streaming:
-                    kwargs.setdefault(
-                        "stream_options", {"include_usage": True}
-                    )
+                    kwargs.setdefault("stream_options", {"include_usage": True})
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(

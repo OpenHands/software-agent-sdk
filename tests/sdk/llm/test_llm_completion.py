@@ -1,7 +1,7 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -723,9 +723,7 @@ def test_llm_streaming_preserves_cache_read_tokens(mock_completion):
     )
 
     mock_stream = MagicMock(spec=CustomStreamWrapper)
-    mock_stream.__iter__.return_value = iter(
-        [content_chunk, finish_chunk, usage_chunk]
-    )
+    mock_stream.__iter__.return_value = iter([content_chunk, finish_chunk, usage_chunk])
     mock_completion.return_value = mock_stream
 
     llm = LLM(
@@ -746,12 +744,15 @@ def test_llm_streaming_preserves_cache_read_tokens(mock_completion):
     # The usage-only chunk must reach the SDK (not be discarded)
     assert len(received_chunks) == 3
 
-    # stream_chunk_builder must preserve prompt_tokens_details
-    assert response.raw_response.usage is not None
-    assert response.raw_response.usage.prompt_tokens == 5000
-    assert response.raw_response.usage.completion_tokens == 100
-    assert response.raw_response.usage.prompt_tokens_details is not None
-    assert response.raw_response.usage.prompt_tokens_details.cached_tokens == 4000
+    # stream_chunk_builder must preserve prompt_tokens_details.
+    # ModelResponse stores 'usage' as an extra (dynamic) field, so pyright
+    # cannot see it statically — cast to Any for attribute access.
+    raw_resp: Any = response.raw_response
+    assert raw_resp.usage is not None
+    assert raw_resp.usage.prompt_tokens == 5000
+    assert raw_resp.usage.completion_tokens == 100
+    assert raw_resp.usage.prompt_tokens_details is not None
+    assert raw_resp.usage.prompt_tokens_details.cached_tokens == 4000
 
     # Telemetry must record cache_read_tokens from prompt_tokens_details
     acc = response.metrics.accumulated_token_usage
@@ -761,9 +762,9 @@ def test_llm_streaming_preserves_cache_read_tokens(mock_completion):
     # Verify stream_options={"include_usage": True} was passed to litellm
     call_kwargs = mock_completion.call_args
     assert call_kwargs is not None
-    actual_stream_options = call_kwargs.kwargs.get(
-        "stream_options"
-    ) or call_kwargs[1].get("stream_options")
+    actual_stream_options = call_kwargs.kwargs.get("stream_options") or call_kwargs[
+        1
+    ].get("stream_options")
     assert actual_stream_options == {"include_usage": True}, (
         f"Expected stream_options={{include_usage: True}}, got {actual_stream_options}"
     )
