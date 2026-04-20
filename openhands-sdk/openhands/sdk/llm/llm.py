@@ -62,6 +62,7 @@ from litellm.types.llms.openai import (
     RefusalDeltaEvent,
     ResponseCompletedEvent,
     ResponsesAPIResponse,
+    ResponsesAPIStreamEvents,
 )
 from litellm.types.utils import (
     Delta,
@@ -999,7 +1000,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         stream_callback = on_token if user_enable_streaming else None
+                        # Collect output items from streaming events.
+                        # Some endpoints (e.g., Codex subscription) send output
+                        # items as separate events but the final response.completed
+                        # event has output=[].  We accumulate them here and patch
+                        # the completed response if needed.
+                        collected_output_items: list[Any] = []
                         for event in ret:
+                            if event is None:
+                                continue
+                            # Collect finished output items
+                            evt_type = getattr(event, "type", None)
+                            if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+                                item = getattr(event, "item", None)
+                                if item is not None:
+                                    collected_output_items.append(item)
                             if stream_callback is None:
                                 continue
                             if isinstance(
@@ -1033,6 +1048,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         completed_resp = completed_event.response
+
+                        # Patch empty output with items collected from stream
+                        if not completed_resp.output and collected_output_items:
+                            completed_resp.output = collected_output_items
 
                         self._telemetry.on_response(completed_resp)
                         return completed_resp
@@ -1417,6 +1436,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - For subscription mode, system prompts are prepended to user content
         """
         msgs = copy.deepcopy(messages)
+
+        # Subscription mode (store=false): strip reasoning items from prior
+        # assistant turns. The Codex endpoint doesn't persist items, so
+        # referencing their IDs in follow-up requests causes a 404.
+        if self.is_subscription:
+            for m in msgs:
+                if m.role == "assistant" and m.responses_reasoning_item is not None:
+                    m.responses_reasoning_item = None
 
         # Determine vision based on model detection
         vision_active = self.vision_is_active()

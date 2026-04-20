@@ -621,3 +621,13 @@ def test_claude_opus_4_7_config():
     assert model["id"] == "claude-opus-4-7"
     assert model["display_name"] == "Claude Opus 4.7"
     assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-7"
+
+
+def test_kimi_k2_6_config():
+    """Test that kimi-k2.6 has correct configuration."""
+    model = MODELS["kimi-k2.6"]
+
+    assert model["id"] == "kimi-k2.6"
+    assert model["display_name"] == "Kimi K2.6"
+    assert model["llm_config"]["model"] == "litellm_proxy/moonshot/kimi-k2.6"
+    assert model["llm_config"]["temperature"] == 1.0
