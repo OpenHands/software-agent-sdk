@@ -179,7 +179,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",
-        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+        json_schema_extra=field_meta(SettingProminence.MAJOR),
     )
     api_version: str | None = Field(
         default=None,
