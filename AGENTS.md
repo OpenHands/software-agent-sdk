@@ -140,6 +140,10 @@ consult each relevant package-level AGENTS.md.
   Pydantic `Field(...)` declarations as non-breaking, including adding,
   removing, or editing `description`, `title`, `examples`,
   `json_schema_extra`, and `deprecated` kwargs.
+- The SDK API breakage checker compares stringified `Field(...)` values by
+  parsing them as Python expressions after escaping literal newlines inside
+  quoted strings; this avoids false positives on multiline descriptions that
+  include embedded quotes like `'security_policy.j2'`.
 - For public REST APIs, read
   [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
   REST contract breaks need a deprecation notice and a runway of

@@ -31,8 +31,9 @@ def test_to_prompt_generates_xml() -> None:
     assert result.count("<skill>") == 2
 
 
-def test_to_prompt_includes_source_as_location() -> None:
-    """to_prompt() should include source as location element."""
+def test_to_prompt_never_emits_location() -> None:
+    """to_prompt() must not emit <location>: invoke_skill is the only entry
+    point and the agent must not be given the file path."""
     skill = Skill(
         name="pdf-tools",
         content="# PDF",
@@ -40,14 +41,8 @@ def test_to_prompt_includes_source_as_location() -> None:
         source="/path/to/skill.md",
     )
     result = to_prompt([skill])
-    assert "<location>/path/to/skill.md</location>" in result
-
-
-def test_to_prompt_omits_location_when_no_source() -> None:
-    """to_prompt() should omit location element when source is None."""
-    skill = Skill(name="pdf-tools", content="# PDF", description="Process PDFs.")
-    result = to_prompt([skill])
     assert "<location>" not in result
+    assert "/path/to/skill.md" not in result
 
 
 def test_to_prompt_escapes_xml() -> None:
@@ -79,9 +74,11 @@ def test_to_prompt_content_fallback_counts_remaining_as_truncated() -> None:
 
     # Should use first non-header line as description
     assert "First line used as description." in result
-    # Should indicate truncation for remaining content
+    # Should indicate truncation for remaining content and point the agent at
+    # invoke_skill (not the file path) as the way to load the full content.
     assert "characters truncated" in result
-    assert "View /skills/test.md for complete information" in result
+    assert 'invoke_skill(name="test")' in result
+    assert "/skills/test.md" not in result
 
 
 def test_to_prompt_truncates_long_descriptions() -> None:
@@ -90,14 +87,16 @@ def test_to_prompt_truncates_long_descriptions() -> None:
     skill.description = "A" * 1034
     result = to_prompt([skill])
 
-    # Should contain truncation indicator
-    assert "... [10 characters truncated]" in result
+    # Should contain truncation indicator pointing at invoke_skill
+    assert "... [10 characters truncated" in result
+    assert 'invoke_skill(name="test")' in result
     # Should contain first 1024 chars
     assert "A" * 1024 in result
 
 
-def test_to_prompt_truncation_includes_source() -> None:
-    """to_prompt() should include source path in truncation message."""
+def test_to_prompt_truncation_points_at_invoke_skill_not_source() -> None:
+    """Truncation message must direct the agent to invoke_skill, not the
+    skill's source path."""
     skill = Skill(
         name="test",
         content="# Test",
@@ -108,4 +107,5 @@ def test_to_prompt_truncation_includes_source() -> None:
     result = to_prompt([skill])
 
     assert "... [10 characters truncated" in result
-    assert "View /path/to/skill.md for complete information]" in result
+    assert 'invoke_skill(name="test")' in result
+    assert "/path/to/skill.md" not in result

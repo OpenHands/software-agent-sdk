@@ -54,6 +54,9 @@ class ModelFeatures:
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
+# Common deployment path prefixes used in LiteLLM proxy configurations
+DEPLOYMENT_PREFIXES = ("prod/", "dev/", "staging/", "test/")
+
 
 @cache
 def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
@@ -64,6 +67,12 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
     normalized = model.strip().lower()
     if normalized.startswith(LITELLM_PROXY_PREFIX):
         normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
+
+    # Strip deployment prefixes (e.g., "prod/", "dev/", "staging/", "test/")
+    for prefix in DEPLOYMENT_PREFIXES:
+        if normalized.startswith(prefix):
+            normalized = normalized.removeprefix(prefix)
+            break
 
     params = get_supported_openai_params(
         model=normalized,
@@ -101,6 +110,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-sonnet-4-6",
     "claude-opus-4-5",
     "claude-opus-4-6",
+    "claude-opus-4-7",
     "claude-sonnet-4-6",
 ]
 

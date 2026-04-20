@@ -19,7 +19,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Fail when unresolved review threads remain (unless waived)
-              uses: actions/github-script@v8
+              uses: actions/github-script@v9
               with:
                   script: |
                       const pr = context.payload.pull_request;

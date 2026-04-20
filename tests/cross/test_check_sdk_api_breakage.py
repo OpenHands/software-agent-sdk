@@ -555,6 +555,27 @@ def test_is_field_metadata_only_change_long_description():
     assert _is_field_metadata_only_change(old, new) is True
 
 
+def test_is_field_metadata_only_change_multiline_description_with_quotes():
+    """Multiline descriptions with embedded quotes are metadata-only changes."""
+    old = (
+        "Field(default='security_policy.j2', description=\"Security policy "
+        "template filename. Can be either:\n"
+        "- A relative filename (e.g., 'security_policy.j2') loaded from the "
+        "agent's prompts directory\n"
+        "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\")"
+    )
+    new = (
+        "Field(default='security_policy.j2', description=\"Security policy "
+        "template filename. Can be either:\n"
+        "- A relative filename (e.g., 'security_policy.j2') loaded from the "
+        "agent's prompts directory\n"
+        "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+        '- Empty string to disable security policy")'
+    )
+
+    assert _is_field_metadata_only_change(old, new) is True
+
+
 def test_is_field_metadata_only_change_deprecated_bool_only():
     """Changing only Field deprecated metadata is detected as metadata-only."""
     old = "Field(default=False, deprecated=False)"
@@ -699,7 +720,68 @@ def test_field_description_change_is_not_breaking(tmp_path):
         new_root,
         _SDK_CFG,
     )
-    # Field description changes should NOT count as breaking
+    assert total_breaks == 0
+    assert undeprecated == 0
+
+
+def test_field_multiline_description_with_quotes_is_not_breaking(tmp_path):
+    """Multiline descriptions with embedded quotes should not be breaking."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    policy: str = Field(\n"
+        + "        default='security_policy.j2',\n"
+        + "        description=(\n"
+        + '            "Security policy template filename. Can be either:\\n"\n'
+        + (
+            '            "- A relative filename (e.g., '
+            "'security_policy.j2') loaded from \"\n"
+        )
+        + '            "the agent\'s prompts directory\\n"\n'
+        + (
+            '            "- An absolute path (e.g., '
+            "'/path/to/custom_security_policy.j2')\"\n"
+        )
+        + "        ),\n"
+        + "    )\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    policy: str = Field(\n"
+        + "        default='security_policy.j2',\n"
+        + "        description=(\n"
+        + '            "Security policy template filename. Can be either:\\n"\n'
+        + (
+            '            "- A relative filename (e.g., '
+            "'security_policy.j2') loaded from \"\n"
+        )
+        + '            "the agent\'s prompts directory\\n"\n'
+        + (
+            '            "- An absolute path (e.g., '
+            "'/path/to/custom_security_policy.j2')\\n\"\n"
+        )
+        + '            "- Empty string to disable security policy"\n'
+        + "        ),\n"
+        + "    )\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+    )
     assert total_breaks == 0
     assert undeprecated == 0
 
