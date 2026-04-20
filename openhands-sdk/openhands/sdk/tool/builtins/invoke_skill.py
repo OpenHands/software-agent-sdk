@@ -123,9 +123,6 @@ class InvokeSkillExecutor(ToolExecutor):
         conversation: BaseConversation,
         working_dir: Path | None,
     ) -> InvokeSkillObservation:
-        # `conversation is None` is unreachable here: a None conversation yields
-        # an empty skill catalog upstream, so lookup returns _unknown_skill_error
-        # before we get here. The only real failure is a missing working_dir.
         if working_dir is None:
             return self._error(
                 skill.name,
