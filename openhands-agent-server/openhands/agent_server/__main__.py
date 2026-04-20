@@ -16,6 +16,22 @@ from openhands.sdk.logger import DEBUG, get_logger
 logger = get_logger(__name__)
 
 
+def preload_modules(modules_arg: str | None) -> None:
+    """Import user-specified modules so their top-level side effects run.
+
+    Used to register custom tools before any conversation is created, avoiding
+    a race with dynamic `tool_module_qualnames` import in conversation_service.
+    """
+    if not modules_arg:
+        return
+    for module_name in modules_arg.split(","):
+        module_name = module_name.strip()
+        if not module_name:
+            continue
+        importlib.import_module(module_name)
+        logger.info("Imported module: %s", module_name)
+
+
 def check_browser():
     """Check if browser functionality can render about:blank."""
     executor = None
@@ -115,18 +131,15 @@ def main() -> None:
         "--import-modules",
         type=str,
         default=None,
-        help="Comma-separated list of modules to import at startup (e.g. 'myapp.tools,myapp.plugins')",
+        help=(
+            "Comma-separated list of modules to import at startup "
+            "(e.g. 'myapp.tools,myapp.plugins')"
+        ),
     )
 
     args = parser.parse_args()
 
-    # Pre-load user-specified modules (e.g. custom tool registrations)
-    if args.import_modules:
-        for module_name in args.import_modules.split(","):
-            module_name = module_name.strip()
-            if module_name:
-                importlib.import_module(module_name)
-                logger.info("Imported module: %s", module_name)
+    preload_modules(args.import_modules)
 
     # Handle browser check
     if args.check_browser:
