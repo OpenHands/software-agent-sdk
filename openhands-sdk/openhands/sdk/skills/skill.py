@@ -155,11 +155,13 @@ class Skill(BaseModel):
     context: Literal["inline", "fork"] = Field(
         default="inline",
         description=(
-            "Execution context for a triggered skill. "
+            "Execution context for the skill. "
             "'inline' (default) injects the skill content directly into the "
             "parent conversation. 'fork' runs the skill content as a fresh "
             "subagent conversation and injects only its final output. "
-            "Useful for skills that make many intermediate tool calls."
+            "Useful for skills that make many intermediate tool calls. "
+            "Works for both triggered skills and progressive-disclosure skills "
+            "invoked explicitly via the invoke_skill tool."
         ),
     )
     is_agentskills_format: bool = Field(
@@ -226,15 +228,6 @@ class Skill(BaseModel):
         "the full description is shown. You can view the complete skill "
         "content at {source}.</NOTE>"
     )
-
-    @model_validator(mode="after")
-    def _validate_context(self) -> "Skill":
-        if self.context == "fork" and self.trigger is None:
-            raise SkillValidationError(
-                "context='fork' requires a trigger; "
-                "a skill with no trigger is always-active and cannot be forked."
-            )
-        return self
 
     @field_validator("allowed_tools", mode="before")
     @classmethod
@@ -1217,6 +1210,11 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
                 f'Call invoke_skill(name="{skill.name}") to load the full skill]'
             )
             description = description + truncation_msg
+
+        if skill.context == "fork":
+            description = (
+                description + " (runs in isolated subagent; only final output returned)"
+            )
 
         # Escape XML special characters using standard library
         description = xml_escape(description.strip())

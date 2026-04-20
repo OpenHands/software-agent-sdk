@@ -52,9 +52,11 @@ def test_context_field_invalid_literal():
         Skill(name="s", content="body", context="invalid_value")  # type: ignore[arg-type]
 
 
-def test_context_fork_requires_trigger():
-    with pytest.raises(Exception, match="requires a trigger"):
-        Skill(name="s", content="body", context="fork", trigger=None)
+def test_context_fork_without_trigger_is_valid():
+    """Trigger-less fork skills are the progressive-disclosure case:
+    invoked explicitly via invoke_skill rather than auto-triggered."""
+    skill = Skill(name="s", content="body", context="fork", trigger=None)
+    assert skill.context == "fork" and skill.trigger is None
 
 
 @pytest.mark.parametrize("context", ["inline", "fork"])

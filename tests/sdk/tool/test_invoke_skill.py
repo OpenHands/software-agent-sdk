@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import suppress
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
+from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr
@@ -12,11 +15,12 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.context import KeywordTrigger
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.skills import Skill
+from openhands.sdk.skills import Skill, to_prompt
 from openhands.sdk.tool.builtins import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
     InvokeSkillAction,
+    InvokeSkillExecutor,
     InvokeSkillObservation,
     InvokeSkillTool,
 )
@@ -43,6 +47,7 @@ def _make_conv(
     skills: list[Skill],
     working_dir: str = "/tmp",
     invoked_skills: list[str] | None = None,
+    persistence_dir: str | None = None,
 ) -> Any:
     """Minimal duck-typed BaseConversation replacement for the executor.
 
@@ -57,6 +62,7 @@ def _make_conv(
             ),
             workspace=SimpleNamespace(working_dir=working_dir),
             invoked_skills=invoked_skills or [],
+            persistence_dir=persistence_dir,
         ),
     )
 
@@ -354,3 +360,192 @@ def test_agent_auto_attaches_invoke_skill_tool(
 
     attached = "invoke_skill" in agent._tools
     assert attached is expect_attached
+
+
+def _fork_skill(
+    name: str = "ddebug",
+    content: str = "run 50 queries and summarize",
+    trigger=None,
+) -> Skill:
+    return Skill(
+        name=name,
+        content=content,
+        description=f"desc for {name}",
+        source=f"/skills/{name}/SKILL.md",
+        is_agentskills_format=True,
+        context="fork",
+        trigger=trigger,
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "routed_to"),
+    [("fork", "_invoke_forked"), ("inline", "_invoke_inline")],
+)
+def test_call_routes_on_skill_context_and_returns_helper_observation(
+    context: Literal["fork", "inline"], routed_to: str
+):
+    """`__call__` is a pure dispatcher: picks the helper by `skill.context`,
+    does not call the other one, and propagates its return value verbatim.
+    A bug that swaps the branches or drops the return would fail this."""
+    skill = Skill(
+        name="s",
+        content="body",
+        description="d",
+        source="/s/SKILL.md",
+        is_agentskills_format=True,
+        context=context,
+        trigger=KeywordTrigger(keywords=["x"]) if context == "fork" else None,
+    )
+    conv = _make_conv([skill], working_dir="/ws")
+    stub = InvokeSkillObservation.from_text(text="stub", skill_name="s")
+
+    with (
+        patch.object(
+            InvokeSkillExecutor, "_invoke_forked", return_value=stub
+        ) as fork_m,
+        patch.object(
+            InvokeSkillExecutor, "_invoke_inline", return_value=stub
+        ) as inline_m,
+    ):
+        obs = _run("s", conv)
+
+    chosen = {"_invoke_forked": fork_m, "_invoke_inline": inline_m}[routed_to]
+    other = {"_invoke_forked": inline_m, "_invoke_inline": fork_m}[routed_to]
+    # Lock both dispatch AND call-site binding: reversing args, dropping
+    # working_dir, or passing the wrong conversation would all fail here.
+    chosen.assert_called_once_with(skill, conv, Path("/ws"))
+    other.assert_not_called()
+    # helper's observation must propagate unchanged
+    assert obs is stub
+
+
+def test_invoke_forked_binds_state_and_returns_subagent_text():
+    """Unit-test the helper in isolation: it must wire skill, the conversation's
+    agent, working_dir, and persistence_dir into `run_skill_forked`, and
+    surface only the subagent's final text."""
+    skill = _fork_skill()
+    conv = _make_conv([skill], working_dir="/ws", persistence_dir="/state/abc")
+
+    with patch(
+        "openhands.sdk.tool.builtins.invoke_skill.run_skill_forked",
+        return_value="subagent summary",
+    ) as mock_fork:
+        obs = InvokeSkillExecutor()._invoke_forked(skill, conv, Path("/ws"))
+
+    mock_fork.assert_called_once_with(
+        skill, conv.state.agent, Path("/ws"), "/state/abc"
+    )
+    assert obs.text == "subagent summary"
+    assert obs.is_error is False
+    assert conv.state.invoked_skills == ["ddebug"]
+
+
+def test_invoke_forked_errors_without_workspace_and_mutates_nothing():
+    """Forked skills need a workspace; without one, surface a clear,
+    skill-scoped error, never spawn a subagent, never record."""
+    skill = _fork_skill()
+    conv = _make_conv([skill])
+
+    with patch(
+        "openhands.sdk.tool.builtins.invoke_skill.run_skill_forked"
+    ) as mock_fork:
+        obs = InvokeSkillExecutor()._invoke_forked(skill, conv, None)
+
+    mock_fork.assert_not_called()
+    assert obs.is_error is True
+    assert "no working_dir" in obs.text
+    assert skill.name in obs.text  # skill-scoped, not generic
+    assert conv.state.invoked_skills == []
+
+
+@pytest.mark.parametrize(
+    ("fork_kwargs", "invocations", "expected_record"),
+    [
+        pytest.param({"return_value": "ok"}, 1, ["ddebug"], id="success-records"),
+        pytest.param({"return_value": "ok"}, 3, ["ddebug"], id="success-dedupes"),
+        pytest.param(
+            {"side_effect": RuntimeError("boom")}, 1, [], id="failure-does-not-record"
+        ),
+    ],
+)
+def test_invoke_forked_records_only_successful_invocations_once(
+    fork_kwargs, invocations: int, expected_record
+):
+    """`invoked_skills` must reflect only successful runs, exactly once per
+    skill — covering success, dedup, and failure in one place."""
+    skill = _fork_skill()
+    conv = _make_conv([skill])
+
+    with patch(
+        "openhands.sdk.tool.builtins.invoke_skill.run_skill_forked", **fork_kwargs
+    ):
+        for _ in range(invocations):
+            with suppress(RuntimeError):
+                InvokeSkillExecutor()._invoke_forked(skill, conv, Path("/ws"))
+    assert conv.state.invoked_skills == expected_record
+
+
+def test_invoke_forked_emits_only_subagent_reply_no_body_no_footer():
+    """Privacy/cost invariant: the parent must receive ONLY the subagent's
+    summary — never the raw skill body (could contain secrets, blows up
+    tokens) and never the inline path's location footer."""
+    skill = _fork_skill(content="## DO NOT LEAK\nsensitive fork instructions")
+    conv = _make_conv([skill], working_dir="/ws")
+
+    with (
+        patch(
+            "openhands.sdk.tool.builtins.invoke_skill.run_skill_forked",
+            return_value="final summary",
+        ),
+        patch(
+            "openhands.sdk.tool.builtins.invoke_skill.render_content_with_commands"
+        ) as mock_render,
+    ):
+        obs = InvokeSkillExecutor()._invoke_forked(skill, conv, Path("/ws"))
+
+    # parent must NOT re-render content
+    mock_render.assert_not_called()
+    assert obs.text == "final summary"
+    assert "DO NOT LEAK" not in obs.text
+    assert "sensitive fork instructions" not in obs.text
+    assert "located at" not in obs.text  # inline-only footer
+
+
+def test_trigger_less_fork_skill_is_constructable_regression():
+    """Regression: `_validate_context` previously rejected trigger-less fork
+    skills. Progressive disclosure requires them (invoked explicitly via
+    `invoke_skill`, not auto-triggered)."""
+    skill = Skill(name="s", content="body", context="fork", trigger=None)
+    assert skill.context == "fork" and skill.trigger is None
+
+
+@pytest.mark.parametrize(
+    ("context", "marker_present"),
+    [("inline", False), ("fork", True)],
+)
+def test_to_prompt_fork_marker_decorates_description_not_name(
+    context: Literal["fork", "inline"], marker_present: bool
+):
+    """The `<available_skills>` block flags fork skills so the agent knows
+    invocation returns a summary. The marker must land in the description,
+    never in the name (which is the agent's lookup key)."""
+    trigger = KeywordTrigger(keywords=["x"]) if context == "fork" else None
+    skill = Skill(
+        name="s",
+        content="# h\n\nbody.",
+        description="plain description",
+        source="/s/SKILL.md",
+        is_agentskills_format=True,
+        context=context,
+        trigger=trigger,
+    )
+
+    block = to_prompt([skill])
+    marker = "runs in isolated subagent"
+
+    assert "<name>s</name>" in block  # name is never decorated
+    assert (marker in block) is marker_present
+    if marker_present:
+        # Marker sits adjacent to the description text, inside <description>.
+        assert "plain description (runs in isolated subagent" in block
