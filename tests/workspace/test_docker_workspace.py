@@ -226,7 +226,7 @@ def test_docker_workspace_startup_uses_health_check_timeout():
         mock_wait.assert_called_once_with(timeout=60.0)
 
 
-def test_docker_workspace_resume_uses_health_check_timeout(mock_docker_workspace):
+def test_docker_workspace_resume_uses_health_check_timeout():
     """Test that resume() passes health_check_timeout to _wait_for_health."""
     with patch.object(DockerWorkspace, "_start_container"):
         with patch("openhands.workspace.docker.workspace.execute_command") as mock_exec:
@@ -237,7 +237,10 @@ def test_docker_workspace_resume_uses_health_check_timeout(mock_docker_workspace
 
     workspace._container_id = "container_id_123"
 
-    with patch.object(workspace, "_wait_for_health") as mock_wait:
+    with (
+        patch("openhands.workspace.docker.workspace.execute_command") as mock_exec,
+        patch.object(workspace, "_wait_for_health") as mock_wait,
+    ):
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
         workspace.resume()
         mock_wait.assert_called_once_with(timeout=30.0)
