@@ -376,29 +376,30 @@ class LocalConversation(BaseConversation):
 
             # Delegate deep-copy semantics to ConversationState.snapshot().
             # Use the fork's own FileStore so events are persisted to the
-            # correct directory.
-            cloned = self._state.snapshot(
+            # correct directory.  The snapshot becomes the fork's state
+            # directly — no intermediate field extraction needed.
+            fork_fs = fork_conv._state._fs
+            fork_persistence_dir = fork_conv._state.persistence_dir
+            fork_conv._state = self._state.snapshot(
                 conversation_id=fork_id,
-                file_store=fork_conv._state._fs,
+                file_store=fork_fs,
                 reset_metrics=reset_metrics,
             )
 
-            # Adopt the cloned EventLog (already backed by fork's FileStore)
-            # and runtime state fields from the clone.
-            fork_conv._state._events = cloned._events
-            fork_conv._state.activated_knowledge_skills = (
-                cloned.activated_knowledge_skills
-            )
-            fork_conv._state.invoked_skills = cloned.invoked_skills
-            fork_conv._state.agent_state = cloned.agent_state
-            fork_conv._state.stats = cloned.stats
-
-            # Copy title via tags if provided
+            # Override fork-specific fields that differ from the source.
+            fork_conv._state.persistence_dir = fork_persistence_dir
+            fork_conv._state.agent = fork_agent
+            if tags is not None:
+                fork_conv._state.tags = dict(tags)
             if title is not None:
                 fork_conv._state.tags = {
                     **fork_conv._state.tags,
                     "title": title,
                 }
+
+            # Fix up objects that hold a direct reference to the state.
+            if fork_conv._stuck_detector is not None:
+                fork_conv._stuck_detector.state = fork_conv._state
 
             event_count = len(self._state.events)
 

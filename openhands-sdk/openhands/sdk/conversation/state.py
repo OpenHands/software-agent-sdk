@@ -1,6 +1,7 @@
 # state.py
 import copy
 import json
+import uuid
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
@@ -292,8 +293,6 @@ class ConversationState(OpenHandsModel):
         Returns:
             A new ``ConversationState`` that is independent of the source.
         """
-        import uuid
-
         new_id = conversation_id if conversation_id is not None else uuid.uuid4()
         fs = file_store or InMemoryFileStore()
 
