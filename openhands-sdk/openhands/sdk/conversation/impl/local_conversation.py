@@ -374,10 +374,10 @@ class LocalConversation(BaseConversation):
                 tags=tags,
             )
 
-            # Delegate deep-copy semantics to ConversationState.snapshot().
-            # Use the fork's own FileStore so events are persisted to the
-            # correct directory.  The snapshot becomes the fork's state
-            # directly — no intermediate field extraction needed.
+            # Delegate deep-copy semantics to ConversationState.snapshot()
+            # and replace the fork's placeholder state.  Fork-specific
+            # fields (persistence_dir, agent, tags) are overridden
+            # afterwards since they differ from the source conversation.
             fork_fs = fork_conv._state._fs
             fork_persistence_dir = fork_conv._state.persistence_dir
             fork_conv._state = self._state.snapshot(
@@ -385,8 +385,6 @@ class LocalConversation(BaseConversation):
                 file_store=fork_fs,
                 reset_metrics=reset_metrics,
             )
-
-            # Override fork-specific fields that differ from the source.
             fork_conv._state.persistence_dir = fork_persistence_dir
             fork_conv._state.agent = fork_agent
             if tags is not None:
