@@ -256,3 +256,38 @@ def test_snapshot_has_no_state_change_callback():
     snap = state.snapshot()
 
     assert snap._on_state_change is None
+
+
+def test_snapshot_overrides_agent():
+    """Passing agent= replaces the agent on the copy."""
+    state = _make_state()
+    alt = Agent(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("k2"), usage_id="alt"),
+        tools=[],
+    )
+
+    snap = state.snapshot(agent=alt)
+
+    assert snap.agent is alt
+    assert state.agent is not alt
+
+
+def test_snapshot_overrides_persistence_dir():
+    """Passing persistence_dir= replaces it on the copy."""
+    state = _make_state()
+
+    snap = state.snapshot(persistence_dir="/tmp/other")
+
+    assert snap.persistence_dir == "/tmp/other"
+    assert state.persistence_dir != "/tmp/other"
+
+
+def test_snapshot_overrides_tags():
+    """Passing tags= replaces the tags dict on the copy."""
+    state = _make_state()
+    state.tags = {"old": "val"}
+
+    snap = state.snapshot(tags={"env": "test"})
+
+    assert snap.tags == {"env": "test"}
+    assert state.tags == {"old": "val"}

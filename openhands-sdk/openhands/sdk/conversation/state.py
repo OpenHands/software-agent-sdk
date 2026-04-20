@@ -264,6 +264,9 @@ class ConversationState(OpenHandsModel):
         conversation_id: ConversationID | None = None,
         file_store: FileStore | None = None,
         reset_metrics: bool = False,
+        agent: AgentBase | None = None,
+        persistence_dir: str | None = None,
+        tags: dict[str, str] | None = None,
     ) -> "ConversationState":
         """Create an independent copy of this state with its own identity.
 
@@ -289,18 +292,27 @@ class ConversationState(OpenHandsModel):
                 ``None``.
             reset_metrics: When ``True`` (default ``False``), the copy starts
                 with fresh ``ConversationStats``.
+            agent: Override the agent on the copy.  Defaults to the source's
+                agent when not provided.
+            persistence_dir: Override the persistence directory on the copy.
+                Defaults to the source's ``persistence_dir`` when not
+                provided.
+            tags: Override the tags dict on the copy.  Defaults to a shallow
+                copy of the source's tags when not provided.
 
         Returns:
             A new ``ConversationState`` that is independent of the source.
-        """
+        """  # noqa: E501
         new_id = conversation_id if conversation_id is not None else uuid.uuid4()
         fs = file_store or InMemoryFileStore()
 
         new_state = type(self)(
             id=new_id,
-            agent=self.agent,
+            agent=agent if agent is not None else self.agent,
             workspace=self.workspace,
-            persistence_dir=self.persistence_dir,
+            persistence_dir=(
+                persistence_dir if persistence_dir is not None else self.persistence_dir
+            ),
             max_iterations=self.max_iterations,
             stuck_detection=self.stuck_detection,
             execution_status=ConversationExecutionStatus.IDLE,
@@ -317,7 +329,7 @@ class ConversationState(OpenHandsModel):
                 else self.stats.model_copy(deep=True)
             ),
             secret_registry=self.secret_registry,
-            tags=dict(self.tags),
+            tags=dict(tags) if tags is not None else dict(self.tags),
             agent_state=copy.deepcopy(self.agent_state),
             hook_config=self.hook_config,
         )
