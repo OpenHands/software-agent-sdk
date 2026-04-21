@@ -40,6 +40,9 @@ _LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
     "examples/04_llm_specific_tools/02_gemini_file_tools.py": {
         "LLM_MODEL": "openhands/gemini-3.1-pro-preview",
     },
+    "examples/04_llm_specific_tools/03_gpt5_update_plan_preset.py": {
+        "LLM_MODEL": "openhands/gpt-5.1",
+    },
 }
 
 # Examples that require interactive input or additional infrastructure.
@@ -90,6 +93,12 @@ EXAMPLES = tuple(_iter_examples())
 def test_directory_example_is_discovered() -> None:
     assert (
         EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store" / "main.py"
+    ) in EXAMPLES
+
+
+def test_llm_specific_example_is_discovered() -> None:
+    assert (
+        EXAMPLES_ROOT / "04_llm_specific_tools" / "03_gpt5_update_plan_preset.py"
     ) in EXAMPLES
 
 

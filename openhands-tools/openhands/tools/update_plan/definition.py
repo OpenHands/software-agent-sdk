@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from rich.text import Text
 
 from openhands.sdk.tool import (
@@ -35,21 +35,17 @@ _STATUS_MAP: dict[UpdatePlanStatusType, TaskTrackerStatusType] = {
 
 
 class PlanItem(BaseModel):
-    step: str = Field(..., description="A short plan step.")
+    model_config = ConfigDict(extra="forbid")
+
+    step: str
     status: UpdatePlanStatusType = Field(
-        ..., description="One of: pending, in_progress, completed."
+        ..., description="One of: pending, in_progress, completed"
     )
 
 
 class UpdatePlanAction(Action):
-    explanation: str | None = Field(
-        default=None,
-        description="Optional explanation for why the plan changed.",
-    )
-    plan: list[PlanItem] = Field(
-        default_factory=list,
-        description="The updated task plan.",
-    )
+    explanation: str | None = None
+    plan: list[PlanItem] = Field(..., description="The list of steps.")
 
     @property
     def visualize(self) -> Text:
@@ -132,9 +128,10 @@ class UpdatePlanExecutor(ToolExecutor[UpdatePlanAction, UpdatePlanObservation]):
 
 
 _UPDATE_PLAN_DESCRIPTION = (
-    "Updates the task plan. Provide an optional explanation and a list of plan "
-    "items, each with a step and status. At most one step can be in_progress "
-    "at a time."
+    "Updates the task plan.\n"
+    "Provide an optional explanation and a list of plan items, each with a "
+    "step and status.\n"
+    "At most one step can be in_progress at a time.\n"
 )
 
 
