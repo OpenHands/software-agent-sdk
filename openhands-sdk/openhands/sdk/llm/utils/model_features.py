@@ -179,6 +179,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 SEND_REASONING_CONTENT_MODELS: list[str] = [
     "kimi-k2-thinking",
     "kimi-k2.5",
+    "kimi-k2.6",
     "openrouter/minimax-m2",  # MiniMax-M2 via OpenRouter (interleaved thinking)
     "deepseek/deepseek-reasoner",
 ]

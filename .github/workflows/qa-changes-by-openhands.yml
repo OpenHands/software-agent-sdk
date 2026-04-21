@@ -50,5 +50,5 @@ jobs:
                   # EXPERIMENTAL: use the feature branch of extensions
                   extensions-version: feat/qa-changes-plugin
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
-                  github-token: ${{ secrets.PAT_TOKEN }}
+                  github-token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
                   lmnr-api-key: ${{ secrets.LMNR_SKILLS_API_KEY }}

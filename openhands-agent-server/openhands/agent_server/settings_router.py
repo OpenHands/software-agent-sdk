@@ -2,7 +2,11 @@ from functools import lru_cache
 
 from fastapi import APIRouter
 
-from openhands.sdk.settings import AgentSettings, ConversationSettings, SettingsSchema
+from openhands.sdk.settings import (
+    ConversationSettings,
+    SettingsSchema,
+    export_agent_settings_schema,
+)
 
 
 settings_router = APIRouter(prefix="/settings", tags=["Settings"])
@@ -10,7 +14,12 @@ settings_router = APIRouter(prefix="/settings", tags=["Settings"])
 
 @lru_cache(maxsize=1)
 def _get_agent_settings_schema() -> SettingsSchema:
-    return AgentSettings.export_schema()
+    # ``AgentSettings`` is now a discriminated union over
+    # ``LLMAgentSettings`` and ``ACPAgentSettings``; the combined
+    # schema tags sections with a ``variant`` so the frontend can
+    # show LLM-only or ACP-only sections based on the active
+    # ``agent_kind`` value.
+    return export_agent_settings_schema()
 
 
 @lru_cache(maxsize=1)

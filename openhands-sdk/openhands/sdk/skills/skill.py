@@ -733,6 +733,10 @@ def load_user_skills() -> list[Skill]:
     with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
     names.
 
+    Also loads enabled installed skills from ~/.openhands/skills/installed/
+    (managed via install_skill/uninstall_skill). Installed skills have lower
+    precedence than user skills from the directories above.
+
     Returns:
         List of Skill objects loaded from user directories.
         Returns empty list if no skills found or loading fails.
@@ -741,6 +745,17 @@ def load_user_skills() -> list[Skill]:
     seen_names: set[str] = set()
 
     _load_and_merge_from_dirs(USER_SKILLS_DIRS, seen_names, all_skills, "user skills")
+
+    # Load enabled installed skills (lower precedence than user skills)
+    try:
+        from openhands.sdk.skills.installed import load_installed_skills
+
+        for skill in load_installed_skills():
+            if skill.name not in seen_names:
+                seen_names.add(skill.name)
+                all_skills.append(skill)
+    except Exception as e:
+        logger.warning(f"Failed to load installed skills: {e}")
 
     logger.debug(
         f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
@@ -1146,7 +1161,9 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
         max_description_length: Maximum length for descriptions (default 1024)
 
     Returns:
-        XML string in AgentSkills format with name, description, and location
+        XML string in AgentSkills format with name and description. The
+        `<location>` field is intentionally omitted so the agent cannot
+        bypass the `invoke_skill` tool by reading the file directly.
 
     Example:
         >>> skills = [Skill(name="pdf-tools", content="...",
@@ -1157,7 +1174,6 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
           <skill>
             <name>pdf-tools</name>
             <description>Extract text from PDF files.</description>
-            <location>/path/to/skill</location>
           </skill>
         </available_skills>
     """
@@ -1195,23 +1211,22 @@ def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
             description = description[:max_description_length]
 
         if total_truncated > 0:
-            truncation_msg = f"... [{total_truncated} characters truncated"
-            if skill.source:
-                truncation_msg += f". View {skill.source} for complete information"
-            truncation_msg += "]"
+            truncation_msg = (
+                f"... [{total_truncated} characters truncated. "
+                f'Call invoke_skill(name="{skill.name}") to load the full skill]'
+            )
             description = description + truncation_msg
 
         # Escape XML special characters using standard library
         description = xml_escape(description.strip())
         name = xml_escape(skill.name.strip())
 
-        # Build skill element following AgentSkills format from skills-ref
+        # Build skill element. Note: <location> is intentionally omitted so
+        # the agent cannot bypass `invoke_skill` by reading the file directly;
+        # `invoke_skill` is the only supported invocation path.
         lines.append("  <skill>")
         lines.append(f"    <name>{name}</name>")
         lines.append(f"    <description>{description}</description>")
-        if skill.source:
-            source = xml_escape(skill.source.strip())
-            lines.append(f"    <location>{source}</location>")
         lines.append("  </skill>")
 
     lines.append("</available_skills>")

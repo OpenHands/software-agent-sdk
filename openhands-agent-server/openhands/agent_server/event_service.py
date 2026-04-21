@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -19,9 +20,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import AgentErrorEvent
+from openhands.sdk.event import AgentErrorEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -482,6 +484,42 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
+        # Only wire token streaming if at least one LLM has stream=True.
+        # The LLM silently ignores on_token when stream is off, but skipping
+        # the wiring lets us log the decision so operators can tell from a
+        # log line whether deltas will flow.
+        streaming_enabled = any(llm.stream for llm in agent.get_all_llms())
+        logger.info(
+            "Token streaming: %s",
+            "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
+        )
+
+        def _token_streaming_callback(chunk: LLMStreamChunk) -> None:
+            # Published directly to _pub_sub (not via _callback_wrapper) so
+            # deltas reach subscribers but are NOT persisted to
+            # ConversationState.events. See StreamingDeltaEvent docstring.
+            if not self._main_loop or not self._main_loop.is_running():
+                return
+            for choice in chunk.choices or ():
+                delta = choice.delta
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                reasoning = getattr(delta, "reasoning_content", None)
+                # Use `is not None` rather than truthiness: some providers
+                # emit legitimate empty-string chunks at stream boundaries
+                # (e.g. after a tool call) that we still want to forward.
+                if content is None and reasoning is None:
+                    continue
+                event = StreamingDeltaEvent(
+                    content=content if isinstance(content, str) else None,
+                    reasoning_content=reasoning if isinstance(reasoning, str) else None,
+                )
+                with suppress(RuntimeError):
+                    asyncio.run_coroutine_threadsafe(
+                        self._pub_sub(event), self._main_loop
+                    )
+
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -489,6 +527,7 @@ class EventService:
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
             callbacks=[self._callback_wrapper],
+            token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
