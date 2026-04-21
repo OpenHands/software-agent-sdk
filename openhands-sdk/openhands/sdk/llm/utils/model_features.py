@@ -193,6 +193,25 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
+    # Databricks FMAPI models: return a fixed feature set.
+    # FMAPI does not support Anthropic prompt caching, extended thinking, or
+    # the Responses API — even for Claude-based endpoints. Standard tool calling
+    # (OpenAI wire format) and stop words are supported.
+    # This early return prevents Databricks Claude model names (which contain
+    # "claude-3-7-sonnet" etc.) from incorrectly matching PROMPT_CACHE_MODELS
+    # and other per-provider pattern lists.
+    if (model or "").startswith("databricks/"):
+        return ModelFeatures(
+            supports_reasoning_effort=False,
+            supports_extended_thinking=False,
+            supports_prompt_cache=False,
+            supports_stop_words=True,
+            supports_responses_api=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
+            supports_prompt_cache_retention=False,
+        )
+
     return ModelFeatures(
         supports_reasoning_effort=_supports_reasoning_effort(model),
         supports_extended_thinking=model_matches(model, EXTENDED_THINKING_MODELS),
