@@ -206,6 +206,46 @@ jobs:
                       const canonicalIssueNumber = canonicalIssueRaw ? Number(canonicalIssueRaw) : Number.NaN;
                       const candidateLabel = 'duplicate-candidate';
 
+                      function parseDuplicateCheckMarker(body) {
+                        if (!body) {
+                          return null;
+                        }
+                        const match = body.match(/<!-- openhands-duplicate-check canonical=(\d+) auto-close=(true|false) -->/);
+                        if (!match) {
+                          return null;
+                        }
+                        return {
+                          canonicalIssueNumber: Number(match[1]),
+                          autoClose: match[2] === 'true',
+                        };
+                      }
+
+                      async function ensureCanonicalIssueIsOpenIssue() {
+                        let canonicalIssue;
+                        try {
+                          ({ data: canonicalIssue } = await github.rest.issues.get({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            issue_number: canonicalIssueNumber,
+                          }));
+                        } catch (error) {
+                          if (error.status === 404) {
+                            core.setFailed(`Canonical issue #${canonicalIssueNumber} does not exist.`);
+                            return false;
+                          }
+                          throw error;
+                        }
+                        if (canonicalIssue.pull_request) {
+                          core.setFailed(`Canonical issue #${canonicalIssueNumber} is a pull request, not an issue.`);
+                          return false;
+                        }
+                        if (canonicalIssue.state !== 'open' || canonicalIssue.locked) {
+                          core.setFailed(`Canonical issue #${canonicalIssueNumber} must be an open, unlocked issue.`);
+                          return false;
+                        }
+                        return true;
+                      }
+
                       async function ensureCandidateLabelOnIssue() {
                         try {
                           await github.rest.issues.getLabel({
@@ -250,6 +290,10 @@ jobs:
                       }
                       if (!Number.isInteger(canonicalIssueNumber) || canonicalIssueNumber <= 0) {
                         core.setFailed(`No canonical issue number was returned for issue #${issueNumber}.`);
+                        return;
+                      }
+                        
+                      if (!(await ensureCanonicalIssueIsOpenIssue())) {
                         return;
                       }
 
@@ -313,8 +357,18 @@ jobs:
 
                       const existing = allComments.find((comment) => comment.body && comment.body.includes('<!-- openhands-duplicate-check '));
                       if (existing) {
-                        if (autoClose) {
+                        const existingMarker = parseDuplicateCheckMarker(existing.body);
+                        if (
+                          autoClose &&
+                          existingMarker &&
+                          existingMarker.autoClose &&
+                          existingMarker.canonicalIssueNumber === canonicalIssueNumber
+                        ) {
                           await ensureCandidateLabelOnIssue();
+                        } else if (autoClose) {
+                          core.warning(
+                            `Duplicate check comment already exists on issue #${issueNumber} with different canonical/auto-close metadata; skipping label ensure.`
+                          );
                         }
                         core.info(`Duplicate check comment already exists on issue #${issueNumber}; skipping.`);
                         return;

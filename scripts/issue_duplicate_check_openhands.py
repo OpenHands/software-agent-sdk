@@ -28,6 +28,7 @@ SUCCESSFUL_TERMINAL_EXECUTION_STATUSES = {
 TERMINAL_EXECUTION_STATUSES = (
     FAILED_EXECUTION_STATUSES | SUCCESSFUL_TERMINAL_EXECUTION_STATUSES
 )
+EVENT_SEARCH_LIMIT = 1000
 
 
 def parse_args() -> argparse.Namespace:
@@ -323,7 +324,7 @@ def poll_conversation(
 def fetch_app_server_events(app_conversation_id: str) -> list[dict[str, Any]]:
     payload = request_json(
         OPENHANDS_BASE_URL,
-        f"/api/v1/conversation/{urllib.parse.quote(app_conversation_id)}/events/search?limit=100",
+        f"/api/v1/conversation/{urllib.parse.quote(app_conversation_id)}/events/search?limit={EVENT_SEARCH_LIMIT}",
         headers={"Authorization": openhands_headers()["Authorization"]},
     )
     if isinstance(payload, dict):
@@ -338,7 +339,7 @@ def fetch_agent_server_events(
 ) -> list[dict[str, Any]]:
     payload = request_json(
         agent_server_url,
-        f"/api/conversations/{urllib.parse.quote(app_conversation_id)}/events/search?limit=100",
+        f"/api/conversations/{urllib.parse.quote(app_conversation_id)}/events/search?limit={EVENT_SEARCH_LIMIT}",
         headers={"X-Session-API-Key": session_api_key},
     )
     if isinstance(payload, dict):
@@ -373,11 +374,17 @@ def extract_last_agent_text(events: list[dict[str, Any]]) -> str:
     for event in events:
         if event.get("kind") != "MessageEvent" or event.get("source") != "agent":
             continue
-        llm_message = event.get("llm_message") or {}
-        content = llm_message.get("content") or []
+        llm_message = event.get("llm_message")
+        if not isinstance(llm_message, dict):
+            continue
+        content = llm_message.get("content")
+        if not isinstance(content, list):
+            continue
         for part in content:
+            if not isinstance(part, dict):
+                continue
             if part.get("type") == "text" and part.get("text"):
-                messages.append(part["text"])
+                messages.append(str(part["text"]))
     if not messages:
         raise RuntimeError(
             "No assistant text message was found in the conversation events"

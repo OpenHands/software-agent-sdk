@@ -17,6 +17,7 @@ GITHUB_API_BASE_URL = "https://api.github.com"
 MAX_PAGES = 100
 DUPLICATE_CANDIDATE_LABEL = "duplicate-candidate"
 DUPLICATE_VETO_MARKER = "<!-- openhands-duplicate-veto -->"
+AUTOMATION_BOT_LOGINS = {"all-hands-bot"}
 DUPLICATE_MARKER_RE = re.compile(
     r"<!-- openhands-duplicate-check canonical=(?P<canonical>\d+) "
     r"auto-close=(?P<auto_close>true|false) -->"
@@ -199,11 +200,17 @@ def has_veto_note(comments: list[dict[str, Any]]) -> bool:
 
 
 def is_non_bot_comment(comment: dict[str, Any]) -> bool:
+    if user_id_from_item(comment) is None:
+        return False
     user = comment.get("user")
     if not isinstance(user, dict):
-        return True
-    login = str(user.get("login") or "")
-    return user.get("type") != "Bot" and not login.endswith("[bot]")
+        return False
+    login = str(user.get("login") or "").lower()
+    return (
+        user.get("type") != "Bot"
+        and not login.endswith("[bot]")
+        and login not in AUTOMATION_BOT_LOGINS
+    )
 
 
 def remove_candidate_label(
@@ -311,7 +318,15 @@ def main() -> int:
             issue_number = int(issue_number)
         except (TypeError, ValueError):
             continue
-        issue_created_at = parse_timestamp(issue_created_at_str)
+        try:
+            issue_created_at = parse_timestamp(issue_created_at_str)
+        except ValueError as exc:
+            print(
+                "Warning: Skipping issue "
+                f"#{issue_number} due to invalid timestamp: {exc}",
+                file=sys.stderr,
+            )
+            continue
         if issue_created_at > cutoff:
             continue
 
@@ -330,7 +345,15 @@ def main() -> int:
             comment_id = int(comment_id)
         except (TypeError, ValueError):
             continue
-        comment_created_at = parse_timestamp(comment_created_at_str)
+        try:
+            comment_created_at = parse_timestamp(comment_created_at_str)
+        except ValueError as exc:
+            print(
+                "Warning: Skipping issue "
+                f"#{issue_number} due to invalid duplicate-comment timestamp: {exc}",
+                file=sys.stderr,
+            )
+            continue
         if comment_created_at > cutoff:
             continue
 
@@ -365,13 +388,22 @@ def main() -> int:
             )
             continue
 
-        newer_comments = [
-            comment
-            for comment in comments
-            if comment.get("created_at")
-            and parse_timestamp(comment["created_at"]) > comment_created_at
-            and is_non_bot_comment(comment)
-        ]
+        newer_comments = []
+        for comment in comments:
+            created_at = comment.get("created_at")
+            if not created_at or not is_non_bot_comment(comment):
+                continue
+            try:
+                newer_comment_created_at = parse_timestamp(created_at)
+            except ValueError as exc:
+                print(
+                    "Warning: Ignoring newer comment with invalid timestamp on "
+                    f"issue #{issue_number}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            if newer_comment_created_at > comment_created_at:
+                newer_comments.append(comment)
         if newer_comments:
             summary.append(
                 keep_open_due_to_newer_comments(

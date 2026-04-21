@@ -166,22 +166,28 @@ def test_is_non_bot_comment_filters_github_bots():
     module = load_module("auto_close_duplicate_issues.py")
 
     assert (
-        module.is_non_bot_comment({"user": {"type": "User", "login": "enyst"}}) is True
-    )
-    assert (
-        module.is_non_bot_comment({"user": {"type": "Bot", "login": "renovate[bot]"}})
-        is False
-    )
-    assert (
-        module.is_non_bot_comment({"user": {"type": "User", "login": "all-hands-bot"}})
+        module.is_non_bot_comment({"user": {"id": 1, "type": "User", "login": "enyst"}})
         is True
     )
     assert (
         module.is_non_bot_comment(
-            {"user": {"type": "User", "login": "dependabot[bot]"}}
+            {"user": {"id": 2, "type": "Bot", "login": "renovate[bot]"}}
         )
         is False
     )
+    assert (
+        module.is_non_bot_comment(
+            {"user": {"id": 3, "type": "User", "login": "all-hands-bot"}}
+        )
+        is False
+    )
+    assert (
+        module.is_non_bot_comment(
+            {"user": {"id": 4, "type": "User", "login": "dependabot[bot]"}}
+        )
+        is False
+    )
+    assert module.is_non_bot_comment({"user": None}) is False
 
 
 def test_has_reaction_from_user_ignores_missing_user_ids():
@@ -585,7 +591,12 @@ def test_auto_close_main_removes_label_when_newer_comment_exists(monkeypatch, ca
             "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
             "created_at": old_timestamp,
         },
-        {"id": 12, "body": "new info", "created_at": newer_timestamp},
+        {
+            "id": 12,
+            "body": "new info",
+            "created_at": newer_timestamp,
+            "user": {"id": 8, "type": "User", "login": "someone"},
+        },
     ]
     keep_open_calls: list[tuple[str, int, bool]] = []
 
@@ -648,7 +659,7 @@ def test_auto_close_main_ignores_newer_bot_comments(monkeypatch, capsys):
             "id": 12,
             "body": "status update",
             "created_at": newer_timestamp,
-            "user": {"type": "Bot", "login": "renovate[bot]"},
+            "user": {"id": 8, "type": "User", "login": "all-hands-bot"},
         },
     ]
     closed: list[tuple[str, int, int, bool]] = []
@@ -703,6 +714,154 @@ def test_auto_close_main_ignores_newer_bot_comments(monkeypatch, capsys):
     assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
 
 
+def test_auto_close_main_ignores_newer_deleted_user_comments(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
+    old_timestamp = iso_timestamp(now - timedelta(days=5))
+    newer_timestamp = iso_timestamp(now - timedelta(days=4))
+    issue = {
+        "number": 123,
+        "created_at": old_timestamp,
+        "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+        "user": {"id": 7},
+    }
+    comments = [
+        {
+            "id": 11,
+            "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
+            "created_at": old_timestamp,
+        },
+        {
+            "id": 12,
+            "body": "orphaned comment",
+            "created_at": newer_timestamp,
+            "user": None,
+        },
+    ]
+    closed: list[tuple[str, int, int, bool]] = []
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(module, "list_open_issues", lambda repository: [issue])
+    monkeypatch.setattr(
+        module, "list_issue_comments", lambda repository, number: comments
+    )
+    monkeypatch.setattr(
+        module, "list_comment_reactions", lambda repository, comment_id: []
+    )
+    monkeypatch.setattr(
+        module,
+        "close_issue_as_duplicate",
+        lambda repository,
+        issue_number,
+        canonical_issue_number,
+        *,
+        dry_run: closed.append(
+            (repository, issue_number, canonical_issue_number, dry_run)
+        ),
+    )
+
+    assert module.main() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["results"][0]["action"] == "closed-as-duplicate"
+    assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
+
+
+def test_auto_close_main_skips_invalid_timestamps(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+    issue = {
+        "number": 123,
+        "created_at": "not-a-timestamp",
+        "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+        "user": {"id": 7},
+    }
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(module, "list_open_issues", lambda repository: [issue])
+
+    assert module.main() == 0
+
+    captured = capsys.readouterr()
+    assert "invalid timestamp" in captured.err
+    assert json.loads(captured.out) == {
+        "repository": "OpenHands/agent-sdk",
+        "results": [],
+    }
+
+
+def test_auto_close_main_ignores_newer_comments_with_invalid_timestamps(
+    monkeypatch, capsys
+):
+    module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
+    old_timestamp = iso_timestamp(now - timedelta(days=5))
+    issue = {
+        "number": 123,
+        "created_at": old_timestamp,
+        "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+        "user": {"id": 7},
+    }
+    comments = [
+        {
+            "id": 11,
+            "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
+            "created_at": old_timestamp,
+        },
+        {
+            "id": 12,
+            "body": "human but malformed",
+            "created_at": "not-a-timestamp",
+            "user": {"id": 8, "type": "User", "login": "enyst"},
+        },
+    ]
+    closed: list[tuple[str, int, int, bool]] = []
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(module, "list_open_issues", lambda repository: [issue])
+    monkeypatch.setattr(
+        module, "list_issue_comments", lambda repository, number: comments
+    )
+    monkeypatch.setattr(
+        module, "list_comment_reactions", lambda repository, comment_id: []
+    )
+    monkeypatch.setattr(
+        module,
+        "close_issue_as_duplicate",
+        lambda repository,
+        issue_number,
+        canonical_issue_number,
+        *,
+        dry_run: closed.append(
+            (repository, issue_number, canonical_issue_number, dry_run)
+        ),
+    )
+
+    assert module.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Ignoring newer comment with invalid timestamp" in captured.err
+    assert json.loads(captured.out)["results"][0]["action"] == "closed-as-duplicate"
+    assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
+
+
 def test_parse_agent_json_handles_single_line_fenced_json():
     module = load_module("issue_duplicate_check_openhands.py")
 
@@ -733,6 +892,107 @@ def test_parse_agent_json_rejects_trailing_content():
 
     with pytest.raises(ValueError, match="No valid JSON object found"):
         module.parse_agent_json('prefix {"key":"value"} suffix')
+
+
+def test_extract_first_item_handles_list_payload():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    assert module.extract_first_item([{"status": "READY"}, {"status": "IGNORED"}]) == {
+        "status": "READY"
+    }
+
+
+def test_extract_first_item_handles_dict_without_items():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    assert module.extract_first_item({"execution_status": "completed"}) == {
+        "execution_status": "completed"
+    }
+
+
+def test_extract_first_item_handles_invalid_types():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    assert module.extract_first_item("not-a-payload") is None
+    assert module.extract_first_item({"items": ["bad", {"status": "READY"}]}) is None
+
+
+def test_extract_last_agent_text_returns_last_agent_message():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    assert (
+        module.extract_last_agent_text(
+            [
+                make_agent_message("first"),
+                {
+                    "kind": "MessageEvent",
+                    "source": "user",
+                    "llm_message": {"content": []},
+                },
+                make_agent_message("second"),
+            ]
+        )
+        == "second"
+    )
+
+
+def test_extract_last_agent_text_raises_on_empty_events():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    with pytest.raises(RuntimeError, match="No assistant text message"):
+        module.extract_last_agent_text([])
+
+
+def test_extract_last_agent_text_ignores_malformed_content():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    assert (
+        module.extract_last_agent_text(
+            [
+                {
+                    "kind": "MessageEvent",
+                    "source": "agent",
+                    "llm_message": {"content": "bad"},
+                },
+                {
+                    "kind": "MessageEvent",
+                    "source": "agent",
+                    "llm_message": {"content": ["bad-part"]},
+                },
+                make_agent_message("usable"),
+            ]
+        )
+        == "usable"
+    )
+
+
+def test_build_prompt_includes_all_sections():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    prompt = module.build_prompt(
+        "OpenHands/agent-sdk",
+        {
+            "number": 123,
+            "title": 'Quote "issue"',
+            "body": "Body with newline\nand braces {}",
+            "html_url": "https://github.com/OpenHands/agent-sdk/issues/123",
+        },
+    )
+
+    assert "Repository: OpenHands/agent-sdk" in prompt
+    assert "New issue number: #123" in prompt
+    assert "Return schema:" in prompt
+    assert json.dumps("Body with newline\nand braces {}", ensure_ascii=False) in prompt
+
+
+def test_build_prompt_handles_missing_fields():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    prompt = module.build_prompt("OpenHands/agent-sdk", {"number": 5})
+
+    assert "New issue title:" in prompt
+    assert "New issue URL:" in prompt
+    assert 'New issue body (JSON-escaped string): ""' in prompt
 
 
 def test_normalize_result_promotes_actionable_duplicates():
@@ -775,6 +1035,62 @@ def test_issue_duplicate_request_json_reports_urlerror(monkeypatch):
 
     with pytest.raises(RuntimeError, match="GET https://example.test/path failed"):
         module.request_json("https://example.test", "/path")
+
+
+def test_normalize_result_sanitizes_invalid_edge_cases():
+    module = load_module("issue_duplicate_check_openhands.py")
+    normalized = module.normalize_result(
+        {
+            "classification": "bogus",
+            "confidence": "bogus",
+            "should_comment": True,
+            "is_duplicate": True,
+            "auto_close_candidate": True,
+            "canonical_issue_number": "nan",
+            "candidate_issues": "not-a-list",
+            "summary": None,
+        }
+    )
+
+    assert normalized == {
+        "classification": "no-match",
+        "confidence": "low",
+        "should_comment": False,
+        "is_duplicate": False,
+        "auto_close_candidate": False,
+        "canonical_issue_number": None,
+        "candidate_issues": [],
+        "summary": "",
+    }
+
+
+def test_normalize_result_disables_invalid_auto_close_states():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    overlap = module.normalize_result(
+        {
+            "classification": "overlapping-scope",
+            "confidence": "high",
+            "should_comment": False,
+            "is_duplicate": False,
+            "auto_close_candidate": True,
+            "candidate_issues": [{"number": 45}],
+        }
+    )
+    low_confidence = module.normalize_result(
+        {
+            "classification": "duplicate",
+            "confidence": "low",
+            "should_comment": False,
+            "is_duplicate": True,
+            "auto_close_candidate": True,
+            "candidate_issues": [{"number": 45}],
+        }
+    )
+
+    assert overlap["should_comment"] is True
+    assert overlap["auto_close_candidate"] is False
+    assert low_confidence["auto_close_candidate"] is False
 
 
 def test_extract_agent_server_url_returns_runtime_prefix():
@@ -980,6 +1296,35 @@ def test_poll_conversation_raises_on_failed_status(monkeypatch):
         )
 
     assert "boom" in str(exc.value)
+
+
+def test_issue_duplicate_main_rejects_pull_requests(monkeypatch, tmp_path):
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk",
+            issue_number=123,
+            output=str(tmp_path / "result.json"),
+            poll_interval_seconds=1,
+            max_wait_seconds=10,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_issue",
+        lambda repository, issue_number: {
+            "number": issue_number,
+            "pull_request": {
+                "url": f"https://github.com/{repository}/pull/{issue_number}"
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="#123 is a pull request, not an issue"):
+        module.main()
 
 
 def test_issue_duplicate_main_waits_for_start_task_and_writes_output(
