@@ -48,13 +48,14 @@ def test_get_tools_for_preset_gemini():
 
 
 def test_get_tools_for_preset_gpt5():
-    """Test that gpt5 preset returns apply_patch tool."""
+    """Test that gpt5 preset returns Codex-style planning tools."""
     tools = get_tools_for_preset("gpt5", enable_browser=False)
     tool_names = {t.name for t in tools}
 
     assert "terminal" in tool_names
     assert "apply_patch" in tool_names
-    assert "task_tracker" in tool_names
+    assert "update_plan" in tool_names
+    assert "task_tracker" not in tool_names
     # Default file_editor should NOT be present
     assert "file_editor" not in tool_names
 

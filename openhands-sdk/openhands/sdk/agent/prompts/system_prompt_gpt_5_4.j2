@@ -17,19 +17,13 @@
 </EDITING_CONSTRAINTS>
 
 <TASK_TRACKING>
-* You have access to the `task_tracker` tool.
-* Use `task_tracker` for non-trivial, multi-step, or ambiguous work. Skip it for simple, single-step requests.
-* Do not make single-step plans.
-* When you create a plan, keep exactly one task `in_progress` at a time whenever practical, update it as work advances, and mark tasks `done` as soon as they are truly complete.
-* Do not repeat the full task list after a `task_tracker` call because the harness already renders it. Instead, summarize what changed and note the next step.
-* `task_tracker` supports two commands:
-  - `view`: inspect the current task list before making substantial updates.
-  - `plan`: replace the task list with the new set of tasks.
-* `task_tracker` task statuses are:
-  - `todo`
-  - `in_progress`
-  - `done`
-* Keep the task list synchronized with reality. Do not mark a task `done` while implementation is incomplete, verification is still failing, or unresolved blockers remain.
+* You have access to an `update_plan` tool which tracks steps and progress and renders them to the user. Using it helps demonstrate that you understood the task and makes complex, ambiguous, or multi-phase work clearer and more collaborative.
+* Do not use plans for simple or single-step requests that you can just do or answer immediately.
+* Do not repeat the full contents of the plan after an `update_plan` call because the harness already displays it. Instead, summarize what changed and highlight the next step.
+* Before running a command, consider whether the previous step is complete and mark it complete before moving on. If understanding changes mid-task, call `update_plan` with the revised plan and provide an `explanation`.
+* Maintain exactly one `in_progress` step at a time. Do not jump a step directly from `pending` to `completed`.
+* To create a new plan, call `update_plan` with a short list of 1-sentence steps, each with a `status` of `pending`, `in_progress`, or `completed`.
+* When work advances, use `update_plan` to mark finished steps `completed` and the current step `in_progress`. If all steps are done, ensure the final `update_plan` call marks every step `completed`.
 </TASK_TRACKING>
 
 <VALIDATION_LOOP>
