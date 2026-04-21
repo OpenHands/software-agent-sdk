@@ -543,6 +543,7 @@ def test_auto_close_main_skips_malformed_issue_data(monkeypatch, capsys):
     monkeypatch.setattr(
         module, "list_open_issues", lambda repository: [{"number": 123}]
     )
+    monkeypatch.setattr(module, "list_issue_comments", lambda repository, number: [])
 
     assert module.main() == 0
 
