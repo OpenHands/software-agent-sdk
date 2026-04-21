@@ -2,15 +2,14 @@
 
 Uses an in-process asyncpg mock (via unittest.mock) to avoid requiring a live
 PostgreSQL instance. Tests cover the FileStore interface contract and the
-per-path threading lock behaviour.
+pg_advisory_lock behaviour.
 """
 
 import threading
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from openhands.sdk.io.postgresql import PostgreSQLFileStore
@@ -31,13 +30,16 @@ def _make_row(**kwargs: str) -> MagicMock:
 def store(monkeypatch: pytest.MonkeyPatch) -> PostgreSQLFileStore:
     """Return a PostgreSQLFileStore backed by a mocked asyncpg pool."""
     rows: dict[tuple[str, str], str] = {}  # (namespace, path) -> content
+    held_locks: set[int] = set()  # advisory lock keys currently held
+
+    # ------------------------------------------------------------------ #
+    # Pool-level operations (CRUD)
+    # ------------------------------------------------------------------ #
 
     async def execute(query: str, *args: Any) -> None:
-        # INSERT ... ON CONFLICT DO UPDATE
         if "INSERT INTO" in query and "ON CONFLICT" in query:
             ns, path, content = args[0], args[1], args[2]
             rows[(ns, path)] = content
-        # DELETE
         elif "DELETE FROM" in query:
             ns, path, prefix = args[0], args[1], args[2]
             to_delete = [
@@ -47,8 +49,6 @@ def store(monkeypatch: pytest.MonkeyPatch) -> PostgreSQLFileStore:
             ]
             for k in to_delete:
                 del rows[k]
-        # CREATE TABLE / INDEX — no-op
-        pass
 
     async def fetchrow(query: str, *args: Any) -> MagicMock | None:
         ns, path = args[0], args[1]
@@ -66,18 +66,41 @@ def store(monkeypatch: pytest.MonkeyPatch) -> PostgreSQLFileStore:
         ]
         return [_make_row(path=k[1]) for k in sorted(matched)]
 
-    @asynccontextmanager
-    async def acquire() -> AsyncIterator[AsyncMock]:
-        conn = AsyncMock()
-        conn.execute = execute
-        yield conn
-
     mock_pool = MagicMock()
     mock_pool.execute = execute
     mock_pool.fetchrow = fetchrow
     mock_pool.fetch = fetch
-    mock_pool.acquire = acquire
     mock_pool.close = AsyncMock()
+
+    # ------------------------------------------------------------------ #
+    # Advisory lock operations (dedicated connection via asyncpg.connect)
+    # ------------------------------------------------------------------ #
+
+    async def conn_fetchval(query: str, *args: Any) -> bool:
+        if "pg_try_advisory_lock" in query:
+            key = args[0]
+            if key in held_locks:
+                return False
+            held_locks.add(key)
+            return True
+        return False
+
+    async def conn_execute(query: str, *args: Any) -> None:
+        if "pg_advisory_unlock" in query:
+            held_locks.discard(args[0])
+
+    async def mock_connect(dsn: str, **kwargs: Any) -> AsyncMock:
+        conn = AsyncMock()
+        conn.fetchval = conn_fetchval
+        conn.execute = conn_execute
+        conn.close = AsyncMock()
+        return conn
+
+    monkeypatch.setattr(asyncpg, "connect", mock_connect)
+
+    # ------------------------------------------------------------------ #
+    # Bypass _setup (pool creation + schema)
+    # ------------------------------------------------------------------ #
 
     async def mock_setup(self: PostgreSQLFileStore, dsn: str) -> MagicMock:
         return mock_pool
@@ -144,7 +167,7 @@ def test_get_absolute_path(store: PostgreSQLFileStore) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests: lock
+# Tests: pg_advisory_lock
 # ---------------------------------------------------------------------------
 
 

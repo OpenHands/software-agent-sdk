@@ -20,6 +20,7 @@ Example::
 
 import asyncio
 import concurrent.futures
+import hashlib
 import threading
 from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
@@ -57,9 +58,9 @@ class PostgreSQLFileStore(FileStore):
                The table and index are created on first instantiation.
 
     Note:
-        ``lock()`` uses a per-path ``threading.Lock``, which is sufficient
-        for single-process deployments. For multi-process deployments,
-        replace with PostgreSQL advisory locks (``pg_try_advisory_lock``).
+        ``lock()`` uses PostgreSQL session-level advisory locks
+        (``pg_try_advisory_lock``), which are safe for concurrent writers
+        across multiple processes and instances.
     """
 
     def __init__(self, dsn: str, namespace: str, table: str = DEFAULT_TABLE) -> None:
@@ -77,10 +78,6 @@ class PostgreSQLFileStore(FileStore):
             name=f"pg-filestore-{namespace[:8]}",
         )
         self._bg_thread.start()
-
-        # Per-path threading locks for EventLog sequential index assignment.
-        self._path_locks: dict[str, threading.Lock] = {}
-        self._meta_lock = threading.Lock()
 
         # Initialize pool and schema in one async call to avoid create_pool
         # type-stub limitations (asyncpg.create_pool is not typed as a coroutine).
@@ -121,6 +118,35 @@ class PostgreSQLFileStore(FileStore):
             coro, self._loop
         )
         return future.result()
+
+    def _advisory_key(self, path: str) -> int:
+        """Derive a 64-bit signed advisory lock key from namespace + path."""
+        raw = f"{self._namespace}\x00{path}".encode()
+        digest = hashlib.sha256(raw).digest()
+        return int.from_bytes(digest[:8], "big", signed=True)
+
+    async def _lock_acquire(
+        self, key: int, path: str, timeout: float
+    ) -> asyncpg.Connection:
+        """Acquire a session-level advisory lock on a dedicated connection."""
+        conn: asyncpg.Connection = await asyncpg.connect(self._dsn)
+        deadline = self._loop.time() + timeout
+        while True:
+            acquired = bool(await conn.fetchval("SELECT pg_try_advisory_lock($1)", key))
+            if acquired:
+                return conn
+            remaining = deadline - self._loop.time()
+            if remaining <= 0:
+                await conn.close()
+                raise TimeoutError(
+                    f"Could not acquire advisory lock for {path!r} within {timeout}s"
+                )
+            await asyncio.sleep(min(0.05, remaining))
+
+    async def _lock_release(self, conn: asyncpg.Connection, key: int) -> None:
+        """Release the advisory lock and close the dedicated connection."""
+        await conn.execute("SELECT pg_advisory_unlock($1)", key)
+        await conn.close()
 
     # ------------------------------------------------------------------ #
     # FileStore interface
@@ -203,23 +229,18 @@ class PostgreSQLFileStore(FileStore):
 
     @contextmanager
     def lock(self, path: str, timeout: float = 30.0) -> Iterator[None]:
-        """Acquire an in-process threading lock for the given path.
+        """Acquire a PostgreSQL session-level advisory lock for the given path.
 
-        EventLog calls this to serialize sequential index assignment.
-        A threading.Lock per path is sufficient for single-process deployments.
+        Safe for concurrent writers across multiple processes and instances.
+        Uses pg_try_advisory_lock with 50 ms polling until timeout.
+        The lock key is derived from namespace + path via SHA-256.
         """
-        with self._meta_lock:
-            if path not in self._path_locks:
-                self._path_locks[path] = threading.Lock()
-            lock = self._path_locks[path]
-
-        acquired = lock.acquire(timeout=timeout)
-        if not acquired:
-            raise TimeoutError(f"Could not acquire lock for '{path}' within {timeout}s")
+        key = self._advisory_key(path)
+        conn = self._run(self._lock_acquire(key, path, timeout))
         try:
             yield
         finally:
-            lock.release()
+            self._run(self._lock_release(conn, key))
 
     def close(self) -> None:
         """Close the connection pool and stop the background event loop."""
