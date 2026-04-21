@@ -220,8 +220,8 @@ def test_agent_mcp_config_empty_not_encrypted() -> None:
     # Serialize with cipher - should NOT have encrypted_mcp_config for empty
     agent_dump = agent.model_dump(context={"cipher": cipher})
 
-    # Empty dict should serialize as empty dict, not encrypted
-    assert agent_dump.get("mcp_config") == {}
+    # Empty dict is omitted entirely (default value), not serialized or encrypted
+    assert "mcp_config" not in agent_dump
     assert "encrypted_mcp_config" not in agent_dump
 
 
