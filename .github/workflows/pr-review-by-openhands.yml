@@ -11,7 +11,7 @@ on:
     #   4. A maintainer requests openhands-agent or all-hands-bot as a reviewer
     # Adding labels and requesting reviewers still requires write access.
     pull_request:
-        types: [opened, ready_for_review, labeled, review_requested]
+        types: [opened, ready_for_review, synchronize, labeled, review_requested]
 
 permissions:
     contents: read
@@ -30,6 +30,7 @@ jobs:
             github.event.pull_request.head.repo.full_name == github.repository && (
                 (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
+                (github.event.action == 'synchronize' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 github.event.label.name == 'review-this' ||
                 github.event.requested_reviewer.login == 'openhands-agent' ||
                 github.event.requested_reviewer.login == 'all-hands-bot'
@@ -53,5 +54,5 @@ jobs:
                   # picks up the sub-agent code (extensions#164 not yet on main)
                   extensions-version: feat/pr-review-sub-agent-delegation
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
-                  github-token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+                  github-token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC || github.token }}
                   lmnr-api-key: ${{ secrets.LMNR_SKILLS_API_KEY }}
