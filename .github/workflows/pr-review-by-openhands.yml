@@ -10,10 +10,8 @@ on:
     #   3. A maintainer adds the 'review-this' label, OR
     #   4. A maintainer requests openhands-agent or all-hands-bot as a reviewer
     # Adding labels and requesting reviewers still requires write access.
-    # We intentionally include `synchronize` so follow-up commits retrigger review
-    # on the latest SHA rather than leaving stale feedback on earlier revisions.
     pull_request:
-        types: [opened, ready_for_review, synchronize, labeled, review_requested]
+        types: [opened, ready_for_review, labeled, review_requested]
 
 permissions:
     contents: read
@@ -32,7 +30,6 @@ jobs:
             github.event.pull_request.head.repo.full_name == github.repository && (
                 (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
-                (github.event.action == 'synchronize' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 github.event.label.name == 'review-this' ||
                 github.event.requested_reviewer.login == 'openhands-agent' ||
                 github.event.requested_reviewer.login == 'all-hands-bot'
