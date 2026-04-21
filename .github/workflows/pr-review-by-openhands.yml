@@ -49,6 +49,9 @@ jobs:
                   review-style: roasted
                   # Enable experimental sub-agent delegation for file-level reviews
                   use-sub-agents: 'true'
+                  # Must match the branch in `uses:` so the script checkout
+                  # picks up the sub-agent code (extensions#164 not yet on main)
+                  extensions-version: feat/pr-review-sub-agent-delegation
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
-                  github-token: ${{ secrets.PAT_TOKEN }}
+                  github-token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
                   lmnr-api-key: ${{ secrets.LMNR_SKILLS_API_KEY }}
