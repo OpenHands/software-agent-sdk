@@ -37,7 +37,7 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
-from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
 
 if TYPE_CHECKING:
@@ -263,9 +263,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return self
 
         # Check if handler is for the current (actual) class
-        handler_str = str(handler)
-        _, handler_class = handler_str.split("=", 1)
-        handler_class = handler_class[:-1]  # Remove trailing )
+        # See get_handler_class_name() for details on the fragile string parsing
+        handler_class = get_handler_class_name(handler)
 
         if handler_class != self.__class__.__name__:
             # Handler is for a base class, delegate to model_dump for proper
@@ -308,7 +307,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             # Default: redact by omitting
             result.pop("mcp_config", None)
             return result
-
 
     condenser: CondenserBase | None = Field(
         default=None,
