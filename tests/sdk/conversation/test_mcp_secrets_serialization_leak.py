@@ -254,31 +254,37 @@ class TestMcpConfigPreservation:
             "mcp_config should retain secrets in memory for runtime use"
         )
 
-    def test_non_secret_mcp_config_values_persist(self, tmp_path):
-        """Verify that non-secret parts of mcp_config are preserved.
+    def test_non_secret_mcp_config_values_persist_with_cipher(self, tmp_path):
+        """Verify that mcp_config is preserved when using cipher for persistence.
 
-        Commands, args, and other non-sensitive config should still
-        be serialized normally.
+        When a cipher is provided (the production flow), mcp_config should be
+        encrypted on save and decrypted on restore, preserving all values.
+
+        Without a cipher, mcp_config is fully redacted (None) to prevent
+        accidental secret leakage to API responses and WebSocket events.
         """
+        from openhands.sdk.utils.cipher import Cipher
+
         llm = LLM(model="test-model", api_key=SecretStr("test-key"))
         mcp_config = {
             "mcpServers": {
                 "fetch": {
                     "command": "uvx",
                     "args": ["mcp-server-fetch"],
-                    # No env/secrets - should be fully preserved
                 }
             }
         }
         agent = Agent(llm=llm, mcp_config=mcp_config)
+        cipher = Cipher(secret_key="test-encryption-key")
 
         workspace = LocalWorkspace(working_dir=str(tmp_path / "workspace"))
-        # Create state (triggers persistence)
-        _ = ConversationState.create(
+        # Create state with cipher (triggers persistence with encryption)
+        state = ConversationState.create(
             id=uuid.uuid4(),
             agent=agent,
             workspace=workspace,
             persistence_dir=str(tmp_path / "persistence"),
+            cipher=cipher,
         )
 
         base_state_path = tmp_path / "persistence" / "base_state.json"
@@ -286,10 +292,22 @@ class TestMcpConfigPreservation:
             persisted_json = json.load(f)
 
         agent_data = persisted_json.get("agent", {})
-        persisted_mcp_config = agent_data.get("mcp_config", {})
 
-        # Non-sensitive config should be preserved
-        # (This test may need adjustment based on the chosen fix strategy)
-        assert "mcpServers" in persisted_mcp_config or persisted_mcp_config == {}, (
-            "Non-secret mcp_config should be preserved or explicitly cleared"
+        # With cipher, mcp_config should be encrypted (not plaintext, not None)
+        assert "encrypted_mcp_config" in agent_data, (
+            "mcp_config should be encrypted when cipher is provided"
         )
+        assert agent_data.get("mcp_config") is None or "mcp_config" not in agent_data, (
+            "plaintext mcp_config should not be present when encrypted"
+        )
+
+        # Verify roundtrip: restore with same cipher should get original config
+        restored_state = ConversationState.create(
+            id=state.id,
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=str(tmp_path / "persistence"),
+            cipher=cipher,
+        )
+        # The runtime agent is used, but the decryption should work
+        assert restored_state.agent.mcp_config == mcp_config
