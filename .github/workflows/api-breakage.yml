@@ -92,7 +92,7 @@ jobs:
 
             - name: Post API breakage report to PR
               if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-              uses: actions/github-script@v8
+              uses: actions/github-script@v9
               env:
                   EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
                   LOG_PATH: api-breakage.log

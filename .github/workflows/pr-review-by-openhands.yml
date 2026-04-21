@@ -40,12 +40,18 @@ jobs:
         runs-on: ubuntu-24.04
         steps:
             - name: Run PR Review
-              uses: OpenHands/extensions/plugins/pr-review@main
+              # TODO: Revert to @main after OpenHands/extensions#164 is merged
+              uses: OpenHands/extensions/plugins/pr-review@feat/pr-review-sub-agent-delegation
               with:
                   llm-model: litellm_proxy/claude-sonnet-4-5-20250929
                   llm-base-url: https://llm-proxy.app.all-hands.dev
                   # Review style: roasted (other option: standard)
                   review-style: roasted
+                  # Enable experimental sub-agent delegation for file-level reviews
+                  use-sub-agents: 'true'
+                  # Must match the branch in `uses:` so the script checkout
+                  # picks up the sub-agent code (extensions#164 not yet on main)
+                  extensions-version: feat/pr-review-sub-agent-delegation
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
-                  github-token: ${{ secrets.PAT_TOKEN }}
+                  github-token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
                   lmnr-api-key: ${{ secrets.LMNR_SKILLS_API_KEY }}

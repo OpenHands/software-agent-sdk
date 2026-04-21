@@ -659,6 +659,73 @@ class ConversationService:
         await event_service.condense()
         return True
 
+    async def fork_conversation(
+        self,
+        source_id: UUID,
+        *,
+        fork_id: UUID | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> ConversationInfo | None:
+        """Fork an existing conversation, deep-copying its event history.
+
+        The fork is persisted to disk and then loaded as a new EventService,
+        so the forked conversation is fully independent from the source.
+
+        Returns ``None`` when *source_id* does not exist.
+
+        Raises:
+            ValueError: If *fork_id* is already taken by an active
+                conversation.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        # Reject duplicate fork IDs early to avoid clobbering an active
+        # conversation or leaking an EventService reference.
+        if fork_id is not None and fork_id in self._event_services:
+            raise ValueError(f"Conversation with id {fork_id} already exists")
+
+        source_service = self._event_services.get(source_id)
+        if source_service is None:
+            return None
+
+        source_conversation = source_service.get_conversation()
+
+        # fork() deep-copies events, state, and writes to a new persistence dir.
+        fork_conv = await asyncio.to_thread(
+            source_conversation.fork,
+            conversation_id=fork_id,
+            title=title,
+            tags=tags,
+            reset_metrics=reset_metrics,
+        )
+        # Extract the persisted data, then discard the temporary conversation.
+        fork_conv_id = fork_conv.id
+        fork_agent = cast(Agent, fork_conv.agent)
+        fork_workspace = fork_conv.workspace
+        fork_conv.delete_on_close = False
+        fork_conv.close()
+
+        # _start_event_service will resume from the persisted fork directory.
+        fork_stored = StoredConversation(
+            id=fork_conv_id,
+            agent=fork_agent,
+            workspace=fork_workspace,
+        )
+        # If the service fails to start, clean up the orphaned persistence
+        # directory so we don't leave stale state on disk.
+        fork_dir = self.conversations_dir / fork_conv_id.hex
+        try:
+            fork_event_service = await self._start_event_service(fork_stored)
+        except Exception:
+            safe_rmtree(fork_dir)
+            raise
+
+        state = await fork_event_service.get_state()
+        return _compose_conversation_info_v1(fork_event_service.stored, state)
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
@@ -827,8 +894,13 @@ class AutoTitleSubscriber(Subscriber):
         if not message_text:
             return
 
-        conversation = self.service._conversation
-        llm = conversation.agent.llm if conversation else None
+        # Precedence: title_llm_profile (if configured and loads) → agent.llm →
+        # truncation. This keeps auto-titling non-breaking for consumers who
+        # don't configure title_llm_profile.
+        title_llm = self._load_title_llm()
+        if title_llm is None:
+            conversation = self.service._conversation
+            title_llm = conversation.agent.llm if conversation else None
 
         async def _generate_and_save() -> None:
             try:
@@ -837,7 +909,7 @@ class AutoTitleSubscriber(Subscriber):
                     None,
                     generate_title_from_message,
                     message_text,
-                    llm,
+                    title_llm,
                     50,
                 )
                 if title and self.service.stored.title is None:
@@ -852,6 +924,30 @@ class AutoTitleSubscriber(Subscriber):
                 )
 
         asyncio.create_task(_generate_and_save())
+
+    def _load_title_llm(self) -> LLM | None:
+        """Load the LLM for title generation from profile store.
+
+        Returns:
+            LLM instance if title_llm_profile is configured and loads
+            successfully, None otherwise. When None is returned, the caller
+            falls back to the agent's LLM (and then to message truncation).
+        """
+        profile_name = self.service.stored.title_llm_profile
+        if not profile_name:
+            return None
+
+        try:
+            from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+            profile_store = LLMProfileStore()
+            return profile_store.load(profile_name)
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning(
+                f"Failed to load title LLM profile '{profile_name}': {e}. "
+                "Falling back to the agent's LLM."
+            )
+            return None
 
 
 @dataclass

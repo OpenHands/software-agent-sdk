@@ -24,7 +24,7 @@ jobs:
             (github.event.workflow_run.conclusion == 'success' &&
              github.event.workflow_run.event == 'release')
         env:
-            GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+            GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
         steps:
             - name: Checkout
               uses: actions/checkout@v6
@@ -105,7 +105,7 @@ jobs:
 
             - name: Install Poetry
               run: |
-                  pipx install poetry==2.2.1
+                  pipx install poetry==2.3.3
 
             # OpenHands-CLI step runs first since it's simpler and less error-prone
             - name: Create PR for OpenHands-CLI repo
