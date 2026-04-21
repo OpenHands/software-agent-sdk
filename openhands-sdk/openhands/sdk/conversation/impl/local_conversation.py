@@ -189,6 +189,9 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
+        # Pin the OpenAI prefix-cache shard to this conversation (#2904).
+        self.agent.llm._prompt_cache_key = str(self._state.id)
+
         # Default callback: persist every event to state
         def _default_callback(e):
             # This callback runs while holding the conversation state's lock
