@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -25,7 +26,9 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -1400,6 +1403,148 @@ class TestEventServiceStartWithRunningStatus:
                 if isinstance(call[0][0], AgentErrorEvent)
             ]
             assert len(error_event_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_start_re_resolves_llm_profile(
+        self, event_service, tmp_path, monkeypatch
+    ):
+        """Test that start() reloads the active LLM from a named profile."""
+        profile_dir = tmp_path / "profiles"
+        monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+        llm_profile_store.LLMProfileStore(base_dir=profile_dir).save(
+            "fast",
+            LLM(model="new-model", usage_id="source-profile"),
+        )
+
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+        event_service.stored.agent = event_service.stored.agent.model_copy(
+            update={"llm": LLM(model="old-model", usage_id="old-usage")}
+        )
+        event_service.stored.llm_profile_id = "fast"
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            await event_service.start()
+
+            started_agent = MockConversation.call_args.kwargs["agent"]
+            assert isinstance(started_agent, Agent)
+            assert started_agent.llm.model == "new-model"
+            assert started_agent.llm.usage_id == "profile:fast"
+            assert isinstance(event_service.stored.agent, Agent)
+            assert event_service.stored.agent.llm.model == "new-model"
+
+    @pytest.mark.asyncio
+    async def test_start_falls_back_to_stored_snapshot_when_profile_needs_cipher(
+        self, event_service, tmp_path, monkeypatch
+    ):
+        """Test that start() falls back when an encrypted profile cannot be loaded."""
+        profile_dir = tmp_path / "profiles"
+        monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+        llm_profile_store.LLMProfileStore(base_dir=profile_dir).save(
+            "fast",
+            LLM(
+                model="new-model",
+                usage_id="source-profile",
+                api_key=SecretStr("new-secret"),
+            ),
+            include_secrets=True,
+            cipher=Cipher("test-secret-key"),
+        )
+
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+        event_service.stored.agent = event_service.stored.agent.model_copy(
+            update={
+                "llm": LLM(
+                    model="old-model",
+                    usage_id="old-usage",
+                    api_key=SecretStr("old-secret"),
+                )
+            }
+        )
+        event_service.stored.llm_profile_id = "fast"
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            await event_service.start()
+
+            started_agent = MockConversation.call_args.kwargs["agent"]
+            assert isinstance(started_agent, Agent)
+            assert started_agent.llm.model == "old-model"
+            assert started_agent.llm.usage_id == "old-usage"
+            assert isinstance(event_service.stored.agent, Agent)
+            assert event_service.stored.agent.llm.model == "old-model"
+
+    @pytest.mark.asyncio
+    async def test_switch_profile_persists_profile_metadata(self, event_service):
+        """Test switch_profile updates the stored profile-backed agent snapshot."""
+        original_updated_at = event_service.stored.updated_at
+        new_agent = event_service.stored.agent.model_copy(
+            update={"llm": LLM(model="new-model", usage_id="profile:fast")}
+        )
+
+        mock_conversation = MagicMock()
+        mock_state = MagicMock(spec=ConversationState)
+        mock_state.execution_status = ConversationExecutionStatus.IDLE
+        mock_state.__enter__ = MagicMock(return_value=mock_state)
+        mock_state.__exit__ = MagicMock(return_value=None)
+        mock_conversation._state = mock_state
+        mock_conversation.agent = event_service.stored.agent
+
+        def switch_profile(profile_id: str) -> None:
+            assert profile_id == "fast"
+            mock_conversation.agent = new_agent
+
+        mock_conversation.switch_profile.side_effect = switch_profile
+        event_service._conversation = mock_conversation
+        event_service.save_meta = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+        event_service._setup_llm_log_streaming = MagicMock()
+        event_service._setup_stats_streaming = MagicMock()
+
+        await event_service.switch_profile("fast")
+
+        assert event_service.stored.llm_profile_id == "fast"
+        assert isinstance(event_service.stored.agent, Agent)
+        assert event_service.stored.agent.llm.model == "new-model"
+        assert event_service.stored.updated_at > original_updated_at
+        event_service.save_meta.assert_awaited_once()
+        event_service._publish_state_update.assert_awaited_once()
+        event_service._setup_llm_log_streaming.assert_called_once_with(new_agent)
+        event_service._setup_stats_streaming.assert_called_once_with(new_agent)
 
 
 class TestEventServiceConcurrentSubscriptions:

@@ -71,6 +71,7 @@ def _compose_conversation_info_v1(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        llm_profile_id=stored.llm_profile_id,
     )
 
 

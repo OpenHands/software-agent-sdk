@@ -80,6 +80,12 @@ class StoredConversation(StartACPConversationRequest):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    llm_profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional named LLM profile backing this conversation's active LLM."
+        ),
+    )
 
 
 class _ConversationInfoBase(BaseModel):
@@ -191,6 +197,12 @@ class ConversationInfo(_ConversationInfoBase):
         description=(
             "The legacy v1 agent configuration. "
             "This endpoint remains pinned to the standard Agent contract."
+        ),
+    )
+    llm_profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional named LLM profile currently backing the conversation LLM."
         ),
     )
 

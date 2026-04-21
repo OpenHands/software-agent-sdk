@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 
@@ -40,6 +40,15 @@ def get_conversation_service(request: Request):
             detail="Conversation service is not available",
         )
     return service
+
+
+def get_config(request: Request) -> Config:
+    """Get the app configuration from FastAPI state."""
+
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        return get_default_config()
+    return config
 
 
 async def get_event_service(

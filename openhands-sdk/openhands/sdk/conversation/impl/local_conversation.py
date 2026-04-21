@@ -107,6 +107,8 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        profile_store_dir: str | Path | None = None,
+        profile_store_cipher: Cipher | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -148,6 +150,9 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            profile_store_dir: Optional directory for persisted LLM profiles.
+            profile_store_cipher: Optional cipher for decrypting persisted LLM
+                   profiles when switching by name.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -261,7 +266,8 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore()
+        self._profile_store = LLMProfileStore(base_dir=profile_store_dir)
+        self._profile_store_cipher = profile_store_cipher
 
         # Initialize secrets if provided
         if secrets:
@@ -614,7 +620,10 @@ class LocalConversation(BaseConversation):
         try:
             new_llm = self.llm_registry.get(usage_id)
         except KeyError:
-            new_llm = self._profile_store.load(profile_name)
+            new_llm = self._profile_store.load(
+                profile_name,
+                cipher=self._profile_store_cipher,
+            )
             new_llm = new_llm.model_copy(update={"usage_id": usage_id})
             self.llm_registry.add(new_llm)
         with self._state:

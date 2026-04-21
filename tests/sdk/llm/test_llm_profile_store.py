@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.utils.cipher import Cipher
 
 
 @pytest.fixture
@@ -197,6 +198,45 @@ def test_save_with_secrets(
 
     # Secret should be present
     assert "secret-api-key-12345" in content
+
+
+def test_save_with_cipher_encrypts_and_loads_secrets(
+    profile_store: LLMProfileStore, sample_llm_with_secrets: LLM
+) -> None:
+    """Test that cipher-backed saves encrypt secrets and restore them on load."""
+    cipher = Cipher("test-secret-key")
+
+    profile_store.save(
+        "with_cipher",
+        sample_llm_with_secrets,
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    profile_path = profile_store.base_dir / "with_cipher.json"
+    content = profile_path.read_text()
+
+    assert "secret-api-key-12345" not in content
+
+    loaded = profile_store.load("with_cipher", cipher=cipher)
+    assert isinstance(loaded.api_key, SecretStr)
+    assert loaded.api_key.get_secret_value() == "secret-api-key-12345"
+
+
+def test_load_encrypted_profile_requires_cipher(
+    profile_store: LLMProfileStore, sample_llm_with_secrets: LLM
+) -> None:
+    """Test that encrypted profiles fail to load when no cipher is provided."""
+    cipher = Cipher("test-secret-key")
+    profile_store.save(
+        "with_cipher",
+        sample_llm_with_secrets,
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    with pytest.raises(ValueError, match="contains encrypted secrets"):
+        profile_store.load("with_cipher")
 
 
 @pytest.mark.parametrize("name", ["my_profile", "my_profile.json"])

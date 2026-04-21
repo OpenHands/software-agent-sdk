@@ -100,6 +100,7 @@ class TestConversationServiceSearchConversations:
         """Test basic search_conversations functionality."""
         # Create mock event service
         mock_service = AsyncMock(spec=EventService)
+        sample_stored_conversation.llm_profile_id = "fast"
         mock_service.stored = sample_stored_conversation
         mock_state = ConversationState(
             id=sample_stored_conversation.id,
@@ -118,6 +119,7 @@ class TestConversationServiceSearchConversations:
         assert len(result.items) == 1
         assert result.items[0].id == conversation_id
         assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
+        assert result.items[0].llm_profile_id == "fast"
         assert result.next_page_id is None
 
     @pytest.mark.asyncio

@@ -11,7 +11,8 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
-from openhands.sdk import LLM, AgentBase, Event, Message, get_logger
+from openhands.agent_server.utils import utc_now
+from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -22,11 +23,16 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import AgentErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
+
+
+def _profile_usage_id(profile_id: str) -> str:
+    return f"profile:{profile_id}"
 
 
 logger = get_logger(__name__)
@@ -70,11 +76,6 @@ class EventService:
                 }
             )
         )
-
-    def get_conversation(self):
-        if not self._conversation:
-            raise ValueError("inactive_service")
-        return self._conversation
 
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
@@ -467,9 +468,29 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent_cls = type(self.stored.agent)
+
+        agent_config = self.stored.agent
+        if self.stored.llm_profile_id is not None and isinstance(agent_config, Agent):
+            profile_id = self.stored.llm_profile_id
+            try:
+                resolved_llm = LLMProfileStore().load(profile_id, cipher=self.cipher)
+                resolved_llm = resolved_llm.model_copy(
+                    update={"usage_id": _profile_usage_id(profile_id)}
+                )
+                agent_config = agent_config.model_copy(update={"llm": resolved_llm})
+                self.stored.agent = agent_config
+            except (FileNotFoundError, ValueError) as exc:
+                logger.warning(
+                    "Failed to restore LLM profile %s for conversation %s: %s. "
+                    "Falling back to stored LLM snapshot.",
+                    profile_id,
+                    self.stored.id,
+                    exc,
+                )
+
+        agent_cls = type(agent_config)
         agent = agent_cls.model_validate(
-            self.stored.agent.model_dump(context={"expose_secrets": True}),
+            agent_config.model_dump(context={"expose_secrets": True}),
         )
 
         # Create LocalConversation with plugins and hook_config.
@@ -494,6 +515,7 @@ class EventService:
             visualizer=None,
             secrets=self.stored.secrets,
             cipher=self.cipher,
+            profile_store_cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,
         )
@@ -624,6 +646,31 @@ class EventService:
             await loop.run_in_executor(None, self._conversation.pause)
             # Publish state update after pause to ensure stats are updated
             await self._publish_state_update()
+
+    async def switch_profile(self, profile_id: str):
+        """Switch the active conversation LLM to a named profile."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        conversation = self._conversation
+        if not isinstance(self.stored.agent, Agent):
+            raise ValueError("llm_profiles_not_supported")
+
+        with conversation._state as state:
+            if state.execution_status == ConversationExecutionStatus.RUNNING:
+                raise ValueError("conversation_already_running")
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, conversation.switch_profile, profile_id)
+
+        agent = conversation.agent
+        assert isinstance(agent, Agent)
+        self.stored.agent = agent.model_copy()
+        self.stored.llm_profile_id = profile_id
+        self.stored.updated_at = utc_now()
+        await self.save_meta()
+        self._setup_llm_log_streaming(agent)
+        self._setup_stats_streaming(agent)
+        await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""

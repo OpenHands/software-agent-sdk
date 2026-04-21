@@ -115,6 +115,8 @@ When reviewing code, provide constructive feedback:
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 - `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
+- Agent-server conversation LLM profile switching should build on the existing `/api/conversations/{id}/switch_profile` endpoint and keep persistence (`llm_profile_id`, stored agent snapshot, meta save) in `EventService.switch_profile()` rather than adding parallel router/service wrappers for the same operation.
+
 
 
 ## Package-specific guidance
@@ -345,6 +347,7 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
 - Repository guidance lives in the project root AGENTS.md (loaded as a third-party skill file).
+- Agent-server LLM switching should stay profile-first: prefer `/api/llm-profiles` CRUD and conversation profile switching over per-conversation raw LLM payload setters (see PR #2485 design doc).
 </REPO_CONFIG_NOTES>
 
 </REPO>
