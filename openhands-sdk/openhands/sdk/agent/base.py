@@ -288,24 +288,27 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # - expose_secrets=True: keep as-is (explicitly requested)
         # - cipher present: encrypt and store in encrypted_mcp_config, omit original
         # - default: omit (redact sensitive data)
-        if self.mcp_config:  # Only process non-empty configs
-            if info.context and info.context.get("expose_secrets"):
-                # Keep mcp_config as-is (already in result from handler)
-                pass
-            elif info.context and info.context.get("cipher"):
-                # Encrypt and add encrypted_mcp_config
-                cipher: Cipher = info.context["cipher"]
-                json_str = json.dumps(self.mcp_config)
-                encrypted = cipher.encrypt(SecretStr(json_str))
-                if encrypted:
-                    result["encrypted_mcp_config"] = encrypted
-                # Remove plaintext mcp_config
-                result.pop("mcp_config", None)
-            else:
-                # Default: redact by omitting
-                result.pop("mcp_config", None)
+        if not self.mcp_config:  # Only process non-empty configs
+            result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("expose_secrets"):
+            # Keep mcp_config as-is (already in result from handler)
+            return result
+        elif info.context and info.context.get("cipher"):
+            # Encrypt and add encrypted_mcp_config
+            cipher: Cipher = info.context["cipher"]
+            json_str = json.dumps(self.mcp_config)
+            encrypted = cipher.encrypt(SecretStr(json_str))
+            if encrypted:
+                result["encrypted_mcp_config"] = encrypted
+            # Remove plaintext mcp_config
+            result.pop("mcp_config", None)
+            return result
+        else:
+            # Default: redact by omitting
+            result.pop("mcp_config", None)
+            return result
 
-        return result
 
     condenser: CondenserBase | None = Field(
         default=None,
