@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import TracebackType
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.extensions.installation.info import InstallationInfo
 from openhands.sdk.extensions.installation.interface import (
@@ -94,6 +94,18 @@ class InstallationMetadata(BaseModel):
     )
 
     metadata_filename: ClassVar[str] = ".installed.json"
+    _LEGACY_KEYS: ClassVar[tuple[str, ...]] = ("plugins", "skills")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_keys(cls, data: Any) -> Any:
+        """Migrate old ``plugins`` / ``skills`` keys to ``extensions``."""
+        if isinstance(data, dict) and "extensions" not in data:
+            for legacy_key in cls._LEGACY_KEYS:
+                if legacy_key in data:
+                    data["extensions"] = data.pop(legacy_key)
+                    break
+        return data
 
     @classmethod
     def open(

@@ -38,6 +38,67 @@ def _write_mock_extension(
 
 
 # ============================================================================
+# Legacy Key Migration Tests
+# ============================================================================
+
+
+def test_migrate_legacy_plugins_key():
+    """Test that old {"plugins": {...}} format is migrated to extensions."""
+    data = {
+        "plugins": {
+            "my-plugin": {
+                "name": "my-plugin",
+                "source": "github:owner/repo",
+                "install_path": "/tmp/installed/my-plugin",
+            }
+        }
+    }
+    metadata = InstallationMetadata.model_validate(data)
+    assert "my-plugin" in metadata.extensions
+    assert metadata.extensions["my-plugin"].name == "my-plugin"
+
+
+def test_migrate_legacy_skills_key():
+    """Test that old {"skills": {...}} format is migrated to extensions."""
+    data = {
+        "skills": {
+            "my-skill": {
+                "name": "my-skill",
+                "source": "local",
+                "install_path": "/tmp/installed/my-skill",
+                "enabled": False,
+            }
+        }
+    }
+    metadata = InstallationMetadata.model_validate(data)
+    assert "my-skill" in metadata.extensions
+    assert metadata.extensions["my-skill"].enabled is False
+
+
+def test_migrate_does_not_overwrite_extensions_key():
+    """Test that migration is skipped when 'extensions' key already exists."""
+    data = {
+        "extensions": {
+            "new-ext": {
+                "name": "new-ext",
+                "source": "local",
+                "install_path": "/tmp/installed/new-ext",
+            }
+        },
+        "plugins": {
+            "old-plugin": {
+                "name": "old-plugin",
+                "source": "local",
+                "install_path": "/tmp/installed/old-plugin",
+            }
+        },
+    }
+    metadata = InstallationMetadata.model_validate(data)
+    assert "new-ext" in metadata.extensions
+    assert "old-plugin" not in metadata.extensions
+
+
+# ============================================================================
 # Load / Save Tests
 # ============================================================================
 
