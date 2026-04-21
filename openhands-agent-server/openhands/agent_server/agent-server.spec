@@ -7,10 +7,41 @@ from pathlib import Path
 import os
 import site
 from PyInstaller.utils.hooks import (
+    collect_all,
     collect_submodules,
     collect_data_files,
     copy_metadata,
 )
+
+# Collect everything (submodules + datas + binaries + metadata) for the
+# Vertex AI SDK so LiteLLM's vertex_ai_partner_models handler can route to
+# Vertex AI Model Garden MaaS endpoints (MiniMax, Qwen, Kimi). The imports
+# happen inside function bodies AND traverse PEP-420 google.cloud namespace
+# packages, so collect_submodules alone misses everything below the namespace
+# root. collect_all walks the actual installed dirs.
+_vertex_pkgs = (
+    "vertexai",
+    "google.cloud.aiplatform",
+    "google.cloud.aiplatform_v1",
+    "google.cloud.aiplatform_v1beta1",
+    "google.cloud.bigquery",
+    "google.cloud.storage",
+    "google.cloud.resourcemanager",
+    "google.api_core",
+    "google.auth",
+    "google.rpc",
+    "google.genai",
+    "proto",
+    "grpc_status",
+)
+_vertex_datas = []
+_vertex_binaries = []
+_vertex_hiddenimports = []
+for _pkg in _vertex_pkgs:
+    _d, _b, _h = collect_all(_pkg)
+    _vertex_datas += _d
+    _vertex_binaries += _b
+    _vertex_hiddenimports += _h
 
 # Get the project root directory (current working directory when running PyInstaller)
 project_root = Path.cwd()
@@ -59,7 +90,10 @@ def get_fakeredis_data():
 a = Analysis(
     [ENTRY],
     pathex=PATHEX,
-    binaries=[],
+    binaries=[
+        # Vertex AI SDK binaries (collected via collect_all above)
+        *_vertex_binaries,
+    ],
     datas=[
         # Third-party packages that ship data
         *collect_data_files("tiktoken"),
@@ -84,6 +118,9 @@ a = Analysis(
         # Package metadata for importlib.metadata
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),
+
+        # Vertex AI SDK datas (collected via collect_all above)
+        *_vertex_datas,
     ],
     hiddenimports=[
         # Pull all OpenHands modules from the namespace (PEP 420 safe once pathex is correct)
@@ -99,6 +136,13 @@ a = Analysis(
         *collect_submodules("fastmcp"),
         *collect_submodules("fakeredis"),
         *collect_submodules("lupa"),  # Required for fakeredis[lua] Lua scripting support
+
+        # Vertex AI SDK hidden imports (collected via collect_all above)
+        *_vertex_hiddenimports,
+        # google.rpc.status_pb2 is a gRPC proto stub imported dynamically by
+        # the gRPC channel layer; pin it explicitly in case namespace traversal
+        # misses it.
+        "google.rpc.status_pb2",
 
         # mcp subpackages used at runtime (avoid CLI)
         "mcp.types",
