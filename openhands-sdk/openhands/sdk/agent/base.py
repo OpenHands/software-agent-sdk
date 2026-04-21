@@ -291,9 +291,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if not self.mcp_config:  # Only process non-empty configs
             result.pop("mcp_config", None)
             return result
-        elif info.context and info.context.get("expose_secrets"):
-            # Keep mcp_config as-is (already in result from handler)
-            return result
         elif info.context and info.context.get("cipher"):
             # Encrypt and add encrypted_mcp_config
             cipher: Cipher = info.context["cipher"]
@@ -303,6 +300,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 result["encrypted_mcp_config"] = encrypted
             # Remove plaintext mcp_config
             result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("expose_secrets"):
+            # Keep mcp_config as-is (already in result from handler)
             return result
         else:
             # Default: redact by omitting
