@@ -71,10 +71,15 @@ def request_json(
         raise RuntimeError(
             f"{method} {path} failed with HTTP {exc.code}: {error_body}"
         ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{method} {path} failed: {exc}") from exc
 
     if not payload:
         return None
-    return json.loads(payload)
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse JSON from {path}: {exc}") from exc
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -291,8 +296,12 @@ def main() -> int:
 
     summary: list[dict[str, Any]] = []
     for issue in list_open_issues(args.repository):
-        issue_number = int(issue["number"])
-        issue_created_at = parse_timestamp(issue["created_at"])
+        issue_number = issue.get("number")
+        issue_created_at_str = issue.get("created_at")
+        if issue_number is None or not issue_created_at_str:
+            continue
+        issue_number = int(issue_number)
+        issue_created_at = parse_timestamp(issue_created_at_str)
         if issue_created_at > cutoff:
             continue
 
@@ -303,12 +312,16 @@ def main() -> int:
         if latest_comment is None or canonical_issue_number is None:
             continue
 
-        comment_created_at = parse_timestamp(latest_comment["created_at"])
+        comment_created_at_str = latest_comment.get("created_at")
+        comment_id = latest_comment.get("id")
+        if not comment_created_at_str or comment_id is None:
+            continue
+        comment_created_at = parse_timestamp(comment_created_at_str)
         if comment_created_at > cutoff:
             continue
 
         author_id = user_id_from_item(issue)
-        reactions = list_comment_reactions(args.repository, int(latest_comment["id"]))
+        reactions = list_comment_reactions(args.repository, int(comment_id))
         author_thumbs_down = has_reaction_from_user(reactions, author_id, "-1")
         author_thumbs_up = has_reaction_from_user(reactions, author_id, "+1")
         if author_thumbs_down:
@@ -341,7 +354,8 @@ def main() -> int:
         newer_comments = [
             comment
             for comment in comments
-            if parse_timestamp(comment["created_at"]) > comment_created_at
+            if comment.get("created_at")
+            and parse_timestamp(comment["created_at"]) > comment_created_at
         ]
         if newer_comments:
             summary.append(

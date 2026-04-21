@@ -106,15 +106,17 @@ def request_json(
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.load(response)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Failed to parse JSON from {method} {base_url}{path}: {exc}"
-        ) from exc
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
             f"{method} {base_url}{path} failed with HTTP {exc.code}: {error_body}"
         ) from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Failed to parse JSON from {method} {base_url}{path}: {exc}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{method} {base_url}{path} failed: {exc}") from exc
 
 
 def fetch_issue(repository: str, issue_number: int) -> dict[str, Any]:

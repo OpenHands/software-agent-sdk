@@ -124,6 +124,44 @@ def test_parse_timestamp_reports_invalid_values():
         module.parse_timestamp("invalid")
 
 
+def test_auto_close_request_json_reports_urlerror(monkeypatch):
+    module = load_module("auto_close_duplicate_issues.py")
+
+    monkeypatch.setattr(module, "github_headers", lambda: {})
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            module.urllib.error.URLError("boom")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="GET /test failed"):
+        module.request_json("/test")
+
+
+def test_auto_close_request_json_reports_invalid_json(monkeypatch):
+    module = load_module("auto_close_duplicate_issues.py")
+    monkeypatch.setattr(module, "github_headers", lambda: {})
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"not-json"
+
+    monkeypatch.setattr(
+        module.urllib.request, "urlopen", lambda *args, **kwargs: DummyResponse()
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to parse JSON from /test"):
+        module.request_json("/test")
+
+
 def test_has_reaction_from_user_ignores_missing_user_ids():
     module = load_module("auto_close_duplicate_issues.py")
     reactions = [
@@ -382,6 +420,66 @@ def test_auto_close_main_closes_old_duplicate(monkeypatch, capsys):
     assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
 
 
+def test_auto_close_main_skips_malformed_issue_data(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(
+        module, "list_open_issues", lambda repository: [{"number": 123}]
+    )
+
+    assert module.main() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {"repository": "OpenHands/agent-sdk", "results": []}
+
+
+def test_auto_close_main_skips_malformed_duplicate_comment(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
+    old_timestamp = iso_timestamp(now - timedelta(days=5))
+    issue = {
+        "number": 123,
+        "created_at": old_timestamp,
+        "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+        "user": {"id": 7},
+    }
+    comments = [
+        {
+            "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
+            "created_at": old_timestamp,
+        }
+    ]
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(module, "list_open_issues", lambda repository: [issue])
+    monkeypatch.setattr(
+        module, "list_issue_comments", lambda repository, number: comments
+    )
+    monkeypatch.setattr(
+        module,
+        "close_issue_as_duplicate",
+        lambda *args, **kwargs: pytest.fail("close_issue_as_duplicate should not run"),
+    )
+
+    assert module.main() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {"repository": "OpenHands/agent-sdk", "results": []}
+
+
 def test_auto_close_main_removes_label_when_newer_comment_exists(monkeypatch, capsys):
     module = load_module("auto_close_duplicate_issues.py")
     now = datetime.now(UTC)
@@ -498,6 +596,21 @@ def test_normalize_result_promotes_actionable_duplicates():
     assert normalized["canonical_issue_number"] == 21
     assert len(normalized["candidate_issues"]) == 3
     assert normalized["summary"] == "duplicate summary"
+
+
+def test_issue_duplicate_request_json_reports_urlerror(monkeypatch):
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            module.urllib.error.URLError("boom")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="GET https://example.test/path failed"):
+        module.request_json("https://example.test", "/path")
 
 
 def test_normalize_result_lowercases_classification():

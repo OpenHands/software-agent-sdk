@@ -291,14 +291,27 @@ jobs:
                       );
                       const body = sections.join('\n').trim();
 
-                      const { data: comments } = await github.rest.issues.listComments({
-                        owner: context.repo.owner,
-                        repo: context.repo.repo,
-                        issue_number: issueNumber,
-                        per_page: 100,
-                      });
+                      let allComments = [];
+                      let page = 1;
+                      while (true) {
+                        const { data: comments } = await github.rest.issues.listComments({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: issueNumber,
+                          per_page: 100,
+                          page,
+                        });
+                        if (!comments || comments.length === 0) {
+                          break;
+                        }
+                        allComments = allComments.concat(comments);
+                        if (comments.length < 100) {
+                          break;
+                        }
+                        page += 1;
+                      }
 
-                      const existing = comments.find((comment) => comment.body && comment.body.includes('<!-- openhands-duplicate-check '));
+                      const existing = allComments.find((comment) => comment.body && comment.body.includes('<!-- openhands-duplicate-check '));
                       if (existing) {
                         if (autoClose) {
                           await ensureCandidateLabelOnIssue();
