@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
 
@@ -14,10 +15,14 @@ from pydantic import Field, PrivateAttr
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 
+from .repo import CloneResult, RepoMapping, RepoSource, clone_repos, get_repos_context
+
 
 if TYPE_CHECKING:
+    from openhands.sdk.context import AgentContext
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.secret import LookupSecret
+    from openhands.sdk.skills import Skill
 
 
 logger = get_logger(__name__)
@@ -831,3 +836,358 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 logger.info(f"Completion callback sent ({status}): {resp.status_code}")
         except Exception as e:
             logger.warning(f"Completion callback failed: {e}")
+
+    # --- Repository Cloning Methods ---
+
+    def _get_secret_value(self, name: str) -> str | None:
+        """Fetch a secret value directly from the sandbox settings API.
+
+        Unlike get_secrets() which returns LookupSecret references, this method
+        fetches the actual secret value for use in operations like git cloning.
+
+        Args:
+            name: Name of the secret to fetch (e.g., "github_token", "gitlab_token")
+
+        Returns:
+            The secret value as a string, or None if not found or an error occurred.
+        """
+        if not self._sandbox_id or not self._session_api_key:
+            return None
+
+        try:
+            resp = self._send_settings_request(
+                "GET", f"{self._settings_base_url}/secrets/{name}"
+            )
+            return resp.text
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.debug(f"Secret '{name}' not found")
+            else:
+                logger.warning(f"Failed to fetch secret '{name}': {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching secret '{name}': {e}")
+            return None
+
+    def clone_repos(
+        self,
+        repos: list[RepoSource] | list[dict[str, Any]] | list[str],
+        target_dir: str | Path | None = None,
+        write_mapping_file: bool = True,
+    ) -> CloneResult:
+        """Clone repositories to the workspace directory.
+
+        Clones specified repositories to meaningful directory names (e.g.,
+        'openhands-cli' instead of 'repo_0'). Automatically fetches GitHub
+        and GitLab tokens from the user's secrets for authentication.
+
+        Args:
+            repos: List of repositories to clone. Can be:
+                - List of RepoSource objects
+                - List of dicts with 'url' and optional 'ref' keys
+                - List of URL strings (e.g., "owner/repo")
+            target_dir: Directory to clone into. Defaults to self.working_dir.
+            write_mapping_file: If True, writes repos_mapping.json to target_dir.
+
+        Returns:
+            CloneResult containing:
+                - success_count: Number of successfully cloned repos
+                - failed_repos: List of repo URLs that failed to clone
+                - repo_mappings: Dict mapping URLs to RepoMapping objects
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     # Clone a single repo
+            ...     result = workspace.clone_repos(["owner/repo"])
+            ...
+            ...     # Clone multiple repos with refs
+            ...     result = workspace.clone_repos([
+            ...         {"url": "owner/repo1", "ref": "main"},
+            ...         {"url": "owner/repo2", "ref": "v1.0.0"},
+            ...     ])
+            ...
+            ...     # Access cloned repo paths
+            ...     for url, mapping in result.repo_mappings.items():
+            ...         print(f"{url} -> {mapping.local_path}")
+        """
+        # Normalize repos to RepoSource objects
+        normalized_repos: list[RepoSource] = []
+        for repo in repos:
+            if isinstance(repo, RepoSource):
+                normalized_repos.append(repo)
+            elif isinstance(repo, dict):
+                normalized_repos.append(RepoSource.model_validate(repo))
+            elif isinstance(repo, str):
+                normalized_repos.append(RepoSource(url=repo))
+            else:
+                raise ValueError(f"Invalid repo specification: {repo}")
+
+        # Determine target directory
+        if target_dir is None:
+            target_path = Path(self.working_dir)
+        elif isinstance(target_dir, str):
+            target_path = Path(target_dir)
+        else:
+            target_path = target_dir
+
+        # Fetch tokens from secrets
+        github_token = self._get_secret_value("github_token")
+        gitlab_token = self._get_secret_value("gitlab_token")
+
+        # Determine mapping file path
+        mapping_file = (
+            target_path / "repos_mapping.json" if write_mapping_file else None
+        )
+
+        # Clone repositories
+        return clone_repos(
+            repos=normalized_repos,
+            target_dir=target_path,
+            github_token=github_token,
+            gitlab_token=gitlab_token,
+            mapping_file=mapping_file,
+        )
+
+    def get_repos_context(
+        self, repo_mappings: dict[str, RepoMapping] | None = None
+    ) -> str:
+        """Generate context string describing cloned repositories for the agent.
+
+        This method produces a markdown-formatted string that can be prepended
+        to agent prompts to inform the agent about available repositories.
+
+        Args:
+            repo_mappings: Dict mapping URLs to RepoMapping objects. If None,
+                attempts to read from repos_mapping.json in working_dir.
+
+        Returns:
+            Markdown-formatted context string, or empty string if no repos.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     result = workspace.clone_repos(["owner/repo"])
+            ...     context = workspace.get_repos_context(result.repo_mappings)
+            ...     prompt = f"{context}\\n\\n{user_prompt}"
+        """
+        if repo_mappings is not None:
+            return get_repos_context(repo_mappings)
+
+        # Try to load from mapping file in working_dir
+        mapping_file = Path(self.working_dir) / "repos_mapping.json"
+        if not mapping_file.exists():
+            return ""
+
+        try:
+            with open(mapping_file) as f:
+                data = json.load(f)
+            # Convert to RepoMapping objects
+            mappings = {
+                url: RepoMapping(
+                    url=url,
+                    dir_name=info["dir_name"],
+                    local_path=info["local_path"],
+                    ref=info.get("ref"),
+                )
+                for url, info in data.items()
+            }
+            return get_repos_context(mappings)
+        except (json.JSONDecodeError, OSError, KeyError) as e:
+            logger.warning(f"Failed to read repos_mapping.json: {e}")
+            return ""
+
+    # --- Skill Loading Methods ---
+
+    def load_skills_from_agent_server(
+        self,
+        project_dirs: list[str | Path] | None = None,
+        load_public: bool = True,
+        load_user: bool = True,
+        load_project: bool = True,
+        load_org: bool = True,
+        timeout: float = 60.0,
+    ) -> tuple[list[Skill], AgentContext | None]:
+        """Load skills via the local agent-server's /api/skills endpoint.
+
+        This method calls the agent-server running inside the sandbox to load
+        skills from all configured sources, mirroring how V1 conversations
+        load skills in OpenHands.
+
+        When project_dirs is provided (e.g., directories of cloned repos),
+        project skills are loaded from EACH directory separately and merged.
+        Skills are deduplicated by name, with later directories taking
+        precedence over earlier ones.
+
+        Args:
+            project_dirs: List of directories to load project skills from.
+                If None, uses self.working_dir only.
+            load_public: Load public skills from OpenHands/extensions repo.
+            load_user: Load user skills from ~/.openhands/skills/.
+            load_project: Load project skills from workspace directories.
+            load_org: Load organization-level skills.
+            timeout: Request timeout in seconds.
+
+        Returns:
+            Tuple of (list of Skill objects, AgentContext or None).
+            The AgentContext is pre-configured with loaded skills and
+            load_public_skills=False to avoid duplicates.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     # Load all skills using working_dir
+            ...     skills, context = workspace.load_skills_from_agent_server()
+            ...
+            ...     # Load skills from cloned repos
+            ...     result = workspace.clone_repos(["owner/repo1", "owner/repo2"])
+            ...     repo_dirs = [m.local_path for m in result.repo_mappings.values()]
+            ...     skills, context = workspace.load_skills_from_agent_server(
+            ...         project_dirs=repo_dirs
+            ...     )
+            ...
+            ...     # Use with agent
+            ...     agent = agent.model_copy(update={"agent_context": context})
+        """
+        from openhands.sdk.context import AgentContext
+
+        logger.info("Loading skills via agent-server...")
+        logger.debug(f"Agent-server URL: {self.host}")
+
+        # Use dict to deduplicate skills by name (later skills override earlier)
+        skills_by_name: dict[str, dict[str, Any]] = {}
+
+        def call_skills_api(project_dir: str | None, **kwargs: Any) -> list[dict]:
+            """Call the agent-server /api/skills endpoint."""
+            payload = {
+                "load_public": kwargs.get("load_public", False),
+                "load_user": kwargs.get("load_user", False),
+                "load_project": kwargs.get("load_project", False),
+                "load_org": kwargs.get("load_org", False),
+                "project_dir": project_dir,
+                "org_config": None,
+                "sandbox_config": None,
+            }
+
+            headers = {"Content-Type": "application/json"}
+            if self._session_api_key:
+                headers["X-Session-API-Key"] = self._session_api_key
+
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.post(
+                        f"{self.host}/api/skills",
+                        json=payload,
+                        headers=headers,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    skills = data.get("skills", [])
+                    sources = data.get("sources", {})
+                    logger.debug(f"Agent-server sources: {sources}")
+                    return skills
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Agent-server HTTP error {e.response.status_code}")
+                return []
+            except Exception as e:
+                logger.error(f"Failed to connect to agent-server: {e}")
+                return []
+
+        # Determine project directories
+        if project_dirs:
+            # Multiple directories provided - load project skills from each
+            dirs = [str(d) if isinstance(d, Path) else d for d in project_dirs]
+
+            # First: load public/user/org skills (not project-specific)
+            logger.debug("Loading public/user/org skills...")
+            global_skills = call_skills_api(
+                project_dir=self.working_dir,
+                load_public=load_public,
+                load_user=load_user,
+                load_project=False,
+                load_org=load_org,
+            )
+            for skill_data in global_skills:
+                name = skill_data.get("name", "unknown")
+                skills_by_name[name] = skill_data
+
+            # Then: load project skills from each directory
+            if load_project:
+                for dir_path in dirs:
+                    logger.debug(f"Loading project skills from {dir_path}...")
+                    proj_skills = call_skills_api(
+                        project_dir=dir_path,
+                        load_public=False,
+                        load_user=False,
+                        load_project=True,
+                        load_org=False,
+                    )
+                    for skill_data in proj_skills:
+                        name = skill_data.get("name", "unknown")
+                        # Later directories override earlier ones
+                        skills_by_name[name] = skill_data
+        else:
+            # Single working_dir - load all skills from it
+            logger.debug("Loading all skills from working_dir...")
+            all_skills = call_skills_api(
+                project_dir=self.working_dir,
+                load_public=load_public,
+                load_user=load_user,
+                load_project=load_project,
+                load_org=load_org,
+            )
+            for skill_data in all_skills:
+                name = skill_data.get("name", "unknown")
+                skills_by_name[name] = skill_data
+
+        # Convert to SDK Skill objects
+        loaded_skills: list[Skill] = []
+        for skill_data in skills_by_name.values():
+            try:
+                skill = self._convert_skill_data_to_skill(skill_data)
+                loaded_skills.append(skill)
+            except Exception as e:
+                skill_name = skill_data.get("name", "unknown")
+                logger.warning(f"Failed to convert skill {skill_name}: {e}")
+
+        logger.info(f"Loaded {len(loaded_skills)} skills")
+        if loaded_skills:
+            logger.debug(f"Skills: {[s.name for s in loaded_skills]}")
+
+        # Create AgentContext with loaded skills
+        # Set load_public_skills=False to avoid duplicates since we already loaded them
+        if loaded_skills:
+            agent_context = AgentContext(skills=loaded_skills, load_public_skills=False)
+        else:
+            # Fall back to public skills if agent-server was unavailable
+            logger.warning("No skills loaded, falling back to public skills")
+            agent_context = AgentContext(skills=[], load_public_skills=True)
+
+        return loaded_skills, agent_context
+
+    def _convert_skill_data_to_skill(self, skill_data: dict[str, Any]) -> Skill:
+        """Convert skill dict from API response to SDK Skill object.
+
+        Args:
+            skill_data: Dict with name, content, triggers, source, description, etc.
+
+        Returns:
+            Skill object
+        """
+        from openhands.sdk.skills import KeywordTrigger, Skill, TaskTrigger
+
+        trigger = None
+        triggers = skill_data.get("triggers", [])
+
+        if triggers:
+            # Determine trigger type based on content (same logic as OpenHands)
+            if any(t.startswith("/") for t in triggers):
+                trigger = TaskTrigger(triggers=triggers)
+            else:
+                trigger = KeywordTrigger(keywords=triggers)
+
+        return Skill(
+            name=skill_data.get("name", "unknown"),
+            content=skill_data.get("content", ""),
+            trigger=trigger,
+            source=skill_data.get("source"),
+            description=skill_data.get("description"),
+            is_agentskills_format=skill_data.get("is_agentskills_format", False),
+        )
