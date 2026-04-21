@@ -1155,6 +1155,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 api_key_value = self._get_litellm_api_key_value()
 
+                # When streaming, request usage in the final chunk so that
+                # detailed token breakdowns (prompt_tokens_details with
+                # cached_tokens, etc.) are not silently discarded by
+                # litellm's streaming handler.
+                if enable_streaming:
+                    kwargs.setdefault("stream_options", {"include_usage": True})
+
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
                     model=self.model,
