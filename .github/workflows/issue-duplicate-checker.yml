@@ -29,8 +29,8 @@ on:
             close_after_days:
                 description: Days to wait before auto-closing duplicate candidates in auto-close mode
                 required: false
-                type: string
-                default: '3'
+                type: number
+                default: 3
 
 
 permissions:
@@ -111,6 +111,10 @@ jobs:
                     --repository "$TARGET_REPOSITORY" \
                     --issue-number "$ISSUE_NUMBER" \
                     --output "$OUTPUT_PATH"
+                  test -f "$OUTPUT_PATH" || {
+                    echo "Error: Output file not created"
+                    exit 1
+                  }
                   echo "result_path=$OUTPUT_PATH" >> "$GITHUB_OUTPUT"
 
             - name: Parse duplicate check result
@@ -136,8 +140,9 @@ jobs:
                   summary_path = Path(os.environ['GITHUB_STEP_SUMMARY'])
 
                   def write_multiline(name: str, value: str) -> None:
+                      delimiter = f"EOF_{os.urandom(8).hex()}"
                       with output_path.open('a', encoding='utf-8') as fh:
-                          fh.write(f"{name}<<EOF\n{value}\nEOF\n")
+                          fh.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
 
                   canonical_issue_number = result.get('canonical_issue_number')
                   with output_path.open('a', encoding='utf-8') as fh:
@@ -212,7 +217,17 @@ jobs:
                       const classification = process.env.CLASSIFICATION || 'no-match';
                       const autoClose = process.env.AUTO_CLOSE_CANDIDATE === 'true';
                       const closeAfterDays = process.env.CLOSE_AFTER_DAYS || '3';
-                      const candidates = JSON.parse(process.env.CANDIDATE_ISSUES_JSON || '[]');
+                      let candidates = [];
+                      try {
+                        candidates = JSON.parse(process.env.CANDIDATE_ISSUES_JSON || '[]');
+                      } catch (error) {
+                        core.setFailed(`Invalid candidate JSON: ${error.message}`);
+                        return;
+                      }
+                      if (!Array.isArray(candidates)) {
+                        core.setFailed('CANDIDATE_ISSUES_JSON is not an array');
+                        return;
+                      }
                       const canonicalIssueRaw = process.env.CANONICAL_ISSUE_NUMBER || candidates?.[0]?.number;
                       const canonicalIssueNumber = canonicalIssueRaw ? Number(canonicalIssueRaw) : Number.NaN;
                       const candidateLabel = 'duplicate-candidate';
@@ -361,9 +376,10 @@ jobs:
                       );
                       const body = sections.join('\n').trim();
 
+                      const MAX_COMMENT_PAGES = 10;
                       let allComments = [];
                       let page = 1;
-                      while (true) {
+                      while (page <= MAX_COMMENT_PAGES) {
                         const { data: comments } = await github.rest.issues.listComments({
                           owner: context.repo.owner,
                           repo: context.repo.repo,
@@ -379,6 +395,11 @@ jobs:
                           break;
                         }
                         page += 1;
+                      }
+                      if (page > MAX_COMMENT_PAGES) {
+                        core.warning(
+                          `Stopped loading comments for issue #${issueNumber} after ${MAX_COMMENT_PAGES} pages.`
+                        );
                       }
 
                       const existing = allComments.find((comment) => comment.body && comment.body.includes('<!-- openhands-duplicate-check '));

@@ -110,6 +110,25 @@ def test_list_comment_reactions_paginates(monkeypatch):
     ]
 
 
+def test_list_helpers_raise_on_non_list_payloads(monkeypatch):
+    module = load_module("auto_close_duplicate_issues.py")
+
+    monkeypatch.setattr(module, "request_json", lambda *args, **kwargs: {"bad": True})
+
+    with pytest.raises(
+        RuntimeError, match="Expected list response while listing open issues"
+    ):
+        module.list_open_issues("OpenHands/agent-sdk")
+    with pytest.raises(
+        RuntimeError, match="Expected list response while listing comments"
+    ):
+        module.list_issue_comments("OpenHands/agent-sdk", 7)
+    with pytest.raises(
+        RuntimeError, match="Expected list response while listing reactions"
+    ):
+        module.list_comment_reactions("OpenHands/agent-sdk", 9)
+
+
 def test_ensure_page_limit_raises():
     module = load_module("auto_close_duplicate_issues.py")
 
@@ -122,6 +141,14 @@ def test_parse_timestamp_reports_invalid_values():
 
     with pytest.raises(ValueError, match="Failed to parse timestamp"):
         module.parse_timestamp("invalid")
+
+
+def test_parse_timestamp_accepts_microseconds():
+    module = load_module("auto_close_duplicate_issues.py")
+
+    parsed = module.parse_timestamp("2026-04-21T21:10:11.123456Z")
+
+    assert parsed == datetime(2026, 4, 21, 21, 10, 11, 123456, tzinfo=UTC)
 
 
 def test_auto_close_request_json_reports_urlerror(monkeypatch):
@@ -201,6 +228,12 @@ def test_has_reaction_from_user_ignores_missing_user_ids():
     assert module.has_reaction_from_user(reactions, None, "-1") is False
     assert module.has_reaction_from_user(reactions, 42, "-1") is True
     assert module.has_reaction_from_user(reactions, 42, "+1") is False
+
+
+def test_is_non_bot_comment_requires_string_login():
+    module = load_module("auto_close_duplicate_issues.py")
+
+    assert module.is_non_bot_comment({"user": {"id": 7, "login": None}}) is False
 
 
 def test_extract_duplicate_metadata_and_veto_helpers():
@@ -1041,7 +1074,7 @@ def test_extract_first_item_handles_invalid_types():
     assert module.extract_first_item({"items": ["bad", {"status": "READY"}]}) is None
 
 
-def test_extract_last_agent_text_returns_last_agent_message():
+def test_extract_last_agent_text_returns_full_final_agent_message():
     module = load_module("issue_duplicate_check_openhands.py")
 
     assert (
@@ -1050,13 +1083,17 @@ def test_extract_last_agent_text_returns_last_agent_message():
                 make_agent_message("first"),
                 {
                     "kind": "MessageEvent",
-                    "source": "user",
-                    "llm_message": {"content": []},
+                    "source": "agent",
+                    "llm_message": {
+                        "content": [
+                            {"type": "text", "text": "second"},
+                            {"type": "text", "text": " message"},
+                        ]
+                    },
                 },
-                make_agent_message("second"),
             ]
         )
-        == "second"
+        == "second message"
     )
 
 
@@ -1067,27 +1104,38 @@ def test_extract_last_agent_text_raises_on_empty_events():
         module.extract_last_agent_text([])
 
 
-def test_extract_last_agent_text_ignores_malformed_content():
+def test_extract_last_agent_text_raises_on_malformed_last_agent_message():
     module = load_module("issue_duplicate_check_openhands.py")
 
-    assert (
+    with pytest.raises(RuntimeError, match="Last agent message content is not a list"):
         module.extract_last_agent_text(
             [
+                make_agent_message("first"),
                 {
                     "kind": "MessageEvent",
                     "source": "agent",
                     "llm_message": {"content": "bad"},
                 },
+            ]
+        )
+
+
+def test_extract_last_agent_text_raises_on_last_agent_message_without_text():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    with pytest.raises(
+        RuntimeError, match="Last agent message contains no text content"
+    ):
+        module.extract_last_agent_text(
+            [
+                make_agent_message("first"),
                 {
                     "kind": "MessageEvent",
                     "source": "agent",
-                    "llm_message": {"content": ["bad-part"]},
+                    "llm_message": {"content": [{"type": "image", "text": "ignored"}]},
                 },
-                make_agent_message("usable"),
             ]
         )
-        == "usable"
-    )
 
 
 def test_build_prompt_includes_all_sections():

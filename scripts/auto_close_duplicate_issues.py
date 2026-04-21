@@ -85,7 +85,7 @@ def request_json(
 
 def parse_timestamp(value: str) -> datetime:
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError(f"Failed to parse timestamp {value!r}: {exc}") from exc
 
@@ -104,7 +104,12 @@ def list_open_issues(repository: str) -> list[dict[str, Any]]:
         payload = request_json(
             f"/repos/{repository}/issues?state=open&labels={label_query}&per_page=100&page={page}"
         )
-        if not isinstance(payload, list) or not payload:
+        if not isinstance(payload, list):
+            raise RuntimeError(
+                f"Expected list response while listing open issues for {repository}, "
+                f"got {type(payload).__name__}"
+            )
+        if not payload:
             return issues
         for issue in payload:
             if issue.get("pull_request"):
@@ -121,7 +126,12 @@ def list_issue_comments(repository: str, issue_number: int) -> list[dict[str, An
         payload = request_json(
             f"/repos/{repository}/issues/{issue_number}/comments?per_page=100&page={page}"
         )
-        if not isinstance(payload, list) or not payload:
+        if not isinstance(payload, list):
+            raise RuntimeError(
+                "Expected list response while listing comments for issue "
+                f"#{issue_number}, got {type(payload).__name__}"
+            )
+        if not payload:
             return comments
         comments.extend(payload)
         page += 1
@@ -135,7 +145,12 @@ def list_comment_reactions(repository: str, comment_id: int) -> list[dict[str, A
         payload = request_json(
             f"/repos/{repository}/issues/comments/{comment_id}/reactions?per_page=100&page={page}"
         )
-        if not isinstance(payload, list) or not payload:
+        if not isinstance(payload, list):
+            raise RuntimeError(
+                "Expected list response while listing reactions for comment "
+                f"{comment_id}, got {type(payload).__name__}"
+            )
+        if not payload:
             return reactions
         reactions.extend(payload)
         page += 1
@@ -166,8 +181,14 @@ def find_latest_auto_close_comment(
         if latest_comment is not None:
             if comment_created_at is None:
                 continue
-            if latest_created_at is not None and comment_created_at < latest_created_at:
-                continue
+            if latest_created_at is not None:
+                try:
+                    if parse_timestamp(comment_created_at) < parse_timestamp(
+                        latest_created_at
+                    ):
+                        continue
+                except ValueError:
+                    continue
         latest_comment = comment
         latest_canonical_issue = canonical_issue
         latest_created_at = comment_created_at
@@ -215,7 +236,10 @@ def is_non_bot_comment(comment: dict[str, Any]) -> bool:
     user = comment.get("user")
     if not isinstance(user, dict):
         return False
-    login = str(user.get("login") or "").lower()
+    login = user.get("login")
+    if not isinstance(login, str):
+        return False
+    login = login.lower()
     return (
         user.get("type") != "Bot"
         and not login.endswith("[bot]")

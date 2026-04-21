@@ -370,26 +370,32 @@ def extract_agent_server_url(conversation_url: str) -> str | None:
 
 
 def extract_last_agent_text(events: list[dict[str, Any]]) -> str:
-    messages: list[str] = []
-    for event in events:
-        if event.get("kind") != "MessageEvent" or event.get("source") != "agent":
-            continue
-        llm_message = event.get("llm_message")
-        if not isinstance(llm_message, dict):
-            continue
-        content = llm_message.get("content")
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            if part.get("type") == "text" and part.get("text"):
-                messages.append(str(part["text"]))
-    if not messages:
+    agent_events = [
+        event
+        for event in events
+        if event.get("kind") == "MessageEvent" and event.get("source") == "agent"
+    ]
+    if not agent_events:
         raise RuntimeError(
             "No assistant text message was found in the conversation events"
         )
-    return messages[-1].strip()
+
+    llm_message = agent_events[-1].get("llm_message")
+    if not isinstance(llm_message, dict):
+        raise RuntimeError("Last agent message has no llm_message field")
+    content = llm_message.get("content")
+    if not isinstance(content, list):
+        raise RuntimeError("Last agent message content is not a list")
+
+    text_parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text" and part.get("text"):
+            text_parts.append(str(part["text"]))
+    if not text_parts:
+        raise RuntimeError("Last agent message contains no text content")
+    return "".join(text_parts).strip()
 
 
 def parse_agent_json(text: str) -> dict[str, Any]:
