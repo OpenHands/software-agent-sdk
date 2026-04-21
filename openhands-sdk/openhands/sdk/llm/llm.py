@@ -14,8 +14,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ModelWrapValidatorHandler,
     PrivateAttr,
     SecretStr,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -468,6 +470,52 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
+    @model_validator(mode="wrap")
+    @classmethod
+    def _dispatch_to_provider_subclass(
+        cls,
+        data: Any,
+        handler: ModelWrapValidatorHandler["LLM"],
+        info: ValidationInfo,
+    ) -> "LLM":
+        """Route persisted agent JSON to the matching LLM subclass.
+
+        When a saved agent is rehydrated the ``llm`` dict may carry a
+        ``provider`` key written by a subclass (e.g. ``"provider":
+        "databricks"``). Without this, ``LLM.model_validate(data)`` would
+        build a base ``LLM`` and silently drop the subclass-only fields.
+
+        Only fires when called directly on the base ``LLM`` class with a
+        plain dict — subclass validators and non-dict inputs pass through
+        unchanged.  Subclasses are discovered generically via
+        ``__subclasses__()`` keyed off their ``provider`` Literal annotation,
+        so no provider names are hardcoded here.
+        """
+        if cls is not LLM or not isinstance(data, dict):
+            return handler(data)
+        provider = data.get("provider")
+        if not provider:
+            return handler(data)
+        for sub in LLM.__subclasses__():
+            f = sub.model_fields.get("provider")
+            if f and provider in getattr(f.annotation, "__args__", ()):
+                return sub.model_validate(data, context=info.context)
+        return handler(data)
+
+    @field_validator("safety_settings", mode="before")
+    @classmethod
+    def _warn_safety_settings_deprecated(
+        cls, v: list[dict[str, str]] | None
+    ) -> list[dict[str, str]] | None:
+        if v is not None:
+            warn_deprecated(
+                "LLM.safety_settings",
+                deprecated_in="1.15.0",
+                removed_in="1.20.0",
+                details="Safety settings are no longer applied.",
+            )
+        return v
+
     @field_validator(
         "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
     )
