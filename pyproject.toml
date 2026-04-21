@@ -96,6 +96,9 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
+markers = [
+    "integration: requires a live PostgreSQL instance (set POSTGRES_DSN)",
+]
 
 # Pyright configuration for PEP 420 namespace packages
 # This is needed for VSCode to properly resolve imports across multiple packages in the monorepo

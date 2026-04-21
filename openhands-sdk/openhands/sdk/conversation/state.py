@@ -297,6 +297,12 @@ class ConversationState(OpenHandsModel):
                     are redacted (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            file_store: Optional pre-configured FileStore for event
+                    persistence. When provided, ``persistence_dir`` is **not**
+                    used for EventLog storage (the supplied store takes
+                    precedence). Note that ``persistence_dir`` is still read
+                    for ``env_observation_persistence_dir`` — pass both if you
+                    need observation persistence alongside a custom store.
 
         Returns:
             ConversationState ready for use

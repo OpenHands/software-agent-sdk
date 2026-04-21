@@ -21,6 +21,7 @@ Example::
 import asyncio
 import concurrent.futures
 import hashlib
+import re
 import threading
 from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
@@ -37,6 +38,8 @@ _T = TypeVar("_T")
 __all__ = ["PostgreSQLFileStore"]
 
 DEFAULT_TABLE = "sdk_filestore"
+
+_VALID_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class PostgreSQLFileStore(FileStore):
@@ -55,7 +58,12 @@ class PostgreSQLFileStore(FileStore):
         namespace: Logical scope for all path operations.
                    Use a unique conversation ID to isolate event logs.
         table: Table name (default: ``sdk_filestore``).
-               The table and index are created on first instantiation.
+               Must be a valid SQL identifier (letters, digits, underscores).
+        auto_create_schema: If ``True`` (default), ``CREATE TABLE IF NOT EXISTS``
+               and ``CREATE INDEX IF NOT EXISTS`` run on instantiation. Set to
+               ``False`` in production and run :meth:`ensure_schema` once during
+               deployment or migration instead — DDL acquires heavy locks that
+               can cause contention under concurrent instantiation.
 
     Note:
         ``lock()`` uses PostgreSQL session-level advisory locks
@@ -63,7 +71,19 @@ class PostgreSQLFileStore(FileStore):
         across multiple processes and instances.
     """
 
-    def __init__(self, dsn: str, namespace: str, table: str = DEFAULT_TABLE) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        namespace: str,
+        table: str = DEFAULT_TABLE,
+        auto_create_schema: bool = True,
+    ) -> None:
+        if not _VALID_IDENT_RE.match(table):
+            raise ValueError(
+                f"Invalid table name {table!r}: must be a valid SQL identifier "
+                "(letters, digits, underscores; must not start with a digit)"
+            )
+
         self._dsn = dsn
         self._namespace = namespace
         self._table = table
@@ -79,37 +99,87 @@ class PostgreSQLFileStore(FileStore):
         )
         self._bg_thread.start()
 
-        # Initialize pool and schema in one async call to avoid create_pool
-        # type-stub limitations (asyncpg.create_pool is not typed as a coroutine).
-        future: concurrent.futures.Future[asyncpg.Pool] = (
-            asyncio.run_coroutine_threadsafe(self._setup(dsn), self._loop)
+        # Initialize pool (and optionally schema) in one async call.
+        try:
+            future: concurrent.futures.Future[asyncpg.Pool] = (
+                asyncio.run_coroutine_threadsafe(
+                    self._setup(dsn, auto_create_schema), self._loop
+                )
+            )
+            self._pool: asyncpg.Pool = future.result()
+        except Exception:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._bg_thread.join(timeout=5)
+            raise
+
+    def __enter__(self) -> "PostgreSQLFileStore":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    # ------------------------------------------------------------------ #
+    # Schema management
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    async def _create_schema(cls, conn: asyncpg.Connection, table: str) -> None:
+        """Execute DDL to create the table and index."""
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                namespace  TEXT        NOT NULL,
+                path       TEXT        NOT NULL,
+                content    TEXT        NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (namespace, path)
+            )
+            """
         )
-        self._pool: asyncpg.Pool = future.result()
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS {table}_ns_idx
+            ON {table} (namespace)
+            """
+        )
+
+    @classmethod
+    async def ensure_schema(
+        cls, dsn: str, table: str = DEFAULT_TABLE
+    ) -> None:
+        """Create the table and index if they don't exist.
+
+        Intended to be called once during deployment or migration rather than
+        on every instantiation. Safe to call multiple times (idempotent).
+
+        Example::
+
+            import asyncio
+            from openhands.sdk.io.postgresql import PostgreSQLFileStore
+
+            asyncio.run(PostgreSQLFileStore.ensure_schema(
+                "postgresql://user:pass@host:5432/db"
+            ))
+        """
+        if not _VALID_IDENT_RE.match(table):
+            raise ValueError(
+                f"Invalid table name {table!r}: must be a valid SQL identifier"
+            )
+        conn = await asyncpg.connect(dsn)
+        try:
+            await cls._create_schema(conn, table)
+        finally:
+            await conn.close()
 
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
 
-    async def _setup(self, dsn: str) -> asyncpg.Pool:
+    async def _setup(self, dsn: str, auto_create_schema: bool) -> asyncpg.Pool:
         pool = await asyncpg.create_pool(dsn)
-        async with pool.acquire() as conn:
-            await conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self._table} (
-                    namespace  TEXT        NOT NULL,
-                    path       TEXT        NOT NULL,
-                    content    TEXT        NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (namespace, path)
-                )
-                """
-            )
-            await conn.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS {self._table}_ns_idx
-                ON {self._table} (namespace)
-                """
-            )
+        if auto_create_schema:
+            async with pool.acquire() as conn:
+                await self._create_schema(conn, self._table)
         return pool
 
     def _run(self, coro: Coroutine[Any, Any, _T]) -> _T:
@@ -128,7 +198,14 @@ class PostgreSQLFileStore(FileStore):
     async def _lock_acquire(
         self, key: int, path: str, timeout: float
     ) -> asyncpg.Connection:
-        """Acquire a session-level advisory lock on a dedicated connection."""
+        """Acquire a session-level advisory lock on a dedicated connection.
+
+        Uses a standalone connection (not from the pool) because PostgreSQL
+        session-level advisory locks are tied to the database session. Pool
+        connections are returned/recycled after use, which would release the
+        lock prematurely. A dedicated connection keeps the lock held for the
+        entire ``lock()`` context manager scope.
+        """
         conn: asyncpg.Connection = await asyncpg.connect(self._dsn)
         deadline = self._loop.time() + timeout
         while True:

@@ -1,11 +1,23 @@
 """Tests for PostgreSQLFileStore.
 
-Uses an in-process asyncpg mock (via unittest.mock) to avoid requiring a live
-PostgreSQL instance. Tests cover the FileStore interface contract and the
-pg_advisory_lock behaviour.
+Contract tests (mocked asyncpg)
+-------------------------------
+Use an in-process asyncpg mock (via unittest.mock) to verify the FileStore
+interface contract without requiring a live PostgreSQL instance. These tests
+prove the *interface* behaves correctly but cannot catch real SQL bugs.
+
+Integration tests
+-----------------
+Gated behind ``@pytest.mark.integration`` and a ``POSTGRES_DSN`` env var.
+Run against a real PostgreSQL instance to verify actual SQL round-trips.
+
+    POSTGRES_DSN="postgresql://user:pass@localhost:5432/test" \
+        pytest tests/sdk/io/test_postgresql_filestore.py -m integration
 """
 
+import os
 import threading
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,7 +28,7 @@ from openhands.sdk.io.postgresql import PostgreSQLFileStore
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures — contract tests (mocked)
 # ---------------------------------------------------------------------------
 
 
@@ -102,7 +114,9 @@ def store(monkeypatch: pytest.MonkeyPatch) -> PostgreSQLFileStore:
     # Bypass _setup (pool creation + schema)
     # ------------------------------------------------------------------ #
 
-    async def mock_setup(self: PostgreSQLFileStore, dsn: str) -> MagicMock:
+    async def mock_setup(
+        self: PostgreSQLFileStore, dsn: str, auto_create_schema: bool
+    ) -> MagicMock:
         return mock_pool
 
     with patch.object(PostgreSQLFileStore, "_setup", mock_setup):
@@ -111,7 +125,7 @@ def store(monkeypatch: pytest.MonkeyPatch) -> PostgreSQLFileStore:
 
 
 # ---------------------------------------------------------------------------
-# Tests: FileStore interface contract
+# Contract tests: FileStore interface
 # ---------------------------------------------------------------------------
 
 
@@ -167,7 +181,29 @@ def test_get_absolute_path(store: PostgreSQLFileStore) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests: pg_advisory_lock
+# Contract tests: constructor validation
+# ---------------------------------------------------------------------------
+
+
+def test_invalid_table_name_rejected() -> None:
+    with pytest.raises(ValueError, match="Invalid table name"):
+        PostgreSQLFileStore(
+            dsn="postgresql://test/db",
+            namespace="ns",
+            table="x; DROP TABLE users; --",
+        )
+
+
+def test_context_manager(store: PostgreSQLFileStore) -> None:
+    # Verify __enter__/__exit__ work (close is called on exit)
+    with patch.object(store, "close") as mock_close:
+        with store:
+            pass
+        mock_close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Contract tests: pg_advisory_lock
 # ---------------------------------------------------------------------------
 
 
@@ -206,3 +242,81 @@ def test_lock_timeout(store: PostgreSQLFileStore) -> None:
 
     release.set()
     t.join()
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — require a live PostgreSQL instance
+# ---------------------------------------------------------------------------
+
+_POSTGRES_DSN = os.environ.get("POSTGRES_DSN")
+
+_skip_no_pg = pytest.mark.skipif(
+    _POSTGRES_DSN is None,
+    reason="POSTGRES_DSN env var not set — skipping integration tests",
+)
+
+
+@pytest.fixture()
+def pg_store() -> PostgreSQLFileStore:
+    """Create a PostgreSQLFileStore against a real PostgreSQL instance.
+
+    Uses a unique namespace per test run to avoid collisions.
+    """
+    assert _POSTGRES_DSN is not None
+    namespace = f"test-{uuid.uuid4().hex[:12]}"
+    store = PostgreSQLFileStore(
+        dsn=_POSTGRES_DSN, namespace=namespace, auto_create_schema=True
+    )
+    yield store  # type: ignore[misc]
+    # Cleanup: delete all rows for this namespace, then close
+    store._run(
+        store._pool.execute(
+            f"DELETE FROM {store._table} WHERE namespace = $1",
+            store._namespace,
+        )
+    )
+    store.close()
+
+
+@_skip_no_pg
+@pytest.mark.integration
+class TestPostgreSQLIntegration:
+    """Round-trip tests against a real PostgreSQL instance."""
+
+    def test_write_read_roundtrip(self, pg_store: PostgreSQLFileStore) -> None:
+        pg_store.write("events/e0.json", '{"turn": 1}')
+        assert pg_store.read("events/e0.json") == '{"turn": 1}'
+
+    def test_overwrite(self, pg_store: PostgreSQLFileStore) -> None:
+        pg_store.write("f.txt", "v1")
+        pg_store.write("f.txt", "v2")
+        assert pg_store.read("f.txt") == "v2"
+
+    def test_list_and_delete(self, pg_store: PostgreSQLFileStore) -> None:
+        pg_store.write("dir/a", "1")
+        pg_store.write("dir/b", "2")
+        pg_store.write("other/c", "3")
+
+        listed = pg_store.list("dir")
+        assert "dir/a" in listed
+        assert "dir/b" in listed
+        assert "other/c" not in listed
+
+        pg_store.delete("dir")
+        assert not pg_store.exists("dir/a")
+        assert not pg_store.exists("dir/b")
+        assert pg_store.exists("other/c")
+
+    def test_exists(self, pg_store: PostgreSQLFileStore) -> None:
+        assert not pg_store.exists("nope")
+        pg_store.write("nope", "yes")
+        assert pg_store.exists("nope")
+
+    def test_read_missing(self, pg_store: PostgreSQLFileStore) -> None:
+        with pytest.raises(FileNotFoundError):
+            pg_store.read("does-not-exist")
+
+    def test_lock_roundtrip(self, pg_store: PostgreSQLFileStore) -> None:
+        with pg_store.lock("test-lock", timeout=5.0):
+            pg_store.write("locked-file", "safe")
+        assert pg_store.read("locked-file") == "safe"
