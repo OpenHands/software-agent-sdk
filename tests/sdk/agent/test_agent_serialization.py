@@ -335,15 +335,15 @@ def test_include_default_tools_deserialization_from_dict() -> None:
 
 
 def test_mcp_config_redacted_by_default() -> None:
-    """Test that mcp_config is redacted (None) when serialized without context."""
+    """Test that mcp_config is omitted when serialized without context."""
 
     llm = LLM(model="test-model", usage_id="test-llm")
     mcp_config = {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-fetch"]}}}
     agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
 
-    # Serialize without any context - should redact mcp_config
+    # Serialize without any context - should omit mcp_config entirely
     agent_dump = agent.model_dump()
-    assert agent_dump.get("mcp_config") is None
+    assert "mcp_config" not in agent_dump  # Omitted, not None
     assert "encrypted_mcp_config" not in agent_dump
 
 
@@ -371,8 +371,8 @@ def test_mcp_config_encrypted_with_cipher_context() -> None:
     # Serialize with cipher - should have encrypted_mcp_config
     agent_dump = agent.model_dump(context={"cipher": cipher})
 
-    # mcp_config should be None, encrypted_mcp_config should be present
-    assert "mcp_config" not in agent_dump or agent_dump.get("mcp_config") is None
+    # mcp_config should be omitted, encrypted_mcp_config should be present
+    assert "mcp_config" not in agent_dump  # Omitted, not None
     assert "encrypted_mcp_config" in agent_dump
     assert isinstance(agent_dump["encrypted_mcp_config"], str)
 

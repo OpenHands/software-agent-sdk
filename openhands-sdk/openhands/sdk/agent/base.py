@@ -315,9 +315,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             encrypted = cipher.encrypt(SecretStr(json_str))
             if encrypted:
                 result["encrypted_mcp_config"] = encrypted
-            # Remove the None mcp_config if present (cleaner output)
-            if "mcp_config" in result and result["mcp_config"] is None:
-                del result["mcp_config"]
+
+        # Redact by omitting: remove mcp_config if it was set to None by the
+        # field serializer (either due to cipher encryption or default redaction).
+        # This preserves the REST API contract (field is optional, not nullable).
+        if "mcp_config" in result and result["mcp_config"] is None:
+            del result["mcp_config"]
 
         return result
 
