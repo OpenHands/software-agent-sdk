@@ -28,10 +28,51 @@ _UNSAFE_PATH_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.context.agent_context import AgentContext
     from openhands.sdk.skills.skill import Skill
 
 
 logger = get_logger(__name__)
+
+
+def _build_sub_agent_context(
+    parent_context: AgentContext | None,
+) -> AgentContext | None:
+    """Drop fork-context skills so the subagent can't re-trigger itself
+    (direct recursion) or other forks (A → B → A loops). Inline skills stay —
+    they only inject static content. All other context fields
+    (system_message_suffix, secrets, datetime) are preserved."""
+    if parent_context is None:
+        return None
+    safe_skills = [s for s in parent_context.skills if s.context != "fork"]
+    return parent_context.model_copy(update={"skills": safe_skills})
+
+
+def _build_sub_agent(
+    agent: AgentBase,
+    sub_agent_context: AgentContext | None,
+) -> AgentBase:
+    """Rebuild the agent from spec (not model_copy) so the sub-conv runs
+    _initialize() fresh — otherwise the shallow-copied _tools would let
+    sub_conv.close() tear down the parent's executors. Clone + reset_metrics
+    the LLM so fork/parent token accounting stay separate (same pattern as
+    DelegateTool, see delegate/impl.py)."""
+    sub_llm = agent.llm.model_copy()
+    sub_llm.reset_metrics()
+    spec_fields = {name: getattr(agent, name) for name in type(agent).model_fields}
+    spec_fields["agent_context"] = sub_agent_context
+    spec_fields["llm"] = sub_llm
+    return type(agent)(**spec_fields)
+
+
+def _fork_persistence_dir(
+    persistence_dir: str | None,
+    skill_name: str,
+) -> str | None:
+    if persistence_dir is None:
+        return None
+    safe_name = _UNSAFE_PATH_CHARS.sub("_", skill_name)
+    return str(Path(persistence_dir) / "forks" / safe_name)
 
 
 def run_skill_forked(
@@ -50,6 +91,7 @@ def run_skill_forked(
         ``<persistence_dir>/forks/<skill.name>/``
     Otherwise the subconversation is ephemeral (in-memory only).
     """
+    # Deferred to avoid a circular import: Conversation → AgentBase → skills.
     from openhands.sdk.conversation.conversation import Conversation
     from openhands.sdk.conversation.response_utils import get_agent_final_response
 
@@ -57,29 +99,14 @@ def run_skill_forked(
         skill.content,
         working_dir=Path(working_dir) if working_dir else None,
     )
-
-    # Strip fork-context skills from the subagent so forked skills cannot
-    # re-trigger themselves (direct recursion) or each other (A → B → A loops).
-    # Inline skills are kept: they only inject static content and are safe to
-    # reuse inside a forked subagent. Everything else on agent_context
-    # (system_message_suffix, secrets, datetime) is preserved.
-    parent_context = agent.agent_context
-    if parent_context is not None:
-        safe_skills = [s for s in parent_context.skills if s.context != "fork"]
-        sub_agent_context = parent_context.model_copy(update={"skills": safe_skills})
-    else:
-        sub_agent_context = None
-    sub_agent = agent.model_copy(update={"agent_context": sub_agent_context})
-
-    fork_persistence_dir: str | None = None
-    if persistence_dir is not None:
-        safe_name = _UNSAFE_PATH_CHARS.sub("_", skill.name)
-        fork_persistence_dir = str(Path(persistence_dir) / "forks" / safe_name)
-
+    sub_agent = _build_sub_agent(
+        agent,
+        _build_sub_agent_context(agent.agent_context),
+    )
     sub_conv = Conversation(
         agent=sub_agent,
         workspace=str(working_dir),
-        persistence_dir=fork_persistence_dir,
+        persistence_dir=_fork_persistence_dir(persistence_dir, skill.name),
         visualizer=None,
         stuck_detection=True,
         delete_on_close=True,
@@ -91,6 +118,12 @@ def run_skill_forked(
             get_agent_final_response(sub_conv.state.events)
             or "[forked skill produced no output]"
         )
+    except Exception as e:
+        # A fork is best-effort context retrieval; don't take down the parent
+        # conversation. Log the full traceback for operators and return an
+        # inline marker so the parent LLM sees the failure instead of crashing.
+        logger.exception("Forked skill %r crashed", skill.name)
+        return f"[forked skill {skill.name!r} failed: {type(e).__name__}: {e}]"
     finally:
         try:
             sub_conv.close()

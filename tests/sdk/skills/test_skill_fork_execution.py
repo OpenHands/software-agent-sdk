@@ -171,8 +171,12 @@ def test_fork_skill_persistence_dir_forwarded(persistence_dir):
 def test_fork_persistence_dir_path_construction(persistence_dir, skill_name, expected):
     """builds <persistence_dir>/forks/<safe_name> before passing to Conversation."""
     skill = _fork_skill(name=skill_name)
-    mock_agent = MagicMock()
-    mock_agent.agent_context = None
+    agent = Agent(
+        llm=TestLLM.from_messages([]),
+        tools=[],
+        include_default_tools=[],
+        agent_context=None,
+    )
 
     with patch(
         "openhands.sdk.conversation.conversation.Conversation"
@@ -181,7 +185,7 @@ def test_fork_persistence_dir_path_construction(persistence_dir, skill_name, exp
         mock_conv.state.events = []
         MockConversation.return_value = mock_conv
 
-        run_skill_forked(skill, mock_agent, "/workspace", persistence_dir)
+        run_skill_forked(skill, agent, "/workspace", persistence_dir)
 
     _, conv_kwargs = MockConversation.call_args
     assert conv_kwargs.get("persistence_dir") == expected
@@ -230,10 +234,12 @@ def test_subagent_context_keeps_inline_skills_drops_forks():
         skills=[fork_skill, other_fork, inline_skill],
         system_message_suffix="preserve me",
     )
-    mock_agent = MagicMock()
-    mock_agent.agent_context = parent_ctx
-    # model_copy on the agent itself: capture what gets passed
-    mock_agent.model_copy.return_value = MagicMock()
+    agent = Agent(
+        llm=TestLLM.from_messages([]),
+        tools=[],
+        include_default_tools=[],
+        agent_context=parent_ctx,
+    )
 
     with patch(
         "openhands.sdk.conversation.conversation.Conversation"
@@ -241,12 +247,84 @@ def test_subagent_context_keeps_inline_skills_drops_forks():
         mock_conv = MagicMock()
         mock_conv.state.events = []
         MockConversation.return_value = mock_conv
-        run_skill_forked(fork_skill, mock_agent, "/workspace")
+        run_skill_forked(fork_skill, agent, "/workspace")
 
-    _, agent_copy_kwargs = mock_agent.model_copy.call_args
-    sub_ctx = agent_copy_kwargs["update"]["agent_context"]
+    _, conv_kwargs = MockConversation.call_args
+    sub_ctx = conv_kwargs["agent"].agent_context
     assert [s.name for s in sub_ctx.skills] == ["inline_helper"]
     assert sub_ctx.system_message_suffix == "preserve me"
+
+
+def test_fork_returns_error_marker_when_subagent_crashes(caplog):
+    """A fork crash must not propagate to the parent — return a marker instead.
+
+    The fork is best-effort context retrieval. If sub_conv.run() raises, the
+    parent conversation should keep going with a readable error string rather
+    than dying with the fork's traceback.
+    """
+    import logging
+
+    fork_skill = _fork_skill(name="ddebug")
+    agent = Agent(
+        llm=TestLLM.from_messages([]),
+        tools=[],
+        include_default_tools=[],
+        agent_context=None,
+    )
+
+    with patch(
+        "openhands.sdk.conversation.conversation.Conversation"
+    ) as MockConversation:
+        mock_conv = MagicMock()
+        mock_conv.run.side_effect = RuntimeError("simulated LLM failure")
+        MockConversation.return_value = mock_conv
+
+        with caplog.at_level(logging.ERROR, logger="openhands.sdk.skills.fork"):
+            result = run_skill_forked(fork_skill, agent, "/workspace")
+
+    assert "ddebug" in result
+    assert "RuntimeError" in result
+    assert "simulated LLM failure" in result
+    # Operators still see the full traceback in logs (message + exc_info).
+    crash_record = next(
+        r for r in caplog.records if "ddebug" in r.getMessage() and r.exc_info
+    )
+    assert crash_record.exc_info[0] is RuntimeError
+    # Sub-conversation was closed even on error.
+    mock_conv.close.assert_called_once()
+
+
+def test_fork_isolates_llm_metrics_from_parent():
+    """Fork must not share the parent's Metrics object via the LLM reference.
+
+    Both conversations read their own ConversationStats.usage_to_metrics, which
+    holds a *reference* to llm.metrics captured at registration time. If the
+    sub-agent used the parent's LLM object directly, fork completions would
+    mutate the same Metrics instance and the parent's accounting would leak.
+    """
+    fork_skill = _fork_skill()
+    parent_llm = TestLLM.from_messages([])
+    agent = Agent(
+        llm=parent_llm,
+        tools=[],
+        include_default_tools=[],
+        agent_context=AgentContext(skills=[fork_skill]),
+    )
+
+    with patch(
+        "openhands.sdk.conversation.conversation.Conversation"
+    ) as MockConversation:
+        mock_conv = MagicMock()
+        mock_conv.state.events = []
+        MockConversation.return_value = mock_conv
+        run_skill_forked(fork_skill, agent, "/workspace")
+
+    _, conv_kwargs = MockConversation.call_args
+    sub_llm = conv_kwargs["agent"].llm
+    assert sub_llm is not parent_llm, "fork must receive its own LLM instance"
+    # Fresh metrics: reset_metrics() detaches so a new Metrics is lazily created
+    # on next access, independent of the parent's.
+    assert sub_llm.metrics is not parent_llm.metrics
 
 
 def test_fork_end_to_end_with_test_llm(tmp_path):
@@ -254,13 +332,12 @@ def test_fork_end_to_end_with_test_llm(tmp_path):
 
     This exercises the real pipeline (no mocks on ``run_skill_forked`` or
     ``Conversation``): ``LocalConversation`` + ``Agent`` + fork-context
-    ``Skill`` + real ``run_skill_forked``, with both the parent and the
-    forked subagent driven by a single shared ``TestLLM``.
+    ``Skill`` + real ``run_skill_forked``.
 
-    Because ``run_skill_forked`` builds the sub-conversation with
-    ``agent.model_copy``, the sub-agent reuses the parent's LLM — so one
-    scripted queue serves both: first response is consumed by the fork,
-    second by the parent.
+    The fork gets its own ``TestLLM`` instance (copied + metrics reset), but
+    ``model_copy`` shallow-copies PrivateAttrs so the ``_scripted_responses``
+    deque is shared by reference: the fork consumes the first response, the
+    parent consumes the second.
     """
     fork_output = "FORK_SUBAGENT_OUTPUT_SENTINEL"
     parent_reply = "parent acknowledges the fork result"
@@ -299,8 +376,10 @@ def test_fork_end_to_end_with_test_llm(tmp_path):
         conversation.send_message("please look into the datadog error")
         conversation.run()
 
-        # Both sides of the fork ran exactly once each.
-        assert llm.call_count == 2
+        # Parent and fork each completed once on their own LLM instance
+        # (combined: the shared response deque was fully consumed).
+        assert llm.call_count == 1
+        assert len(llm._scripted_responses) == 0
 
         # The user MessageEvent carries the augmented content (the fork's
         # final output) and records the skill as activated.
