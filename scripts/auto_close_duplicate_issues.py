@@ -110,7 +110,6 @@ def list_open_issues(repository: str) -> list[dict[str, Any]]:
                 continue
             issues.append(issue)
         page += 1
-    return issues
 
 
 def list_issue_comments(repository: str, issue_number: int) -> list[dict[str, Any]]:
@@ -197,6 +196,14 @@ def has_veto_note(comments: list[dict[str, Any]]) -> bool:
     return any(
         DUPLICATE_VETO_MARKER in (comment.get("body") or "") for comment in comments
     )
+
+
+def is_non_bot_comment(comment: dict[str, Any]) -> bool:
+    user = comment.get("user")
+    if not isinstance(user, dict):
+        return True
+    login = str(user.get("login") or "")
+    return user.get("type") != "Bot" and not login.endswith("[bot]")
 
 
 def remove_candidate_label(
@@ -300,7 +307,10 @@ def main() -> int:
         issue_created_at_str = issue.get("created_at")
         if issue_number is None or not issue_created_at_str:
             continue
-        issue_number = int(issue_number)
+        try:
+            issue_number = int(issue_number)
+        except (TypeError, ValueError):
+            continue
         issue_created_at = parse_timestamp(issue_created_at_str)
         if issue_created_at > cutoff:
             continue
@@ -316,12 +326,16 @@ def main() -> int:
         comment_id = latest_comment.get("id")
         if not comment_created_at_str or comment_id is None:
             continue
+        try:
+            comment_id = int(comment_id)
+        except (TypeError, ValueError):
+            continue
         comment_created_at = parse_timestamp(comment_created_at_str)
         if comment_created_at > cutoff:
             continue
 
         author_id = user_id_from_item(issue)
-        reactions = list_comment_reactions(args.repository, int(comment_id))
+        reactions = list_comment_reactions(args.repository, comment_id)
         author_thumbs_down = has_reaction_from_user(reactions, author_id, "-1")
         author_thumbs_up = has_reaction_from_user(reactions, author_id, "+1")
         if author_thumbs_down:
@@ -356,6 +370,7 @@ def main() -> int:
             for comment in comments
             if comment.get("created_at")
             and parse_timestamp(comment["created_at"]) > comment_created_at
+            and is_non_bot_comment(comment)
         ]
         if newer_comments:
             summary.append(

@@ -162,6 +162,28 @@ def test_auto_close_request_json_reports_invalid_json(monkeypatch):
         module.request_json("/test")
 
 
+def test_is_non_bot_comment_filters_github_bots():
+    module = load_module("auto_close_duplicate_issues.py")
+
+    assert (
+        module.is_non_bot_comment({"user": {"type": "User", "login": "enyst"}}) is True
+    )
+    assert (
+        module.is_non_bot_comment({"user": {"type": "Bot", "login": "renovate[bot]"}})
+        is False
+    )
+    assert (
+        module.is_non_bot_comment({"user": {"type": "User", "login": "all-hands-bot"}})
+        is True
+    )
+    assert (
+        module.is_non_bot_comment(
+            {"user": {"type": "User", "login": "dependabot[bot]"}}
+        )
+        is False
+    )
+
+
 def test_has_reaction_from_user_ignores_missing_user_ids():
     module = load_module("auto_close_duplicate_issues.py")
     reactions = [
@@ -480,6 +502,72 @@ def test_auto_close_main_skips_malformed_duplicate_comment(monkeypatch, capsys):
     assert summary == {"repository": "OpenHands/agent-sdk", "results": []}
 
 
+def test_auto_close_main_skips_non_numeric_issue_number(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "list_open_issues",
+        lambda repository: [
+            {"number": "oops", "created_at": iso_timestamp(now - timedelta(days=5))}
+        ],
+    )
+
+    assert module.main() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {"repository": "OpenHands/agent-sdk", "results": []}
+
+
+def test_auto_close_main_skips_non_numeric_comment_id(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
+    old_timestamp = iso_timestamp(now - timedelta(days=5))
+    issue = {
+        "number": 123,
+        "created_at": old_timestamp,
+        "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+        "user": {"id": 7},
+    }
+    comments = [
+        {
+            "id": "oops",
+            "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
+            "created_at": old_timestamp,
+        }
+    ]
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(module, "list_open_issues", lambda repository: [issue])
+    monkeypatch.setattr(
+        module, "list_issue_comments", lambda repository, number: comments
+    )
+    monkeypatch.setattr(
+        module,
+        "close_issue_as_duplicate",
+        lambda *args, **kwargs: pytest.fail("close_issue_as_duplicate should not run"),
+    )
+
+    assert module.main() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {"repository": "OpenHands/agent-sdk", "results": []}
+
+
 def test_auto_close_main_removes_label_when_newer_comment_exists(monkeypatch, capsys):
     module = load_module("auto_close_duplicate_issues.py")
     now = datetime.now(UTC)
@@ -537,6 +625,82 @@ def test_auto_close_main_removes_label_when_newer_comment_exists(monkeypatch, ca
         "results": [{"issue_number": 123, "action": "kept-open"}],
     }
     assert keep_open_calls == [("OpenHands/agent-sdk", 123, False)]
+
+
+def test_auto_close_main_ignores_newer_bot_comments(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
+    old_timestamp = iso_timestamp(now - timedelta(days=5))
+    newer_timestamp = iso_timestamp(now - timedelta(days=4))
+    issue = {
+        "number": 123,
+        "created_at": old_timestamp,
+        "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+        "user": {"id": 7},
+    }
+    comments = [
+        {
+            "id": 11,
+            "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
+            "created_at": old_timestamp,
+        },
+        {
+            "id": 12,
+            "body": "status update",
+            "created_at": newer_timestamp,
+            "user": {"type": "Bot", "login": "renovate[bot]"},
+        },
+    ]
+    closed: list[tuple[str, int, int, bool]] = []
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(module, "list_open_issues", lambda repository: [issue])
+    monkeypatch.setattr(
+        module, "list_issue_comments", lambda repository, number: comments
+    )
+    monkeypatch.setattr(
+        module, "list_comment_reactions", lambda repository, comment_id: []
+    )
+    monkeypatch.setattr(
+        module,
+        "close_issue_as_duplicate",
+        lambda repository,
+        issue_number,
+        canonical_issue_number,
+        *,
+        dry_run: closed.append(
+            (repository, issue_number, canonical_issue_number, dry_run)
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "keep_open_due_to_newer_comments",
+        lambda *args, **kwargs: pytest.fail(
+            "keep_open_due_to_newer_comments should not run"
+        ),
+    )
+
+    assert module.main() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {
+        "repository": "OpenHands/agent-sdk",
+        "results": [
+            {
+                "issue_number": 123,
+                "action": "closed-as-duplicate",
+                "canonical_issue_number": 45,
+                "author_thumbs_up": False,
+            }
+        ],
+    }
+    assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
 
 
 def test_parse_agent_json_handles_single_line_fenced_json():
