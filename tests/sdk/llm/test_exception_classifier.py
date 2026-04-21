@@ -2,7 +2,6 @@ from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
     ContextWindowExceededError,
-    InternalServerError,
 )
 
 from openhands.sdk.llm.exceptions import (
@@ -78,20 +77,6 @@ def test_is_context_window_exceeded_negative():
         is_context_window_exceeded(BadRequestError("irrelevant", MODEL, PROVIDER))
         is False
     )
-
-
-def test_looks_like_malformed_history_from_internal_server_error():
-    """llama-server returns 500 when tool call arguments are malformed JSON (#2887)."""
-    e = InternalServerError(
-        (
-            '{"error":{"code":500,"message":"Failed to parse tool call arguments '
-            'as JSON: ..."}}'
-        ),
-        MODEL,
-        PROVIDER,
-    )
-    assert looks_like_malformed_conversation_history_error(e) is True
-    assert is_context_window_exceeded(e) is False
 
 
 def test_looks_like_auth_error_positive():

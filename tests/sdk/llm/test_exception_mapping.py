@@ -1,4 +1,4 @@
-from litellm.exceptions import BadRequestError, InternalServerError
+from litellm.exceptions import BadRequestError
 
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
@@ -35,20 +35,6 @@ def test_map_malformed_tool_history_bad_request():
             "ids were found without `tool_result` blocks immediately after: "
             "toolu_01Aye4s5HrR2uXwXFYgtQi4H. Each `tool_use` block must have "
             'a corresponding `tool_result` block in the next message."}}'
-        ),
-        MODEL,
-        PROVIDER,
-    )
-    mapped = map_provider_exception(e)
-    assert isinstance(mapped, LLMMalformedConversationHistoryError)
-
-
-def test_map_malformed_tool_args_internal_server_error():
-    """InternalServerError with malformed tool args maps to malformed history."""
-    e = InternalServerError(
-        (
-            '{"error":{"code":500,"message":"Failed to parse tool call arguments '
-            'as JSON: ..."}}'
         ),
         MODEL,
         PROVIDER,

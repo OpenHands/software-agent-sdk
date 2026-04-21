@@ -104,19 +104,6 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     return False
 
 
-def _ensure_valid_tool_call_arguments(tool_call: MessageToolCall) -> MessageToolCall:
-    """Return *tool_call* with guaranteed-valid JSON in ``arguments``.
-
-    If the arguments are already valid JSON the original object is returned
-    unchanged.  Otherwise a shallow copy with ``arguments="{}"`` is returned.
-    """
-    try:
-        json.loads(tool_call.arguments)
-    except (json.JSONDecodeError, TypeError):
-        return tool_call.model_copy(update={"arguments": "{}"})
-    return tool_call
-
-
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
@@ -756,24 +743,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
     ) -> None:
-        # Ensure tool_call.arguments is valid JSON before storing in the
-        # event stream.  LLMs sometimes produce malformed JSON (e.g.
-        # unterminated strings).  Inference servers such as llama-server
-        # parse the arguments field of tool calls in conversation history
-        # and reject the entire prompt when it is invalid, causing an
-        # infinite retry loop (see #2887).  The error details are already
-        # conveyed via the AgentErrorEvent, so replacing malformed
-        # arguments with "{}" loses no actionable information.
-        safe_tool_call = _ensure_valid_tool_call_arguments(tool_call)
         tc_event = ActionEvent(
             source="agent",
             thought=thought or [],
             reasoning_content=reasoning_content,
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
-            tool_call=safe_tool_call,
-            tool_name=safe_tool_call.name,
-            tool_call_id=safe_tool_call.id,
+            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
             llm_response_id=llm_response_id,
             action=None,
         )
@@ -782,7 +760,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             AgentErrorEvent(
                 error=error,
                 tool_name=tool_name,
-                tool_call_id=safe_tool_call.id,
+                tool_call_id=tool_call.id,
             )
         )
 

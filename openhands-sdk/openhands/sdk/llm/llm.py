@@ -77,6 +77,7 @@ from litellm.utils import (
 
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
+    LLMMalformedToolArgsError,
     LLMNoResponseError,
     map_provider_exception,
 )
@@ -113,6 +114,7 @@ LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     LiteLLMTimeout,
     InternalServerError,
     LLMNoResponseError,
+    LLMMalformedToolArgsError,
 )
 
 # Minimum context window size required for OpenHands to function properly.
@@ -128,6 +130,42 @@ ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 # This cap prevents requesting output that exceeds the context window.
 # 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
 DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
+
+
+def _validate_tool_call_args(resp: ModelResponse) -> None:
+    """Raise :class:`LLMMalformedToolArgsError` if any tool call has bad JSON.
+
+    Called inside ``_one_attempt()`` so the retry decorator can re-call the
+    LLM automatically (#2887).
+
+    Raw control characters (newline, tab, …) inside string values are
+    tolerated because the agent layer already sanitizes them.  Only
+    truly unparseable JSON (unterminated strings, missing brackets, …)
+    triggers the error.
+    """
+    from openhands.sdk.agent.utils import sanitize_json_control_chars
+
+    choices = resp.get("choices") or []
+    for choice in choices:
+        tool_calls = getattr(choice.get("message", None), "tool_calls", None)
+        if not tool_calls:
+            continue
+        for tc in tool_calls:
+            args = getattr(tc.function, "arguments", None) if tc.function else None
+            if args is None:
+                continue
+            try:
+                json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                # Tolerate raw control chars — sanitize_json_control_chars
+                # in the agent layer handles these downstream.
+                try:
+                    json.loads(sanitize_json_control_chars(args))
+                except (json.JSONDecodeError, TypeError):
+                    raise LLMMalformedToolArgsError(
+                        f"Tool '{tc.function.name}' has unparseable JSON "
+                        f"arguments: {args!r}"
+                    )
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -836,6 +874,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 raise LLMNoResponseError(
                     "Response choices is less than 1. Response: " + str(resp)
                 )
+
+            # Validate tool call arguments are parseable JSON.
+            # Raised inside the retry boundary so the LLM gets another
+            # chance to produce valid output (#2887).
+            _validate_tool_call_args(resp)
 
             return resp
 
