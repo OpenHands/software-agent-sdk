@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import itertools
 import json
 from datetime import UTC, datetime, timedelta
@@ -151,6 +152,17 @@ def test_parse_timestamp_accepts_microseconds():
     assert parsed == datetime(2026, 4, 21, 21, 10, 11, 123456, tzinfo=UTC)
 
 
+def test_github_headers_requires_token(monkeypatch):
+    module = load_module("auto_close_duplicate_issues.py")
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    with pytest.raises(
+        RuntimeError, match="GITHUB_TOKEN environment variable is required"
+    ):
+        module.github_headers()
+
+
 def test_auto_close_request_json_reports_urlerror(monkeypatch):
     module = load_module("auto_close_duplicate_issues.py")
 
@@ -164,6 +176,27 @@ def test_auto_close_request_json_reports_urlerror(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="GET /test failed"):
+        module.request_json("/test")
+
+
+def test_auto_close_request_json_reports_httperror(monkeypatch):
+    module = load_module("auto_close_duplicate_issues.py")
+
+    monkeypatch.setattr(module, "github_headers", lambda: {})
+    error = module.urllib.error.HTTPError(
+        url="https://example.test/test",
+        code=403,
+        msg="Forbidden",
+        hdrs=None,
+        fp=io.BytesIO(b'{"message":"denied"}'),
+    )
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(RuntimeError, match=r"GET /test failed with HTTP 403: .*denied"):
         module.request_json("/test")
 
 
@@ -1167,6 +1200,17 @@ def test_build_prompt_handles_missing_fields():
     assert 'New issue body (JSON-escaped string): ""' in prompt
 
 
+def test_openhands_headers_requires_api_key(monkeypatch):
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    monkeypatch.delenv("OPENHANDS_API_KEY", raising=False)
+
+    with pytest.raises(
+        RuntimeError, match="OPENHANDS_API_KEY environment variable is required"
+    ):
+        module.openhands_headers()
+
+
 def test_normalize_result_promotes_actionable_duplicates():
     module = load_module("issue_duplicate_check_openhands.py")
     normalized = module.normalize_result(
@@ -1206,6 +1250,29 @@ def test_issue_duplicate_request_json_reports_urlerror(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="GET https://example.test/path failed"):
+        module.request_json("https://example.test", "/path")
+
+
+def test_issue_duplicate_request_json_reports_httperror(monkeypatch):
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    error = module.urllib.error.HTTPError(
+        url="https://example.test/path",
+        code=500,
+        msg="boom",
+        hdrs=None,
+        fp=io.BytesIO(b'{"error":"server blew up"}'),
+    )
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"GET https://example\.test/path failed with HTTP 500: .*server blew up",
+    ):
         module.request_json("https://example.test", "/path")
 
 
@@ -1259,10 +1326,21 @@ def test_normalize_result_disables_invalid_auto_close_states():
             "candidate_issues": [{"number": 45}],
         }
     )
+    missing_candidates = module.normalize_result(
+        {
+            "classification": "duplicate",
+            "confidence": "high",
+            "should_comment": False,
+            "is_duplicate": True,
+            "auto_close_candidate": True,
+            "candidate_issues": [],
+        }
+    )
 
     assert overlap["should_comment"] is True
     assert overlap["auto_close_candidate"] is False
     assert low_confidence["auto_close_candidate"] is False
+    assert missing_candidates["auto_close_candidate"] is False
 
 
 def test_extract_agent_server_url_returns_runtime_prefix():
@@ -1571,6 +1649,117 @@ def test_issue_duplicate_main_waits_for_start_task_and_writes_output(
     assert result["repository"] == "OpenHands/agent-sdk"
     assert result["app_conversation_id"] == "conv-123"
     assert result["canonical_issue_number"] == 45
+
+
+def test_issue_duplicate_main_reports_output_write_failures(monkeypatch, tmp_path):
+    module = load_module("issue_duplicate_check_openhands.py")
+    output_path = tmp_path / "result.json"
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk",
+            issue_number=123,
+            output=str(output_path),
+            poll_interval_seconds=1,
+            max_wait_seconds=10,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_issue",
+        lambda repository, issue_number: {
+            "number": issue_number,
+            "title": "Issue title",
+            "body": "Issue body",
+            "html_url": f"https://github.com/{repository}/issues/{issue_number}",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "start_conversation",
+        lambda *args, **kwargs: {"app_conversation_id": "conv-123"},
+    )
+    monkeypatch.setattr(
+        module,
+        "poll_conversation",
+        lambda app_conversation_id, poll_interval_seconds, max_wait_seconds: {
+            "conversation_url": "https://app.all-hands.dev/conversations/conv-123"
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_app_server_events",
+        lambda app_conversation_id: [
+            make_agent_message(
+                json.dumps(
+                    {
+                        "classification": "duplicate",
+                        "confidence": "high",
+                        "should_comment": True,
+                        "is_duplicate": True,
+                        "auto_close_candidate": False,
+                        "candidate_issues": [{"number": 45, "title": "Existing issue"}],
+                        "summary": "duplicate summary",
+                    }
+                )
+            )
+        ],
+    )
+
+    def fail_write_text(self, *_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(module.Path, "write_text", fail_write_text)
+
+    with pytest.raises(
+        RuntimeError, match=r"Failed to write output to .*result\.json: disk full"
+    ):
+        module.main()
+
+
+def test_issue_duplicate_main_rejects_non_string_session_api_key(monkeypatch, tmp_path):
+    module = load_module("issue_duplicate_check_openhands.py")
+    output_path = tmp_path / "result.json"
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk",
+            issue_number=123,
+            output=str(output_path),
+            poll_interval_seconds=1,
+            max_wait_seconds=10,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_issue",
+        lambda repository, issue_number: {
+            "number": issue_number,
+            "title": "Issue title",
+            "body": "Issue body",
+            "html_url": f"https://github.com/{repository}/issues/{issue_number}",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "start_conversation",
+        lambda *args, **kwargs: {"app_conversation_id": "conv-123"},
+    )
+    monkeypatch.setattr(
+        module,
+        "poll_conversation",
+        lambda app_conversation_id, poll_interval_seconds, max_wait_seconds: {
+            "conversation_url": "https://app.all-hands.dev/conversations/conv-123",
+            "session_api_key": {"bad": True},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="session_api_key had unexpected type"):
+        module.main()
 
 
 def test_issue_duplicate_main_prefers_agent_final_response(monkeypatch, tmp_path):

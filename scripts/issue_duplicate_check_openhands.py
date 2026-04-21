@@ -82,7 +82,7 @@ def github_headers() -> dict[str, str]:
 def openhands_headers() -> dict[str, str]:
     api_key = os.environ.get("OPENHANDS_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENHANDS_API_KEY is required")
+        raise RuntimeError("OPENHANDS_API_KEY environment variable is required")
     return {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -477,6 +477,8 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
         normalized["should_comment"] = True
     if normalized["auto_close_candidate"] and confidence != "high":
         normalized["auto_close_candidate"] = False
+    if normalized["auto_close_candidate"] and not normalized["candidate_issues"]:
+        normalized["auto_close_candidate"] = False
     if (
         normalized["auto_close_candidate"]
         and normalized["canonical_issue_number"] is None
@@ -529,7 +531,13 @@ def main() -> int:
         conversation.get("conversation_url")
         or f"{OPENHANDS_BASE_URL}/conversations/{app_conversation_id}"
     )
-    session_api_key = str(conversation.get("session_api_key") or "")
+    session_api_key_value = conversation.get("session_api_key")
+    if session_api_key_value and not isinstance(session_api_key_value, str):
+        raise RuntimeError(
+            "session_api_key had unexpected type in the OpenHands conversation: "
+            f"{type(session_api_key_value).__name__}"
+        )
+    session_api_key = session_api_key_value or ""
     agent_server_url = extract_agent_server_url(conversation_url)
 
     agent_text = ""
@@ -543,16 +551,18 @@ def main() -> int:
         events = fetch_app_server_events(app_conversation_id)
         try:
             agent_text = extract_last_agent_text(events)
-        except RuntimeError:
+        except RuntimeError as exc:
             if not session_api_key:
                 raise RuntimeError(
+                    "App server events did not contain assistant text and "
                     "session_api_key was missing from the OpenHands conversation"
-                )
+                ) from exc
             if not agent_server_url:
                 raise RuntimeError(
-                    "Cannot extract agent server URL from conversation URL: "
+                    "App server events did not contain assistant text and cannot "
+                    "extract agent server URL from conversation URL: "
                     f"{conversation_url}"
-                )
+                ) from exc
             events = fetch_agent_server_events(
                 app_conversation_id,
                 agent_server_url,

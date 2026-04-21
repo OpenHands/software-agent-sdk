@@ -97,6 +97,10 @@ jobs:
                     echo "Error: TARGET_REPOSITORY is required"
                     exit 1
                   fi
+                  echo "$TARGET_REPOSITORY" | grep -qE '^[^/]+/[^/]+$' || {
+                    echo "Error: TARGET_REPOSITORY must be in owner/repo format"
+                    exit 1
+                  }
 
             - name: Run OpenHands duplicate check conversation
               id: run_check
