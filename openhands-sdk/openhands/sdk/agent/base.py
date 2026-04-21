@@ -17,7 +17,6 @@ from pydantic import (
     SecretStr,
     SerializationInfo,
     ValidationInfo,
-    field_serializer,
     model_serializer,
     model_validator,
 )
@@ -247,41 +246,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         return data
 
-    @field_serializer("mcp_config", when_used="always")
-    def _serialize_mcp_config(self, v: dict[str, Any], info) -> dict[str, Any] | None:
-        """Serialize mcp_config with encryption or redaction.
-
-        - If a cipher is provided in context: returns None (encrypted_mcp_config
-          is populated separately via model serializer)
-        - If expose_secrets flag is True in context: returns the config as-is
-        - Otherwise: returns None to redact sensitive MCP configuration
-        """
-        if not v:
-            # Empty config - nothing to protect
-            return v
-
-        # If cipher is present, we'll encrypt instead (handled in model dump)
-        if info.context and info.context.get("cipher"):
-            return None
-
-        # If expose_secrets is True, return the config as-is
-        if info.context and info.context.get("expose_secrets"):
-            return v
-
-        # Default: redact by returning None
-        return None
-
     @model_serializer(mode="wrap")
-    def _serialize_with_encrypted_mcp(self, handler, info: SerializationInfo):
-        """Serialize the agent, handling mcp_config encryption.
+    def _serialize_with_mcp_handling(self, handler, info: SerializationInfo):
+        """Serialize the agent, handling mcp_config encryption/redaction.
 
-        This serializer also handles polymorphic serialization for subclasses
-        (like ACPAgent) by delegating to model_dump when the handler is not
-        for the actual class.
+        This serializer handles:
+        1. Polymorphic serialization for subclasses (e.g., ACPAgent)
+        2. mcp_config encryption when cipher is in context
+        3. mcp_config redaction (omission) when neither cipher nor expose_secrets
 
-        When a cipher is present in context and mcp_config has content:
-        - Encrypts mcp_config as JSON and stores in encrypted_mcp_config
-        - Removes the None mcp_config from output
+        The mcp_config handling is done here (not in a field_serializer) to avoid
+        changing the field's schema type, which would break REST API compatibility.
         """
         if isinstance(self, dict):
             # Sometimes pydantic passes a dict in here.
@@ -308,19 +283,27 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         else:
             result = handler(self)
 
-        # Add encrypted_mcp_config if cipher is present and mcp_config has content
-        if self.mcp_config and info.context and info.context.get("cipher"):
-            cipher: Cipher = info.context["cipher"]
-            json_str = json.dumps(self.mcp_config)
-            encrypted = cipher.encrypt(SecretStr(json_str))
-            if encrypted:
-                result["encrypted_mcp_config"] = encrypted
-
-        # Redact by omitting: remove mcp_config if it was set to None by the
-        # field serializer (either due to cipher encryption or default redaction).
-        # This preserves the REST API contract (field is optional, not nullable).
-        if "mcp_config" in result and result["mcp_config"] is None:
-            del result["mcp_config"]
+        # Handle mcp_config based on context:
+        # - Empty config: keep as-is (nothing sensitive)
+        # - expose_secrets=True: keep as-is (explicitly requested)
+        # - cipher present: encrypt and store in encrypted_mcp_config, omit original
+        # - default: omit (redact sensitive data)
+        if self.mcp_config:  # Only process non-empty configs
+            if info.context and info.context.get("expose_secrets"):
+                # Keep mcp_config as-is (already in result from handler)
+                pass
+            elif info.context and info.context.get("cipher"):
+                # Encrypt and add encrypted_mcp_config
+                cipher: Cipher = info.context["cipher"]
+                json_str = json.dumps(self.mcp_config)
+                encrypted = cipher.encrypt(SecretStr(json_str))
+                if encrypted:
+                    result["encrypted_mcp_config"] = encrypted
+                # Remove plaintext mcp_config
+                result.pop("mcp_config", None)
+            else:
+                # Default: redact by omitting
+                result.pop("mcp_config", None)
 
         return result
 
