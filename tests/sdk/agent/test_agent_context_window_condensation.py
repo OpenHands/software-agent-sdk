@@ -9,7 +9,10 @@ from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.event.condenser import CondensationRequest
 from openhands.sdk.llm import LLM
-from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
+from openhands.sdk.llm.exceptions import (
+    LLMContextWindowExceedError,
+    LLMMalformedConversationHistoryError,
+)
 
 
 if TYPE_CHECKING:
@@ -33,6 +36,29 @@ class RaisingLLM(LLM):
         raise LLMContextWindowExceedError()
 
 
+class MalformedHistoryRaisingLLM(LLM):
+    _force_responses: bool = PrivateAttr(default=False)
+
+    def __init__(self, *, model: str = "test-model", force_responses: bool = False):
+        super().__init__(model=model, usage_id="test-llm")
+        self._force_responses = force_responses
+
+    def uses_responses_api(self) -> bool:  # override gating
+        return self._force_responses
+
+    def completion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        raise LLMMalformedConversationHistoryError(
+            "messages.134: `tool_use` ids were found without `tool_result` blocks "
+            "immediately after"
+        )
+
+    def responses(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        raise LLMMalformedConversationHistoryError(
+            "messages.134: `tool_use` ids were found without `tool_result` blocks "
+            "immediately after"
+        )
+
+
 class HandlesRequestsCondenser(CondenserBase):
     def condense(
         self, view: View, agent_llm: "LLM | None" = None
@@ -51,7 +77,6 @@ def test_agent_triggers_condensation_request_when_ctx_exceeded_with_condenser(
     agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
     convo = Conversation(agent=agent)
 
-    # Trigger lazy agent initialization before calling step()
     convo._ensure_agent_ready()
 
     seen = []
@@ -59,10 +84,38 @@ def test_agent_triggers_condensation_request_when_ctx_exceeded_with_condenser(
     def on_event(e):
         seen.append(e)
 
-    # Expect Agent to emit CondensationRequest and not raise
     agent.step(convo, on_event=on_event)
 
     assert any(isinstance(e, CondensationRequest) for e in seen)
+
+
+@pytest.mark.parametrize("force_responses", [True, False])
+def test_agent_triggers_condensation_request_when_history_is_malformed(
+    force_responses: bool,
+    caplog,
+):
+    llm = MalformedHistoryRaisingLLM(force_responses=force_responses)
+    agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
+    convo = Conversation(agent=agent)
+
+    convo._ensure_agent_ready()
+
+    seen = []
+
+    def on_event(e):
+        seen.append(e)
+
+    agent.step(convo, on_event=on_event)
+
+    assert any(isinstance(e, CondensationRequest) for e in seen)
+    assert any(
+        "malformed conversation history error" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        "triggering condensation retry with condensed history" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize("force_responses", [True, False])
@@ -71,7 +124,6 @@ def test_agent_raises_ctx_exceeded_when_no_condenser(force_responses: bool):
     agent = Agent(llm=llm, tools=[], condenser=None)
     convo = Conversation(agent=agent)
 
-    # Trigger lazy agent initialization before calling step()
     convo._ensure_agent_ready()
 
     with pytest.raises(LLMContextWindowExceedError):
@@ -79,21 +131,43 @@ def test_agent_raises_ctx_exceeded_when_no_condenser(force_responses: bool):
 
 
 @pytest.mark.parametrize("force_responses", [True, False])
+def test_agent_raises_malformed_history_error_when_no_condenser(
+    force_responses: bool,
+    caplog,
+):
+    llm = MalformedHistoryRaisingLLM(force_responses=force_responses)
+    agent = Agent(llm=llm, tools=[], condenser=None)
+    convo = Conversation(agent=agent)
+
+    convo._ensure_agent_ready()
+
+    with pytest.raises(LLMMalformedConversationHistoryError):
+        agent.step(convo, on_event=lambda e: None)
+
+    assert any(
+        "malformed conversation history error but no condenser can handle "
+        "condensation requests" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        "event-stream or resume bug" in record.message for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize("force_responses", [True, False])
 def test_agent_logs_warning_when_no_condenser_on_ctx_exceeded(
     force_responses: bool, caplog
 ):
-    """Test that warning is logged when context window exceeded without condenser."""  # noqa: E501
+    """Test that warning is logged when context window exceeded without condenser."""
     llm = RaisingLLM(force_responses=force_responses)
     agent = Agent(llm=llm, tools=[], condenser=None)
     convo = Conversation(agent=agent)
 
-    # Trigger lazy agent initialization before calling step()
     convo._ensure_agent_ready()
 
     with pytest.raises(LLMContextWindowExceedError):
         agent.step(convo, on_event=lambda e: None)
 
-    # Check that warning was logged
     assert any(
         "CONTEXT WINDOW EXCEEDED ERROR" in record.message for record in caplog.records
     )
@@ -126,13 +200,11 @@ def test_agent_logs_warning_with_non_handling_condenser_on_ctx_exceeded(
     agent = Agent(llm=llm, tools=[], condenser=condenser)
     convo = Conversation(agent=agent)
 
-    # Trigger lazy agent initialization before calling step()
     convo._ensure_agent_ready()
 
     with pytest.raises(LLMContextWindowExceedError):
         agent.step(convo, on_event=lambda e: None)
 
-    # Check that warning was logged with condenser info
     assert any(
         "CONTEXT WINDOW EXCEEDED ERROR" in record.message for record in caplog.records
     )

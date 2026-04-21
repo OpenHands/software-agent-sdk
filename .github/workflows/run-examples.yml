@@ -28,7 +28,7 @@ jobs:
         steps:
             - name: Wait for agent server to finish build
               if: github.event_name == 'pull_request'
-              uses: lewagon/wait-on-check-action@v1.6.0
+              uses: lewagon/wait-on-check-action@v1.7.0
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
                   check-name: Build & Push (python-amd64)
@@ -76,7 +76,7 @@ jobs:
                   PR_NUMBER: ${{ github.event.pull_request.number }}
                   REPO_OWNER: ${{ github.repository_owner }}
                   REPO_NAME: ${{ github.event.repository.name }}
-                  GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+                  SDK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
                   OPENHANDS_CLOUD_API_KEY: ${{ secrets.ALLHANDS_BOT_OPENHANDS_SAAS_API_KEY }}
                   # ACP agents (Claude Code, Codex) route through LiteLLM proxy
                   ANTHROPIC_BASE_URL: https://llm-proxy.app.all-hands.dev
