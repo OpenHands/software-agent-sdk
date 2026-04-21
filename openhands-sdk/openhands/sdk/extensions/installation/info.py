@@ -46,10 +46,6 @@ class InstallationInfo(BaseModel):
     ) -> InstallationInfo:
         """Create an InstallationInfo from an extension and its install context.
 
-        Only ``extension.name`` is required by ``ExtensionProtocol``.
-        ``version`` and ``description`` are read with ``getattr`` so
-        extension types that omit them (e.g. skills) get sensible defaults.
-
         Args:
             extension: Any object satisfying ``ExtensionProtocol``.
             source: Original source string (e.g. ``"github:owner/repo"``).
@@ -59,8 +55,8 @@ class InstallationInfo(BaseModel):
         """
         return InstallationInfo(
             name=extension.name,
-            version=getattr(extension, "version", "1.0.0"),
-            description=getattr(extension, "description", None) or "",
+            version=extension.version,
+            description=extension.description or "",
             source=source,
             resolved_ref=resolved_ref,
             repo_path=repo_path,

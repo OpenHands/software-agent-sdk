@@ -4,19 +4,21 @@ from typing import Protocol
 
 
 class ExtensionProtocol(Protocol):
-    """Minimal structural protocol for installable extensions.
+    """Structural protocol for installable extensions.
 
-    Only ``name`` is required.  ``version`` and ``description`` are read
-    via ``getattr`` in ``InstallationInfo.from_extension`` so that
-    extension types that don't carry those fields (e.g. skills) still
-    work without adapter wrappers.
-
-    ``name`` is declared as a read-only property so that both plain
-    attributes and ``@property`` accessors satisfy the protocol.
+    All three properties are declared as read-only so that both plain
+    Pydantic field attributes and ``@property`` accessors satisfy the
+    protocol.
     """
 
     @property
     def name(self) -> str: ...
+
+    @property
+    def version(self) -> str: ...
+
+    @property
+    def description(self) -> str | None: ...
 
 
 class InstallationInterface[T: ExtensionProtocol](ABC):
