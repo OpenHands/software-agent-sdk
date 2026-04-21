@@ -267,6 +267,7 @@ class ConversationState(OpenHandsModel):
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        file_store: FileStore | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -304,11 +305,12 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        file_store = (
-            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
-            if persistence_dir
-            else InMemoryFileStore()
-        )
+        if file_store is None:
+            file_store = (
+                LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
+                if persistence_dir
+                else InMemoryFileStore()
+            )
 
         try:
             base_text = file_store.read(BASE_STATE)
