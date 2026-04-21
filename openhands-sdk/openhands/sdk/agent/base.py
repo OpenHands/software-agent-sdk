@@ -217,7 +217,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not isinstance(data, dict):
             return data
-
+        # - Empty config: omit (default value, nothing to protect)
         encrypted = data.pop("encrypted_mcp_config", None)
         if encrypted is None:
             return data
