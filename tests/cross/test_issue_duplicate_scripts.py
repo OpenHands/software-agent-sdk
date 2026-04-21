@@ -613,6 +613,23 @@ def test_issue_duplicate_request_json_reports_urlerror(monkeypatch):
         module.request_json("https://example.test", "/path")
 
 
+def test_extract_agent_server_url_returns_runtime_prefix():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    assert (
+        module.extract_agent_server_url(
+            "https://runtime.example/api/conversations/conv-123"
+        )
+        == "https://runtime.example"
+    )
+    assert (
+        module.extract_agent_server_url(
+            "https://app.all-hands.dev/conversations/conv-123"
+        )
+        is None
+    )
+
+
 def test_normalize_result_lowercases_classification():
     module = load_module("issue_duplicate_check_openhands.py")
     normalized = module.normalize_result(
@@ -875,6 +892,87 @@ def test_issue_duplicate_main_waits_for_start_task_and_writes_output(
     assert result["canonical_issue_number"] == 45
 
 
+def test_issue_duplicate_main_prefers_agent_final_response(monkeypatch, tmp_path):
+    module = load_module("issue_duplicate_check_openhands.py")
+    output_path = tmp_path / "result.json"
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk",
+            issue_number=123,
+            output=str(output_path),
+            poll_interval_seconds=1,
+            max_wait_seconds=10,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_issue",
+        lambda repository, issue_number: {
+            "number": issue_number,
+            "title": "Issue title",
+            "body": "Issue body",
+            "html_url": f"https://github.com/{repository}/issues/{issue_number}",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "start_conversation",
+        lambda *args, **kwargs: {"app_conversation_id": "conv-123"},
+    )
+    monkeypatch.setattr(
+        module,
+        "poll_conversation",
+        lambda app_conversation_id, poll_interval_seconds, max_wait_seconds: {
+            "conversation_url": "https://runtime.example/api/conversations/conv-123",
+            "session_api_key": "session-key",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_agent_server_final_response",
+        lambda app_conversation_id, agent_server_url, session_api_key: json.dumps(
+            {
+                "classification": "overlapping-scope",
+                "confidence": "medium",
+                "should_comment": True,
+                "is_duplicate": False,
+                "auto_close_candidate": False,
+                "canonical_issue_number": 45,
+                "candidate_issues": [{"number": 45, "title": "Existing issue"}],
+                "summary": "overlap summary",
+            }
+        )
+        if app_conversation_id == "conv-123"
+        and agent_server_url == "https://runtime.example"
+        and session_api_key == "session-key"
+        else pytest.fail("Unexpected final-response parameters"),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_app_server_events",
+        lambda app_conversation_id: pytest.fail(
+            "fetch_app_server_events should not run"
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_agent_server_events",
+        lambda *args, **kwargs: pytest.fail("fetch_agent_server_events should not run"),
+    )
+
+    assert module.main() == 0
+
+    result = json.loads(output_path.read_text())
+    assert result["classification"] == "overlapping-scope"
+    assert (
+        result["conversation_url"]
+        == "https://runtime.example/api/conversations/conv-123"
+    )
+
+
 def test_issue_duplicate_main_falls_back_to_agent_server_events(monkeypatch, tmp_path):
     module = load_module("issue_duplicate_check_openhands.py")
     output_path = tmp_path / "result.json"
@@ -912,6 +1010,11 @@ def test_issue_duplicate_main_falls_back_to_agent_server_events(monkeypatch, tmp
             "conversation_url": "https://runtime.example/api/conversations/conv-123",
             "session_api_key": "session-key",
         },
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_agent_server_final_response",
+        lambda app_conversation_id, agent_server_url, session_api_key: "",
     )
     monkeypatch.setattr(
         module, "fetch_app_server_events", lambda app_conversation_id: []

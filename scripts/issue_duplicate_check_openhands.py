@@ -348,6 +348,26 @@ def fetch_agent_server_events(
     return []
 
 
+def fetch_agent_server_final_response(
+    app_conversation_id: str, agent_server_url: str, session_api_key: str
+) -> str:
+    payload = request_json(
+        agent_server_url,
+        f"/api/conversations/{urllib.parse.quote(app_conversation_id)}/agent_final_response",
+        headers={"X-Session-API-Key": session_api_key},
+    )
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("response") or "").strip()
+
+
+def extract_agent_server_url(conversation_url: str) -> str | None:
+    marker = "/api/conversations/"
+    if marker not in conversation_url:
+        return None
+    return conversation_url.rsplit(marker, 1)[0]
+
+
 def extract_last_agent_text(events: list[dict[str, Any]]) -> str:
     messages: list[str] = []
     for event in events:
@@ -496,29 +516,36 @@ def main() -> int:
         conversation.get("conversation_url")
         or f"{OPENHANDS_BASE_URL}/conversations/{app_conversation_id}"
     )
-    events = fetch_app_server_events(app_conversation_id)
-    try:
-        agent_text = extract_last_agent_text(events)
-    except RuntimeError:
-        session_api_key = conversation.get("session_api_key")
-        if not session_api_key:
-            raise RuntimeError(
-                "session_api_key was missing from the OpenHands conversation"
-            )
+    session_api_key = str(conversation.get("session_api_key") or "")
+    agent_server_url = extract_agent_server_url(conversation_url)
 
-        marker = "/api/conversations/"
-        if marker not in conversation_url:
-            raise RuntimeError(
-                "Cannot extract agent server URL from conversation URL: "
-                f"{conversation_url}"
-            )
-        agent_server_url = conversation_url.rsplit(marker, 1)[0]
-        events = fetch_agent_server_events(
+    agent_text = ""
+    if agent_server_url and session_api_key:
+        agent_text = fetch_agent_server_final_response(
             app_conversation_id,
             agent_server_url,
             session_api_key,
         )
-        agent_text = extract_last_agent_text(events)
+    if not agent_text:
+        events = fetch_app_server_events(app_conversation_id)
+        try:
+            agent_text = extract_last_agent_text(events)
+        except RuntimeError:
+            if not session_api_key:
+                raise RuntimeError(
+                    "session_api_key was missing from the OpenHands conversation"
+                )
+            if not agent_server_url:
+                raise RuntimeError(
+                    "Cannot extract agent server URL from conversation URL: "
+                    f"{conversation_url}"
+                )
+            events = fetch_agent_server_events(
+                app_conversation_id,
+                agent_server_url,
+                session_api_key,
+            )
+            agent_text = extract_last_agent_text(events)
     result = normalize_result(parse_agent_json(agent_text))
 
     result["issue_number"] = args.issue_number
