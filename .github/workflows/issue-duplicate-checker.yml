@@ -63,8 +63,10 @@ jobs:
 
     issue-duplicate-check:
         if: |
-            github.event_name == 'issues' ||
-            (github.event_name == 'workflow_dispatch' && inputs.mode == 'issue-check' && inputs.issue_number != '')
+            secrets.OPENHANDS_API_KEY != '' && (
+                github.event_name == 'issues' ||
+                (github.event_name == 'workflow_dispatch' && inputs.mode == 'issue-check' && inputs.issue_number != null)
+            )
         runs-on: ubuntu-latest
         timeout-minutes: 35
         concurrency:
@@ -200,7 +202,8 @@ jobs:
                       const autoClose = process.env.AUTO_CLOSE_CANDIDATE === 'true';
                       const closeAfterDays = process.env.CLOSE_AFTER_DAYS || '3';
                       const candidates = JSON.parse(process.env.CANDIDATE_ISSUES_JSON || '[]');
-                      const canonicalIssueNumber = Number(process.env.CANONICAL_ISSUE_NUMBER || candidates?.[0]?.number || 0);
+                      const canonicalIssueRaw = process.env.CANONICAL_ISSUE_NUMBER || candidates?.[0]?.number;
+                      const canonicalIssueNumber = canonicalIssueRaw ? Number(canonicalIssueRaw) : Number.NaN;
                       const candidateLabel = 'duplicate-candidate';
 
                       async function ensureCandidateLabelOnIssue() {
@@ -321,6 +324,9 @@ jobs:
             (github.event_name == 'workflow_dispatch' && inputs.mode == 'auto-close')
         runs-on: ubuntu-latest
         timeout-minutes: 20
+        concurrency:
+            group: auto-close-duplicates-${{ github.repository }}
+            cancel-in-progress: false
         steps:
             - name: Checkout repository
               uses: actions/checkout@v6

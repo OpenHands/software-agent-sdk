@@ -10,6 +10,8 @@ on:
     #   3. A maintainer adds the 'review-this' label, OR
     #   4. A maintainer requests openhands-agent or all-hands-bot as a reviewer
     # Adding labels and requesting reviewers still requires write access.
+    # We intentionally include `synchronize` so follow-up commits retrigger review
+    # on the latest SHA rather than leaving stale feedback on earlier revisions.
     pull_request:
         types: [opened, ready_for_review, synchronize, labeled, review_requested]
 

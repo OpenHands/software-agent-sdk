@@ -14,6 +14,7 @@ from typing import Any
 
 
 GITHUB_API_BASE_URL = "https://api.github.com"
+MAX_PAGES = 100
 DUPLICATE_CANDIDATE_LABEL = "duplicate-candidate"
 DUPLICATE_VETO_MARKER = "<!-- openhands-duplicate-veto -->"
 DUPLICATE_MARKER_RE = re.compile(
@@ -77,7 +78,15 @@ def request_json(
 
 
 def parse_timestamp(value: str) -> datetime:
-    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise ValueError(f"Failed to parse timestamp {value!r}: {exc}") from exc
+
+
+def ensure_page_limit(page: int, resource_name: str) -> None:
+    if page > MAX_PAGES:
+        raise RuntimeError(f"Exceeded pagination limit while listing {resource_name}")
 
 
 def list_open_issues(repository: str) -> list[dict[str, Any]]:
@@ -85,6 +94,7 @@ def list_open_issues(repository: str) -> list[dict[str, Any]]:
     page = 1
     label_query = urllib.parse.quote(DUPLICATE_CANDIDATE_LABEL)
     while True:
+        ensure_page_limit(page, f"open issues for {repository}")
         payload = request_json(
             f"/repos/{repository}/issues?state=open&labels={label_query}&per_page=100&page={page}"
         )
@@ -102,6 +112,7 @@ def list_issue_comments(repository: str, issue_number: int) -> list[dict[str, An
     comments: list[dict[str, Any]] = []
     page = 1
     while True:
+        ensure_page_limit(page, f"comments for issue #{issue_number}")
         payload = request_json(
             f"/repos/{repository}/issues/{issue_number}/comments?per_page=100&page={page}"
         )
@@ -115,6 +126,7 @@ def list_comment_reactions(repository: str, comment_id: int) -> list[dict[str, A
     reactions: list[dict[str, Any]] = []
     page = 1
     while True:
+        ensure_page_limit(page, f"reactions for comment {comment_id}")
         payload = request_json(
             f"/repos/{repository}/issues/comments/{comment_id}/reactions?per_page=100&page={page}"
         )

@@ -106,6 +106,10 @@ def request_json(
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.load(response)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Failed to parse JSON from {method} {base_url}{path}: {exc}"
+        ) from exc
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
@@ -469,12 +473,17 @@ def main() -> int:
     conversation_url = ""
 
     if not app_conversation_id:
+        task_id = start_task.get("id")
+        if not task_id:
+            raise RuntimeError(f"Missing id in start task response: {start_task}")
         ready_task = poll_start_task(
-            start_task["id"],
+            task_id,
             args.poll_interval_seconds,
             args.max_wait_seconds,
         )
-        app_conversation_id = ready_task["app_conversation_id"]
+        app_conversation_id = ready_task.get("app_conversation_id")
+        if not app_conversation_id:
+            raise RuntimeError(f"Missing app_conversation_id in response: {ready_task}")
 
     conversation = poll_conversation(
         app_conversation_id,
@@ -517,7 +526,10 @@ def main() -> int:
     result["agent_response"] = agent_text
 
     output_path = Path(args.output)
-    output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    try:
+        output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        raise RuntimeError(f"Failed to write output to {output_path}: {exc}") from exc
 
     print(
         json.dumps(
