@@ -255,7 +255,7 @@ jobs:
               env:
                   DEFAULT_MODEL: ${{ steps.load-models.outputs.default_model }}
                   ALLOWED_MODEL_IDS_JSON: ${{ steps.load-models.outputs.allowed_model_ids }}
-                  PAT_TOKEN_DEFAULT: ${{ secrets.PAT_TOKEN }}
+                  PAT_TOKEN_DEFAULT: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH }}
               run: |
                   set -euo pipefail
 
