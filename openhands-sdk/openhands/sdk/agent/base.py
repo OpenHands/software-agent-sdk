@@ -283,7 +283,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             result = handler(self)
 
         # Handle mcp_config based on context:
-        # - Empty config: keep as-is (nothing sensitive)
+        # - Empty config: omit (nothing sensitive)
         # - expose_secrets=True: keep as-is (explicitly requested)
         # - cipher present: encrypt and store in encrypted_mcp_config, omit original
         # - default: omit (redact sensitive data)
