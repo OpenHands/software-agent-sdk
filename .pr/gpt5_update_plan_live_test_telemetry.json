@@ -1,0 +1,18 @@
+{
+  "demo_file_content": "Checklist of changes for this run:\n- Defined a three-step plan via update_plan.\n- Created or updated GPT5_PLAN_DEMO.txt with this checklist.\n",
+  "demo_file_exists": true,
+  "example_cost_lines": [
+    "EXAMPLE_COST: 0.05832974999999999"
+  ],
+  "example_script": "examples/04_llm_specific_tools/03_gpt5_update_plan_preset.py",
+  "loaded_tools_line": "{\"asctime\": \"2026-04-21 12:22:27,257\", \"levelname\": \"INFO\", \"name\": \"openhands.sdk.agent.base\", \"filename\": \"base.py\", \"lineno\": 321, \"message\": \"Loaded 17 tools from spec: ['terminal', 'apply_patch', 'update_plan', 'browser_navigate', 'browser_click', 'browser_get_state', 'browser_get_content', 'browser_type', 'browser_scroll', 'browser_go_back', 'browser_list_tabs', 'browser_switch_tab', 'browser_close_tab', 'browser_get_storage', 'browser_set_storage', 'browser_start_recording', 'browser_stop_recording']\"}",
+  "run_mode": "direct-openai",
+  "run_succeeded": true,
+  "tool_mentions": {
+    "apply_patch": 0,
+    "task_tracker": 0,
+    "terminal": 1,
+    "update_plan": 2
+  },
+  "workspace": "/tmp/tmp.kCQhja56zm"
+}
