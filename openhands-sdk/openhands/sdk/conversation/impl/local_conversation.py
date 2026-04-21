@@ -68,7 +68,7 @@ logger = get_logger(__name__)
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
-    _state: ConversationState
+    _state_value: ConversationState
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
     _on_token: ConversationTokenCallbackType | None
@@ -83,6 +83,18 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+
+    @property
+    def _state(self) -> ConversationState:
+        return self._state_value
+
+    @_state.setter
+    def _state(self, new_state: ConversationState) -> None:
+        self._state_value = new_state
+        # Automatically update objects that hold direct state references.
+        stuck_detector = getattr(self, "_stuck_detector", None)
+        if stuck_detector is not None:
+            stuck_detector.state = new_state
 
     def __init__(
         self,
@@ -382,7 +394,8 @@ class LocalConversation(BaseConversation):
                     fork_tags["title"] = title
 
             # Delegate deep-copy semantics to ConversationState.snapshot()
-            # and replace the fork's placeholder state.
+            # and replace the fork's placeholder state.  The _state setter
+            # automatically updates the stuck detector's reference.
             fork_conv._state = self._state.snapshot(
                 conversation_id=fork_id,
                 file_store=fork_conv._state._fs,
@@ -391,10 +404,6 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_conv._state.persistence_dir,
                 tags=fork_tags,
             )
-
-            # Fix up objects that hold a direct reference to the state.
-            if fork_conv._stuck_detector is not None:
-                fork_conv._stuck_detector.state = fork_conv._state
 
             event_count = len(self._state.events)
 

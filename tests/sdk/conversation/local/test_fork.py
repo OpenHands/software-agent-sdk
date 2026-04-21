@@ -142,6 +142,21 @@ def test_fork_copies_invoked_skills():
         assert "skill-c" not in src._state.invoked_skills
 
 
+def test_fork_stuck_detector_references_fork_state():
+    """After fork, stuck_detector must point to the fork's state, not the source's."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            stuck_detection=True,
+        )
+        fork = src.fork()
+
+        assert fork.stuck_detector is not None
+        assert fork.stuck_detector.state is fork._state
+
+
 def test_fork_accepts_replacement_agent():
     """Providing an agent kwarg replaces the source agent in the fork."""
     with tempfile.TemporaryDirectory() as tmpdir:
