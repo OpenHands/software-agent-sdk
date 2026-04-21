@@ -59,7 +59,7 @@ def test_mcp_tool_serialization():
     assert loaded.model_dump_json() == dumped
 
 
-def test_agent_serialization_should_include_mcp_tool() -> None:
+def test_mcp_config_exposed_with_expose_secrets_context() -> None:
     """Test mcp_config serialization with expose_secrets=True context."""
     # Create a simple LLM instance and agent with empty tools
     llm = LLM(model="test-model", usage_id="test-llm")
