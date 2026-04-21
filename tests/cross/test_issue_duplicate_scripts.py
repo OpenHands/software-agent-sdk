@@ -1360,6 +1360,13 @@ def test_extract_agent_server_url_returns_runtime_prefix():
     )
 
 
+def test_validate_event_search_results_raises_when_limit_is_hit():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    with pytest.raises(RuntimeError, match="Event search returned at least"):
+        module.validate_event_search_results([{}] * module.EVENT_SEARCH_LIMIT)
+
+
 def test_normalize_result_lowercases_classification():
     module = load_module("issue_duplicate_check_openhands.py")
     normalized = module.normalize_result(

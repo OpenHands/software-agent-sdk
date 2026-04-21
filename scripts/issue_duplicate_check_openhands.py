@@ -29,6 +29,10 @@ TERMINAL_EXECUTION_STATUSES = (
     FAILED_EXECUTION_STATUSES | SUCCESSFUL_TERMINAL_EXECUTION_STATUSES
 )
 EVENT_SEARCH_LIMIT = 1000
+EVENT_SEARCH_LIMIT_HIT_MESSAGE = (
+    f"Event search returned at least {EVENT_SEARCH_LIMIT} events; results may be "
+    "incomplete"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -321,6 +325,12 @@ def poll_conversation(
     )
 
 
+def validate_event_search_results(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(events) >= EVENT_SEARCH_LIMIT:
+        raise RuntimeError(EVENT_SEARCH_LIMIT_HIT_MESSAGE)
+    return events
+
+
 def fetch_app_server_events(app_conversation_id: str) -> list[dict[str, Any]]:
     payload = request_json(
         OPENHANDS_BASE_URL,
@@ -328,9 +338,9 @@ def fetch_app_server_events(app_conversation_id: str) -> list[dict[str, Any]]:
         headers={"Authorization": openhands_headers()["Authorization"]},
     )
     if isinstance(payload, dict):
-        return payload.get("items", [])
+        return validate_event_search_results(payload.get("items", []))
     if isinstance(payload, list):
-        return payload
+        return validate_event_search_results(payload)
     return []
 
 
@@ -343,9 +353,9 @@ def fetch_agent_server_events(
         headers={"X-Session-API-Key": session_api_key},
     )
     if isinstance(payload, dict):
-        return payload.get("items", [])
+        return validate_event_search_results(payload.get("items", []))
     if isinstance(payload, list):
-        return payload
+        return validate_event_search_results(payload)
     return []
 
 

@@ -97,7 +97,7 @@ jobs:
                     echo "Error: TARGET_REPOSITORY is required"
                     exit 1
                   fi
-                  echo "$TARGET_REPOSITORY" | grep -qE '^[^/]+/[^/]+$' || {
+                  echo "$TARGET_REPOSITORY" | grep -qE '^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$' || {
                     echo "Error: TARGET_REPOSITORY must be in owner/repo format"
                     exit 1
                   }
@@ -232,7 +232,11 @@ jobs:
                         core.setFailed('CANDIDATE_ISSUES_JSON is not an array');
                         return;
                       }
-                      const canonicalIssueRaw = process.env.CANONICAL_ISSUE_NUMBER || candidates?.[0]?.number;
+                      if (candidates.length === 0) {
+                        core.setFailed(`No candidate issues were returned for issue #${issueNumber}.`);
+                        return;
+                      }
+                      const canonicalIssueRaw = process.env.CANONICAL_ISSUE_NUMBER || candidates[0].number;
                       const canonicalIssueNumber = canonicalIssueRaw ? Number(canonicalIssueRaw) : Number.NaN;
                       const candidateLabel = 'duplicate-candidate';
 
@@ -329,10 +333,6 @@ jobs:
                         }
                       }
 
-                      if (!Array.isArray(candidates) || candidates.length === 0) {
-                        core.setFailed(`No candidate issues were returned for issue #${issueNumber}.`);
-                        return;
-                      }
                       if (!Number.isInteger(canonicalIssueNumber) || canonicalIssueNumber <= 0) {
                         core.setFailed(`No canonical issue number was returned for issue #${issueNumber}.`);
                         return;

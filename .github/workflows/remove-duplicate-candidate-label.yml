@@ -8,6 +8,10 @@ on:
 permissions:
     issues: write
 
+concurrency:
+    group: remove-duplicate-${{ github.repository }}-${{ github.event.issue.number }}
+    cancel-in-progress: false
+
 jobs:
     remove-duplicate-candidate:
         if: |
