@@ -19,8 +19,8 @@ jobs:
             github.event.issue.pull_request == null &&
             contains(github.event.issue.labels.*.name, 'duplicate-candidate') &&
             github.event.comment.user.type != 'Bot' &&
-            !contains(github.event.comment.body, '<!-- openhands-duplicate-check') &&
-            !contains(github.event.comment.body, '<!-- openhands-duplicate-veto')
+            !startsWith(github.event.comment.body || '', '<!-- openhands-duplicate-check') &&
+            !startsWith(github.event.comment.body || '', '<!-- openhands-duplicate-veto')
         runs-on: ubuntu-latest
         steps:
             - name: Remove duplicate-candidate label

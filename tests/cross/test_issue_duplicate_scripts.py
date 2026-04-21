@@ -1276,6 +1276,37 @@ def test_issue_duplicate_request_json_reports_httperror(monkeypatch):
         module.request_json("https://example.test", "/path")
 
 
+def test_fetch_issue_rejects_invalid_repository_format():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    with pytest.raises(ValueError, match="Invalid repository format"):
+        module.fetch_issue("bad/repo/name", 123)
+
+
+def test_fetch_app_server_events_ignores_non_list_items(monkeypatch):
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    monkeypatch.setattr(module, "request_json", lambda *args, **kwargs: {"items": 123})
+    monkeypatch.setattr(
+        module, "openhands_headers", lambda: {"Authorization": "Bearer test-token"}
+    )
+
+    assert module.fetch_app_server_events("conv-123") == []
+
+
+def test_fetch_agent_server_events_ignores_non_list_items(monkeypatch):
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    monkeypatch.setattr(module, "request_json", lambda *args, **kwargs: {"items": 123})
+
+    assert (
+        module.fetch_agent_server_events(
+            "conv-123", "https://runtime.example", "session-key"
+        )
+        == []
+    )
+
+
 def test_normalize_result_sanitizes_invalid_edge_cases():
     module = load_module("issue_duplicate_check_openhands.py")
     normalized = module.normalize_result(

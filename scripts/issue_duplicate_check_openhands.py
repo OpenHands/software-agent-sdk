@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -14,6 +15,7 @@ from typing import Any
 
 
 OPENHANDS_BASE_URL = os.environ.get("OPENHANDS_BASE_URL", "https://app.all-hands.dev")
+REPOSITORY_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$")
 GITHUB_API_BASE_URL = os.environ.get("GITHUB_API_BASE_URL", "https://api.github.com")
 FAILED_EXECUTION_STATUSES = {
     "error",
@@ -125,6 +127,8 @@ def request_json(
 
 
 def fetch_issue(repository: str, issue_number: int) -> dict[str, Any]:
+    if not REPOSITORY_PATTERN.fullmatch(repository):
+        raise ValueError(f"Invalid repository format: {repository}")
     return request_json(
         GITHUB_API_BASE_URL,
         f"/repos/{repository}/issues/{issue_number}",
@@ -338,7 +342,8 @@ def fetch_app_server_events(app_conversation_id: str) -> list[dict[str, Any]]:
         headers={"Authorization": openhands_headers()["Authorization"]},
     )
     if isinstance(payload, dict):
-        return validate_event_search_results(payload.get("items", []))
+        items = payload.get("items")
+        return validate_event_search_results(items) if isinstance(items, list) else []
     if isinstance(payload, list):
         return validate_event_search_results(payload)
     return []
@@ -353,7 +358,8 @@ def fetch_agent_server_events(
         headers={"X-Session-API-Key": session_api_key},
     )
     if isinstance(payload, dict):
-        return validate_event_search_results(payload.get("items", []))
+        items = payload.get("items")
+        return validate_event_search_results(items) if isinstance(items, list) else []
     if isinstance(payload, list):
         return validate_event_search_results(payload)
     return []

@@ -380,7 +380,7 @@ jobs:
                       );
                       const body = sections.join('\n').trim();
 
-                      const MAX_COMMENT_PAGES = 10;
+                      const MAX_COMMENT_PAGES = 50;
                       let allComments = [];
                       let page = 1;
                       while (page <= MAX_COMMENT_PAGES) {
@@ -401,9 +401,10 @@ jobs:
                         page += 1;
                       }
                       if (page > MAX_COMMENT_PAGES) {
-                        core.warning(
+                        core.setFailed(
                           `Stopped loading comments for issue #${issueNumber} after ${MAX_COMMENT_PAGES} pages.`
                         );
+                        return;
                       }
 
                       const existing = allComments.find((comment) => comment.body && comment.body.includes('<!-- openhands-duplicate-check '));
@@ -419,9 +420,10 @@ jobs:
                             existingMarker.canonicalIssueNumber !== canonicalIssueNumber ||
                             existingMarker.autoClose !== autoClose
                           ) {
-                            core.warning(
-                              `Duplicate check comment already exists on issue #${issueNumber} with different canonical/auto-close metadata; keeping label state aligned with the existing comment.`
+                            core.setFailed(
+                              `Duplicate check comment already exists on issue #${issueNumber} with different canonical/auto-close metadata; manual reconciliation is required.`
                             );
+                            return;
                           }
                         } else {
                           core.warning(
