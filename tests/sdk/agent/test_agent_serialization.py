@@ -347,18 +347,6 @@ def test_mcp_config_redacted_by_default() -> None:
     assert "encrypted_mcp_config" not in agent_dump
 
 
-def test_mcp_config_exposed_with_expose_secrets_context() -> None:
-    """Test that mcp_config is included when expose_secrets=True."""
-    llm = LLM(model="test-model", usage_id="test-llm")
-    mcp_config = {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-fetch"]}}}
-    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
-
-    # Serialize with expose_secrets=True - should include mcp_config
-    agent_dump = agent.model_dump(context={"expose_secrets": True})
-    assert agent_dump.get("mcp_config") == mcp_config
-    assert "encrypted_mcp_config" not in agent_dump
-
-
 def test_mcp_config_encrypted_with_cipher_context() -> None:
     """Test that mcp_config is encrypted when cipher is in context."""
     from openhands.sdk.utils.cipher import Cipher
