@@ -41,6 +41,7 @@ dev = [
     "streamlit>=1.49.1",
     "pytest-timeout>=2.4.0",
     "griffe[pypi]>=2.0.0",
+    "asyncpg>=0.31.0",
 ]
 
 # Ruff configuration
