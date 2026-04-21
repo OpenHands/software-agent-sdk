@@ -179,7 +179,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",
-        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+        json_schema_extra=field_meta(SettingProminence.MAJOR),
     )
     api_version: str | None = Field(
         default=None,
@@ -1154,6 +1154,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     message="Accessing the 'model_fields' attribute.*",
                 )
                 api_key_value = self._get_litellm_api_key_value()
+
+                # When streaming, request usage in the final chunk so that
+                # detailed token breakdowns (prompt_tokens_details with
+                # cached_tokens, etc.) are not silently discarded by
+                # litellm's streaming handler.
+                if enable_streaming:
+                    kwargs.setdefault("stream_options", {"include_usage": True})
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
