@@ -4,40 +4,68 @@ description: >-
   This skill should be used when the user asks to "triage PRs",
   "scan pull requests", "check PR status", "review stale PRs",
   "which PRs need attention", or mentions triaging issues and pull requests.
-  Scans all open PRs in OpenHands/software-agent-sdk, categorizes them by
-  review status, triggers the ReviewBot on unreviewed PRs, and produces
-  a summary report of what needs attention.
+  Scans all open PRs in a GitHub repository, categorizes them by review
+  status, triggers the ReviewBot on unreviewed PRs, and produces a summary
+  report of what needs attention. Works with any GitHub repository.
 ---
 
 # PR & Issue Triage Skill
 
-Scan all open pull requests and issues in `OpenHands/software-agent-sdk`,
-categorize them, trigger review bots where needed, and produce an
-actionable summary report.
+Scan all open pull requests and issues in a GitHub repository, categorize
+them, trigger review bots where needed, and produce an actionable summary
+report.
 
 ## Prerequisites
 
 - `GITHUB_TOKEN` environment variable with repo access
 - `gh` CLI authenticated (the token is auto-detected)
 
+## Step 0: Determine the Target Repository
+
+The target repository (`OWNER/REPO`) must be resolved before any other
+step. Use the following priority order:
+
+1. **Current git checkout** — run `git remote get-url origin` and extract
+   the `OWNER/REPO` slug from the URL.
+2. **Explicit user input** — if no git remote is found (or the workspace
+   has no `.git` directory), **ask the user** which repository to triage.
+   Do not guess or hard-code a default.
+
+```bash
+# Try to detect from git remote
+REPO_SLUG=$(git remote get-url origin 2>/dev/null \
+  | sed -E 's#.*github\.com[:/]##; s#\.git$##')
+
+if [ -z "$REPO_SLUG" ]; then
+  echo "No git remote found. Please provide the repository (OWNER/REPO)."
+  # Wait for user input before proceeding.
+fi
+```
+
+Store the resolved value in `REPO_SLUG` (e.g. `octocat/hello-world`) and
+substitute it into every `gh` / `gh api` command below.
+
 ## Workflow
 
 ### Step 1: Fetch All Open PRs
 
 ```bash
-gh pr list --repo OpenHands/software-agent-sdk --state open \
+gh pr list --repo "$REPO_SLUG" --state open \
   --json number,title,author,createdAt,updatedAt,isDraft,labels,url \
   --limit 200
 ```
 
 ### Step 2: Get Detailed Review Status via GraphQL
 
-For each non-draft PR, query review threads and latest reviews:
+Split `REPO_SLUG` into its owner and repo components, then query:
 
 ```bash
-gh api graphql -f query='
+OWNER="${REPO_SLUG%%/*}"
+REPO="${REPO_SLUG##*/}"
+
+gh api graphql -f query="
 {
-  repository(owner: "OpenHands", name: "software-agent-sdk") {
+  repository(owner: \"$OWNER\", name: \"$REPO\") {
     pullRequests(states: OPEN, first: 100) {
       nodes {
         number
@@ -68,7 +96,7 @@ gh api graphql -f query='
       }
     }
   }
-}'
+}"
 ```
 
 ### Step 3: Categorize Each PR
@@ -81,16 +109,20 @@ Classify every non-draft (ready for review) PR into one of these buckets:
 | ⏳ **CHANGES REQUESTED** | Has `CHANGES_REQUESTED` review | Waiting for author — leave as is |
 | 💬 **HAS UNRESOLVED THREADS** | >0 unresolved review threads | Waiting for author — leave as is |
 | 🔴 **NO REVIEWS** | Zero reviews, zero `/codereview` comments | **Trigger ReviewBot** |
-| 🟡 **BOT-ONLY REVIEWED** | Only `all-hands-bot`/`copilot-*` reviewed, 0 unresolved threads, no `/codereview` comment | **Trigger ReviewBot** |
+| 🟡 **BOT-ONLY REVIEWED** | Only bot accounts reviewed, 0 unresolved threads, no `/codereview` comment | **Trigger ReviewBot** |
 | 🟠 **REVIEWED (needs decision)** | Human reviewed, threads resolved, no approval | Needs maintainer attention |
+
+**Bot accounts** are usernames that match common automation patterns:
+`*[bot]`, `*-bot`, `copilot-*`, `dependabot`, `github-actions`.
+Treat reviews only from these accounts as "bot-only reviewed".
 
 ### Step 4: Check for Existing Bot Comments
 
-Before triggering the ReviewBot, verify no `/codereview` or `/github-pr-review`
-comment already exists:
+Before triggering the ReviewBot, verify no `/codereview` or
+`/github-pr-review` comment already exists:
 
 ```bash
-gh api "repos/OpenHands/software-agent-sdk/issues/{PR_NUMBER}/comments" \
+gh api "repos/$REPO_SLUG/issues/{PR_NUMBER}/comments" \
   --jq '[.[] | select(.body | test("/codereview|/github-pr-review"))] | length'
 ```
 
@@ -102,11 +134,13 @@ For PRs that need it (per rules above), post a comment that triggers the
 review commands **and** includes a disclosure note:
 
 ```bash
-gh api "repos/OpenHands/software-agent-sdk/issues/{PR_NUMBER}/comments" \
+gh api "repos/$REPO_SLUG/issues/{PR_NUMBER}/comments" \
   -f body="@OpenHands /codereview /github-pr-review
 
 ---
-_🤖 This comment was automatically posted by the **pr-triage** skill ([OpenHands](https://github.com/All-Hands-AI/OpenHands)) on behalf of a maintainer._"
+_🤖 This comment was automatically posted by the **pr-triage** skill
+([OpenHands](https://github.com/All-Hands-AI/OpenHands)) on behalf of
+a maintainer._"
 ```
 
 ### Step 6: Identify Stale PRs
@@ -141,26 +175,26 @@ Output a structured report with these sections:
 ## Example Run
 
 ```
-📊 PR Triage Report — 2026-04-21
-═══════════════════════════════════
+📊 PR Triage Report for octocat/hello-world — 2026-04-21
+══════════════════════════════════════════════════════════
 
-🚀 Ready to Merge (6):
-  #1996 ✅ test: use default agent preset for integration tests (xingyaoww)
-  #2196 ✅ fix: redact credentials from URLs (jpshackelford)
+🚀 Ready to Merge (3):
+  #42 ✅ fix: correct typo in README (alice)
+  #38 ✅ feat: add dark mode support (bob)
   ...
 
-🔴 ReviewBot Triggered (10):
-  #1780 → fix: remote conversation OTEL session ID (timon0305)
-  #2142 → feat: add MaybeDontAnalyzer security analyzer (robotdan)
+🔴 ReviewBot Triggered (5):
+  #55 → feat: add search endpoint (carol)
+  #51 → fix: handle null pointer in parser (dave)
   ...
 
-⏳ Waiting for Author (15):
-  #2470 CHANGES_REQUESTED: Alternate fix for stale execution (DoubleDensity)
-  #2349 💬 1 unresolved: condenser for subagents (VascoSch92)
+⏳ Waiting for Author (8):
+  #47 CHANGES_REQUESTED: refactor auth module (eve)
+  #44 💬 2 unresolved: add caching layer (frank)
   ...
 
-🗑️ Close Candidates (18 ancient drafts):
-  #704 (193d) Add Kubernetes build context generator (tofarr)
-  #796 (185d) feat: add enum support to environment parser (tofarr)
+🗑️ Close Candidates (4 ancient drafts):
+  #12 (180d) POC: new layout engine (grace)
+  #8  (210d) experiment: wasm support (heidi)
   ...
 ```
