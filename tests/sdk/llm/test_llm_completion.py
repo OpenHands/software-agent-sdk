@@ -1,7 +1,7 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +12,8 @@ from litellm.types.utils import (
     Function,
     Message as LiteLLMMessage,
     ModelResponse,
+    ModelResponseStream,
+    PromptTokensDetailsWrapper,
     StreamingChoices,
     Usage,
 )
@@ -655,6 +657,117 @@ def test_llm_completion_function_call_vs_non_function_call_mode(mock_completion)
 
     # Non-native mode should not pass tools (they're handled via prompts)
     assert non_native_call_kwargs.get("tools") is None
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_streaming_preserves_cache_read_tokens(mock_completion):
+    """Test that cache_read_tokens from prompt_tokens_details survive streaming.
+
+    Regression test for: when streaming through a LiteLLM proxy, the proxy
+    sends a final usage-only chunk (empty choices) with prompt_tokens_details
+    including cached_tokens.  If the SDK doesn't request
+    stream_options={"include_usage": True}, litellm's streaming handler
+    silently discards this chunk and falls back to calculate_total_usage()
+    which only keeps prompt_tokens/completion_tokens — losing
+    prompt_tokens_details.cached_tokens entirely.
+
+    This test creates realistic streaming chunks (as sent by a LiteLLM proxy)
+    including a usage-only final chunk with cached_tokens=4000 and lets the
+    real stream_chunk_builder reassemble them.  It verifies:
+    1. stream_options={"include_usage": True} is passed to litellm_completion
+    2. cache_read_tokens is correctly reported in the response metrics
+    """
+    # --- Simulate chunks as sent by a LiteLLM proxy ---
+    content_chunk = ModelResponseStream(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(content="Hello world", role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="minimax/MiniMax-M2.5",
+        object="chat.completion.chunk",
+    )
+
+    finish_chunk = ModelResponseStream(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content=None, role=None),
+            )
+        ],
+        created=1234567890,
+        model="minimax/MiniMax-M2.5",
+        object="chat.completion.chunk",
+    )
+
+    # Final usage-only chunk (empty choices) — this is the chunk the proxy
+    # sends when stream_options={"include_usage": True} is set upstream.
+    usage_chunk = ModelResponseStream(
+        id="chatcmpl-test",
+        choices=[],
+        created=1234567890,
+        model="minimax/MiniMax-M2.5",
+        object="chat.completion.chunk",
+        usage=Usage(
+            prompt_tokens=5000,
+            completion_tokens=100,
+            total_tokens=5100,
+            prompt_tokens_details=PromptTokensDetailsWrapper(cached_tokens=4000),
+        ),
+    )
+
+    mock_stream = MagicMock(spec=CustomStreamWrapper)
+    mock_stream.__iter__.return_value = iter([content_chunk, finish_chunk, usage_chunk])
+    mock_completion.return_value = mock_stream
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="minimax/MiniMax-M2.5",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received_chunks = []
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    response = llm.completion(
+        messages=messages, stream=True, on_token=received_chunks.append
+    )
+
+    # The usage-only chunk must reach the SDK (not be discarded)
+    assert len(received_chunks) == 3
+
+    # stream_chunk_builder must preserve prompt_tokens_details.
+    # ModelResponse stores 'usage' as an extra (dynamic) field, so pyright
+    # cannot see it statically — cast to Any for attribute access.
+    raw_resp: Any = response.raw_response
+    assert raw_resp.usage is not None
+    assert raw_resp.usage.prompt_tokens == 5000
+    assert raw_resp.usage.completion_tokens == 100
+    assert raw_resp.usage.prompt_tokens_details is not None
+    assert raw_resp.usage.prompt_tokens_details.cached_tokens == 4000
+
+    # Telemetry must record cache_read_tokens from prompt_tokens_details
+    acc = response.metrics.accumulated_token_usage
+    assert acc is not None
+    assert acc.cache_read_tokens == 4000
+
+    # Verify stream_options={"include_usage": True} was passed to litellm
+    call_kwargs = mock_completion.call_args
+    assert call_kwargs is not None
+    actual_stream_options = call_kwargs.kwargs.get("stream_options") or call_kwargs[
+        1
+    ].get("stream_options")
+    assert actual_stream_options == {"include_usage": True}, (
+        f"Expected stream_options={{include_usage: True}}, got {actual_stream_options}"
+    )
 
 
 # This file focuses on LLM completion functionality, configuration options,

@@ -43,7 +43,10 @@ def test_security_policy_in_system_message():
         "Download and run code from a repository specified by a user" in system_message
     )
     assert "Open pull requests on the original repositories" in system_message
-    assert "Install and run popular packages from pypi, npm" in system_message
+    assert (
+        "Install and run popular packages from **official** package registries"
+        in system_message
+    )
     assert (
         "Upload code to anywhere other than the location where it was obtained"
         in system_message
@@ -60,6 +63,25 @@ def test_security_policy_in_system_message():
         "This [message/comment/issue/PR] was created by an AI agent" in system_message
     )
     assert "AI assistant (OpenHands)" not in system_message
+
+
+def test_none_security_policy_filename_disables_policy_without_null_public_value():
+    """Test that None input disables the policy without exposing a null contract."""
+    agent = Agent.model_validate(
+        {
+            "llm": LLM(
+                usage_id="test-llm",
+                model="test-model",
+                api_key=SecretStr("test-key"),
+                base_url="http://test",
+            ),
+            "security_policy_filename": None,
+        }
+    )
+
+    assert agent.security_policy_filename == ""
+    assert agent.model_dump()["security_policy_filename"] == ""
+    assert "🔐 Security Policy" not in agent.static_system_message
 
 
 def test_custom_security_policy_in_system_message():

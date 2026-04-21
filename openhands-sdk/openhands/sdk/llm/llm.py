@@ -62,6 +62,7 @@ from litellm.types.llms.openai import (
     RefusalDeltaEvent,
     ResponseCompletedEvent,
     ResponsesAPIResponse,
+    ResponsesAPIStreamEvents,
 )
 from litellm.types.utils import (
     Delta,
@@ -178,7 +179,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",
-        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+        json_schema_extra=field_meta(SettingProminence.MAJOR),
     )
     api_version: str | None = Field(
         default=None,
@@ -657,6 +658,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+        # Keep telemetry in sync so post-resume LLM calls record into
+        # the restored metrics object, not the stale one from __init__.
+        if self._telemetry is not None:
+            self._telemetry.metrics = metrics
 
     def reset_metrics(self) -> None:
         """Reset metrics and telemetry to fresh instances.
@@ -995,7 +1000,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         stream_callback = on_token if user_enable_streaming else None
+                        # Collect output items from streaming events.
+                        # Some endpoints (e.g., Codex subscription) send output
+                        # items as separate events but the final response.completed
+                        # event has output=[].  We accumulate them here and patch
+                        # the completed response if needed.
+                        collected_output_items: list[Any] = []
                         for event in ret:
+                            if event is None:
+                                continue
+                            # Collect finished output items
+                            evt_type = getattr(event, "type", None)
+                            if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+                                item = getattr(event, "item", None)
+                                if item is not None:
+                                    collected_output_items.append(item)
                             if stream_callback is None:
                                 continue
                             if isinstance(
@@ -1029,6 +1048,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         completed_resp = completed_event.response
+
+                        # Patch empty output with items collected from stream
+                        if not completed_resp.output and collected_output_items:
+                            completed_resp.output = collected_output_items
 
                         self._telemetry.on_response(completed_resp)
                         return completed_resp
@@ -1132,6 +1155,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 api_key_value = self._get_litellm_api_key_value()
 
+                # When streaming, request usage in the final chunk so that
+                # detailed token breakdowns (prompt_tokens_details with
+                # cached_tokens, etc.) are not silently discarded by
+                # litellm's streaming handler.
+                if enable_streaming:
+                    kwargs.setdefault("stream_options", {"include_usage": True})
+
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
                     model=self.model,
@@ -1210,6 +1240,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             elif self._model_info is not None:
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
+                    # Guard: if max_output_tokens >= the context window,
+                    # requesting that many output tokens would leave zero
+                    # room for input and strict providers (e.g. AWS Bedrock)
+                    # will reject every call. Halve it so input has
+                    # headroom. We check both max_input_tokens and
+                    # max_tokens since either may represent the context
+                    # window depending on the provider.
+                    context_window = self.max_input_tokens or self._model_info.get(
+                        "max_tokens"
+                    )
+                    if (
+                        context_window is not None
+                        and self.max_output_tokens is not None
+                        and self.max_output_tokens >= context_window
+                    ):
+                        capped = self.max_output_tokens // 2
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s "
+                            "for %s (max_output_tokens >= context "
+                            "window %s)",
+                            self.max_output_tokens,
+                            capped,
+                            self.model,
+                            context_window,
+                        )
+                        self.max_output_tokens = capped
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting
@@ -1387,6 +1443,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - For subscription mode, system prompts are prepended to user content
         """
         msgs = copy.deepcopy(messages)
+
+        # Subscription mode (store=false): strip reasoning items from prior
+        # assistant turns. The Codex endpoint doesn't persist items, so
+        # referencing their IDs in follow-up requests causes a 404.
+        if self.is_subscription:
+            for m in msgs:
+                if m.role == "assistant" and m.responses_reasoning_item is not None:
+                    m.responses_reasoning_item = None
 
         # Determine vision based on model detection
         vision_active = self.vision_is_active()

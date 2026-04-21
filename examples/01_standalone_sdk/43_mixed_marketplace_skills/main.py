@@ -37,7 +37,7 @@ Usage:
 import sys
 from pathlib import Path
 
-from openhands.sdk.plugin import Marketplace
+from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.skills import (
     install_skills_from_marketplace,
     list_installed_skills,
