@@ -153,14 +153,24 @@ def find_latest_auto_close_comment(
 ) -> tuple[dict[str, Any] | None, int | None]:
     latest_comment: dict[str, Any] | None = None
     latest_canonical_issue: int | None = None
+    latest_created_at: str | None = None
     for comment in comments:
         canonical_issue, auto_close = extract_duplicate_metadata(
             comment.get("body") or ""
         )
         if canonical_issue is None or not auto_close:
             continue
+        comment_created_at = comment.get("created_at")
+        if not isinstance(comment_created_at, str):
+            comment_created_at = None
+        if latest_comment is not None:
+            if comment_created_at is None:
+                continue
+            if latest_created_at is not None and comment_created_at < latest_created_at:
+                continue
         latest_comment = comment
         latest_canonical_issue = canonical_issue
+        latest_created_at = comment_created_at
     return latest_comment, latest_canonical_issue
 
 
@@ -311,23 +321,11 @@ def main() -> int:
     summary: list[dict[str, Any]] = []
     for issue in list_open_issues(args.repository):
         issue_number = issue.get("number")
-        issue_created_at_str = issue.get("created_at")
-        if issue_number is None or not issue_created_at_str:
+        if issue_number is None:
             continue
         try:
             issue_number = int(issue_number)
         except (TypeError, ValueError):
-            continue
-        try:
-            issue_created_at = parse_timestamp(issue_created_at_str)
-        except ValueError as exc:
-            print(
-                "Warning: Skipping issue "
-                f"#{issue_number} due to invalid timestamp: {exc}",
-                file=sys.stderr,
-            )
-            continue
-        if issue_created_at > cutoff:
             continue
 
         comments = list_issue_comments(args.repository, issue_number)

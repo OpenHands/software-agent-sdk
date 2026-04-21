@@ -63,10 +63,8 @@ jobs:
 
     issue-duplicate-check:
         if: |
-            secrets.OPENHANDS_API_KEY != '' && (
-                github.event_name == 'issues' ||
-                (github.event_name == 'workflow_dispatch' && inputs.mode == 'issue-check' && inputs.issue_number != null)
-            )
+            github.event_name == 'issues' ||
+            (github.event_name == 'workflow_dispatch' && inputs.mode == 'issue-check' && inputs.issue_number != null)
         runs-on: ubuntu-latest
         timeout-minutes: 35
         concurrency:
@@ -83,9 +81,14 @@ jobs:
 
             - name: Validate duplicate check inputs
               env:
+                  OPENHANDS_API_KEY: ${{ secrets.OPENHANDS_API_KEY }}
                   ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
                   TARGET_REPOSITORY: ${{ inputs.repository || github.event.repository.full_name }}
               run: |
+                  if [ -z "$OPENHANDS_API_KEY" ]; then
+                    echo "Error: OPENHANDS_API_KEY secret is required"
+                    exit 1
+                  fi
                   if [ -z "$ISSUE_NUMBER" ]; then
                     echo "Error: ISSUE_NUMBER is required"
                     exit 1
@@ -118,9 +121,17 @@ jobs:
                   python - <<'PY'
                   import json
                   import os
+                  import sys
                   from pathlib import Path
 
-                  result = json.loads(Path(os.environ['RESULT_PATH']).read_text())
+                  try:
+                      result = json.loads(Path(os.environ['RESULT_PATH']).read_text())
+                  except (FileNotFoundError, json.JSONDecodeError) as exc:
+                      print(
+                          f"Error: Failed to read duplicate check result: {exc}",
+                          file=sys.stderr,
+                      )
+                      raise SystemExit(1) from exc
                   output_path = Path(os.environ['GITHUB_OUTPUT'])
                   summary_path = Path(os.environ['GITHUB_STEP_SUMMARY'])
 
@@ -284,6 +295,21 @@ jobs:
                         }
                       }
 
+                      async function removeCandidateLabelFromIssue() {
+                        try {
+                          await github.rest.issues.removeLabel({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            issue_number: issueNumber,
+                            name: candidateLabel,
+                          });
+                        } catch (error) {
+                          if (error.status !== 404) {
+                            throw error;
+                          }
+                        }
+                      }
+
                       if (!Array.isArray(candidates) || candidates.length === 0) {
                         core.setFailed(`No candidate issues were returned for issue #${issueNumber}.`);
                         return;
@@ -358,16 +384,23 @@ jobs:
                       const existing = allComments.find((comment) => comment.body && comment.body.includes('<!-- openhands-duplicate-check '));
                       if (existing) {
                         const existingMarker = parseDuplicateCheckMarker(existing.body);
-                        if (
-                          autoClose &&
-                          existingMarker &&
-                          existingMarker.autoClose &&
-                          existingMarker.canonicalIssueNumber === canonicalIssueNumber
-                        ) {
-                          await ensureCandidateLabelOnIssue();
-                        } else if (autoClose) {
+                        if (existingMarker) {
+                          if (existingMarker.autoClose) {
+                            await ensureCandidateLabelOnIssue();
+                          } else {
+                            await removeCandidateLabelFromIssue();
+                          }
+                          if (
+                            existingMarker.canonicalIssueNumber !== canonicalIssueNumber ||
+                            existingMarker.autoClose !== autoClose
+                          ) {
+                            core.warning(
+                              `Duplicate check comment already exists on issue #${issueNumber} with different canonical/auto-close metadata; keeping label state aligned with the existing comment.`
+                            );
+                          }
+                        } else {
                           core.warning(
-                            `Duplicate check comment already exists on issue #${issueNumber} with different canonical/auto-close metadata; skipping label ensure.`
+                            `Duplicate check comment already exists on issue #${issueNumber} but its marker could not be parsed; leaving label state unchanged.`
                           );
                         }
                         core.info(`Duplicate check comment already exists on issue #${issueNumber}; skipping.`);
@@ -411,6 +444,11 @@ jobs:
                   python scripts/auto_close_duplicate_issues.py \
                     --repository "${{ github.repository }}" \
                     --close-after-days "$CLOSE_AFTER_DAYS" | tee "$RUNNER_TEMP/auto-close-summary.json"
+                  status=${PIPESTATUS[0]}
+                  if [ "$status" -ne 0 ]; then
+                    echo "::error::Auto-close script failed with exit code $status"
+                    exit "$status"
+                  fi
 
             - name: Summarize auto-close run
               run: |

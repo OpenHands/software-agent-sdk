@@ -203,6 +203,58 @@ def test_has_reaction_from_user_ignores_missing_user_ids():
     assert module.has_reaction_from_user(reactions, 42, "+1") is False
 
 
+def test_extract_duplicate_metadata_and_veto_helpers():
+    module = load_module("auto_close_duplicate_issues.py")
+
+    assert module.extract_duplicate_metadata(
+        "<!-- openhands-duplicate-check canonical=42 auto-close=true -->"
+    ) == (42, True)
+    assert module.extract_duplicate_metadata("plain comment") == (None, False)
+    assert (
+        module.has_veto_note(
+            [{"body": f"noticed\n{module.DUPLICATE_VETO_MARKER}\nthanks"}]
+        )
+        is True
+    )
+    assert module.has_veto_note([{"body": "plain comment"}]) is False
+
+
+def test_issue_has_label_handles_string_and_object_labels():
+    module = load_module("auto_close_duplicate_issues.py")
+
+    issue = {
+        "labels": [
+            module.DUPLICATE_CANDIDATE_LABEL,
+            {"name": "bug"},
+        ]
+    }
+
+    assert module.issue_has_label(issue, module.DUPLICATE_CANDIDATE_LABEL) is True
+    assert module.issue_has_label(issue, "bug") is True
+    assert module.issue_has_label(issue, "enhancement") is False
+
+
+def test_find_latest_auto_close_comment_prefers_newest_timestamp():
+    module = load_module("auto_close_duplicate_issues.py")
+    comments = [
+        {
+            "body": "<!-- openhands-duplicate-check canonical=10 auto-close=true -->",
+            "created_at": "2026-04-20T00:00:00Z",
+            "id": 1,
+        },
+        {
+            "body": "<!-- openhands-duplicate-check canonical=11 auto-close=true -->",
+            "created_at": "2026-04-19T00:00:00Z",
+            "id": 2,
+        },
+    ]
+
+    latest_comment, canonical_issue = module.find_latest_auto_close_comment(comments)
+
+    assert latest_comment == comments[0]
+    assert canonical_issue == 10
+
+
 def test_find_latest_auto_close_comment_returns_latest_candidate():
     module = load_module("auto_close_duplicate_issues.py")
     comments = [
@@ -210,14 +262,17 @@ def test_find_latest_auto_close_comment_returns_latest_candidate():
         {
             "body": "<!-- openhands-duplicate-check canonical=10 auto-close=false -->",
             "id": 1,
+            "created_at": "2026-04-18T00:00:00Z",
         },
         {
             "body": "<!-- openhands-duplicate-check canonical=11 auto-close=true -->",
             "id": 2,
+            "created_at": "2026-04-19T00:00:00Z",
         },
         {
             "body": "<!-- openhands-duplicate-check canonical=12 auto-close=true -->",
             "id": 3,
+            "created_at": "2026-04-20T00:00:00Z",
         },
     ]
 
@@ -253,6 +308,33 @@ def test_close_issue_propagates_comment_failure(monkeypatch):
         ("PATCH", "/repos/OpenHands/agent-sdk/issues/123"),
         ("POST", "/repos/OpenHands/agent-sdk/issues/123/comments"),
     ]
+
+
+def test_dry_run_helpers_skip_api_calls(monkeypatch):
+    module = load_module("auto_close_duplicate_issues.py")
+
+    monkeypatch.setattr(
+        module,
+        "request_json",
+        lambda *args, **kwargs: pytest.fail(
+            "request_json should not run in dry-run mode"
+        ),
+    )
+
+    assert module.remove_candidate_label("OpenHands/agent-sdk", 1, dry_run=True) is True
+    assert module.post_veto_note("OpenHands/agent-sdk", 1, dry_run=True) is True
+
+    monkeypatch.setattr(
+        module,
+        "remove_candidate_label",
+        lambda *args, **kwargs: pytest.fail(
+            "remove_candidate_label should not run in dry-run close path"
+        ),
+    )
+    assert (
+        module.close_issue_as_duplicate("OpenHands/agent-sdk", 1, 2, dry_run=True)
+        is None
+    )
 
 
 def test_close_issue_as_duplicate_removes_label_on_success(monkeypatch):
@@ -773,14 +855,22 @@ def test_auto_close_main_ignores_newer_deleted_user_comments(monkeypatch, capsys
     assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
 
 
-def test_auto_close_main_skips_invalid_timestamps(monkeypatch, capsys):
+def test_auto_close_main_skips_recent_duplicate_comments(monkeypatch, capsys):
     module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
     issue = {
         "number": 123,
-        "created_at": "not-a-timestamp",
+        "created_at": iso_timestamp(now - timedelta(days=30)),
         "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
         "user": {"id": 7},
     }
+    comments = [
+        {
+            "id": 11,
+            "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
+            "created_at": iso_timestamp(now - timedelta(days=1)),
+        }
+    ]
 
     monkeypatch.setattr(
         module,
@@ -790,12 +880,21 @@ def test_auto_close_main_skips_invalid_timestamps(monkeypatch, capsys):
         ),
     )
     monkeypatch.setattr(module, "list_open_issues", lambda repository: [issue])
+    monkeypatch.setattr(
+        module, "list_issue_comments", lambda repository, number: comments
+    )
+    monkeypatch.setattr(
+        module, "list_comment_reactions", lambda repository, comment_id: []
+    )
+    monkeypatch.setattr(
+        module,
+        "close_issue_as_duplicate",
+        lambda *args, **kwargs: pytest.fail("close_issue_as_duplicate should not run"),
+    )
 
     assert module.main() == 0
 
-    captured = capsys.readouterr()
-    assert "invalid timestamp" in captured.err
-    assert json.loads(captured.out) == {
+    assert json.loads(capsys.readouterr().out) == {
         "repository": "OpenHands/agent-sdk",
         "results": [],
     }
@@ -908,6 +1007,30 @@ def test_extract_first_item_handles_dict_without_items():
     assert module.extract_first_item({"execution_status": "completed"}) == {
         "execution_status": "completed"
     }
+
+
+def test_extract_last_agent_text_raises_on_no_agent_messages():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    with pytest.raises(RuntimeError, match="No assistant text message"):
+        module.extract_last_agent_text(
+            [
+                {
+                    "kind": "MessageEvent",
+                    "source": "user",
+                    "llm_message": {"content": [{"type": "text", "text": "hi"}]},
+                }
+            ]
+        )
+
+
+def test_as_bool_handles_common_inputs():
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    assert module.as_bool(True) is True
+    assert module.as_bool(" YES ") is True
+    assert module.as_bool(0) is False
+    assert module.as_bool(None) is False
 
 
 def test_extract_first_item_handles_invalid_types():
