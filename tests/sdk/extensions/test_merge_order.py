@@ -1,12 +1,12 @@
 """Integration tests for the full Extensions merge precedence chain.
 
-Production merge order (lowest → highest precedence):
+Production merge order (highest → lowest precedence):
 
-    sandbox → public → user → org → project → plugins → inline
+    inline → plugins → project → org → user → public → sandbox
 
-Skills and MCP config are last-wins: later sources override earlier.
-Agents are first-wins: earlier sources are kept on collision.
-Hooks concatenate: all sources' hooks run in merge order.
+All keyed fields (skills, MCP config, agents) are first-wins: the
+first source to provide a name keeps it.  Hooks concatenate in merge
+order (highest-precedence hooks run first).
 """
 
 from __future__ import annotations
@@ -53,32 +53,22 @@ def _mcp(server_name: str, cmd: str) -> dict[str, Any]:
 
 
 def _build_chain() -> list[Extensions]:
-    """Build the full production precedence chain.
+    """Build the full production precedence chain (highest first).
 
-    Order: sandbox, public, user, org, project, plugin, inline
+    Order: inline, plugin, project, org, user, public, sandbox
     """
-    sandbox = Extensions(
-        skills=[_skill("work_hosts", "sandbox-hosts")],
+    inline = Extensions(
+        skills=[_skill("inline-skill", "inline-content")],
+        hooks=_hooks("echo inline-hook"),
+        mcp_config=_mcp("inline-server", "inline-cmd"),
+        agents=[_agent("reviewer", description="inline-reviewer")],
     )
 
-    public = Extensions(
-        skills=[
-            _skill("github", "public-github"),
-            _skill("docker", "public-docker"),
-            _skill("security", "public-security"),
-        ],
-    )
-
-    user = Extensions(
-        skills=[_skill("my-tool", "user-tool")],
-        hooks=_hooks("echo user-hook"),
-    )
-
-    org = Extensions(
-        skills=[
-            _skill("org-policy", "org-policy-content"),
-            _skill("security", "org-security-override"),
-        ],
+    plugin = Extensions(
+        skills=[_skill("lint-plugin", "plugin-lint")],
+        hooks=_hooks("echo plugin-hook"),
+        mcp_config=_mcp("fetch", "plugin-fetch"),
+        agents=[_agent("reviewer", description="plugin-reviewer")],
     )
 
     project = Extensions(
@@ -90,21 +80,31 @@ def _build_chain() -> list[Extensions]:
         mcp_config=_mcp("fetch", "project-fetch"),
     )
 
-    plugin = Extensions(
-        skills=[_skill("lint-plugin", "plugin-lint")],
-        hooks=_hooks("echo plugin-hook"),
-        mcp_config=_mcp("fetch", "plugin-fetch-override"),
-        agents=[_agent("reviewer", description="plugin-reviewer")],
+    org = Extensions(
+        skills=[
+            _skill("org-policy", "org-policy-content"),
+            _skill("security", "org-security-override"),
+        ],
     )
 
-    inline = Extensions(
-        skills=[_skill("inline-skill", "inline-content")],
-        hooks=_hooks("echo inline-hook"),
-        mcp_config=_mcp("inline-server", "inline-cmd"),
-        agents=[_agent("reviewer", description="inline-reviewer")],
+    user = Extensions(
+        skills=[_skill("my-tool", "user-tool")],
+        hooks=_hooks("echo user-hook"),
     )
 
-    return [sandbox, public, user, org, project, plugin, inline]
+    public = Extensions(
+        skills=[
+            _skill("github", "public-github"),
+            _skill("docker", "public-docker"),
+            _skill("security", "public-security"),
+        ],
+    )
+
+    sandbox = Extensions(
+        skills=[_skill("work_hosts", "sandbox-hosts")],
+    )
+
+    return [inline, plugin, project, org, user, public, sandbox]
 
 
 # ------------------------------------------------------------------
@@ -130,15 +130,15 @@ def test_full_chain_skill_count():
     assert names == expected
 
 
-def test_project_skill_overrides_public():
-    """Project's 'github' skill overrides public's."""
+def test_project_skill_wins_over_public():
+    """Project's 'github' skill wins over public's (first-wins)."""
     result = Extensions.collapse(_build_chain())
     github = next(s for s in result.skills if s.name == "github")
     assert github.content == "project-github-override"
 
 
-def test_org_skill_overrides_public():
-    """Org's 'security' skill overrides public's."""
+def test_org_skill_wins_over_public():
+    """Org's 'security' skill wins over public's (first-wins)."""
     result = Extensions.collapse(_build_chain())
     security = next(s for s in result.skills if s.name == "security")
     assert security.content == "org-security-override"
@@ -152,11 +152,9 @@ def test_sandbox_skill_survives():
 
 
 def test_plugin_mcp_overrides_project():
-    """Plugin's 'fetch' MCP server overrides project's."""
+    """Plugin's 'fetch' MCP server wins over project's (first-wins)."""
     result = Extensions.collapse(_build_chain())
-    assert result.mcp_config["mcpServers"]["fetch"]["command"] == (
-        "plugin-fetch-override"
-    )
+    assert result.mcp_config["mcpServers"]["fetch"]["command"] == "plugin-fetch"
 
 
 def test_inline_mcp_adds_new_server():
@@ -168,23 +166,23 @@ def test_inline_mcp_adds_new_server():
 
 
 def test_hooks_concatenate_in_order():
-    """All hooks from all sources are present in merge order."""
+    """All hooks from all sources are present in merge order (highest first)."""
     result = Extensions.collapse(_build_chain())
     assert result.hooks is not None
     commands = [m.hooks[0].command for m in result.hooks.pre_tool_use]
     assert commands == [
-        "echo user-hook",
-        "echo project-hook",
-        "echo plugin-hook",
         "echo inline-hook",
+        "echo plugin-hook",
+        "echo project-hook",
+        "echo user-hook",
     ]
 
 
 def test_agents_first_wins():
-    """Plugin's 'reviewer' agent wins over inline's (first-wins)."""
+    """Inline's 'reviewer' agent wins over plugin's (first-wins)."""
     result = Extensions.collapse(_build_chain())
     assert len(result.agents) == 1
-    assert result.agents[0].description == "plugin-reviewer"
+    assert result.agents[0].description == "inline-reviewer"
 
 
 def test_empty_sources_are_harmless():
@@ -215,12 +213,12 @@ def test_single_source_passthrough():
     assert len(result.agents) == 1
 
 
-def test_later_skill_overrides_earlier_across_many_sources():
-    """The last source providing a name always wins for skills."""
+def test_first_skill_wins_across_many_sources():
+    """The first source providing a name always wins for skills."""
     chain = [Extensions(skills=[_skill("x", f"source-{i}")]) for i in range(5)]
     result = Extensions.collapse(chain)
     assert len(result.skills) == 1
-    assert result.skills[0].content == "source-4"
+    assert result.skills[0].content == "source-0"
 
 
 def test_first_agent_wins_across_many_sources():

@@ -4,7 +4,7 @@
 
 A unified `Extensions` bundle that holds the resolved set of skills, hooks,
 MCP servers, and agent definitions. Sources produce bundles, bundles merge
-with clean last-wins semantics, and the conversation consumes the final
+with clean first-wins semantics, and the conversation consumes the final
 merged bundle to configure the agent. Public API doesn't change until
 everything is proven internally.
 
@@ -15,7 +15,7 @@ everything is proven internally.
 **What**: An immutable Pydantic model that is the canonical "resolved extensions" container.
 
 ```
-openhands-sdk/openhands/sdk/extensions/bundle.py
+openhands-sdk/openhands/sdk/extensions/extensions.py
 ```
 
 ### Fields
@@ -33,21 +33,25 @@ bundle — they stay a plugin-internal concept.
 ### Merge operation
 
 `Extensions.merge(other: Extensions) -> Extensions` — binary operation,
-`other` overrides `self`:
+`self` wins on collision (first-wins):
 
-- **skills**: last-wins by name (dict update keyed on `skill.name`, `other` wins)
+- **skills**: first-wins by name (`self` kept on collision, `other` only adds new names)
 - **hooks**: concatenate (`self` hooks run before `other` hooks, via `HookConfig.merge`)
-- **mcp_config**: last-wins — deep-merge `mcpServers` by server name (`other` wins), shallow override other top-level keys
-- **agents**: first-wins by name (`self`'s agent kept on collision, `other` only adds new names)
+- **mcp_config**: first-wins — merge `mcpServers` by server name (`self` kept on collision), `self` kept for other top-level keys
+- **agents**: first-wins by name (`self` kept on collision, `other` only adds new names)
 
-Caller controls precedence by merge order. Class also gets:
+All keyed fields use the same precedence direction: `self` (base) wins.
+Caller controls precedence by placing the highest-precedence bundle first.
+Class also gets:
 - `Extensions.empty()` — classmethod returning an empty bundle (identity for merge)
 - `Extensions.is_empty() -> bool` — check if everything is empty/None
-- `Extensions.collapse(bundles: list[Extensions]) -> Extensions` — reduce via merge
+- `Extensions.collapse(bundles: list[Extensions]) -> Extensions` — reduce via merge (first entry = highest precedence)
 
 ### Location
 
-`openhands/sdk/extensions/bundle.py`, exported from `openhands/sdk/extensions/__init__.py`.
+`openhands/sdk/extensions/extensions.py`. Not yet exported from
+`openhands/sdk/extensions/__init__.py` — will be exported when the
+internal adoption (Phase 4) is complete and the API is ready.
 
 ### Tests
 
@@ -95,14 +99,15 @@ isolation. Mock filesystem/git where needed.
 **What**: Verify the merge operation works correctly for the real
 precedence order used in production.
 
-### Precedence order (lowest → highest)
+### Precedence order (highest → lowest)
 
 ```
-sandbox → public → user → org → project → plugins → inline
+inline → plugins → project → org → user → public → sandbox
 ```
 
-`Extensions.collapse()` takes a list in this order; later entries override
-earlier ones for skills/MCP/agents, hooks concatenate.
+`Extensions.collapse()` takes a list in this order; the first entry wins
+for skills/MCP/agents (first-wins), hooks concatenate with highest
+precedence hooks running first.
 
 ### Tests
 
@@ -177,8 +182,8 @@ is in production.
 
 ```
 openhands-sdk/openhands/sdk/extensions/
-├── __init__.py          # re-exports Extensions, source functions
-├── bundle.py            # Extensions model + merge
+├── __init__.py          # (empty until Phase 4 exports are ready)
+├── extensions.py        # Extensions model + merge
 ├── fetch.py             # (existing) git fetch utilities
 ├── installation/        # (existing) install/uninstall manager
 │   ├── __init__.py
@@ -201,14 +206,14 @@ tests/sdk/extensions/
 
 ## Decisions
 
-1. **`Extensions.merge()` logs warnings on overrides.** Consistent with
-   existing `Plugin.add_skills_to()` and `add_mcp_config_to()` behavior.
+1. **`Extensions.merge()` logs debug messages on collisions.** Consistent
+   with existing `Plugin.add_skills_to()` and `add_mcp_config_to()`
+   behavior.
 
-2. **Agents merge as first-wins.** Matches current
-   `register_agent_if_absent` semantics. Higher-precedence sources should
-   be placed *earlier* in the merge chain for agents (opposite of
-   skills/MCP which are last-wins). In practice this means `merge()`
-   keeps `self`'s agent when names collide, not `other`'s.
+2. **All keyed fields use first-wins.** Skills, MCP config, and agents
+   all keep `self`'s value on collision.  `collapse()` takes a list
+   ordered highest → lowest precedence.  One precedence direction for
+   the entire merge — no per-field exceptions.
 
 3. **Skill auto-loading flags (`load_public_skills`, `load_user_skills`)
    stay on `AgentContext` for now.** They'll move to an extension spec in

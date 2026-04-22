@@ -93,12 +93,12 @@ def test_skills_merge_no_overlap():
     assert {s.name for s in merged.skills} == {"x", "y"}
 
 
-def test_skills_merge_override():
+def test_skills_merge_first_wins():
     a = Extensions(skills=[_skill("x", "old")])
     b = Extensions(skills=[_skill("x", "new")])
     merged = a.merge(b)
     assert len(merged.skills) == 1
-    assert merged.skills[0].content == "new"
+    assert merged.skills[0].content == "old"
 
 
 def test_skills_merge_preserves_order():
@@ -108,13 +108,13 @@ def test_skills_merge_preserves_order():
     assert [s.name for s in merged.skills] == ["a", "b", "c"]
 
 
-def test_skills_override_preserves_position():
-    """When other overrides a skill, it keeps the position of the original."""
+def test_skills_collision_keeps_base():
+    """On collision, base's skill is kept (first-wins); other's new skills appended."""
     a = Extensions(skills=[_skill("a"), _skill("b"), _skill("c")])
-    b = Extensions(skills=[_skill("b", "new")])
+    b = Extensions(skills=[_skill("b", "new"), _skill("d")])
     merged = a.merge(b)
-    assert [s.name for s in merged.skills] == ["a", "b", "c"]
-    assert merged.skills[1].content == "new"
+    assert [s.name for s in merged.skills] == ["a", "b", "c", "d"]
+    assert merged.skills[1].content == "content for b"
 
 
 # ------------------------------------------------------------------
@@ -163,18 +163,18 @@ def test_mcp_merge_no_overlap():
     assert set(merged.mcp_config["mcpServers"]) == {"s1", "s2"}
 
 
-def test_mcp_merge_server_override():
+def test_mcp_merge_server_first_wins():
     a = Extensions(mcp_config={"mcpServers": {"s": {"cmd": "old"}}})
     b = Extensions(mcp_config={"mcpServers": {"s": {"cmd": "new"}}})
     merged = a.merge(b)
-    assert merged.mcp_config["mcpServers"]["s"]["cmd"] == "new"
+    assert merged.mcp_config["mcpServers"]["s"]["cmd"] == "old"
 
 
-def test_mcp_merge_top_level_key_override():
+def test_mcp_merge_top_level_key_first_wins():
     a = Extensions(mcp_config={"mcpServers": {}, "timeout": 10})
     b = Extensions(mcp_config={"timeout": 30})
     merged = a.merge(b)
-    assert merged.mcp_config["timeout"] == 30
+    assert merged.mcp_config["timeout"] == 10
     assert merged.mcp_config["mcpServers"] == {}
 
 
@@ -240,10 +240,10 @@ def test_collapse_single():
 
 
 def test_collapse_precedence():
-    """Later entries override earlier for skills (last-wins)."""
-    low = Extensions(skills=[_skill("s", "low")])
+    """Earlier entries win for all keyed fields (first-wins)."""
     high = Extensions(skills=[_skill("s", "high")])
-    result = Extensions.collapse([low, high])
+    low = Extensions(skills=[_skill("s", "low")])
+    result = Extensions.collapse([high, low])
     assert result.skills[0].content == "high"
 
 
@@ -267,45 +267,44 @@ def test_collapse_hooks_accumulate():
 
 
 def test_collapse_full_scenario():
-    """Realistic multi-source collapse."""
-    public = Extensions(
-        skills=[_skill("github"), _skill("docker")],
-        mcp_config={"mcpServers": {"fetch": {"cmd": "uvx mcp-server-fetch"}}},
-    )
-    user = Extensions(
-        skills=[_skill("my-tool")],
-        hooks=_hook_config(pre_tool_use=[_hook_matcher(command="lint.sh")]),
-    )
-    project = Extensions(
-        skills=[_skill("github", "project-override")],
-        agents=[_agent("reviewer")],
-    )
+    """Realistic multi-source collapse (highest precedence first)."""
     plugin = Extensions(
         skills=[_skill("security-scan")],
         hooks=_hook_config(pre_tool_use=[_hook_matcher(command="scan.sh")]),
         mcp_config={"mcpServers": {"fetch": {"cmd": "custom-fetch"}}},
         agents=[_agent("reviewer", description="plugin-reviewer")],
     )
+    project = Extensions(
+        skills=[_skill("github", "project-override")],
+        agents=[_agent("reviewer")],
+    )
+    user = Extensions(
+        skills=[_skill("my-tool")],
+        hooks=_hook_config(pre_tool_use=[_hook_matcher(command="lint.sh")]),
+    )
+    public = Extensions(
+        skills=[_skill("github"), _skill("docker")],
+        mcp_config={"mcpServers": {"fetch": {"cmd": "uvx mcp-server-fetch"}}},
+    )
 
-    result = Extensions.collapse([public, user, project, plugin])
+    result = Extensions.collapse([plugin, project, user, public])
 
-    # Skills: plugin's security-scan added, project's github override kept
-    # (then overridden by plugin if plugin had one — it doesn't here)
+    # Skills: first provider of each name wins
     skill_names = {s.name for s in result.skills}
     assert skill_names == {"github", "docker", "my-tool", "security-scan"}
     github_skill = next(s for s in result.skills if s.name == "github")
     assert github_skill.content == "project-override"
 
-    # MCP: plugin's fetch overrides public's
+    # MCP: plugin's fetch wins (first-wins)
     assert result.mcp_config["mcpServers"]["fetch"]["cmd"] == "custom-fetch"
 
-    # Hooks: user + plugin concatenated (2 matchers)
+    # Hooks: plugin + user concatenated (2 matchers, in merge order)
     assert result.hooks is not None
     assert len(result.hooks.pre_tool_use) == 2
 
-    # Agents: project's reviewer wins (first-wins over plugin's)
+    # Agents: plugin's reviewer wins (first-wins)
     assert len(result.agents) == 1
-    assert result.agents[0].description == ""  # project's default
+    assert result.agents[0].description == "plugin-reviewer"
 
 
 # ------------------------------------------------------------------

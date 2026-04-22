@@ -32,11 +32,15 @@ class Extensions(BaseModel):
 
     Merge semantics (``self.merge(other)``):
 
-    * **skills** — last-wins by ``skill.name`` (``other`` overrides ``self``)
+    * **skills** — first-wins by ``skill.name`` (``self`` kept on collision)
     * **hooks** — concatenate (``self`` hooks run before ``other`` hooks)
-    * **mcp_config** — last-wins by server name inside ``mcpServers``,
-      shallow override for other top-level keys
+    * **mcp_config** — first-wins by server name inside ``mcpServers``,
+      ``self`` kept for other top-level keys on collision
     * **agents** — first-wins by ``agent.name`` (``self`` kept on collision)
+
+    Because every keyed field is first-wins, :py:meth:`collapse` expects
+    the list ordered from **highest to lowest** precedence (first entry
+    wins).
     """
 
     model_config = {"frozen": True}
@@ -62,6 +66,26 @@ class Extensions(BaseModel):
     # Helpers
     # ------------------------------------------------------------------
 
+    def __repr__(self) -> str:
+        parts: list[str] = []
+        if self.skills:
+            names = [s.name for s in self.skills]
+            parts.append(f"skills={names}")
+        if self.hooks is not None:
+            n = sum(
+                len(getattr(self.hooks, f))
+                for f in self.hooks.model_fields
+                if isinstance(getattr(self.hooks, f), list)
+            )
+            parts.append(f"hooks={n} matcher(s)")
+        if self.mcp_config:
+            servers = list(self.mcp_config.get("mcpServers", {}).keys())
+            parts.append(f"mcp={servers}")
+        if self.agents:
+            names = [a.name for a in self.agents]
+            parts.append(f"agents={names}")
+        return f"Extensions({', '.join(parts)})" if parts else "Extensions(empty)"
+
     @classmethod
     def empty(cls) -> Extensions:
         """Return an empty bundle (identity element for :py:meth:`merge`)."""
@@ -83,10 +107,9 @@ class Extensions(BaseModel):
     def merge(self, other: Extensions) -> Extensions:
         """Merge *other* into *self*, returning a new bundle.
 
-        *other* is treated as the higher-precedence source for skills and
-        MCP config (last-wins).  For agents, *self* has priority
-        (first-wins).  Hooks are concatenated so that *self*'s hooks run
-        before *other*'s.
+        *self* is the higher-precedence source (first-wins) for skills,
+        MCP config, and agents.  Hooks are concatenated so that *self*'s
+        hooks run before *other*'s.
         """
         return Extensions(
             skills=_merge_skills(self.skills, other.skills),
@@ -97,7 +120,7 @@ class Extensions(BaseModel):
 
     @classmethod
     def collapse(cls, bundles: list[Extensions]) -> Extensions:
-        """Merge an ordered list of bundles (left = lowest precedence).
+        """Merge an ordered list of bundles (left = highest precedence).
 
         Returns :py:meth:`empty` when *bundles* is empty.
         """
@@ -111,15 +134,17 @@ class Extensions(BaseModel):
 # ======================================================================
 
 
-def _merge_skills(base: list[Skill], override: list[Skill]) -> list[Skill]:
-    """Last-wins merge keyed on ``skill.name``."""
+def _merge_skills(base: list[Skill], other: list[Skill]) -> list[Skill]:
+    """First-wins merge keyed on ``skill.name``.  *base* kept on collision."""
     merged: dict[str, Skill] = {s.name: s for s in base}
-    for skill in override:
+    for skill in other:
         if skill.name in merged:
             logger.debug(
-                "Skill '%s' overridden by higher-precedence source", skill.name
+                "Skill '%s' already present; keeping higher-precedence definition",
+                skill.name,
             )
-        merged[skill.name] = skill
+        else:
+            merged[skill.name] = skill
     return list(merged.values())
 
 
@@ -131,57 +156,52 @@ def _merge_hooks(
     return HookConfig.merge(configs)
 
 
-def _merge_mcp_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Last-wins merge for MCP config.
+def _merge_mcp_config(base: dict[str, Any], other: dict[str, Any]) -> dict[str, Any]:
+    """First-wins merge for MCP config.  *base* kept on collision.
 
-    ``mcpServers`` is deep-merged by server name; other top-level keys
-    are shallow-overridden.
+    ``mcpServers`` is merged by server name; other top-level keys are
+    kept from *base* when present.
     """
-    if not base and not override:
+    if not base and not other:
         return {}
     if not base:
-        return dict(override)
-    if not override:
+        return dict(other)
+    if not other:
         return dict(base)
 
     result = dict(base)
 
-    # Deep-merge mcpServers by server name
-    if "mcpServers" in override:
+    # Merge mcpServers by server name — base wins on collision
+    if "mcpServers" in other:
         existing_servers: dict[str, Any] = result.get("mcpServers", {})
-        for server_name in override["mcpServers"]:
+        for server_name, server_cfg in other["mcpServers"].items():
             if server_name in existing_servers:
                 logger.debug(
-                    "MCP server '%s' overridden by higher-precedence source",
+                    "MCP server '%s' already present; keeping"
+                    " higher-precedence definition",
                     server_name,
                 )
-        result["mcpServers"] = {
-            **existing_servers,
-            **override["mcpServers"],
-        }
+            else:
+                existing_servers[server_name] = server_cfg
+        result["mcpServers"] = existing_servers
 
-    # Other top-level keys: shallow override
-    for key, value in override.items():
-        if key != "mcpServers":
-            if key in result:
-                logger.debug(
-                    "MCP config key '%s' overridden by higher-precedence source",
-                    key,
-                )
+    # Other top-level keys: base wins on collision
+    for key, value in other.items():
+        if key != "mcpServers" and key not in result:
             result[key] = value
 
     return result
 
 
 def _merge_agents(
-    base: list[AgentDefinition], override: list[AgentDefinition]
+    base: list[AgentDefinition], other: list[AgentDefinition]
 ) -> list[AgentDefinition]:
-    """First-wins merge keyed on ``agent.name``."""
+    """First-wins merge keyed on ``agent.name``.  *base* kept on collision."""
     merged: dict[str, AgentDefinition] = {a.name: a for a in base}
-    for agent in override:
+    for agent in other:
         if agent.name in merged:
             logger.debug(
-                "Agent '%s' already present; keeping earlier definition (first-wins)",
+                "Agent '%s' already present; keeping higher-precedence definition",
                 agent.name,
             )
         else:
