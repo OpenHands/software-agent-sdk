@@ -99,12 +99,24 @@ class InstallationMetadata(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_keys(cls, data: Any) -> Any:
-        """Migrate old ``plugins`` / ``skills`` keys to ``extensions``."""
-        if isinstance(data, dict) and "extensions" not in data:
-            for legacy_key in cls._LEGACY_KEYS:
-                if legacy_key in data:
-                    data["extensions"] = data.pop(legacy_key)
-                    break
+        """Migrate old ``plugins`` / ``skills`` keys into ``extensions``.
+
+        Legacy entries are merged into the existing ``extensions`` dict
+        (if any).  Explicit ``extensions`` entries win on key conflicts.
+        """
+        if not isinstance(data, dict):
+            return data
+        merged: dict[str, Any] = {}
+        for legacy_key in cls._LEGACY_KEYS:
+            if legacy_key in data:
+                logger.warning(
+                    "Migrating legacy %r key to 'extensions'",
+                    legacy_key,
+                )
+                merged.update(data.pop(legacy_key))
+        if merged:
+            merged.update(data.get("extensions") or {})
+            data["extensions"] = merged
         return data
 
     @classmethod

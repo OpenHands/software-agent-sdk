@@ -1,5 +1,7 @@
+import logging
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
 from openhands.sdk.extensions.installation import (
@@ -75,8 +77,57 @@ def test_migrate_legacy_skills_key():
     assert metadata.extensions["my-skill"].enabled is False
 
 
-def test_migrate_does_not_overwrite_extensions_key():
-    """Test that migration is skipped when 'extensions' key already exists."""
+def test_migrate_merges_both_legacy_keys():
+    """Test that both plugins and skills are merged when both are present."""
+    data = {
+        "plugins": {
+            "my-plugin": {
+                "name": "my-plugin",
+                "source": "github:owner/repo",
+                "install_path": "/tmp/installed/my-plugin",
+            }
+        },
+        "skills": {
+            "my-skill": {
+                "name": "my-skill",
+                "source": "local",
+                "install_path": "/tmp/installed/my-skill",
+            }
+        },
+    }
+    metadata = InstallationMetadata.model_validate(data)
+    assert "my-plugin" in metadata.extensions
+    assert "my-skill" in metadata.extensions
+
+
+def test_migrate_legacy_key_logs_warning(caplog: pytest.LogCaptureFixture):
+    """Each legacy key that is migrated emits a warning."""
+    data = {
+        "plugins": {
+            "p": {
+                "name": "p",
+                "source": "local",
+                "install_path": "/tmp/p",
+            }
+        },
+        "skills": {
+            "s": {
+                "name": "s",
+                "source": "local",
+                "install_path": "/tmp/s",
+            }
+        },
+    }
+    with caplog.at_level(logging.WARNING):
+        InstallationMetadata.model_validate(data)
+
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("plugins" in w for w in warnings)
+    assert any("skills" in w for w in warnings)
+
+
+def test_migrate_merges_legacy_into_extensions():
+    """Legacy keys are merged into extensions; extensions wins on conflicts."""
     data = {
         "extensions": {
             "new-ext": {
@@ -95,7 +146,29 @@ def test_migrate_does_not_overwrite_extensions_key():
     }
     metadata = InstallationMetadata.model_validate(data)
     assert "new-ext" in metadata.extensions
-    assert "old-plugin" not in metadata.extensions
+    assert "old-plugin" in metadata.extensions
+
+
+def test_migrate_extensions_wins_on_conflict():
+    """When a name appears in both extensions and a legacy key, extensions wins."""
+    data = {
+        "extensions": {
+            "shared": {
+                "name": "shared",
+                "source": "local",
+                "install_path": "/tmp/installed/shared",
+            }
+        },
+        "plugins": {
+            "shared": {
+                "name": "shared",
+                "source": "github:owner/repo",
+                "install_path": "/tmp/installed/shared",
+            }
+        },
+    }
+    metadata = InstallationMetadata.model_validate(data)
+    assert metadata.extensions["shared"].source == "local"
 
 
 # ============================================================================
