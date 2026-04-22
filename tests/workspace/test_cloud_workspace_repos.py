@@ -125,15 +125,10 @@ class TestProviderDetection:
             == GitProvider.BITBUCKET
         )
 
-    def test_detect_azure(self):
-        assert (
-            _detect_provider_from_url("https://dev.azure.com/o/p/_git/r")
-            == GitProvider.AZURE
-        )
-
     def test_detect_unknown(self):
         assert _detect_provider_from_url("https://example.com/o/r") is None
         assert _detect_provider_from_url("owner/repo") is None
+        assert _detect_provider_from_url("https://dev.azure.com/o/p/_git/r") is None
 
 
 class TestHelperFunctions:

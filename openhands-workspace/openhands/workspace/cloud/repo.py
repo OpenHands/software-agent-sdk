@@ -36,7 +36,6 @@ class GitProvider(str, Enum):
     GITHUB = "github"
     GITLAB = "gitlab"
     BITBUCKET = "bitbucket"
-    AZURE = "azure"
 
 
 # Mapping of provider to secret name used in sandbox settings
@@ -44,7 +43,6 @@ PROVIDER_TOKEN_NAMES: dict[GitProvider, str] = {
     GitProvider.GITHUB: "github_token",
     GitProvider.GITLAB: "gitlab_token",
     GitProvider.BITBUCKET: "bitbucket_token",
-    GitProvider.AZURE: "azure_token",
 }
 
 # Mapping of URL patterns to providers for auto-detection
@@ -52,8 +50,6 @@ PROVIDER_URL_PATTERNS: dict[str, GitProvider] = {
     "github.com": GitProvider.GITHUB,
     "gitlab.com": GitProvider.GITLAB,
     "bitbucket.org": GitProvider.BITBUCKET,
-    "dev.azure.com": GitProvider.AZURE,
-    "visualstudio.com": GitProvider.AZURE,
 }
 
 
@@ -114,10 +110,10 @@ class RepoSource(BaseModel):
         default=None,
         description="Optional branch, tag, or commit SHA to checkout.",
     )
-    provider: Literal["github", "gitlab", "bitbucket", "azure"] | None = Field(
+    provider: Literal["github", "gitlab", "bitbucket"] | None = Field(
         default=None,
         description=(
-            "Git hosting provider (github, gitlab, bitbucket, azure). "
+            "Git hosting provider (github, gitlab, bitbucket). "
             "Used to determine which authentication token to use. "
             "If not specified, auto-detected from URL "
             "(defaults to github for owner/repo format)."
@@ -283,12 +279,6 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
             if token:
                 return f"https://x-token-auth:{token}@{base_url}/{url}.git"
             return f"https://{base_url}/{url}.git"
-        elif provider == GitProvider.AZURE:
-            # Azure DevOps uses organization/project/_git/repo format
-            # For owner/repo format, assume it's org/repo
-            if token:
-                return f"https://{token}@dev.azure.com/{url}"
-            return f"https://dev.azure.com/{url}"
 
     # Handle full URLs - inject authentication
     if not token:
@@ -302,16 +292,6 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
         return url.replace(
             "https://bitbucket.org", f"https://x-token-auth:{token}@bitbucket.org"
         )
-    elif provider == GitProvider.AZURE and (
-        "dev.azure.com" in url or "visualstudio.com" in url
-    ):
-        if "dev.azure.com" in url:
-            return url.replace(
-                "https://dev.azure.com", f"https://{token}@dev.azure.com"
-            )
-        else:
-            # Handle legacy visualstudio.com URLs
-            return url.replace("https://", f"https://{token}@")
 
     # Return as-is for other URLs or unrecognized patterns
     return url
