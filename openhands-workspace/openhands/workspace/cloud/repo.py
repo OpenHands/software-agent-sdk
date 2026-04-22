@@ -302,7 +302,7 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
     # Handle full URLs - inject authentication only if hostname matches exactly
     if token:
         parsed = urllib.parse.urlparse(url)
-        if parsed.netloc == base_url:
+        if parsed.netloc.lower() == base_url:
             # Replace only the first occurrence to prevent double injection
             return url.replace(
                 f"https://{base_url}", f"https://{auth_prefix}{base_url}", 1
