@@ -883,8 +883,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Args:
             repos: List of repositories to clone. Can be:
                 - List of RepoSource objects
-                - List of dicts with 'url' and optional 'ref'/'provider' keys
-                - List of URL strings (e.g., "owner/repo")
+                - List of dicts with 'url', optional 'ref', and 'provider' keys
+                - List of full URL strings (e.g., "https://github.com/owner/repo")
+                Note: Short URLs (owner/repo) require explicit 'provider' field.
             target_dir: Directory to clone into. Defaults to self.working_dir.
 
         Returns:
@@ -895,36 +896,31 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         Example:
             >>> with OpenHandsCloudWorkspace(...) as workspace:
-            ...     # Clone a single repo
-            ...     result = workspace.clone_repos(["owner/repo"])
-            ...
-            ...     # Clone multiple repos with refs
+            ...     # Clone with full URLs (provider auto-detected)
             ...     result = workspace.clone_repos([
-            ...         {"url": "owner/repo1", "ref": "main"},
-            ...         {"url": "owner/repo2", "ref": "v1.0.0"},
+            ...         "https://github.com/owner/repo1",
+            ...         {"url": "https://gitlab.com/owner/repo2", "ref": "main"},
             ...     ])
             ...
-            ...     # Clone from different providers
+            ...     # Clone with short URLs (provider required)
             ...     result = workspace.clone_repos([
-            ...         {"url": "owner/repo1"},  # GitHub (default)
-            ...         {"url": "owner/repo2", "provider": "gitlab"},
+            ...         {"url": "owner/repo1", "provider": "github"},
+            ...         {"url": "owner/repo2", "provider": "gitlab", "ref": "v1.0"},
             ...     ])
             ...
             ...     # Access cloned repo paths
             ...     for url, mapping in result.repo_mappings.items():
             ...         print(f"{url} -> {mapping.local_path}")
         """
-        # Normalize repos to RepoSource objects
+        # Normalize repos to RepoSource objects using model_validate
+        # This ensures consistent validation for all input formats
         normalized_repos: list[RepoSource] = []
         for repo in repos:
             if isinstance(repo, RepoSource):
                 normalized_repos.append(repo)
-            elif isinstance(repo, dict):
-                normalized_repos.append(RepoSource.model_validate(repo))
-            elif isinstance(repo, str):
-                normalized_repos.append(RepoSource(url=repo))
             else:
-                raise ValueError(f"Invalid repo specification: {repo}")
+                # model_validate handles both dicts and strings (via model_validator)
+                normalized_repos.append(RepoSource.model_validate(repo))
 
         # Determine target directory
         if target_dir is None:
