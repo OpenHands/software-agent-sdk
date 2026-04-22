@@ -6,7 +6,6 @@ skills from them when running inside an OpenHands Cloud sandbox.
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -318,7 +317,6 @@ def clone_repos(
     repos: list[RepoSource],
     target_dir: Path,
     token_fetcher: TokenFetcher | None = None,
-    mapping_file: Path | None = None,
 ) -> CloneResult:
     """Clone repositories to the target directory.
 
@@ -331,7 +329,6 @@ def clone_repos(
         target_dir: Directory to clone repositories into
         token_fetcher: Callable that takes a token name (e.g., 'github_token')
             and returns the token value, or None if not available
-        mapping_file: Optional path to write repo mapping JSON file
 
     Returns:
         CloneResult with success count, failed repos, and repo mapping
@@ -445,20 +442,6 @@ def clone_repos(
             logger.warning(f"[clone] Clone timed out for {display_url}")
             failed_repos.append(display_url)
             continue
-
-    # Write mapping file if requested
-    if mapping_file and repo_mappings:
-        mapping_data = {
-            url: {
-                "dir_name": m.dir_name,
-                "local_path": m.local_path,
-                "ref": m.ref,
-            }
-            for url, m in repo_mappings.items()
-        }
-        with open(mapping_file, "w") as f:
-            json.dump(mapping_data, f, indent=2)
-        logger.info(f"[clone] Wrote repository mapping to {mapping_file.name}")
 
     logger.info(f"[clone] Cloned {success_count}/{len(repos)} repositories")
     if failed_repos:

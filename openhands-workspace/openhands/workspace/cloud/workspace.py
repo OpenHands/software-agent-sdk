@@ -873,21 +873,19 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         self,
         repos: list[RepoSource] | list[dict[str, Any]] | list[str],
         target_dir: str | Path | None = None,
-        write_mapping_file: bool = True,
     ) -> CloneResult:
         """Clone repositories to the workspace directory.
 
         Clones specified repositories to meaningful directory names (e.g.,
-        'openhands-cli' instead of 'repo_0'). Automatically fetches GitHub
-        and GitLab tokens from the user's secrets for authentication.
+        'openhands-cli' instead of 'repo_0'). Automatically fetches GitHub,
+        GitLab, and Bitbucket tokens from the user's secrets for authentication.
 
         Args:
             repos: List of repositories to clone. Can be:
                 - List of RepoSource objects
-                - List of dicts with 'url' and optional 'ref' keys
+                - List of dicts with 'url' and optional 'ref'/'provider' keys
                 - List of URL strings (e.g., "owner/repo")
             target_dir: Directory to clone into. Defaults to self.working_dir.
-            write_mapping_file: If True, writes repos_mapping.json to target_dir.
 
         Returns:
             CloneResult containing:
@@ -904,6 +902,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             ...     result = workspace.clone_repos([
             ...         {"url": "owner/repo1", "ref": "main"},
             ...         {"url": "owner/repo2", "ref": "v1.0.0"},
+            ...     ])
+            ...
+            ...     # Clone from different providers
+            ...     result = workspace.clone_repos([
+            ...         {"url": "owner/repo1"},  # GitHub (default)
+            ...         {"url": "owner/repo2", "provider": "gitlab"},
             ...     ])
             ...
             ...     # Access cloned repo paths
@@ -930,31 +934,23 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         else:
             target_path = target_dir
 
-        # Determine mapping file path
-        mapping_file = (
-            target_path / "repos_mapping.json" if write_mapping_file else None
-        )
-
         # Clone repositories using _get_secret_value as token fetcher
         # This fetches tokens lazily based on each repo's provider
         return clone_repos(
             repos=normalized_repos,
             target_dir=target_path,
             token_fetcher=self._get_secret_value,
-            mapping_file=mapping_file,
         )
 
-    def get_repos_context(
-        self, repo_mappings: dict[str, RepoMapping] | None = None
-    ) -> str:
+    def get_repos_context(self, repo_mappings: dict[str, RepoMapping]) -> str:
         """Generate context string describing cloned repositories for the agent.
 
         This method produces a markdown-formatted string that can be prepended
         to agent prompts to inform the agent about available repositories.
 
         Args:
-            repo_mappings: Dict mapping URLs to RepoMapping objects. If None,
-                attempts to read from repos_mapping.json in working_dir.
+            repo_mappings: Dict mapping URLs to RepoMapping objects, typically
+                obtained from CloneResult.repo_mappings after calling clone_repos().
 
         Returns:
             Markdown-formatted context string, or empty string if no repos.
@@ -965,31 +961,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             ...     context = workspace.get_repos_context(result.repo_mappings)
             ...     prompt = f"{context}\\n\\n{user_prompt}"
         """
-        if repo_mappings is not None:
-            return get_repos_context(repo_mappings)
-
-        # Try to load from mapping file in working_dir
-        mapping_file = Path(self.working_dir) / "repos_mapping.json"
-        if not mapping_file.exists():
-            return ""
-
-        try:
-            with open(mapping_file) as f:
-                data = json.load(f)
-            # Convert to RepoMapping objects
-            mappings = {
-                url: RepoMapping(
-                    url=url,
-                    dir_name=info["dir_name"],
-                    local_path=info["local_path"],
-                    ref=info.get("ref"),
-                )
-                for url, info in data.items()
-            }
-            return get_repos_context(mappings)
-        except (json.JSONDecodeError, OSError, KeyError) as e:
-            logger.warning(f"Failed to read repos_mapping.json: {e}")
-            return ""
+        return get_repos_context(repo_mappings)
 
     # --- Skill Loading Methods ---
 

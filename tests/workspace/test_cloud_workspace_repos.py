@@ -1,6 +1,5 @@
 """Tests for repository cloning and skill loading in OpenHandsCloudWorkspace."""
 
-import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -394,24 +393,6 @@ class TestCloneRepos:
             assert "gitlab_token" in fetched_tokens
 
     @patch("subprocess.run")
-    def test_write_mapping_file(self, mock_run):
-        """Test writing repos_mapping.json file."""
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-            repos = [RepoSource(url="owner/repo")]
-            mapping_file = tmppath / "repos_mapping.json"
-
-            clone_repos(repos, tmppath, mapping_file=mapping_file)
-
-            assert mapping_file.exists()
-            with open(mapping_file) as f:
-                data = json.load(f)
-            assert "owner/repo" in data
-            assert data["owner/repo"]["dir_name"] == "repo"
-
-    @patch("subprocess.run")
     def test_directory_name_collision(self, mock_run):
         """Test handling of directory name collisions."""
         mock_run.return_value = MagicMock(returncode=0, stderr="")
@@ -527,34 +508,3 @@ class TestCloudWorkspaceRepoMethods:
             context = workspace.get_repos_context(mappings)
             assert "## Cloned Repositories" in context
             assert "`owner/repo`" in context
-
-    def test_get_repos_context_from_file(self):
-        """Test get_repos_context reading from repos_mapping.json."""
-        from openhands.workspace import OpenHandsCloudWorkspace
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create mapping file
-            mapping_file = Path(tmpdir) / "repos_mapping.json"
-            mapping_data = {
-                "owner/repo": {
-                    "dir_name": "repo",
-                    "local_path": f"{tmpdir}/repo",
-                    "ref": "main",
-                }
-            }
-            with open(mapping_file, "w") as f:
-                json.dump(mapping_data, f)
-
-            with patch.object(
-                OpenHandsCloudWorkspace, "model_post_init", lambda self, ctx: None
-            ):
-                workspace = OpenHandsCloudWorkspace(
-                    cloud_api_url="https://test.com",
-                    cloud_api_key="test-key",
-                    local_agent_server_mode=True,
-                )
-                workspace.working_dir = tmpdir
-
-                context = workspace.get_repos_context()
-                assert "## Cloned Repositories" in context
-                assert "`owner/repo`" in context
