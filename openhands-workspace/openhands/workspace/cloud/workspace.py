@@ -10,7 +10,7 @@ from urllib.request import urlopen
 
 import httpx
 import tenacity
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
@@ -844,6 +844,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         Unlike get_secrets() which returns LookupSecret references, this method
         fetches the actual secret value for use in operations like git cloning.
+        Retries up to 3 times on transient failures.
 
         Args:
             name: Name of the secret to fetch (e.g., "github_token", "gitlab_token")
@@ -859,10 +860,20 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             logger.warning(f"Invalid secret name: {name}")
             return None
 
-        try:
-            resp = self._send_settings_request(
+        # Use retry logic for transient failures
+        @tenacity.retry(
+            stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+            wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+            retry=tenacity.retry_if_exception(_is_retryable_error),
+            reraise=True,
+        )
+        def _fetch_secret() -> httpx.Response:
+            return self._send_settings_request(
                 "GET", f"{self._settings_base_url}/secrets/{name}"
             )
+
+        try:
+            resp = _fetch_secret()
             return resp.text
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -920,12 +931,15 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         # Normalize repos to RepoSource objects using model_validate
         # This ensures consistent validation for all input formats
         normalized_repos: list[RepoSource] = []
-        for repo in repos:
-            if isinstance(repo, RepoSource):
-                normalized_repos.append(repo)
-            else:
-                # model_validate handles both dicts and strings (via model_validator)
-                normalized_repos.append(RepoSource.model_validate(repo))
+        try:
+            for repo in repos:
+                if isinstance(repo, RepoSource):
+                    normalized_repos.append(repo)
+                else:
+                    # model_validate handles dicts and strings via model_validator
+                    normalized_repos.append(RepoSource.model_validate(repo))
+        except ValidationError as e:
+            raise ValueError(f"Invalid repository specification: {e}") from e
 
         # Determine target directory
         if target_dir is None:
@@ -978,6 +992,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         """Call the agent-server /api/skills endpoint.
 
         Returns list of skill dicts, or empty list on error.
+        Retries up to 3 times on transient failures.
         """
         payload = {
             "load_public": load_public,
@@ -993,7 +1008,14 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if self._session_api_key:
             headers["X-Session-API-Key"] = self._session_api_key
 
-        try:
+        # Use retry logic for transient failures
+        @tenacity.retry(
+            stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+            wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+            retry=tenacity.retry_if_exception(_is_retryable_error),
+            reraise=True,
+        )
+        def _fetch_skills() -> httpx.Response:
             with httpx.Client(timeout=timeout) as client:
                 resp = client.post(
                     f"{self.host}/api/skills",
@@ -1001,9 +1023,13 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                     headers=headers,
                 )
                 resp.raise_for_status()
-                data = resp.json()
-                logger.debug(f"Agent-server sources: {data.get('sources', {})}")
-                return data.get("skills", [])
+                return resp
+
+        try:
+            resp = _fetch_skills()
+            data = resp.json()
+            logger.debug(f"Agent-server sources: {data.get('sources', {})}")
+            return data.get("skills", [])
         except httpx.HTTPStatusError as e:
             logger.error(f"Agent-server HTTP error {e.response.status_code}")
             return []
@@ -1147,6 +1173,13 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             ...     agent = agent.model_copy(update={"agent_context": context})
         """
         from openhands.sdk.context import AgentContext
+
+        # Validate workspace is ready for API calls
+        if not self.host or not self._sandbox_id:
+            raise RuntimeError(
+                "Workspace not initialized. Ensure the workspace is started "
+                "before loading skills."
+            )
 
         logger.info("Loading skills via agent-server...")
         logger.debug(f"Agent-server URL: {self.host}")

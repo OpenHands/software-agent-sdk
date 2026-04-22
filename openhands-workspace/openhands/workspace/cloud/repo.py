@@ -7,6 +7,7 @@ skills from them when running inside an OpenHands Cloud sandbox.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import urllib.parse
 from collections.abc import Callable
@@ -136,17 +137,20 @@ class RepoSource(BaseModel):
     @field_validator("url")
     @classmethod
     def validate_url(cls, v: str) -> str:
-        """Validate URL format."""
+        """Validate URL format and normalize HTTP to HTTPS."""
         # Allow owner/repo format (e.g., "owner/repo", "my-org/my-repo.git")
         owner_repo_pattern = re.compile(r"^[\w-]+/[\w.-]+$")
         if owner_repo_pattern.match(v):
             return v
-        # Allow full git URLs
-        if v.startswith(("http://", "https://", "git@")):
+        # Normalize HTTP to HTTPS for security (token injection requires HTTPS)
+        if v.startswith("http://"):
+            logger.warning(f"Converting HTTP URL to HTTPS for security: {v}")
+            v = "https://" + v[7:]
+        # Allow HTTPS, git@, and file:// URLs (file:// for testing)
+        if v.startswith(("https://", "git@", "file://")):
             return v
         raise ValueError(
-            "URL must be 'owner/repo' format or a valid git URL "
-            "(https://, http://, or git@)"
+            "URL must be 'owner/repo' format or a valid git URL (https:// or git@)"
         )
 
     @model_validator(mode="after")
@@ -339,7 +343,11 @@ def _build_clone_command(clone_url: str, dest: Path, ref: str | None) -> list[st
 
 
 def _checkout_sha(dest: Path, sha: str) -> bool:
-    """Checkout a specific SHA after full clone. Returns True on success."""
+    """Checkout a specific SHA after full clone. Returns True on success.
+
+    On failure, cleans up the cloned directory to prevent orphaned directories
+    that block retry attempts.
+    """
     result = subprocess.run(
         ["git", "-C", str(dest), "checkout", sha],
         capture_output=True,
@@ -348,17 +356,25 @@ def _checkout_sha(dest: Path, sha: str) -> bool:
     )
     if result.returncode != 0:
         logger.warning(f"[clone] Failed to checkout {sha}: {result.stderr}")
+        # Clean up to prevent orphaned directory blocking retry attempts
+        shutil.rmtree(dest, ignore_errors=True)
         return False
     return True
 
 
 def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
     """Clone a single repository. Returns True on success."""
-    provider = repo.get_provider()
-    clone_url = _build_clone_url(repo.url, provider, token)
-    display_url = _mask_url(repo.url)
+    try:
+        provider = repo.get_provider()
+        clone_url = _build_clone_url(repo.url, provider, token)
+        provider_str = provider.value
+    except ValueError:
+        # No provider detected (e.g., file:// URLs) - use URL as-is
+        clone_url = repo.url
+        provider_str = "local"
 
-    logger.info(f"[clone] Cloning {display_url} ({provider.value}) -> {dest.name}/")
+    display_url = _mask_url(repo.url)
+    logger.info(f"[clone] Cloning {display_url} ({provider_str}) -> {dest.name}/")
 
     cmd = _build_clone_command(clone_url, dest, repo.ref)
 
@@ -422,7 +438,21 @@ def clone_repos(
         logger.info("[clone] No repositories to clone")
         return CloneResult(success_count=0, failed_repos=[], repo_mappings={})
 
-    logger.info(f"[clone] Cloning {len(repos)} repository(ies)...")
+    # Deduplicate repos by URL to prevent orphaned directories
+    seen_urls: set[str] = set()
+    unique_repos: list[RepoSource] = []
+    for repo in repos:
+        if repo.url and repo.url not in seen_urls:
+            seen_urls.add(repo.url)
+            unique_repos.append(repo)
+        elif repo.url:
+            logger.warning(f"[clone] Skipping duplicate URL: {_mask_url(repo.url)}")
+
+    if not unique_repos:
+        logger.info("[clone] No repositories to clone after deduplication")
+        return CloneResult(success_count=0, failed_repos=[], repo_mappings={})
+
+    logger.info(f"[clone] Cloning {len(unique_repos)} repository(ies)...")
     target_dir.mkdir(parents=True, exist_ok=True)
 
     tokens = _TokenCache(token_fetcher)
@@ -430,9 +460,10 @@ def clone_repos(
     failed: list[str] = []
     mappings: dict[str, RepoMapping] = {}
 
-    for repo in repos:
+    for repo in unique_repos:
         try:
             if not repo.url:
+                logger.warning("[clone] Skipping repo with empty URL")
                 continue
 
             # Determine unique directory name
@@ -441,8 +472,12 @@ def clone_repos(
             used_dirs.add(dir_name)
             dest = target_dir / dir_name
 
-            # Clone with provider-specific token
-            token = tokens.get(repo.get_token_name())
+            # Clone with provider-specific token (None if provider unknown)
+            try:
+                token = tokens.get(repo.get_token_name())
+            except ValueError:
+                # No provider (e.g., file:// URLs) - proceed without token
+                token = None
             success = _clone_single_repo(repo, dest, token)
 
             if success:
@@ -460,7 +495,7 @@ def clone_repos(
             logger.warning(f"[clone] Error processing {display_url}: {e}")
             failed.append(display_url)
 
-    logger.info(f"[clone] Cloned {len(mappings)}/{len(repos)} repositories")
+    logger.info(f"[clone] Cloned {len(mappings)}/{len(unique_repos)} repositories")
     if failed:
         logger.warning(f"[clone] Failed: {', '.join(failed)}")
 

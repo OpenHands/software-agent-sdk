@@ -546,3 +546,129 @@ class TestCloudWorkspaceRepoMethods:
             context = workspace.get_repos_context(mappings)
             assert "## Cloned Repositories" in context
             assert "`owner/repo`" in context
+
+
+class TestCloneReposIntegration:
+    """Integration tests for clone_repos using real git operations.
+
+    These tests exercise actual git cloning behavior rather than mocking subprocess.
+    Uses a small local git repository as a fixture to avoid network dependencies.
+    """
+
+    @pytest.fixture
+    def local_git_repo(self, tmp_path):
+        """Create a minimal local git repo for testing."""
+        import subprocess
+
+        repo_dir = tmp_path / "test_repo"
+        repo_dir.mkdir()
+
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=repo_dir, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
+        )
+
+        # Create a file and commit
+        (repo_dir / "README.md").write_text("# Test Repo")
+        subprocess.run(
+            ["git", "add", "README.md"], cwd=repo_dir, capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Initial commit"],
+            cwd=repo_dir,
+            capture_output=True,
+            check=True,
+        )
+
+        # Create a tag
+        subprocess.run(
+            ["git", "tag", "v1.0.0"], cwd=repo_dir, capture_output=True, check=True
+        )
+
+        # Get the commit SHA
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_sha = result.stdout.strip()
+
+        return {"path": repo_dir, "sha": commit_sha}
+
+    def test_clone_local_repo(self, local_git_repo, tmp_path):
+        """Test cloning a local git repository."""
+        target_dir = tmp_path / "cloned"
+        repo_url = f"file://{local_git_repo['path']}"
+
+        repos = [RepoSource(url=repo_url)]
+        result = clone_repos(repos, target_dir)
+
+        assert result.success_count == 1
+        assert len(result.failed_repos) == 0
+        assert repo_url in result.repo_mappings
+
+        # Verify the repo was actually cloned
+        cloned_path = Path(result.repo_mappings[repo_url].local_path)
+        assert cloned_path.exists()
+        assert (cloned_path / "README.md").exists()
+        assert (cloned_path / "README.md").read_text() == "# Test Repo"
+
+    def test_clone_with_tag_ref(self, local_git_repo, tmp_path):
+        """Test cloning with a specific tag ref."""
+        target_dir = tmp_path / "cloned"
+        repo_url = f"file://{local_git_repo['path']}"
+
+        repos = [RepoSource(url=repo_url, ref="v1.0.0")]
+        result = clone_repos(repos, target_dir)
+
+        assert result.success_count == 1
+        cloned_path = Path(result.repo_mappings[repo_url].local_path)
+        assert cloned_path.exists()
+
+    def test_clone_with_sha_ref(self, local_git_repo, tmp_path):
+        """Test cloning with a specific commit SHA."""
+        target_dir = tmp_path / "cloned"
+        repo_url = f"file://{local_git_repo['path']}"
+        sha = local_git_repo["sha"]
+
+        repos = [RepoSource(url=repo_url, ref=sha)]
+        result = clone_repos(repos, target_dir)
+
+        assert result.success_count == 1
+        cloned_path = Path(result.repo_mappings[repo_url].local_path)
+        assert cloned_path.exists()
+
+    def test_clone_invalid_url_fails(self, tmp_path):
+        """Test that invalid URLs are handled gracefully."""
+        target_dir = tmp_path / "cloned"
+
+        repos = [RepoSource(url="file:///nonexistent/repo")]
+        result = clone_repos(repos, target_dir)
+
+        assert result.success_count == 0
+        assert len(result.failed_repos) == 1
+
+    def test_clone_duplicate_urls_deduplicated(self, local_git_repo, tmp_path):
+        """Test that duplicate URLs are deduplicated."""
+        target_dir = tmp_path / "cloned"
+        repo_url = f"file://{local_git_repo['path']}"
+
+        # Same URL twice
+        repos = [RepoSource(url=repo_url), RepoSource(url=repo_url)]
+        result = clone_repos(repos, target_dir)
+
+        # Should only clone once
+        assert result.success_count == 1
+        assert len(result.repo_mappings) == 1
