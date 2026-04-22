@@ -20,6 +20,8 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
+DEFAULT_CACHE_DIR = Path.home() / ".openhands" / "cache" / "extensions"
+
 
 @dataclass
 class InstallationManager[T: ExtensionProtocol]:
@@ -81,7 +83,7 @@ class InstallationManager[T: ExtensionProtocol]:
         logger.info(f"Fetching extension from {source}")
         fetched_path, resolved_ref = fetch_with_resolution(
             source=source,
-            cache_dir=self.installation_dir / ".cache",
+            cache_dir=DEFAULT_CACHE_DIR,
             ref=ref,
             repo_path=repo_path,
             update=True,
