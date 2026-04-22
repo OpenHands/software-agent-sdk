@@ -3,6 +3,7 @@ import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
@@ -53,6 +54,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills.utils import load_mcp_config
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -64,6 +66,44 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
+
+_PROJECT_MCP_CONFIG_PATHS = (
+    Path(".openhands") / ".mcp.json",
+    Path(".mcp.json"),
+)
+
+
+def _find_git_repo_root(path: Path) -> Path | None:
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _find_project_mcp_config(path: Path) -> Path | None:
+    project_root = _find_git_repo_root(path.resolve()) or path.resolve()
+    for candidate in _PROJECT_MCP_CONFIG_PATHS:
+        config_path = project_root / candidate
+        if config_path.is_file():
+            return config_path
+    return None
+
+
+def _merge_mcp_configs(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+) -> dict[str, Any]:
+    if not base:
+        return dict(overlay)
+    if not overlay:
+        return dict(base)
+
+    result = {**base, **overlay}
+    base_servers = base.get("mcpServers", {})
+    overlay_servers = overlay.get("mcpServers", {})
+    if base_servers or overlay_servers:
+        result["mcpServers"] = {**base_servers, **overlay_servers}
+    return result
 
 
 class LocalConversation(BaseConversation):
@@ -411,6 +451,24 @@ class LocalConversation(BaseConversation):
         )
         return fork_conv
 
+    def _load_project_mcp_config(self) -> dict[str, Any]:
+        mcp_json = _find_project_mcp_config(Path(self.workspace.working_dir))
+        if mcp_json is None:
+            return {}
+
+        try:
+            config = load_mcp_config(mcp_json)
+        except Exception as e:
+            logger.warning(f"Failed to load project MCP config from {mcp_json}: {e}")
+            return {}
+
+        server_names = list(config.get("mcpServers", {}).keys())
+        logger.info(
+            f"Loaded project MCP config from {mcp_json} "
+            f"with {len(server_names)} server(s): {server_names}"
+        )
+        return config
+
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
 
@@ -431,15 +489,16 @@ class LocalConversation(BaseConversation):
 
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
+        merged_context = self.agent.agent_context
+        merged_mcp = _merge_mcp_configs(
+            self._load_project_mcp_config(),
+            self.agent.mcp_config,
+        )
 
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
-
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -472,7 +531,12 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            # Update agent with merged content
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        if (
+            merged_context != self.agent.agent_context
+            or merged_mcp != self.agent.mcp_config
+        ):
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -480,11 +544,9 @@ class LocalConversation(BaseConversation):
                 }
             )
 
-            # Also update the agent in _state so API responses reflect loaded plugins
+            # Also update the agent in _state so API responses reflect loaded config
             with self._state:
                 self._state.agent = self.agent
-
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
