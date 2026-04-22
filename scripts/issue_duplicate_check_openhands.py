@@ -145,6 +145,7 @@ def build_prompt(repository: str, issue: dict[str, Any]) -> str:
     issue_title = issue.get("title", "")
     issue_body = issue.get("body") or ""
     issue_url = issue.get("html_url", "")
+    issue_title_json = escape_json_text(issue_title)
     issue_body_json = escape_json_text(issue_body)
 
     return "\n".join(
@@ -161,7 +162,7 @@ def build_prompt(repository: str, issue: dict[str, Any]) -> str:
             f"Repository: {repository}",
             f"New issue number: #{issue_number}",
             f"New issue URL: {issue_url}",
-            f"New issue title: {issue_title}",
+            f"New issue title (JSON-escaped string): {issue_title_json}",
             f"New issue body (JSON-escaped string): {issue_body_json}",
             "",
             "Task:",
@@ -558,11 +559,14 @@ def main() -> int:
 
     agent_text = ""
     if agent_server_url and session_api_key:
-        agent_text = fetch_agent_server_final_response(
-            app_conversation_id,
-            agent_server_url,
-            session_api_key,
-        )
+        try:
+            agent_text = fetch_agent_server_final_response(
+                app_conversation_id,
+                agent_server_url,
+                session_api_key,
+            )
+        except RuntimeError:
+            agent_text = ""
     if not agent_text:
         events = fetch_app_server_events(app_conversation_id)
         try:
