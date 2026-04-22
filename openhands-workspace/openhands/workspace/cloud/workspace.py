@@ -854,6 +854,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not self._sandbox_id or not self._session_api_key:
             return None
 
+        # Validate secret name to prevent path traversal
+        if not name or "/" in name or ".." in name:
+            logger.warning(f"Invalid secret name: {name}")
+            return None
+
         try:
             resp = self._send_settings_request(
                 "GET", f"{self._settings_base_url}/secrets/{name}"
@@ -871,7 +876,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
     def clone_repos(
         self,
-        repos: list[RepoSource] | list[dict[str, Any]] | list[str],
+        repos: list[RepoSource | dict[str, Any] | str],
         target_dir: str | Path | None = None,
     ) -> CloneResult:
         """Clone repositories to the workspace directory.
@@ -1100,7 +1105,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         load_project: bool = True,
         load_org: bool = True,
         timeout: float = 60.0,
-    ) -> tuple[list[Skill], AgentContext | None]:
+    ) -> tuple[list[Skill], AgentContext]:
         """Load skills via the local agent-server's /api/skills endpoint.
 
         This method calls the agent-server running inside the sandbox to load
@@ -1122,9 +1127,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             timeout: Request timeout in seconds.
 
         Returns:
-            Tuple of (list of Skill objects, AgentContext or None).
+            Tuple of (list of Skill objects, AgentContext).
             The AgentContext is pre-configured with loaded skills and
-            load_public_skills=False to avoid duplicates.
+            load_public_skills=False to avoid duplicates (or True if no skills loaded).
 
         Example:
             >>> with OpenHandsCloudWorkspace(...) as workspace:

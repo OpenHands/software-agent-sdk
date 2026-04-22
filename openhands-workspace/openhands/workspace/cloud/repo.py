@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -52,16 +53,26 @@ PROVIDER_URL_PATTERNS: dict[str, GitProvider] = {
 def _detect_provider_from_url(url: str) -> GitProvider | None:
     """Detect git provider from URL patterns.
 
+    Uses proper URL parsing to prevent false positives from malicious URLs
+    like 'https://github.com.evil.com/repo'.
+
     Args:
         url: Repository URL or owner/repo format
 
     Returns:
         Detected GitProvider or None if not recognized
     """
-    url_lower = url.lower()
-    for pattern, provider in PROVIDER_URL_PATTERNS.items():
-        if pattern in url_lower:
-            return provider
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.netloc.lower()
+        # Handle git@ format: git@github.com:owner/repo
+        if not hostname and url.startswith("git@"):
+            hostname = url.split("@")[1].split(":")[0].lower()
+        for pattern, provider in PROVIDER_URL_PATTERNS.items():
+            if hostname == pattern:
+                return provider
+    except Exception:
+        pass
     return None
 
 
@@ -209,8 +220,8 @@ def _extract_repo_name(url: str) -> str:
         >>> _extract_repo_name("git@github.com:owner/repo.git")
         'repo'
     """
-    # Remove trailing .git
-    url = re.sub(r"\.git$", "", url)
+    # Remove trailing .git (with or without trailing slash)
+    url = re.sub(r"\.git/?$", "", url)
 
     # Handle git@host:owner/repo format
     if url.startswith("git@"):
@@ -268,7 +279,10 @@ _PROVIDER_CONFIG: dict[GitProvider, tuple[str, str]] = {
 
 
 def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
-    """Build authenticated clone URL based on the repository URL and provider."""
+    """Build authenticated clone URL based on the repository URL and provider.
+
+    Uses proper URL parsing to prevent token injection into malicious URLs.
+    """
     config = _PROVIDER_CONFIG.get(provider)
     if not config:
         return url
@@ -281,9 +295,14 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
     if is_short_format:
         return f"https://{auth_prefix}{base_url}/{url}.git"
 
-    # Handle full URLs - inject authentication
-    if token and base_url in url:
-        return url.replace(f"https://{base_url}", f"https://{auth_prefix}{base_url}")
+    # Handle full URLs - inject authentication only if hostname matches exactly
+    if token:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.netloc == base_url:
+            # Replace only the first occurrence to prevent double injection
+            return url.replace(
+                f"https://{base_url}", f"https://{auth_prefix}{base_url}", 1
+            )
 
     return url
 
@@ -373,9 +392,13 @@ class _TokenCache:
 
     def get(self, token_name: str) -> str | None:
         if token_name not in self._cache:
-            self._cache[token_name] = (
-                self._fetcher(token_name) if self._fetcher else None
-            )
+            try:
+                self._cache[token_name] = (
+                    self._fetcher(token_name) if self._fetcher else None
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch token '{token_name}': {e}")
+                self._cache[token_name] = None
         return self._cache[token_name]
 
 
@@ -408,28 +431,34 @@ def clone_repos(
     mappings: dict[str, RepoMapping] = {}
 
     for repo in repos:
-        if not repo.url:
-            continue
+        try:
+            if not repo.url:
+                continue
 
-        # Determine unique directory name
-        base_name = _sanitize_dir_name(_extract_repo_name(repo.url))
-        dir_name = _get_unique_dir_name(base_name, used_dirs)
-        used_dirs.add(dir_name)
-        dest = target_dir / dir_name
+            # Determine unique directory name
+            base_name = _sanitize_dir_name(_extract_repo_name(repo.url))
+            dir_name = _get_unique_dir_name(base_name, used_dirs)
+            used_dirs.add(dir_name)
+            dest = target_dir / dir_name
 
-        # Clone with provider-specific token
-        token = tokens.get(repo.get_token_name())
-        success = _clone_single_repo(repo, dest, token)
+            # Clone with provider-specific token
+            token = tokens.get(repo.get_token_name())
+            success = _clone_single_repo(repo, dest, token)
 
-        if success:
-            mappings[repo.url] = RepoMapping(
-                url=repo.url,
-                dir_name=dir_name,
-                local_path=str(dest),
-                ref=repo.ref,
-            )
-        else:
-            failed.append(_mask_url(repo.url))
+            if success:
+                mappings[repo.url] = RepoMapping(
+                    url=repo.url,
+                    dir_name=dir_name,
+                    local_path=str(dest),
+                    ref=repo.ref,
+                )
+            else:
+                failed.append(_mask_url(repo.url))
+        except Exception as e:
+            # Don't let one bad repo stop the entire batch
+            display_url = _mask_url(repo.url) if repo.url else "<unknown>"
+            logger.warning(f"[clone] Error processing {display_url}: {e}")
+            failed.append(display_url)
 
     logger.info(f"[clone] Cloned {len(mappings)}/{len(repos)} repositories")
     if failed:
