@@ -468,10 +468,12 @@ class TestCloudWorkspaceRepoMethods:
             workspace.working_dir = "/workspace/project"
 
             # Full URLs don't need provider
-            workspace.clone_repos([
-                "https://github.com/owner/repo1",
-                "https://github.com/owner/repo2",
-            ])
+            workspace.clone_repos(
+                [
+                    "https://github.com/owner/repo1",
+                    "https://github.com/owner/repo2",
+                ]
+            )
 
             mock_clone.assert_called_once()
             call_args = mock_clone.call_args
@@ -506,9 +508,9 @@ class TestCloudWorkspaceRepoMethods:
             workspace.working_dir = "/workspace/project"
 
             # Short URL with provider specified
-            workspace.clone_repos([
-                {"url": "owner/repo", "ref": "main", "provider": "github"}
-            ])
+            workspace.clone_repos(
+                [{"url": "owner/repo", "ref": "main", "provider": "github"}]
+            )
 
             mock_clone.assert_called_once()
             call_args = mock_clone.call_args
