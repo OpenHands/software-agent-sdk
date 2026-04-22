@@ -153,7 +153,7 @@ class RepoSource(BaseModel):
         if not detected and not self.provider:
             raise ValueError(
                 f"Short URL format '{self.url}' requires explicit 'provider' field. "
-                "Use: {\"url\": \"owner/repo\", \"provider\": \"github\"} "
+                'Use: {"url": "owner/repo", "provider": "github"} '
                 "or provide a full URL like https://github.com/owner/repo"
             )
         return self
