@@ -16,7 +16,7 @@ class InstallationInfo(BaseModel):
     """
 
     name: str = Field(description="Extension name")
-    version: str = Field(default="1.0.0", description="Extension version")
+    version: str = Field(default="", description="Extension version")
     description: str = Field(default="", description="Extension description")
 
     enabled: bool = Field(default=True, description="Whether the extension is enabled")
