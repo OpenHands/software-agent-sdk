@@ -117,38 +117,66 @@ result matches expected precedence.
 
 ---
 
-## Phase 4 — Internal Adoption (No API Change)
+## Phase 4 — Internal Adoption (No API Change) ✅
 
-**What**: Refactor `LocalConversation._ensure_plugins_loaded()` to build
-and merge `Extensions` bundles internally. The constructor signature and
-public API remain unchanged.
+**What**: Refactor `LocalConversation._ensure_plugins_loaded()` and
+`load_plugins()` to build and merge `Extensions` bundles internally.
+Delete `Plugin.add_skills_to()` and `Plugin.add_mcp_config_to()` (the
+old merge code paths).  Constructor signatures and public API remain
+unchanged.
 
-### Changes to `LocalConversation`
+### Deleted from `Plugin`
 
-`_ensure_plugins_loaded()` currently:
-1. Loops over `_plugin_specs`, fetches/loads each plugin
-2. Manually merges skills via `plugin.add_skills_to()`
-3. Manually merges MCP via `plugin.add_mcp_config_to()`
-4. Collects hook configs into a list, merges at the end
-5. Updates agent with `model_copy()`
+`add_skills_to()` and `add_mcp_config_to()` — these implemented the
+same merge logic that now lives in `Extensions._merge_skills` /
+`_merge_mcp_config`.  `test_plugin_merging.py` deleted with them.
 
-Refactored to:
-1. Build `Extensions` from agent's existing `agent_context` + `mcp_config` (inline source)
-2. Build `Extensions` from each loaded plugin (plugin source)
-3. Build `Extensions` from `_pending_hook_config` (inline source)
-4. `Extensions.collapse([inline_agent, *plugin_bundles, inline_hooks])`
-5. Apply the final bundle to the agent
+### Changes to `loader.py` (`load_plugins()`)
+
+`load_plugins()` is the public convenience function exported from
+`openhands.sdk.plugin`.  Refactored internals:
+
+1. Build `Extensions` per plugin via `from_plugin(plugin)`.
+2. Build `agent_bundle` via `from_inline(skills=..., mcp_config=...)`.
+3. `Extensions.collapse([*reversed(plugin_bundles), agent_bundle])`
+   — reversed so last plugin spec still wins (preserves external
+   behavior).
+4. Defense-in-depth `max_skills` check on the collapsed result.
+5. Apply merged skills + MCP to the agent via `model_copy()`.
+6. Return `(updated_agent, merged.hooks)`.
+
+### Changes to `LocalConversation._ensure_plugins_loaded()`
+
+The method has two responsibilities: **merging** (now delegated to
+Extensions) and **lifecycle** (fetch, resolve, register, hook processor).
+The refactored structure keeps them cleanly separated:
+
+| Step | Concern | What happens |
+|------|---------|-------------|
+| 1 | Lifecycle | Fetch each plugin + resolve commit SHA → `ResolvedPluginSource` |
+| 2 | Lifecycle | `Plugin.load(path)` for each fetched plugin |
+| 3 | Merging  | `from_plugin(plugin)` → one `Extensions` bundle per plugin |
+| 4 | Merging  | `from_inline(hooks=_pending_hook_config)` → explicit hooks bundle |
+| 5 | Merging  | `from_inline(skills=..., mcp_config=...)` → agent base bundle |
+| 6 | Merging  | `Extensions.collapse([hooks, *reversed(plugins), agent_base])` |
+| 7 | Lifecycle | Apply `merged.skills` + `merged.mcp_config` to agent via `model_copy()` |
+| 8 | Lifecycle | `register_plugin_agents(merged.agents, ...)` — agents come from the bundle |
+| 9 | Lifecycle | `create_hook_callback(merged.hooks, ...)` → hook processor |
+| 10 | Lifecycle | `run_session_start()` |
 
 ### Changes to agent-server `ConversationService` / `skills_service`
 
 The server's `load_all_skills()` currently builds separate skill lists and
 merges them. Refactor to build `Extensions` bundles and collapse. Hook and
-MCP config from server-side sources get included naturally.
+MCP config from server-side sources get included naturally. (Future work —
+server code is outside the SDK package.)
 
 ### Verification
 
-All existing tests pass. The behavior is identical — just cleaner
-implementation.
+All existing tests pass (718 SDK tests).  `test_plugin_loader.py`
+(25 tests) exercises `load_plugins()` end-to-end with real plugin
+directories and confirms last-plugin-wins, MCP merge, hooks concatenation,
+and `max_skills` enforcement all behave identically.
 
 ---
 

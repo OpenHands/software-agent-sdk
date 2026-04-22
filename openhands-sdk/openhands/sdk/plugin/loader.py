@@ -8,8 +8,10 @@ and merging them into an agent. It is used by:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from openhands.sdk.extensions.extensions import Extensions
+from openhands.sdk.extensions.sources import from_inline, from_plugin
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.plugin import Plugin
@@ -18,7 +20,6 @@ from openhands.sdk.plugin.types import PluginSource
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.context import AgentContext
 
 
 logger = get_logger(__name__)
@@ -31,14 +32,9 @@ def load_plugins(
 ) -> tuple[AgentBase, HookConfig | None]:
     """Load multiple plugins and merge them into the agent.
 
-    This is the canonical function for plugin loading, used by:
-    - LocalConversation (for SDK-direct users)
-    - ConversationService (for agent-server users)
-
-    Plugins are loaded in order and their contents are merged with these semantics:
-    - Skills: Override by name (last plugin wins)
-    - MCP config: Override by key (last plugin wins)
-    - Hooks: Concatenate (all hooks run)
+    Plugins are loaded in order.  Later plugins in the list have higher
+    precedence (last plugin wins for skills and MCP config).  Hooks
+    from all plugins are concatenated.
 
     Args:
         plugin_specs: List of plugin sources to load.
@@ -66,46 +62,52 @@ def load_plugins(
     if not plugin_specs:
         return agent, None
 
-    # Start with agent's existing context and MCP config
-    merged_context: AgentContext | None = agent.agent_context
-    merged_mcp: dict[str, Any] = dict(agent.mcp_config) if agent.mcp_config else {}
-    all_hooks: list[HookConfig] = []
-
+    # Build an Extensions bundle for each plugin
+    plugin_bundles: list[Extensions] = []
     for spec in plugin_specs:
         logger.info(f"Loading plugin from {spec.source}")
-
-        # Fetch (downloads if needed, returns cached path)
         path = Plugin.fetch(
             source=spec.source,
             ref=spec.ref,
             repo_path=spec.repo_path,
         )
         plugin = Plugin.load(path)
-
         logger.info(
             f"Loaded plugin '{plugin.name}': "
             f"{len(plugin.skills)} skills, "
             f"hooks={'yes' if plugin.hooks else 'no'}, "
             f"mcp_config={'yes' if plugin.mcp_config else 'no'}"
         )
+        plugin_bundles.append(from_plugin(plugin))
 
-        # Merge skills and MCP config separately
-        merged_context = plugin.add_skills_to(merged_context, max_skills=max_skills)
-        merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+    # Agent's existing state is the lowest-precedence base.
+    # Later plugins have higher precedence (last-plugin-wins), so we
+    # reverse plugin_bundles for the first-wins collapse.
+    agent_bundle = from_inline(
+        skills=agent.agent_context.skills if agent.agent_context else [],
+        mcp_config=agent.mcp_config,
+    )
+    merged = Extensions.collapse([*reversed(plugin_bundles), agent_bundle])
 
-        # Collect hooks for later combination
-        if plugin.hooks and not plugin.hooks.is_empty():
-            all_hooks.append(plugin.hooks)
+    # Defense-in-depth skill limit
+    if len(merged.skills) > max_skills:
+        raise ValueError(
+            f"Total skills ({len(merged.skills)}) exceeds maximum ({max_skills})"
+        )
 
-    # Combine all hook configs (concatenation semantics)
-    combined_hooks = HookConfig.merge(all_hooks)
+    # Apply merged skills + MCP to the agent
+    from openhands.sdk.context import AgentContext
 
-    # Create updated agent with merged content
+    new_context = (
+        agent.agent_context.model_copy(update={"skills": merged.skills})
+        if agent.agent_context
+        else AgentContext(skills=merged.skills)
+    )
     updated_agent = agent.model_copy(
         update={
-            "agent_context": merged_context,
-            "mcp_config": merged_mcp,
+            "agent_context": new_context,
+            "mcp_config": merged.mcp_config,
         }
     )
 
-    return updated_agent, combined_hooks
+    return updated_agent, merged.hooks

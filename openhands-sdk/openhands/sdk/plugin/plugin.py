@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -24,9 +24,6 @@ from openhands.sdk.skills.utils import (
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 
-
-if TYPE_CHECKING:
-    from openhands.sdk.context import AgentContext
 
 logger = get_logger(__name__)
 
@@ -121,116 +118,6 @@ class Plugin(BaseModel):
             all_skills.append(skill)
 
         return all_skills
-
-    def add_skills_to(
-        self,
-        agent_context: AgentContext | None = None,
-        max_skills: int | None = None,
-    ) -> AgentContext:
-        """Add this plugin's skills to an agent context.
-
-        Plugin skills override existing skills with the same name.
-        Includes both explicit skills and command-derived skills.
-
-        Args:
-            agent_context: Existing agent context (or None to create new)
-            max_skills: Optional max total skills (raises ValueError if exceeded)
-
-        Returns:
-            New AgentContext with this plugin's skills added
-
-        Raises:
-            ValueError: If max_skills limit would be exceeded
-
-        Example:
-            >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
-            >>> new_context = plugin.add_skills_to(agent.agent_context, max_skills=100)
-            >>> agent = agent.model_copy(update={"agent_context": new_context})
-        """
-        # Import at runtime to avoid circular import
-        from openhands.sdk.context import AgentContext
-
-        existing_skills = agent_context.skills if agent_context else []
-
-        # Get all skills including command-derived skills
-        all_skills = self.get_all_skills()
-
-        skills_by_name = {s.name: s for s in existing_skills}
-        for skill in all_skills:
-            if skill.name in skills_by_name:
-                logger.warning(f"Plugin skill '{skill.name}' overrides existing skill")
-            skills_by_name[skill.name] = skill
-
-        if max_skills is not None and len(skills_by_name) > max_skills:
-            raise ValueError(
-                f"Total skills ({len(skills_by_name)}) exceeds maximum ({max_skills})"
-            )
-
-        merged_skills = list(skills_by_name.values())
-
-        if agent_context:
-            return agent_context.model_copy(update={"skills": merged_skills})
-        return AgentContext(skills=merged_skills)
-
-    def add_mcp_config_to(
-        self,
-        mcp_config: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Add this plugin's MCP servers to an MCP config.
-
-        Plugin MCP servers override existing servers with the same name.
-
-        Merge semantics (Claude Code compatible):
-        - mcpServers: deep-merge by server name (last plugin wins for same server)
-        - Other top-level keys: shallow override (plugin wins)
-
-        Args:
-            mcp_config: Existing MCP config (or None to create new)
-
-        Returns:
-            New MCP config dict with this plugin's servers added
-
-        Example:
-            >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
-            >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
-            >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
-        """
-        base_config = mcp_config
-        plugin_config = self.mcp_config
-
-        if base_config is None and plugin_config is None:
-            return {}
-        if base_config is None:
-            return dict(plugin_config) if plugin_config else {}
-        if plugin_config is None:
-            return dict(base_config)
-
-        # Shallow copy to avoid mutating inputs
-        result = dict(base_config)
-
-        # Merge mcpServers by server name (Claude Code compatible behavior)
-        if "mcpServers" in plugin_config:
-            existing_servers = result.get("mcpServers", {})
-            for server_name in plugin_config["mcpServers"]:
-                if server_name in existing_servers:
-                    logger.warning(
-                        f"Plugin MCP server '{server_name}' overrides existing server"
-                    )
-            result["mcpServers"] = {
-                **existing_servers,
-                **plugin_config["mcpServers"],
-            }
-
-        # Other top-level keys: plugin wins (shallow override)
-        for key, value in plugin_config.items():
-            if key != "mcpServers":
-                if key in result:
-                    logger.warning(
-                        f"Plugin MCP config key '{key}' overrides existing value"
-                    )
-                result[key] = value
-
-        return result
 
     @classmethod
     def fetch(

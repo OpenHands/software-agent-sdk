@@ -54,7 +54,6 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.subagent import (
-    AgentDefinition,
     register_file_agents,
     register_plugin_agents,
 )
@@ -419,98 +418,90 @@ class LocalConversation(BaseConversation):
         The method:
         1. Fetches plugins from their sources (network IO for remote sources)
         2. Resolves refs to commit SHAs for deterministic resume
-        3. Loads plugin contents (skills, MCP config, hooks)
-        4. Merges plugin contents into the agent
-        5. Sets up hook processor with combined hooks (explicit + plugin)
-        6. Runs session_start hooks
+        3. Loads plugin contents into Extensions bundles
+        4. Merges bundles (explicit hooks → plugins → agent base)
+        5. Applies merged skills/MCP to the agent
+        6. Registers plugin-defined agents
+        7. Sets up hook processor with combined hooks
+        8. Runs session_start hooks
         """
         if self._plugins_loaded:
             return
 
-        all_plugin_hooks: list[HookConfig] = []
-        all_plugin_agents: list[AgentDefinition] = []
+        from openhands.sdk.extensions.extensions import Extensions
+        from openhands.sdk.extensions.sources import from_inline, from_plugin
 
-        # Load plugins if specified
+        plugin_bundles: list[Extensions] = []
+
+        # ── 1. Fetch & load each plugin into an Extensions bundle ──
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
 
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
-
             for spec in self._plugin_specs:
-                # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
                     source=spec.source,
                     ref=spec.ref,
                     repo_path=spec.repo_path,
                 )
-
-                # Store resolved ref for persistence
                 resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
                 self._resolved_plugins.append(resolved)
 
-                # Load the plugin
                 plugin = Plugin.load(path)
                 logger.debug(
                     f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
                 )
-
-                # Merge plugin contents
-                merged_context = plugin.add_skills_to(merged_context)
-                merged_mcp = plugin.add_mcp_config_to(merged_mcp)
-
-                # Collect hooks
-                if plugin.hooks and not plugin.hooks.is_empty():
-                    all_plugin_hooks.append(plugin.hooks)
-
-                # Collect agent definitions
-                if plugin.agents:
-                    all_plugin_agents.extend(plugin.agents)
-
-            # Update agent with merged content
-            self.agent = self.agent.model_copy(
-                update={
-                    "agent_context": merged_context,
-                    "mcp_config": merged_mcp,
-                }
-            )
-
-            # Also update the agent in _state so API responses reflect loaded plugins
-            with self._state:
-                self._state.agent = self.agent
+                plugin_bundles.append(from_plugin(plugin))
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
-        # Register file-based agents defined in plugins
-        if all_plugin_agents:
+        # ── 2. Build the merge chain and collapse ──
+        #
+        # Precedence (highest first for first-wins collapse):
+        #   explicit hooks → last plugin → … → first plugin → agent base
+        hooks_bundle = from_inline(hooks=self._pending_hook_config)
+        agent_bundle = from_inline(
+            skills=(
+                self.agent.agent_context.skills if self.agent.agent_context else []
+            ),
+            mcp_config=self.agent.mcp_config,
+        )
+        merged = Extensions.collapse(
+            [hooks_bundle, *reversed(plugin_bundles), agent_bundle]
+        )
+
+        # ── 3. Apply merged skills + MCP to the agent ──
+        if plugin_bundles:
+            from openhands.sdk.context import AgentContext
+
+            new_context = (
+                self.agent.agent_context.model_copy(update={"skills": merged.skills})
+                if self.agent.agent_context
+                else AgentContext(skills=merged.skills)
+            )
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": new_context,
+                    "mcp_config": merged.mcp_config,
+                }
+            )
+            with self._state:
+                self._state.agent = self.agent
+
+        # ── 4. Register plugin-defined agents ──
+        if merged.agents:
             register_plugin_agents(
-                agents=all_plugin_agents,
+                agents=merged.agents,
                 work_dir=self.workspace.working_dir,
             )
 
-        # Combine explicit hook_config with plugin hooks
-        # Explicit hooks run first (before plugin hooks)
-        final_hook_config = self._pending_hook_config
-        if all_plugin_hooks:
-            plugin_hooks = HookConfig.merge(all_plugin_hooks)
-            if plugin_hooks is not None:
-                if final_hook_config is not None:
-                    final_hook_config = HookConfig.merge(
-                        [final_hook_config, plugin_hooks]
-                    )
-                else:
-                    final_hook_config = plugin_hooks
-
-        # Set up hook processor with the combined config
-        if final_hook_config is not None:
-            # Store final hook_config in state for observability
-            self._state.hook_config = final_hook_config
+        # ── 5. Set up hook processor ──
+        if merged.hooks is not None:
+            self._state.hook_config = merged.hooks
 
             self._hook_processor, self._on_event = create_hook_callback(
-                hook_config=final_hook_config,
+                hook_config=merged.hooks,
                 working_dir=str(self.workspace.working_dir),
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
