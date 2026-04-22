@@ -8,18 +8,15 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
-
-
-if TYPE_CHECKING:
-    pass
 
 
 logger = get_logger(__name__)
@@ -305,59 +302,81 @@ def _mask_token(text: str, token: str | None) -> str:
     return text
 
 
-TokenFetcher = Any  # Callable[[str], str | None] - fetches token by name
+# Type for functions that fetch tokens by name (e.g., "github_token" -> token value)
+TokenFetcher = Callable[[str], str | None]
 
 
-def _clone_single_repo(
-    repo: RepoSource,
-    dest: Path,
-    token: str | None,
-) -> bool:
+def _build_clone_command(clone_url: str, dest: Path, ref: str | None) -> list[str]:
+    """Build the git clone command."""
+    # SHA refs need full clone; branches/tags can use shallow clone
+    if _is_commit_sha(ref):
+        return ["git", "clone", clone_url, str(dest)]
+
+    cmd = ["git", "clone", "--depth", "1"]
+    if ref:
+        cmd.extend(["--branch", ref])
+    cmd.extend([clone_url, str(dest)])
+    return cmd
+
+
+def _checkout_sha(dest: Path, sha: str) -> bool:
+    """Checkout a specific SHA after full clone. Returns True on success."""
+    result = subprocess.run(
+        ["git", "-C", str(dest), "checkout", sha],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        logger.warning(f"[clone] Failed to checkout {sha}: {result.stderr}")
+        return False
+    return True
+
+
+def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
     """Clone a single repository. Returns True on success."""
-    url, ref = repo.url, repo.ref
     provider = repo.get_provider()
-    clone_url = _build_clone_url(url, provider, token)
-    display_url = _mask_url(url)
-
-    # Build git clone command
-    # SHA refs need full clone + checkout; branches/tags can use shallow clone
-    is_sha = _is_commit_sha(ref)
-    if is_sha:
-        cmd = ["git", "clone", clone_url, str(dest)]
-    else:
-        cmd = ["git", "clone", "--depth", "1"]
-        if ref:
-            cmd.extend(["--branch", ref])
-        cmd.extend([clone_url, str(dest)])
+    clone_url = _build_clone_url(repo.url, provider, token)
+    display_url = _mask_url(repo.url)
 
     logger.info(f"[clone] Cloning {display_url} ({provider.value}) -> {dest.name}/")
+
+    cmd = _build_clone_command(clone_url, dest, repo.ref)
 
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT
         )
-        if result.returncode != 0:
-            logger.warning(f"[clone] Failed: {_mask_token(result.stderr, token)}")
-            return False
-
-        # Checkout specific SHA if needed
-        if is_sha and ref:
-            checkout = subprocess.run(
-                ["git", "-C", str(dest), "checkout", ref],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if checkout.returncode != 0:
-                logger.warning(f"[clone] Failed to checkout {ref}: {checkout.stderr}")
-                return False
-
-        logger.info(f"[clone] Success: {display_url} -> {dest.name}/")
-        return True
-
     except subprocess.TimeoutExpired:
         logger.warning(f"[clone] Timed out: {display_url}")
         return False
+
+    if result.returncode != 0:
+        logger.warning(f"[clone] Failed: {_mask_token(result.stderr, token)}")
+        return False
+
+    # For SHA refs, we did a full clone and need to checkout the specific commit
+    if _is_commit_sha(repo.ref) and repo.ref:
+        if not _checkout_sha(dest, repo.ref):
+            return False
+
+    logger.info(f"[clone] Success: {display_url} -> {dest.name}/")
+    return True
+
+
+class _TokenCache:
+    """Simple cache for provider tokens to avoid repeated API calls."""
+
+    def __init__(self, fetcher: TokenFetcher | None):
+        self._fetcher = fetcher
+        self._cache: dict[str, str | None] = {}
+
+    def get(self, token_name: str) -> str | None:
+        if token_name not in self._cache:
+            self._cache[token_name] = (
+                self._fetcher(token_name) if self._fetcher else None
+            )
+        return self._cache[token_name]
 
 
 def clone_repos(
@@ -383,14 +402,7 @@ def clone_repos(
     logger.info(f"[clone] Cloning {len(repos)} repository(ies)...")
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cache tokens to avoid repeated API calls
-    token_cache: dict[str, str | None] = {}
-
-    def get_token(name: str) -> str | None:
-        if name not in token_cache:
-            token_cache[name] = token_fetcher(name) if token_fetcher else None
-        return token_cache[name]
-
+    tokens = _TokenCache(token_fetcher)
     used_dirs: set[str] = set()
     failed: list[str] = []
     mappings: dict[str, RepoMapping] = {}
@@ -399,16 +411,17 @@ def clone_repos(
         if not repo.url:
             continue
 
-        # Get unique directory name
-        dir_name = _get_unique_dir_name(
-            _sanitize_dir_name(_extract_repo_name(repo.url)), used_dirs
-        )
+        # Determine unique directory name
+        base_name = _sanitize_dir_name(_extract_repo_name(repo.url))
+        dir_name = _get_unique_dir_name(base_name, used_dirs)
         used_dirs.add(dir_name)
         dest = target_dir / dir_name
 
         # Clone with provider-specific token
-        token = get_token(repo.get_token_name())
-        if _clone_single_repo(repo, dest, token):
+        token = tokens.get(repo.get_token_name())
+        success = _clone_single_repo(repo, dest, token)
+
+        if success:
             mappings[repo.url] = RepoMapping(
                 url=repo.url,
                 dir_name=dir_name,

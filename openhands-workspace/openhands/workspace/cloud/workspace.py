@@ -961,6 +961,137 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
     # --- Skill Loading Methods ---
 
+    def _call_skills_api(
+        self,
+        project_dir: str,
+        load_public: bool = False,
+        load_user: bool = False,
+        load_project: bool = False,
+        load_org: bool = False,
+        timeout: float = 60.0,
+    ) -> list[dict[str, Any]]:
+        """Call the agent-server /api/skills endpoint.
+
+        Returns list of skill dicts, or empty list on error.
+        """
+        payload = {
+            "load_public": load_public,
+            "load_user": load_user,
+            "load_project": load_project,
+            "load_org": load_org,
+            "project_dir": project_dir,
+            "org_config": None,
+            "sandbox_config": None,
+        }
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._session_api_key:
+            headers["X-Session-API-Key"] = self._session_api_key
+
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(
+                    f"{self.host}/api/skills",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                logger.debug(f"Agent-server sources: {data.get('sources', {})}")
+                return data.get("skills", [])
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Agent-server HTTP error {e.response.status_code}")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to connect to agent-server: {e}")
+            return []
+
+    def _add_skills_to_dict(
+        self,
+        skills_by_name: dict[str, dict[str, Any]],
+        skill_list: list[dict[str, Any]],
+    ) -> None:
+        """Add skills to dict, keyed by name (later values override)."""
+        for skill_data in skill_list:
+            name = skill_data.get("name", "unknown")
+            skills_by_name[name] = skill_data
+
+    def _load_skills_multi_dir(
+        self,
+        project_dirs: list[str],
+        load_public: bool,
+        load_user: bool,
+        load_project: bool,
+        load_org: bool,
+        timeout: float,
+    ) -> dict[str, dict[str, Any]]:
+        """Load skills when multiple project directories are specified."""
+        skills_by_name: dict[str, dict[str, Any]] = {}
+
+        # Load global skills (public/user/org) once
+        logger.debug("Loading public/user/org skills...")
+        global_skills = self._call_skills_api(
+            project_dir=self.working_dir,
+            load_public=load_public,
+            load_user=load_user,
+            load_project=False,
+            load_org=load_org,
+            timeout=timeout,
+        )
+        self._add_skills_to_dict(skills_by_name, global_skills)
+
+        # Load project skills from each directory
+        if not load_project:
+            return skills_by_name
+
+        for dir_path in project_dirs:
+            logger.debug(f"Loading project skills from {dir_path}...")
+            proj_skills = self._call_skills_api(
+                project_dir=dir_path,
+                load_project=True,
+                timeout=timeout,
+            )
+            self._add_skills_to_dict(skills_by_name, proj_skills)
+
+        return skills_by_name
+
+    def _load_skills_single_dir(
+        self,
+        load_public: bool,
+        load_user: bool,
+        load_project: bool,
+        load_org: bool,
+        timeout: float,
+    ) -> dict[str, dict[str, Any]]:
+        """Load all skills from the working directory."""
+        logger.debug("Loading all skills from working_dir...")
+        all_skills = self._call_skills_api(
+            project_dir=self.working_dir,
+            load_public=load_public,
+            load_user=load_user,
+            load_project=load_project,
+            load_org=load_org,
+            timeout=timeout,
+        )
+
+        skills_by_name: dict[str, dict[str, Any]] = {}
+        self._add_skills_to_dict(skills_by_name, all_skills)
+        return skills_by_name
+
+    def _convert_skills_dict_to_list(
+        self, skills_by_name: dict[str, dict[str, Any]]
+    ) -> list[Skill]:
+        """Convert skill dicts to SDK Skill objects."""
+        loaded_skills: list[Skill] = []
+        for skill_data in skills_by_name.values():
+            try:
+                skill = self._convert_skill_data_to_skill(skill_data)
+                loaded_skills.append(skill)
+            except Exception as e:
+                skill_name = skill_data.get("name", "unknown")
+                logger.warning(f"Failed to convert skill {skill_name}: {e}")
+        return loaded_skills
+
     def load_skills_from_agent_server(
         self,
         project_dirs: list[str | Path] | None = None,
@@ -1015,112 +1146,28 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         logger.info("Loading skills via agent-server...")
         logger.debug(f"Agent-server URL: {self.host}")
 
-        # Use dict to deduplicate skills by name (later skills override earlier)
-        skills_by_name: dict[str, dict[str, Any]] = {}
-
-        def call_skills_api(project_dir: str | None, **kwargs: Any) -> list[dict]:
-            """Call the agent-server /api/skills endpoint."""
-            payload = {
-                "load_public": kwargs.get("load_public", False),
-                "load_user": kwargs.get("load_user", False),
-                "load_project": kwargs.get("load_project", False),
-                "load_org": kwargs.get("load_org", False),
-                "project_dir": project_dir,
-                "org_config": None,
-                "sandbox_config": None,
-            }
-
-            headers = {"Content-Type": "application/json"}
-            if self._session_api_key:
-                headers["X-Session-API-Key"] = self._session_api_key
-
-            try:
-                with httpx.Client(timeout=timeout) as client:
-                    resp = client.post(
-                        f"{self.host}/api/skills",
-                        json=payload,
-                        headers=headers,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    skills = data.get("skills", [])
-                    sources = data.get("sources", {})
-                    logger.debug(f"Agent-server sources: {sources}")
-                    return skills
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Agent-server HTTP error {e.response.status_code}")
-                return []
-            except Exception as e:
-                logger.error(f"Failed to connect to agent-server: {e}")
-                return []
-
-        # Determine project directories
+        # Load skills based on whether multiple project dirs are specified
         if project_dirs:
-            # Multiple directories provided - load project skills from each
             dirs = [str(d) if isinstance(d, Path) else d for d in project_dirs]
-
-            # First: load public/user/org skills (not project-specific)
-            logger.debug("Loading public/user/org skills...")
-            global_skills = call_skills_api(
-                project_dir=self.working_dir,
-                load_public=load_public,
-                load_user=load_user,
-                load_project=False,
-                load_org=load_org,
+            skills_by_name = self._load_skills_multi_dir(
+                dirs, load_public, load_user, load_project, load_org, timeout
             )
-            for skill_data in global_skills:
-                name = skill_data.get("name", "unknown")
-                skills_by_name[name] = skill_data
-
-            # Then: load project skills from each directory
-            if load_project:
-                for dir_path in dirs:
-                    logger.debug(f"Loading project skills from {dir_path}...")
-                    proj_skills = call_skills_api(
-                        project_dir=dir_path,
-                        load_public=False,
-                        load_user=False,
-                        load_project=True,
-                        load_org=False,
-                    )
-                    for skill_data in proj_skills:
-                        name = skill_data.get("name", "unknown")
-                        # Later directories override earlier ones
-                        skills_by_name[name] = skill_data
         else:
-            # Single working_dir - load all skills from it
-            logger.debug("Loading all skills from working_dir...")
-            all_skills = call_skills_api(
-                project_dir=self.working_dir,
-                load_public=load_public,
-                load_user=load_user,
-                load_project=load_project,
-                load_org=load_org,
+            skills_by_name = self._load_skills_single_dir(
+                load_public, load_user, load_project, load_org, timeout
             )
-            for skill_data in all_skills:
-                name = skill_data.get("name", "unknown")
-                skills_by_name[name] = skill_data
 
         # Convert to SDK Skill objects
-        loaded_skills: list[Skill] = []
-        for skill_data in skills_by_name.values():
-            try:
-                skill = self._convert_skill_data_to_skill(skill_data)
-                loaded_skills.append(skill)
-            except Exception as e:
-                skill_name = skill_data.get("name", "unknown")
-                logger.warning(f"Failed to convert skill {skill_name}: {e}")
+        loaded_skills = self._convert_skills_dict_to_list(skills_by_name)
 
         logger.info(f"Loaded {len(loaded_skills)} skills")
         if loaded_skills:
             logger.debug(f"Skills: {[s.name for s in loaded_skills]}")
 
-        # Create AgentContext with loaded skills
-        # Set load_public_skills=False to avoid duplicates since we already loaded them
+        # Create AgentContext - fall back to public skills if none loaded
         if loaded_skills:
             agent_context = AgentContext(skills=loaded_skills, load_public_skills=False)
         else:
-            # Fall back to public skills if agent-server was unavailable
             logger.warning("No skills loaded, falling back to public skills")
             agent_context = AgentContext(skills=[], load_public_skills=True)
 
