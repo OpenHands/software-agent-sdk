@@ -189,6 +189,8 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
+        self._pin_prompt_cache_key()
+
         # Default callback: persist every event to state
         def _default_callback(e):
             # This callback runs while holding the conversation state's lock
@@ -597,6 +599,10 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
+    def _pin_prompt_cache_key(self) -> None:
+        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
+        self.agent.llm._prompt_cache_key = str(self._state.id)
+
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a named profile.
 
@@ -620,6 +626,7 @@ class LocalConversation(BaseConversation):
         with self._state:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
+            self._pin_prompt_cache_key()
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
