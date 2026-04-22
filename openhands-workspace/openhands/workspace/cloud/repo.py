@@ -250,49 +250,33 @@ def _get_unique_dir_name(base_name: str, existing_dirs: set[str]) -> str:
     return f"{base_name}_{counter}"
 
 
+# Provider configurations: (base_url, token_format)
+# token_format uses {token} placeholder
+_PROVIDER_CONFIG: dict[GitProvider, tuple[str, str]] = {
+    GitProvider.GITHUB: ("github.com", "{token}@"),
+    GitProvider.GITLAB: ("gitlab.com", "oauth2:{token}@"),
+    GitProvider.BITBUCKET: ("bitbucket.org", "x-token-auth:{token}@"),
+}
+
+
 def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
-    """Build authenticated clone URL based on the repository URL and provider.
-
-    Args:
-        url: Repository URL or owner/repo format
-        provider: Git hosting provider
-        token: Authentication token for the provider (may be None)
-
-    Returns:
-        Clone URL with authentication if token is available
-    """
-    # Handle owner/repo format - construct full URL based on provider
-    if "://" not in url and "/" in url and not url.startswith("git@"):
-        if provider == GitProvider.GITHUB:
-            base_url = "github.com"
-            if token:
-                return f"https://{token}@{base_url}/{url}.git"
-            return f"https://{base_url}/{url}.git"
-        elif provider == GitProvider.GITLAB:
-            base_url = "gitlab.com"
-            if token:
-                return f"https://oauth2:{token}@{base_url}/{url}.git"
-            return f"https://{base_url}/{url}.git"
-        elif provider == GitProvider.BITBUCKET:
-            base_url = "bitbucket.org"
-            if token:
-                return f"https://x-token-auth:{token}@{base_url}/{url}.git"
-            return f"https://{base_url}/{url}.git"
-
-    # Handle full URLs - inject authentication
-    if not token:
+    """Build authenticated clone URL based on the repository URL and provider."""
+    config = _PROVIDER_CONFIG.get(provider)
+    if not config:
         return url
 
-    if provider == GitProvider.GITHUB and "github.com" in url:
-        return url.replace("https://github.com", f"https://{token}@github.com")
-    elif provider == GitProvider.GITLAB and "gitlab.com" in url:
-        return url.replace("https://gitlab.com", f"https://oauth2:{token}@gitlab.com")
-    elif provider == GitProvider.BITBUCKET and "bitbucket.org" in url:
-        return url.replace(
-            "https://bitbucket.org", f"https://x-token-auth:{token}@bitbucket.org"
-        )
+    base_url, token_format = config
+    auth_prefix = token_format.format(token=token) if token else ""
 
-    # Return as-is for other URLs or unrecognized patterns
+    # Handle owner/repo format - construct full URL
+    is_short_format = "://" not in url and "/" in url and not url.startswith("git@")
+    if is_short_format:
+        return f"https://{auth_prefix}{base_url}/{url}.git"
+
+    # Handle full URLs - inject authentication
+    if token and base_url in url:
+        return url.replace(f"https://{base_url}", f"https://{auth_prefix}{base_url}")
+
     return url
 
 
@@ -313,16 +297,64 @@ def _mask_token(text: str, token: str | None) -> str:
 TokenFetcher = Any  # Callable[[str], str | None] - fetches token by name
 
 
+def _clone_single_repo(
+    repo: RepoSource,
+    dest: Path,
+    token: str | None,
+) -> bool:
+    """Clone a single repository. Returns True on success."""
+    url, ref = repo.url, repo.ref
+    provider = repo.get_provider()
+    clone_url = _build_clone_url(url, provider, token)
+    display_url = _mask_url(url)
+
+    # Build git clone command
+    # SHA refs need full clone + checkout; branches/tags can use shallow clone
+    is_sha = _is_commit_sha(ref)
+    if is_sha:
+        cmd = ["git", "clone", clone_url, str(dest)]
+    else:
+        cmd = ["git", "clone", "--depth", "1"]
+        if ref:
+            cmd.extend(["--branch", ref])
+        cmd.extend([clone_url, str(dest)])
+
+    logger.info(f"[clone] Cloning {display_url} ({provider.value}) -> {dest.name}/")
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT
+        )
+        if result.returncode != 0:
+            logger.warning(f"[clone] Failed: {_mask_token(result.stderr, token)}")
+            return False
+
+        # Checkout specific SHA if needed
+        if is_sha and ref:
+            checkout = subprocess.run(
+                ["git", "-C", str(dest), "checkout", ref],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if checkout.returncode != 0:
+                logger.warning(f"[clone] Failed to checkout {ref}: {checkout.stderr}")
+                return False
+
+        logger.info(f"[clone] Success: {display_url} -> {dest.name}/")
+        return True
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[clone] Timed out: {display_url}")
+        return False
+
+
 def clone_repos(
     repos: list[RepoSource],
     target_dir: Path,
     token_fetcher: TokenFetcher | None = None,
 ) -> CloneResult:
     """Clone repositories to the target directory.
-
-    Clones repos to meaningful directory names (e.g., 'openhands-cli' instead of
-    'repo_0'). Uses the provider specified in each RepoSource to determine which
-    authentication token to use.
 
     Args:
         repos: List of RepoSource configurations (each specifies provider)
@@ -338,119 +370,51 @@ def clone_repos(
         return CloneResult(success_count=0, failed_repos=[], repo_mappings={})
 
     logger.info(f"[clone] Cloning {len(repos)} repository(ies)...")
-
-    # Create target directory
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Cache fetched tokens to avoid repeated API calls
+    # Cache tokens to avoid repeated API calls
     token_cache: dict[str, str | None] = {}
 
-    def get_token(token_name: str) -> str | None:
-        """Get token from cache or fetch it."""
-        if token_name not in token_cache:
-            if token_fetcher:
-                token_cache[token_name] = token_fetcher(token_name)
-            else:
-                token_cache[token_name] = None
-        return token_cache[token_name]
+    def get_token(name: str) -> str | None:
+        if name not in token_cache:
+            token_cache[name] = token_fetcher(name) if token_fetcher else None
+        return token_cache[name]
 
-    # Track used directory names to handle collisions
-    used_dir_names: set[str] = set()
-    failed_repos: list[str] = []
-    repo_mappings: dict[str, RepoMapping] = {}
-    success_count = 0
+    used_dirs: set[str] = set()
+    failed: list[str] = []
+    mappings: dict[str, RepoMapping] = {}
 
     for repo in repos:
-        url = repo.url
-        ref = repo.ref
-
-        if not url:
-            logger.warning("[clone] Skipping repo: no URL specified")
+        if not repo.url:
             continue
 
-        # Get provider and token for this specific repo
-        provider = repo.get_provider()
-        token_name = repo.get_token_name()
-        token = get_token(token_name)
-
-        logger.debug(f"[clone] Repo {url} using provider {provider.value}")
-
-        # Determine directory name from repo URL
-        raw_name = _extract_repo_name(url)
-        safe_name = _sanitize_dir_name(raw_name)
-        dir_name = _get_unique_dir_name(safe_name, used_dir_names)
-        used_dir_names.add(dir_name)
-
+        # Get unique directory name
+        dir_name = _get_unique_dir_name(
+            _sanitize_dir_name(_extract_repo_name(repo.url)), used_dirs
+        )
+        used_dirs.add(dir_name)
         dest = target_dir / dir_name
-        clone_url = _build_clone_url(url, provider, token)
-        display_url = _mask_url(url)
 
-        # Build git clone command
-        # Note: --depth 1 with --branch only works for branches/tags, not SHAs.
-        # For SHA refs, we do a full clone then checkout the specific commit.
-        if _is_commit_sha(ref):
-            # Full clone for SHA refs (shallow clone can't fetch arbitrary commits)
-            cmd = ["git", "clone", clone_url, str(dest)]
-            needs_checkout = True
-        else:
-            # Shallow clone for branches/tags
-            cmd = ["git", "clone", "--depth", "1"]
-            if ref:
-                cmd.extend(["--branch", ref])
-            cmd.extend([clone_url, str(dest)])
-            needs_checkout = False
-
-        logger.info(f"[clone] Cloning {display_url} ({provider.value}) -> {dest.name}/")
-
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT
-            )
-            if result.returncode != 0:
-                error_msg = _mask_token(result.stderr, token)
-                logger.warning(f"[clone] Failed to clone {display_url}: {error_msg}")
-                failed_repos.append(display_url)
-                continue
-
-            # Checkout specific SHA if needed
-            if needs_checkout and ref:
-                checkout_result = subprocess.run(
-                    ["git", "-C", str(dest), "checkout", ref],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if checkout_result.returncode != 0:
-                    logger.warning(
-                        f"[clone] Failed to checkout {ref}: {checkout_result.stderr}"
-                    )
-                    failed_repos.append(display_url)
-                    continue
-
-            logger.info(f"[clone] Successfully cloned {display_url} -> {dir_name}/")
-            success_count += 1
-
-            # Record mapping
-            repo_mappings[url] = RepoMapping(
-                url=url,
+        # Clone with provider-specific token
+        token = get_token(repo.get_token_name())
+        if _clone_single_repo(repo, dest, token):
+            mappings[repo.url] = RepoMapping(
+                url=repo.url,
                 dir_name=dir_name,
                 local_path=str(dest),
-                ref=ref,
+                ref=repo.ref,
             )
+        else:
+            failed.append(_mask_url(repo.url))
 
-        except subprocess.TimeoutExpired:
-            logger.warning(f"[clone] Clone timed out for {display_url}")
-            failed_repos.append(display_url)
-            continue
-
-    logger.info(f"[clone] Cloned {success_count}/{len(repos)} repositories")
-    if failed_repos:
-        logger.warning(f"[clone] FAILED repos: {', '.join(failed_repos)}")
+    logger.info(f"[clone] Cloned {len(mappings)}/{len(repos)} repositories")
+    if failed:
+        logger.warning(f"[clone] Failed: {', '.join(failed)}")
 
     return CloneResult(
-        success_count=success_count,
-        failed_repos=failed_repos,
-        repo_mappings=repo_mappings,
+        success_count=len(mappings),
+        failed_repos=failed,
+        repo_mappings=mappings,
     )
 
 
