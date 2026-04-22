@@ -106,6 +106,8 @@ When reviewing code, provide constructive feedback:
 - `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
+- `LocalConversation` now auto-discovers project-scoped MCP config from the Git repo root (falling back to the workspace dir) before plugin loading. Discovery order is `{project}/.openhands/.mcp.json` then `{project}/.mcp.json`, with env-var expansion handled by `load_mcp_config()` and merge precedence `project < agent/user < plugins`.
+
 - Persisted SDK settings should use the direct `model_dump()` shape with a top-level `schema_version`; avoid adding wrapped payload formats or legacy migration shims in `openhands/sdk/settings/model.py`.
 - Because persisted settings are not in production yet, prefer removing temporary compatibility fields and serializers outright instead of carrying legacy settings shims in the SDK.
 - Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
