@@ -1175,7 +1175,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         from openhands.sdk.context import AgentContext
 
         # Validate workspace is ready for API calls
-        if not self.host or not self._sandbox_id:
+        # Note: self.host defaults to "undefined" so check for that too
+        if not self.host or self.host == "undefined" or not self._sandbox_id:
             raise RuntimeError(
                 "Workspace not initialized. Ensure the workspace is started "
                 "before loading skills."
@@ -1227,7 +1228,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         if triggers:
             # Determine trigger type based on content (same logic as OpenHands)
-            if any(t.startswith("/") for t in triggers):
+            # Note: Validate elements are strings before calling .startswith()
+            if any(isinstance(t, str) and t.startswith("/") for t in triggers):
                 trigger = TaskTrigger(triggers=triggers)
             else:
                 trigger = KeywordTrigger(keywords=triggers)

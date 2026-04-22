@@ -338,20 +338,6 @@ class TestCloneRepos:
             assert "https://github.com/owner/repo" in result.repo_mappings
 
     @patch("subprocess.run")
-    def test_clone_with_ref(self, mock_run):
-        """Test clone with branch/tag ref."""
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            repos = [RepoSource(url="owner/repo", ref="main", provider="github")]
-            clone_repos(repos, Path(tmpdir))
-
-            # Check that --branch was included in command
-            call_args = mock_run.call_args[0][0]
-            assert "--branch" in call_args
-            assert "main" in call_args
-
-    @patch("subprocess.run")
     def test_clone_with_sha_ref(self, mock_run):
         """Test clone with SHA ref (needs full clone + checkout)."""
         mock_run.return_value = MagicMock(returncode=0, stderr="")
@@ -627,6 +613,8 @@ class TestCloneReposIntegration:
 
     def test_clone_with_tag_ref(self, local_git_repo, tmp_path):
         """Test cloning with a specific tag ref."""
+        import subprocess
+
         target_dir = tmp_path / "cloned"
         repo_url = f"file://{local_git_repo['path']}"
 
@@ -637,8 +625,19 @@ class TestCloneReposIntegration:
         cloned_path = Path(result.repo_mappings[repo_url].local_path)
         assert cloned_path.exists()
 
+        # Verify the tag was actually checked out
+        tag_result = subprocess.run(
+            ["git", "-C", str(cloned_path), "describe", "--tags", "--exact-match"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert tag_result.stdout.strip() == "v1.0.0"
+
     def test_clone_with_sha_ref(self, local_git_repo, tmp_path):
         """Test cloning with a specific commit SHA."""
+        import subprocess
+
         target_dir = tmp_path / "cloned"
         repo_url = f"file://{local_git_repo['path']}"
         sha = local_git_repo["sha"]
@@ -649,6 +648,15 @@ class TestCloneReposIntegration:
         assert result.success_count == 1
         cloned_path = Path(result.repo_mappings[repo_url].local_path)
         assert cloned_path.exists()
+
+        # Verify the SHA was actually checked out
+        sha_result = subprocess.run(
+            ["git", "-C", str(cloned_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert sha_result.stdout.strip() == sha
 
     def test_clone_invalid_url_fails(self, tmp_path):
         """Test that invalid URLs are handled gracefully."""

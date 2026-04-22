@@ -347,6 +347,9 @@ def _checkout_sha(dest: Path, sha: str) -> bool:
 
     On failure, cleans up the cloned directory to prevent orphaned directories
     that block retry attempts.
+
+    Note: We don't use `--` separator because the sha parameter is validated
+    by _is_commit_sha() to be 7+ hex characters, making flag injection impossible.
     """
     result = subprocess.run(
         ["git", "-C", str(dest), "checkout", sha],
