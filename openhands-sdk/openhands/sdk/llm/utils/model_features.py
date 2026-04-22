@@ -112,6 +112,11 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-sonnet-4-6",
+    # Gemini uses the same Anthropic-format cache_control markers;
+    # LiteLLM's vertex_ai transform creates the CachedContent resource
+    # automatically when it sees them.
+    "gemini-2.5",
+    "gemini-3",
 ]
 
 # Models that support a top-level prompt_cache_retention parameter

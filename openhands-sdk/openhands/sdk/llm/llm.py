@@ -1352,8 +1352,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         if not self.caching_prompt:
             return False
-        # We don't need to look-up model_info, because
-        # only Anthropic models need explicit caching breakpoints
         return (
             self.caching_prompt
             and get_features(self._model_name_for_capabilities()).supports_prompt_cache
@@ -1393,7 +1391,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # Single block: mark it for caching
                 sys_content[0].cache_prompt = True
 
-        # NOTE: this is only needed for anthropic
         for message in reversed(messages):
             if message.role in ("user", "tool"):
                 message.content[

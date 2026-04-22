@@ -125,6 +125,9 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("anthropic.claude-3-opus-20240229", True),
         ("gpt-4o", False),  # OpenAI doesn't support explicit prompt caching
         ("gemini-1.5-pro", False),
+        ("gemini-2.5-pro", True),
+        ("gemini-3.1-pro-preview", True),
+        ("litellm_proxy/gemini-3.1-pro-preview", True),
         ("unknown-model", False),
     ],
 )
