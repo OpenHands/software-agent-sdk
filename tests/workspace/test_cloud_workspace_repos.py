@@ -9,9 +9,11 @@ import pytest
 
 from openhands.workspace.cloud.repo import (
     CloneResult,
+    GitProvider,
     RepoMapping,
     RepoSource,
     _build_clone_url,
+    _detect_provider_from_url,
     _extract_repo_name,
     _get_unique_dir_name,
     _is_commit_sha,
@@ -73,6 +75,66 @@ class TestRepoSource:
         repo = RepoSource(url="my-org/my-repo")
         assert repo.url == "my-org/my-repo"
 
+    def test_provider_explicit(self):
+        """Test explicit provider specification."""
+        repo = RepoSource(url="owner/repo", provider="gitlab")
+        assert repo.provider == "gitlab"
+        assert repo.get_provider() == GitProvider.GITLAB
+        assert repo.get_token_name() == "gitlab_token"
+
+    def test_provider_auto_detect_github(self):
+        """Test auto-detection of GitHub provider."""
+        repo = RepoSource(url="https://github.com/owner/repo")
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.GITHUB
+        assert repo.get_token_name() == "github_token"
+
+    def test_provider_auto_detect_gitlab(self):
+        """Test auto-detection of GitLab provider."""
+        repo = RepoSource(url="https://gitlab.com/owner/repo")
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.GITLAB
+        assert repo.get_token_name() == "gitlab_token"
+
+    def test_provider_auto_detect_bitbucket(self):
+        """Test auto-detection of Bitbucket provider."""
+        repo = RepoSource(url="https://bitbucket.org/owner/repo")
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.BITBUCKET
+        assert repo.get_token_name() == "bitbucket_token"
+
+    def test_provider_default_github(self):
+        """Test that owner/repo format defaults to GitHub."""
+        repo = RepoSource(url="owner/repo")
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.GITHUB
+
+
+class TestProviderDetection:
+    """Tests for provider detection from URLs."""
+
+    def test_detect_github(self):
+        assert _detect_provider_from_url("https://github.com/o/r") == GitProvider.GITHUB
+
+    def test_detect_gitlab(self):
+        assert _detect_provider_from_url("https://gitlab.com/o/r") == GitProvider.GITLAB
+
+    def test_detect_bitbucket(self):
+        assert (
+            _detect_provider_from_url("https://bitbucket.org/o/r")
+            == GitProvider.BITBUCKET
+        )
+
+    def test_detect_azure(self):
+        assert (
+            _detect_provider_from_url("https://dev.azure.com/o/p/_git/r")
+            == GitProvider.AZURE
+        )
+
+    def test_detect_unknown(self):
+        assert _detect_provider_from_url("https://example.com/o/r") is None
+        assert _detect_provider_from_url("owner/repo") is None
+
 
 class TestHelperFunctions:
     """Tests for helper functions in repo module."""
@@ -129,30 +191,46 @@ class TestHelperFunctions:
         existing = {"repo", "repo_1", "repo_2"}
         assert _get_unique_dir_name("repo", existing) == "repo_3"
 
-    def test_build_clone_url_owner_repo_no_token(self):
+    def test_build_clone_url_github_owner_repo_no_token(self):
         """Test building clone URL from owner/repo without token."""
-        url = _build_clone_url("owner/repo", None, None)
+        url = _build_clone_url("owner/repo", GitProvider.GITHUB, None)
         assert url == "https://github.com/owner/repo.git"
 
-    def test_build_clone_url_owner_repo_with_github_token(self):
+    def test_build_clone_url_github_owner_repo_with_token(self):
         """Test building clone URL from owner/repo with GitHub token."""
-        url = _build_clone_url("owner/repo", "ghtoken123", None)
+        url = _build_clone_url("owner/repo", GitProvider.GITHUB, "ghtoken123")
         assert url == "https://ghtoken123@github.com/owner/repo.git"
 
     def test_build_clone_url_github_https_with_token(self):
         """Test building clone URL from GitHub HTTPS URL with token."""
-        url = _build_clone_url("https://github.com/owner/repo", "ghtoken123", None)
+        url = _build_clone_url(
+            "https://github.com/owner/repo", GitProvider.GITHUB, "ghtoken123"
+        )
         assert url == "https://ghtoken123@github.com/owner/repo"
 
-    def test_build_clone_url_gitlab_with_token(self):
+    def test_build_clone_url_gitlab_owner_repo_with_token(self):
+        """Test building clone URL from owner/repo for GitLab with token."""
+        url = _build_clone_url("owner/repo", GitProvider.GITLAB, "gltoken123")
+        assert url == "https://oauth2:gltoken123@gitlab.com/owner/repo.git"
+
+    def test_build_clone_url_gitlab_https_with_token(self):
         """Test building clone URL from GitLab URL with token."""
-        url = _build_clone_url("https://gitlab.com/owner/repo", None, "gltoken123")
+        url = _build_clone_url(
+            "https://gitlab.com/owner/repo", GitProvider.GITLAB, "gltoken123"
+        )
         assert url == "https://oauth2:gltoken123@gitlab.com/owner/repo"
 
-    def test_build_clone_url_other_host(self):
-        """Test building clone URL from other hosts (returns as-is)."""
-        url = _build_clone_url("https://bitbucket.org/owner/repo", "gh", "gl")
-        assert url == "https://bitbucket.org/owner/repo"
+    def test_build_clone_url_bitbucket_with_token(self):
+        """Test building clone URL for Bitbucket with token."""
+        url = _build_clone_url("owner/repo", GitProvider.BITBUCKET, "bbtoken123")
+        assert url == "https://x-token-auth:bbtoken123@bitbucket.org/owner/repo.git"
+
+    def test_build_clone_url_no_token_passthrough(self):
+        """Test that full URLs without token pass through unchanged."""
+        url = _build_clone_url(
+            "https://github.com/owner/repo", GitProvider.GITHUB, None
+        )
+        assert url == "https://github.com/owner/repo"
 
 
 class TestGetReposContext:
@@ -244,7 +322,7 @@ class TestCloneRepos:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [RepoSource(url="owner/repo", ref="main")]
-            result = clone_repos(repos, Path(tmpdir))
+            clone_repos(repos, Path(tmpdir))
 
             # Check that --branch was included in command
             call_args = mock_run.call_args[0][0]
@@ -258,7 +336,7 @@ class TestCloneRepos:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [RepoSource(url="owner/repo", ref="abc1234567")]
-            result = clone_repos(repos, Path(tmpdir))
+            clone_repos(repos, Path(tmpdir))
 
             # Should have been called twice: clone + checkout
             assert mock_run.call_count == 2
@@ -277,21 +355,48 @@ class TestCloneRepos:
             assert result.repo_mappings == {}
 
     @patch("subprocess.run")
-    def test_clone_with_tokens(self, mock_run):
-        """Test clone with authentication tokens."""
+    def test_clone_with_token_fetcher(self, mock_run):
+        """Test clone with token fetcher callback."""
         mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+        def token_fetcher(name: str) -> str | None:
+            if name == "github_token":
+                return "ghtoken123"
+            return None
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [RepoSource(url="owner/repo")]
-            result = clone_repos(
+            clone_repos(
                 repos,
                 Path(tmpdir),
-                github_token="ghtoken123",
+                token_fetcher=token_fetcher,
             )
 
             # Check that token was included in clone URL
             call_args = mock_run.call_args[0][0]
             assert any("ghtoken123" in str(arg) for arg in call_args)
+
+    @patch("subprocess.run")
+    def test_clone_with_provider_specific_token(self, mock_run):
+        """Test clone fetches correct token based on provider."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+        fetched_tokens = []
+
+        def token_fetcher(name: str) -> str | None:
+            fetched_tokens.append(name)
+            return f"token_for_{name}"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [
+                RepoSource(url="owner/repo1"),  # GitHub (default)
+                RepoSource(url="owner/repo2", provider="gitlab"),
+            ]
+            clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+            # Should have fetched github_token and gitlab_token
+            assert "github_token" in fetched_tokens
+            assert "gitlab_token" in fetched_tokens
 
     @patch("subprocess.run")
     def test_write_mapping_file(self, mock_run):

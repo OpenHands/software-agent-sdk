@@ -7,6 +7,7 @@ from openhands.sdk.workspace import PlatformType, TargetType
 from .apptainer import ApptainerWorkspace
 from .cloud import (
     CloneResult,
+    GitProvider,
     OpenHandsCloudWorkspace,
     RepoMapping,
     RepoSource,
@@ -24,6 +25,7 @@ __all__ = [
     "CloneResult",
     "DockerDevWorkspace",
     "DockerWorkspace",
+    "GitProvider",
     "OpenHandsCloudWorkspace",
     "PlatformType",
     "RepoMapping",

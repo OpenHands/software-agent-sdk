@@ -930,21 +930,17 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         else:
             target_path = target_dir
 
-        # Fetch tokens from secrets
-        github_token = self._get_secret_value("github_token")
-        gitlab_token = self._get_secret_value("gitlab_token")
-
         # Determine mapping file path
         mapping_file = (
             target_path / "repos_mapping.json" if write_mapping_file else None
         )
 
-        # Clone repositories
+        # Clone repositories using _get_secret_value as token fetcher
+        # This fetches tokens lazily based on each repo's provider
         return clone_repos(
             repos=normalized_repos,
             target_dir=target_path,
-            github_token=github_token,
-            gitlab_token=gitlab_token,
+            token_fetcher=self._get_secret_value,
             mapping_file=mapping_file,
         )
 

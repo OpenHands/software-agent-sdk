@@ -10,8 +10,9 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -29,18 +30,69 @@ logger = get_logger(__name__)
 CLONE_TIMEOUT = 300
 
 
+class GitProvider(str, Enum):
+    """Supported git hosting providers."""
+
+    GITHUB = "github"
+    GITLAB = "gitlab"
+    BITBUCKET = "bitbucket"
+    AZURE = "azure"
+
+
+# Mapping of provider to secret name used in sandbox settings
+PROVIDER_TOKEN_NAMES: dict[GitProvider, str] = {
+    GitProvider.GITHUB: "github_token",
+    GitProvider.GITLAB: "gitlab_token",
+    GitProvider.BITBUCKET: "bitbucket_token",
+    GitProvider.AZURE: "azure_token",
+}
+
+# Mapping of URL patterns to providers for auto-detection
+PROVIDER_URL_PATTERNS: dict[str, GitProvider] = {
+    "github.com": GitProvider.GITHUB,
+    "gitlab.com": GitProvider.GITLAB,
+    "bitbucket.org": GitProvider.BITBUCKET,
+    "dev.azure.com": GitProvider.AZURE,
+    "visualstudio.com": GitProvider.AZURE,
+}
+
+
+def _detect_provider_from_url(url: str) -> GitProvider | None:
+    """Detect git provider from URL patterns.
+
+    Args:
+        url: Repository URL or owner/repo format
+
+    Returns:
+        Detected GitProvider or None if not recognized
+    """
+    url_lower = url.lower()
+    for pattern, provider in PROVIDER_URL_PATTERNS.items():
+        if pattern in url_lower:
+            return provider
+    return None
+
+
 class RepoSource(BaseModel):
     """Repository source specification for cloning.
 
     Repositories are cloned during automation setup and skills (AGENTS.md,
     .agents/skills/, etc.) are automatically loaded from each cloned repo.
 
+    The provider field specifies which git hosting service the repo belongs to,
+    which determines which authentication token to use for cloning. If not
+    specified, the provider is auto-detected from the URL (defaulting to GitHub
+    for owner/repo format).
+
     Examples:
-        >>> # Simple string URL
+        >>> # Simple string URL (defaults to GitHub)
         >>> RepoSource(url="owner/repo")
 
-        >>> # Full URL with ref
+        >>> # Full URL with ref (provider auto-detected)
         >>> RepoSource(url="https://github.com/owner/repo", ref="main")
+
+        >>> # GitLab repo with explicit provider
+        >>> RepoSource(url="owner/repo", provider="gitlab")
 
         >>> # From dict
         >>> RepoSource.model_validate({"url": "owner/repo", "ref": "v1.0.0"})
@@ -54,13 +106,22 @@ class RepoSource(BaseModel):
     url: str = Field(
         ...,
         description=(
-            "Repository identifier. Can be 'owner/repo' format (assumes GitHub) "
+            "Repository identifier. Can be 'owner/repo' format "
             "or a full URL (https://github.com/owner/repo, https://gitlab.com/owner/repo)."
         ),
     )
     ref: str | None = Field(
         default=None,
         description="Optional branch, tag, or commit SHA to checkout.",
+    )
+    provider: Literal["github", "gitlab", "bitbucket", "azure"] | None = Field(
+        default=None,
+        description=(
+            "Git hosting provider (github, gitlab, bitbucket, azure). "
+            "Used to determine which authentication token to use. "
+            "If not specified, auto-detected from URL "
+            "(defaults to github for owner/repo format)."
+        ),
     )
 
     @model_validator(mode="before")
@@ -86,6 +147,26 @@ class RepoSource(BaseModel):
             "URL must be 'owner/repo' format or a valid git URL "
             "(https://, http://, or git@)"
         )
+
+    def get_provider(self) -> GitProvider:
+        """Get the git provider for this repo.
+
+        Returns the explicitly set provider, or auto-detects from URL.
+        Defaults to GitHub for owner/repo format without explicit provider.
+        """
+        if self.provider:
+            return GitProvider(self.provider)
+
+        detected = _detect_provider_from_url(self.url)
+        if detected:
+            return detected
+
+        # Default to GitHub for owner/repo format
+        return GitProvider.GITHUB
+
+    def get_token_name(self) -> str:
+        """Get the secret name for this repo's authentication token."""
+        return PROVIDER_TOKEN_NAMES[self.get_provider()]
 
 
 @dataclass
@@ -174,31 +255,65 @@ def _get_unique_dir_name(base_name: str, existing_dirs: set[str]) -> str:
     return f"{base_name}_{counter}"
 
 
-def _build_clone_url(
-    url: str, github_token: str | None, gitlab_token: str | None
-) -> str:
-    """Build authenticated clone URL based on the repository URL."""
-    # Handle owner/repo format (assume GitHub)
+def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
+    """Build authenticated clone URL based on the repository URL and provider.
+
+    Args:
+        url: Repository URL or owner/repo format
+        provider: Git hosting provider
+        token: Authentication token for the provider (may be None)
+
+    Returns:
+        Clone URL with authentication if token is available
+    """
+    # Handle owner/repo format - construct full URL based on provider
     if "://" not in url and "/" in url and not url.startswith("git@"):
-        if github_token:
-            return f"https://{github_token}@github.com/{url}.git"
-        return f"https://github.com/{url}.git"
+        if provider == GitProvider.GITHUB:
+            base_url = "github.com"
+            if token:
+                return f"https://{token}@{base_url}/{url}.git"
+            return f"https://{base_url}/{url}.git"
+        elif provider == GitProvider.GITLAB:
+            base_url = "gitlab.com"
+            if token:
+                return f"https://oauth2:{token}@{base_url}/{url}.git"
+            return f"https://{base_url}/{url}.git"
+        elif provider == GitProvider.BITBUCKET:
+            base_url = "bitbucket.org"
+            if token:
+                return f"https://x-token-auth:{token}@{base_url}/{url}.git"
+            return f"https://{base_url}/{url}.git"
+        elif provider == GitProvider.AZURE:
+            # Azure DevOps uses organization/project/_git/repo format
+            # For owner/repo format, assume it's org/repo
+            if token:
+                return f"https://{token}@dev.azure.com/{url}"
+            return f"https://dev.azure.com/{url}"
 
-    # Handle full URLs
-    if "github.com" in url:
-        if github_token:
-            return url.replace(
-                "https://github.com", f"https://{github_token}@github.com"
-            )
-        return url
-    elif "gitlab.com" in url:
-        if gitlab_token:
-            return url.replace(
-                "https://gitlab.com", f"https://oauth2:{gitlab_token}@gitlab.com"
-            )
+    # Handle full URLs - inject authentication
+    if not token:
         return url
 
-    # Return as-is for other URLs
+    if provider == GitProvider.GITHUB and "github.com" in url:
+        return url.replace("https://github.com", f"https://{token}@github.com")
+    elif provider == GitProvider.GITLAB and "gitlab.com" in url:
+        return url.replace("https://gitlab.com", f"https://oauth2:{token}@gitlab.com")
+    elif provider == GitProvider.BITBUCKET and "bitbucket.org" in url:
+        return url.replace(
+            "https://bitbucket.org", f"https://x-token-auth:{token}@bitbucket.org"
+        )
+    elif provider == GitProvider.AZURE and (
+        "dev.azure.com" in url or "visualstudio.com" in url
+    ):
+        if "dev.azure.com" in url:
+            return url.replace(
+                "https://dev.azure.com", f"https://{token}@dev.azure.com"
+            )
+        else:
+            # Handle legacy visualstudio.com URLs
+            return url.replace("https://", f"https://{token}@")
+
+    # Return as-is for other URLs or unrecognized patterns
     return url
 
 
@@ -209,33 +324,33 @@ def _mask_url(url: str) -> str:
     return url.split("://")[0] + "://" + url.split("://")[-1].split("@")[-1]
 
 
-def _mask_tokens(text: str, github_token: str | None, gitlab_token: str | None) -> str:
-    """Mask tokens in text for safe logging."""
-    if github_token:
-        text = text.replace(github_token, "***")
-    if gitlab_token:
-        text = text.replace(gitlab_token, "***")
+def _mask_token(text: str, token: str | None) -> str:
+    """Mask token in text for safe logging."""
+    if token:
+        text = text.replace(token, "***")
     return text
+
+
+TokenFetcher = Any  # Callable[[str], str | None] - fetches token by name
 
 
 def clone_repos(
     repos: list[RepoSource],
     target_dir: Path,
-    github_token: str | None = None,
-    gitlab_token: str | None = None,
+    token_fetcher: TokenFetcher | None = None,
     mapping_file: Path | None = None,
 ) -> CloneResult:
     """Clone repositories to the target directory.
 
     Clones repos to meaningful directory names (e.g., 'openhands-cli' instead of
-    'repo_0'). Optionally writes a repos_mapping.json file with the URL → local
-    path mapping.
+    'repo_0'). Uses the provider specified in each RepoSource to determine which
+    authentication token to use.
 
     Args:
-        repos: List of RepoSource configurations
+        repos: List of RepoSource configurations (each specifies provider)
         target_dir: Directory to clone repositories into
-        github_token: Optional GitHub token for authentication
-        gitlab_token: Optional GitLab token for authentication
+        token_fetcher: Callable that takes a token name (e.g., 'github_token')
+            and returns the token value, or None if not available
         mapping_file: Optional path to write repo mapping JSON file
 
     Returns:
@@ -249,6 +364,18 @@ def clone_repos(
 
     # Create target directory
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Cache fetched tokens to avoid repeated API calls
+    token_cache: dict[str, str | None] = {}
+
+    def get_token(token_name: str) -> str | None:
+        """Get token from cache or fetch it."""
+        if token_name not in token_cache:
+            if token_fetcher:
+                token_cache[token_name] = token_fetcher(token_name)
+            else:
+                token_cache[token_name] = None
+        return token_cache[token_name]
 
     # Track used directory names to handle collisions
     used_dir_names: set[str] = set()
@@ -264,6 +391,13 @@ def clone_repos(
             logger.warning("[clone] Skipping repo: no URL specified")
             continue
 
+        # Get provider and token for this specific repo
+        provider = repo.get_provider()
+        token_name = repo.get_token_name()
+        token = get_token(token_name)
+
+        logger.debug(f"[clone] Repo {url} using provider {provider.value}")
+
         # Determine directory name from repo URL
         raw_name = _extract_repo_name(url)
         safe_name = _sanitize_dir_name(raw_name)
@@ -271,7 +405,7 @@ def clone_repos(
         used_dir_names.add(dir_name)
 
         dest = target_dir / dir_name
-        clone_url = _build_clone_url(url, github_token, gitlab_token)
+        clone_url = _build_clone_url(url, provider, token)
         display_url = _mask_url(url)
 
         # Build git clone command
@@ -289,14 +423,14 @@ def clone_repos(
             cmd.extend([clone_url, str(dest)])
             needs_checkout = False
 
-        logger.info(f"[clone] Cloning {display_url} -> {dest.name}/")
+        logger.info(f"[clone] Cloning {display_url} ({provider.value}) -> {dest.name}/")
 
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT
             )
             if result.returncode != 0:
-                error_msg = _mask_tokens(result.stderr, github_token, gitlab_token)
+                error_msg = _mask_token(result.stderr, token)
                 logger.warning(f"[clone] Failed to clone {display_url}: {error_msg}")
                 failed_repos.append(display_url)
                 continue
