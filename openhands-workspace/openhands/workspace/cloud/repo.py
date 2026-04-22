@@ -68,6 +68,11 @@ def _detect_provider_from_url(url: str) -> GitProvider | None:
     return None
 
 
+def _is_short_url_format(url: str) -> bool:
+    """Check if URL is the short 'owner/repo' format (no protocol)."""
+    return "://" not in url and not url.startswith("git@")
+
+
 class RepoSource(BaseModel):
     """Repository source specification for cloning.
 
@@ -75,25 +80,19 @@ class RepoSource(BaseModel):
     .agents/skills/, etc.) are automatically loaded from each cloned repo.
 
     The provider field specifies which git hosting service the repo belongs to,
-    which determines which authentication token to use for cloning. If not
-    specified, the provider is auto-detected from the URL (defaulting to GitHub
-    for owner/repo format).
+    which determines which authentication token to use for cloning.
+
+    For full URLs (https://github.com/...), the provider is auto-detected.
+    For short format (owner/repo), the provider field is required.
 
     Examples:
-        >>> # Simple string URL (defaults to GitHub)
-        >>> RepoSource(url="owner/repo")
+        >>> # Full URL - provider auto-detected
+        >>> RepoSource(url="https://github.com/owner/repo")
+        >>> RepoSource(url="https://gitlab.com/owner/repo", ref="main")
 
-        >>> # Full URL with ref (provider auto-detected)
-        >>> RepoSource(url="https://github.com/owner/repo", ref="main")
-
-        >>> # GitLab repo with explicit provider
-        >>> RepoSource(url="owner/repo", provider="gitlab")
-
-        >>> # From dict
-        >>> RepoSource.model_validate({"url": "owner/repo", "ref": "v1.0.0"})
-
-        >>> # From string (via model_validator)
-        >>> RepoSource.model_validate("owner/repo")
+        >>> # Short format - provider required
+        >>> RepoSource(url="owner/repo", provider="github")
+        >>> RepoSource(url="owner/repo", provider="gitlab", ref="v1.0.0")
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -101,8 +100,8 @@ class RepoSource(BaseModel):
     url: str = Field(
         ...,
         description=(
-            "Repository identifier. Can be 'owner/repo' format "
-            "or a full URL (https://github.com/owner/repo, https://gitlab.com/owner/repo)."
+            "Repository URL. Can be a full URL (https://github.com/owner/repo) "
+            "or short format (owner/repo). Short format requires 'provider' field."
         ),
     )
     ref: str | None = Field(
@@ -113,9 +112,8 @@ class RepoSource(BaseModel):
         default=None,
         description=(
             "Git hosting provider (github, gitlab, bitbucket). "
-            "Used to determine which authentication token to use. "
-            "If not specified, auto-detected from URL "
-            "(defaults to github for owner/repo format)."
+            "Required for short URL format (owner/repo). "
+            "Auto-detected for full URLs."
         ),
     )
 
@@ -130,7 +128,7 @@ class RepoSource(BaseModel):
     @field_validator("url")
     @classmethod
     def validate_url(cls, v: str) -> str:
-        """Validate URL format to provide early feedback."""
+        """Validate URL format."""
         # Allow owner/repo format (e.g., "owner/repo", "my-org/my-repo.git")
         owner_repo_pattern = re.compile(r"^[\w-]+/[\w.-]+$")
         if owner_repo_pattern.match(v):
@@ -143,12 +141,25 @@ class RepoSource(BaseModel):
             "(https://, http://, or git@)"
         )
 
-    def get_provider(self) -> GitProvider:
-        """Get the git provider for this repo.
+    @model_validator(mode="after")
+    def validate_provider_required_for_short_urls(self) -> RepoSource:
+        """Require explicit provider for ambiguous short URL format."""
+        if not _is_short_url_format(self.url):
+            # Full URL - provider can be auto-detected
+            return self
 
-        Returns the explicitly set provider, or auto-detects from URL.
-        Defaults to GitHub for owner/repo format without explicit provider.
-        """
+        # Short format - check if provider is specified or detectable
+        detected = _detect_provider_from_url(self.url)
+        if not detected and not self.provider:
+            raise ValueError(
+                f"Short URL format '{self.url}' requires explicit 'provider' field. "
+                "Use: {\"url\": \"owner/repo\", \"provider\": \"github\"} "
+                "or provide a full URL like https://github.com/owner/repo"
+            )
+        return self
+
+    def get_provider(self) -> GitProvider:
+        """Get the git provider for this repo."""
         if self.provider:
             return GitProvider(self.provider)
 
@@ -156,8 +167,8 @@ class RepoSource(BaseModel):
         if detected:
             return detected
 
-        # Default to GitHub for owner/repo format
-        return GitProvider.GITHUB
+        # This shouldn't happen if validation passed
+        raise ValueError(f"Cannot determine provider for URL: {self.url}")
 
     def get_token_name(self) -> str:
         """Get the secret name for this repo's authentication token."""

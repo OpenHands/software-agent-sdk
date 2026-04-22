@@ -25,88 +25,104 @@ from openhands.workspace.cloud.repo import (
 class TestRepoSource:
     """Tests for RepoSource model."""
 
-    def test_simple_url(self):
-        """Test RepoSource with simple owner/repo URL."""
-        repo = RepoSource(url="owner/repo")
-        assert repo.url == "owner/repo"
-        assert repo.ref is None
+    # --- Short URL format (requires provider) ---
 
-    def test_url_with_ref(self):
-        """Test RepoSource with URL and ref."""
-        repo = RepoSource(url="owner/repo", ref="main")
+    def test_short_url_with_provider(self):
+        """Test RepoSource with short URL and explicit provider."""
+        repo = RepoSource(url="owner/repo", provider="github")
+        assert repo.url == "owner/repo"
+        assert repo.provider == "github"
+        assert repo.get_provider() == GitProvider.GITHUB
+
+    def test_short_url_with_ref_and_provider(self):
+        """Test RepoSource with short URL, ref, and provider."""
+        repo = RepoSource(url="owner/repo", ref="main", provider="gitlab")
         assert repo.url == "owner/repo"
         assert repo.ref == "main"
+        assert repo.get_provider() == GitProvider.GITLAB
 
-    def test_full_https_url(self):
-        """Test RepoSource with full HTTPS URL."""
+    def test_short_url_without_provider_rejected(self):
+        """Test that short URL without provider is rejected."""
+        with pytest.raises(ValueError, match="requires explicit 'provider' field"):
+            RepoSource(url="owner/repo")
+
+    def test_short_url_string_without_provider_rejected(self):
+        """Test that string input without provider is rejected."""
+        with pytest.raises(ValueError, match="requires explicit 'provider' field"):
+            RepoSource.model_validate("owner/repo")
+
+    def test_short_url_dict_without_provider_rejected(self):
+        """Test that dict input without provider is rejected."""
+        with pytest.raises(ValueError, match="requires explicit 'provider' field"):
+            RepoSource.model_validate({"url": "owner/repo", "ref": "v1.0"})
+
+    # --- Full URL format (provider auto-detected) ---
+
+    def test_full_https_url_github(self):
+        """Test RepoSource with full GitHub HTTPS URL."""
         repo = RepoSource(url="https://github.com/owner/repo")
         assert repo.url == "https://github.com/owner/repo"
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.GITHUB
+
+    def test_full_https_url_gitlab(self):
+        """Test RepoSource with full GitLab HTTPS URL."""
+        repo = RepoSource(url="https://gitlab.com/owner/repo")
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.GITLAB
+
+    def test_full_https_url_bitbucket(self):
+        """Test RepoSource with full Bitbucket HTTPS URL."""
+        repo = RepoSource(url="https://bitbucket.org/owner/repo")
+        assert repo.provider is None
+        assert repo.get_provider() == GitProvider.BITBUCKET
 
     def test_git_ssh_url(self):
-        """Test RepoSource with git SSH URL."""
+        """Test RepoSource with git SSH URL (contains github.com)."""
         repo = RepoSource(url="git@github.com:owner/repo.git")
         assert repo.url == "git@github.com:owner/repo.git"
+        assert repo.get_provider() == GitProvider.GITHUB
 
-    def test_string_normalization(self):
-        """Test that string input is normalized to RepoSource."""
-        repo = RepoSource.model_validate("owner/repo")
-        assert repo.url == "owner/repo"
-        assert repo.ref is None
+    # --- Provider field behavior ---
 
-    def test_dict_normalization(self):
-        """Test that dict input is validated."""
-        repo = RepoSource.model_validate({"url": "owner/repo", "ref": "v1.0"})
-        assert repo.url == "owner/repo"
-        assert repo.ref == "v1.0"
+    def test_provider_explicit_overrides_detection(self):
+        """Test that explicit provider is used even with full URL."""
+        # User explicitly says gitlab even though URL is github
+        # This could be intentional (mirror, etc.)
+        repo = RepoSource(url="https://github.com/owner/repo", provider="gitlab")
+        assert repo.get_provider() == GitProvider.GITLAB
+
+    def test_provider_github_token_name(self):
+        """Test GitHub token name."""
+        repo = RepoSource(url="owner/repo", provider="github")
+        assert repo.get_token_name() == "github_token"
+
+    def test_provider_gitlab_token_name(self):
+        """Test GitLab token name."""
+        repo = RepoSource(url="owner/repo", provider="gitlab")
+        assert repo.get_token_name() == "gitlab_token"
+
+    def test_provider_bitbucket_token_name(self):
+        """Test Bitbucket token name."""
+        repo = RepoSource(url="owner/repo", provider="bitbucket")
+        assert repo.get_token_name() == "bitbucket_token"
+
+    # --- URL validation ---
 
     def test_invalid_url_rejected(self):
         """Test that invalid URLs are rejected."""
         with pytest.raises(ValueError, match="URL must be"):
-            RepoSource(url="invalid-url-format")
+            RepoSource(url="invalid-url-format", provider="github")
 
     def test_url_with_dots_allowed(self):
         """Test that URLs with dots in repo name are allowed."""
-        repo = RepoSource(url="owner/repo.name")
+        repo = RepoSource(url="owner/repo.name", provider="github")
         assert repo.url == "owner/repo.name"
 
     def test_url_with_dashes_allowed(self):
         """Test that URLs with dashes are allowed."""
-        repo = RepoSource(url="my-org/my-repo")
+        repo = RepoSource(url="my-org/my-repo", provider="github")
         assert repo.url == "my-org/my-repo"
-
-    def test_provider_explicit(self):
-        """Test explicit provider specification."""
-        repo = RepoSource(url="owner/repo", provider="gitlab")
-        assert repo.provider == "gitlab"
-        assert repo.get_provider() == GitProvider.GITLAB
-        assert repo.get_token_name() == "gitlab_token"
-
-    def test_provider_auto_detect_github(self):
-        """Test auto-detection of GitHub provider."""
-        repo = RepoSource(url="https://github.com/owner/repo")
-        assert repo.provider is None
-        assert repo.get_provider() == GitProvider.GITHUB
-        assert repo.get_token_name() == "github_token"
-
-    def test_provider_auto_detect_gitlab(self):
-        """Test auto-detection of GitLab provider."""
-        repo = RepoSource(url="https://gitlab.com/owner/repo")
-        assert repo.provider is None
-        assert repo.get_provider() == GitProvider.GITLAB
-        assert repo.get_token_name() == "gitlab_token"
-
-    def test_provider_auto_detect_bitbucket(self):
-        """Test auto-detection of Bitbucket provider."""
-        repo = RepoSource(url="https://bitbucket.org/owner/repo")
-        assert repo.provider is None
-        assert repo.get_provider() == GitProvider.BITBUCKET
-        assert repo.get_token_name() == "bitbucket_token"
-
-    def test_provider_default_github(self):
-        """Test that owner/repo format defaults to GitHub."""
-        repo = RepoSource(url="owner/repo")
-        assert repo.provider is None
-        assert repo.get_provider() == GitProvider.GITHUB
 
 
 class TestProviderDetection:
@@ -301,7 +317,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            repos = [RepoSource(url="owner/repo")]
+            repos = [RepoSource(url="owner/repo", provider="github")]
             result = clone_repos(repos, Path(tmpdir))
 
             assert result.success_count == 1
@@ -310,12 +326,24 @@ class TestCloneRepos:
             assert result.repo_mappings["owner/repo"].dir_name == "repo"
 
     @patch("subprocess.run")
+    def test_successful_clone_full_url(self, mock_run):
+        """Test successful clone with full URL (no provider needed)."""
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="https://github.com/owner/repo")]
+            result = clone_repos(repos, Path(tmpdir))
+
+            assert result.success_count == 1
+            assert "https://github.com/owner/repo" in result.repo_mappings
+
+    @patch("subprocess.run")
     def test_clone_with_ref(self, mock_run):
         """Test clone with branch/tag ref."""
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            repos = [RepoSource(url="owner/repo", ref="main")]
+            repos = [RepoSource(url="owner/repo", ref="main", provider="github")]
             clone_repos(repos, Path(tmpdir))
 
             # Check that --branch was included in command
@@ -329,7 +357,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            repos = [RepoSource(url="owner/repo", ref="abc1234567")]
+            repos = [RepoSource(url="owner/repo", ref="abc1234567", provider="github")]
             clone_repos(repos, Path(tmpdir))
 
             # Should have been called twice: clone + checkout
@@ -341,7 +369,7 @@ class TestCloneRepos:
         mock_run.return_value = MagicMock(returncode=1, stderr="Clone failed")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            repos = [RepoSource(url="owner/repo")]
+            repos = [RepoSource(url="owner/repo", provider="github")]
             result = clone_repos(repos, Path(tmpdir))
 
             assert result.success_count == 0
@@ -359,7 +387,7 @@ class TestCloneRepos:
             return None
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            repos = [RepoSource(url="owner/repo")]
+            repos = [RepoSource(url="owner/repo", provider="github")]
             clone_repos(
                 repos,
                 Path(tmpdir),
@@ -383,7 +411,7 @@ class TestCloneRepos:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repos = [
-                RepoSource(url="owner/repo1"),  # GitHub (default)
+                RepoSource(url="owner/repo1", provider="github"),
                 RepoSource(url="owner/repo2", provider="gitlab"),
             ]
             clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
@@ -400,8 +428,8 @@ class TestCloneRepos:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Two repos with same name should get unique directories
             repos = [
-                RepoSource(url="owner1/utils"),
-                RepoSource(url="owner2/utils"),
+                RepoSource(url="owner1/utils", provider="github"),
+                RepoSource(url="owner2/utils", provider="github"),
             ]
             result = clone_repos(repos, Path(tmpdir))
 
@@ -421,8 +449,8 @@ class TestCloudWorkspaceRepoMethods:
         "_get_secret_value",
         return_value=None,
     )
-    def test_clone_repos_string_list(self, mock_secret, mock_clone):
-        """Test clone_repos with list of URL strings."""
+    def test_clone_repos_full_url_list(self, mock_secret, mock_clone):
+        """Test clone_repos with list of full URL strings."""
         from openhands.workspace import OpenHandsCloudWorkspace
 
         mock_clone.return_value = CloneResult(0, [], {})
@@ -439,7 +467,11 @@ class TestCloudWorkspaceRepoMethods:
             workspace._session_api_key = "test-session"
             workspace.working_dir = "/workspace/project"
 
-            workspace.clone_repos(["owner/repo1", "owner/repo2"])
+            # Full URLs don't need provider
+            workspace.clone_repos([
+                "https://github.com/owner/repo1",
+                "https://github.com/owner/repo2",
+            ])
 
             mock_clone.assert_called_once()
             call_args = mock_clone.call_args
@@ -473,7 +505,10 @@ class TestCloudWorkspaceRepoMethods:
             workspace._session_api_key = "test-session"
             workspace.working_dir = "/workspace/project"
 
-            workspace.clone_repos([{"url": "owner/repo", "ref": "main"}])
+            # Short URL with provider specified
+            workspace.clone_repos([
+                {"url": "owner/repo", "ref": "main", "provider": "github"}
+            ])
 
             mock_clone.assert_called_once()
             call_args = mock_clone.call_args
@@ -481,6 +516,7 @@ class TestCloudWorkspaceRepoMethods:
             assert len(repos) == 1
             assert repos[0].url == "owner/repo"
             assert repos[0].ref == "main"
+            assert repos[0].provider == "github"
 
     def test_get_repos_context_from_mappings(self):
         """Test get_repos_context with explicit mappings."""
