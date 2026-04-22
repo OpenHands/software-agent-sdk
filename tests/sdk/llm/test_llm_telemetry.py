@@ -312,8 +312,8 @@ class TestTelemetryCostCalculation:
                 assert "Cost calculation failed" in str(w[0].message)
 
     def test_compute_cost_model_name_processing(self, mock_metrics):
-        """Test that model name is processed correctly for litellm."""
-        telemetry = Telemetry(model_name="provider/gpt-4o-mini", metrics=mock_metrics)
+        """Test that parsed provider/model info is sent to LiteLLM cost calc."""
+        telemetry = Telemetry(model_name="openai/gpt-4o-mini", metrics=mock_metrics)
 
         mock_response = ModelResponse(
             id="test-id",
@@ -329,10 +329,10 @@ class TestTelemetryCostCalculation:
             mock_cost.return_value = 0.10
             telemetry._compute_cost(mock_response)
 
-            # Should strip provider prefix
+            # Should send LiteLLM's parsed provider/model pair
             call_kwargs = mock_cost.call_args[1]
             assert call_kwargs["model"] == "gpt-4o-mini"
-            assert call_kwargs["custom_llm_provider"] == "provider"
+            assert call_kwargs["custom_llm_provider"] == "openai"
 
     def test_compute_cost_passes_provider_to_litellm_cost_calculator(
         self, mock_metrics

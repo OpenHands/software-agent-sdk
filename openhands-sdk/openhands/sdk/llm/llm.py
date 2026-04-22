@@ -93,7 +93,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
-from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
+from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
@@ -449,7 +449,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
-    _litellm_provider: str | None = PrivateAttr(default=None)
+    _provider_info: LLMProvider | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -540,6 +540,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Tokenizer
         if self.custom_tokenizer:
             self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
+
+        # LiteLLM-facing provider parsing is fixed for the lifetime of this LLM.
+        self._provider_info = LLMProvider.from_model(
+            model=self.model,
+            api_base=self.base_url,
+        )
 
         # Capabilities + model info
         self._init_model_info_and_caps()
@@ -965,14 +971,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     typed_input: ResponseInputParam | str = (
                         cast(ResponseInputParam, input_items) if input_items else ""
                     )
-                    api_key_value = self._get_litellm_api_key_value()
+                    provider_info = self._provider_info
+                    assert provider_info is not None
 
                     ret = litellm_responses(
-                        model=self.model,
+                        **provider_info.as_litellm_call_kwargs(
+                            api_key=self._get_api_key_value()
+                        ),
                         input=typed_input,
                         instructions=instructions,
                         tools=resp_tools,
-                        api_key=api_key_value,
                         api_base=self.base_url,
                         api_version=self.api_version,
                         timeout=self.timeout,
@@ -1097,28 +1105,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Transport + helpers
     # =========================================================================
 
-    def _infer_litellm_provider(self) -> str | None:
-        if self._litellm_provider is not None:
-            return self._litellm_provider
-
-        provider = infer_litellm_provider(model=self.model, api_base=self.base_url)
-        self._litellm_provider = provider
-        return provider
-
-    def _get_litellm_api_key_value(self) -> str | None:
-        api_key_value: str | None = None
-        if self.api_key:
-            assert isinstance(self.api_key, SecretStr)
-            api_key_value = self.api_key.get_secret_value()
-
-        # LiteLLM treats api_key for Bedrock as an AWS bearer token.
-        # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
-        # to reject the request with an "Invalid API Key format" error.
-        # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
-        if api_key_value is not None and self._infer_litellm_provider() == "bedrock":
+    def _get_api_key_value(self) -> str | None:
+        if self.api_key is None:
             return None
 
-        return api_key_value
+        assert isinstance(self.api_key, SecretStr)
+        return self.api_key.get_secret_value()
 
     def _transport_call(
         self,
@@ -1153,7 +1145,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     category=DeprecationWarning,
                     message="Accessing the 'model_fields' attribute.*",
                 )
-                api_key_value = self._get_litellm_api_key_value()
+                provider_info = self._provider_info
+                assert provider_info is not None
 
                 # When streaming, request usage in the final chunk so that
                 # detailed token breakdowns (prompt_tokens_details with
@@ -1164,8 +1157,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
-                    model=self.model,
-                    api_key=api_key_value,
+                    **provider_info.as_litellm_call_kwargs(
+                        api_key=self._get_api_key_value()
+                    ),
                     api_base=self.base_url,
                     api_version=self.api_version,
                     timeout=self.timeout,

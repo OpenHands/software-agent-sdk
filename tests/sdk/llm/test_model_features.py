@@ -240,7 +240,7 @@ def test_get_features_unknown_model():
 def test_get_features_empty_model():
     """Test get_features with empty or None model."""
     features_empty = get_features("")
-    features_none = get_features(None)  # type: ignore[arg-type]
+    features_none = get_features(None)
 
     # Empty models should have default feature values
     assert features_empty.supports_reasoning_effort is False

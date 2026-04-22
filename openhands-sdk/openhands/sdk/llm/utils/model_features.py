@@ -4,7 +4,7 @@ from functools import cache
 from litellm import get_supported_openai_params
 
 
-def model_matches(model: str, patterns: list[str]) -> bool:
+def model_matches(model: str | None, patterns: list[str]) -> bool:
     """Return True if any pattern appears as a substring in the raw model name.
 
     Matching semantics:
@@ -18,7 +18,7 @@ def model_matches(model: str, patterns: list[str]) -> bool:
     return False
 
 
-def apply_ordered_model_rules(model: str, rules: list[str]) -> bool:
+def apply_ordered_model_rules(model: str | None, rules: list[str]) -> bool:
     """Apply ordered include/exclude model rules to determine final support.
 
     Rules semantics:
@@ -185,7 +185,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 ]
 
 
-def get_features(model: str) -> ModelFeatures:
+def get_features(model: str | None) -> ModelFeatures:
     """Get model features."""
     return ModelFeatures(
         supports_reasoning_effort=_supports_reasoning_effort(model),

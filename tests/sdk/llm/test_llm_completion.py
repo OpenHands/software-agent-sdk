@@ -103,6 +103,9 @@ def test_llm_completion_basic(mock_completion):
     assert response.message.content[0].text == "Test response"
     assert response.metrics.model_name == "gpt-4o"
     mock_completion.assert_called_once()
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == "gpt-4o"
+    assert kwargs["custom_llm_provider"] == "openai"
 
     # Additionally, verify the pre-check helper recognizes provider-style tools
     # (use an empty list of tools here just to exercise the path)

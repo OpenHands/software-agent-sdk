@@ -386,7 +386,49 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
     assert mock_responses.call_count == 1
     _, kwargs = mock_responses.call_args
+    assert kwargs["model"] == "gpt-4o"
+    assert kwargs["custom_llm_provider"] == "openai"
     assert kwargs.get("extra_headers") == headers
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_completion_does_not_forward_bedrock_api_key(mock_completion):
+    mock_response = create_mock_litellm_response("ok")
+    mock_completion.return_value = mock_response
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="us.anthropic.claude-3-sonnet-20240229-v1:0",
+        api_key=SecretStr("sk-ant-not-a-bedrock-key"),
+        num_retries=0,
+    )
+
+    provider_info = llm._provider_info
+    assert provider_info is not None
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = llm.completion(messages=messages)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == provider_info.model
+    if provider_info.name is not None:
+        assert kwargs["custom_llm_provider"] == provider_info.name
+    assert "api_key" not in kwargs
+
+
+def test_llm_initializes_transport_provider_info():
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    provider_info = llm._provider_info
+    assert provider_info is not None
+    assert provider_info.name == "openai"
+    assert provider_info.model == "gpt-4o"
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
