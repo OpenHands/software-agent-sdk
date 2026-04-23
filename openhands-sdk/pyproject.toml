@@ -18,6 +18,7 @@ dependencies = [
     "tenacity>=9.1.2",
     "websockets>=12",
     "lmnr>=0.7.47",
+    "google-cloud-aiplatform>=1.38",
 ]
 
 [project.urls]
