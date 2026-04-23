@@ -11,7 +11,10 @@
 name: QA Changes by OpenHands [experimental]
 
 on:
-    # Use pull_request_target so QA can also run on fork PRs.
+    # Use pull_request for same-repo PRs so workflow changes can self-verify in PRs.
+    pull_request:
+        types: [opened, ready_for_review, labeled, review_requested]
+    # Use pull_request_target for fork PRs.
     # The bot token used here is intentionally scoped to PR QA/comment operations,
     # so the remaining blast radius is bounded even though PR content is untrusted.
     pull_request_target:
@@ -24,9 +27,20 @@ permissions:
 
 jobs:
     qa-changes:
+        # Run on same-repo PRs via pull_request and on fork PRs via pull_request_target.
         # Trigger conditions mirror pr-review, but use the 'qa-this' label.
         # FIRST_TIME_CONTRIBUTOR and NONE PRs require manual trigger via label/reviewer request.
         if: |
+            (
+                (
+                    github.event_name == 'pull_request' &&
+                    github.event.pull_request.head.repo.full_name == github.repository
+                ) ||
+                (
+                    github.event_name == 'pull_request_target' &&
+                    github.event.pull_request.head.repo.full_name != github.repository
+                )
+            ) &&
             (
                 (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
