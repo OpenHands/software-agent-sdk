@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-14T19:14:46.647711905Z"
+exclude-newer = "2026-04-14T23:54:30.919888255Z"
 exclude-newer-span = "P7D"
 
 [manifest]
@@ -2469,7 +2469,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.18.0"
+version = "1.17.0"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "agent-client-protocol" },

@@ -457,13 +457,24 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
 
 
 def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
-    """Load MCP configuration from .mcp.json."""
+    """Load MCP configuration from .mcp.json.
+
+    Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
+    is expanded (since plugin_dir is known). Other variables like ${VAR:-default}
+    are preserved as placeholders to be expanded later when per-conversation
+    secrets are available (in LocalConversation._ensure_plugins_loaded()).
+
+    This prevents the double-expansion bug where defaults would be applied
+    during plugin loading before secrets are available.
+    """
     mcp_json = plugin_dir / ".mcp.json"
     if not mcp_json.exists():
         return None
 
     try:
-        config = load_mcp_config(mcp_json, skill_root=plugin_dir)
+        # expand_defaults=False: preserve ${VAR:-default} placeholders for later
+        # expansion with per-conversation secrets. Only SKILL_ROOT is expanded now.
+        config = load_mcp_config(mcp_json, skill_root=plugin_dir, expand_defaults=False)
         if config and "mcpServers" in config:
             server_names = list(config["mcpServers"].keys())
             logger.info(
