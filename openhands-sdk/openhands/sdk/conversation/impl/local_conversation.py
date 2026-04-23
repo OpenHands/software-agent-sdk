@@ -1,4 +1,5 @@
 import atexit
+import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -188,6 +189,8 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
+        self._pin_prompt_cache_key()
+
         # Default callback: persist every event to state
         def _default_callback(e):
             # This callback runs while holding the conversation state's lock
@@ -306,6 +309,107 @@ class LocalConversation(BaseConversation):
         resume uses the exact same plugin versions.
         """
         return self._resolved_plugins
+
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: AgentBase | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "LocalConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``LocalConversation`` that shares the same event history
+            but has its own identity and independent state going forward.
+        """
+        fork_id = conversation_id or uuid.uuid4()
+        if agent is not None:
+            fork_agent = agent
+        else:
+            # Round-trip via JSON to produce a deep copy that avoids
+            # thread-lock pickling issues with model_copy(deep=True).
+            agent_cls = type(self.agent)
+            fork_agent = agent_cls.model_validate(
+                self.agent.model_dump(context={"expose_secrets": True}),
+            )
+
+        # Hold the state lock while reading mutable state from the source
+        # conversation to avoid torn reads if run() is executing concurrently.
+        with self._state:
+            # Determine persistence_dir for the fork.
+            # Pass the *base* directory only — __init__ calls
+            # get_persistence_dir() which appends the conversation ID hex,
+            # so we must not do that here.
+            source_persistence = self._state.persistence_dir
+            fork_persistence: str | None = None
+            if source_persistence is not None:
+                source_path = Path(source_persistence)
+                fork_persistence = str(source_path.parent)
+
+            # Build the fork conversation (empty – no events yet)
+            fork_conv = LocalConversation(
+                agent=fork_agent,
+                workspace=self.workspace,
+                plugins=self._plugin_specs,
+                persistence_dir=fork_persistence,
+                conversation_id=fork_id,
+                max_iteration_per_run=self.max_iteration_per_run,
+                stuck_detection=self._stuck_detector is not None,
+                visualizer=type(self._visualizer) if self._visualizer else None,
+                delete_on_close=self.delete_on_close,
+                tags=tags,
+            )
+
+            # Deep-copy events from source → fork so the source stays
+            # immutable.
+            for event in self._state.events:
+                fork_conv._state.events.append(event.model_copy(deep=True))
+
+            # Copy runtime state that accumulated during the source
+            # conversation. activated_knowledge_skills is list[str] – strings
+            # are immutable so a shallow list copy is sufficient.
+            # agent_state can hold arbitrary mutable values, so deep-copy it.
+            fork_conv._state.activated_knowledge_skills = list(
+                self._state.activated_knowledge_skills
+            )
+            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+
+            # Copy title via tags if provided
+            if title is not None:
+                fork_conv._state.tags = {
+                    **fork_conv._state.tags,
+                    "title": title,
+                }
+
+            # Reset or copy metrics
+            if not reset_metrics:
+                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+
+            event_count = len(self._state.events)
+
+        logger.info(
+            f"Forked conversation {self.id} → {fork_id} "
+            f"({event_count} events copied, "
+            f"reset_metrics={reset_metrics})"
+        )
+        return fork_conv
 
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
@@ -495,6 +599,10 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
+    def _pin_prompt_cache_key(self) -> None:
+        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
+        self.agent.llm._prompt_cache_key = str(self._state.id)
+
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a named profile.
 
@@ -518,6 +626,7 @@ class LocalConversation(BaseConversation):
         with self._state:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
+            self._pin_prompt_cache_key()
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
@@ -931,9 +1040,13 @@ class LocalConversation(BaseConversation):
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
+        If an explicit LLM is provided, it takes precedence. Otherwise the
+        agent's LLM is used. If neither is available, the title falls back to
+        simple message truncation.
+
         Args:
-            llm: Optional LLM to use for title generation. If not provided,
-                 uses self.agent.llm.
+            llm: Optional LLM to use for title generation. Takes precedence
+                 over the agent's LLM when provided.
             max_length: Maximum length of the generated title.
 
         Returns:
@@ -942,16 +1055,9 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If no user messages are found in the conversation.
         """
-        # Use provided LLM or fall back to agent's LLM
-        llm_to_use = llm or self.agent.llm
-
-        # Skip LLM-based title generation for ACP agents with sentinel LLM
-        # The sentinel model "acp-managed" cannot make LLM calls directly
-        if llm_to_use.model == "acp-managed":
-            llm_to_use = None
-
+        effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=llm_to_use, max_length=max_length
+            events=self._state.events, llm=effective_llm, max_length=max_length
         )
 
     def condense(self) -> None:

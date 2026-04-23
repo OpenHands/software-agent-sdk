@@ -533,6 +533,12 @@ class RemoteState(ConversationStateProtocol):
         return info.get("activated_knowledge_skills", [])
 
     @property
+    def invoked_skills(self) -> list[str]:
+        """Names of progressive-disclosure skills explicitly invoked."""
+        info = self._get_conversation_info()
+        return info.get("invoked_skills", [])
+
+    @property
     def agent(self):
         """The agent configuration (fetched from remote)."""
         info = self._get_conversation_info()
@@ -1169,7 +1175,11 @@ class RemoteConversation(BaseConversation):
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the remote conversation."""
-        payload = {"security_analyzer": analyzer.model_dump() if analyzer else analyzer}
+        payload = {
+            "security_analyzer": analyzer.model_dump(mode="json")
+            if analyzer
+            else analyzer
+        }
         _send_request(
             self._client,
             "POST",
@@ -1294,6 +1304,79 @@ class RemoteConversation(BaseConversation):
             self._client,
             "POST",
             f"{self._conversation_action_base_path}/{self._id}/condense",
+        )
+
+    def fork(
+        self,
+        *,
+        conversation_id: "ConversationID | None" = None,
+        agent: "AgentBase | None" = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "RemoteConversation":
+        """Fork this conversation on the remote agent server.
+
+        Sends a fork request to the server which deep-copies events and
+        state. Returns a new ``RemoteConversation`` pointing at the fork.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                on the server if ``None``).
+            agent: **Not supported for remote conversations.** Passing a
+                non-``None`` value raises ``NotImplementedError``. Use
+                ``LocalConversation.fork(agent=...)`` for agent replacement.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``RemoteConversation`` backed by the forked server-side
+            conversation.
+
+        Raises:
+            NotImplementedError: If ``agent`` is provided.
+        """
+        if agent is not None:
+            raise NotImplementedError(
+                "Agent replacement is not supported for remote conversation "
+                "forks. Use LocalConversation.fork(agent=...) instead."
+            )
+
+        body: dict[str, object] = {"reset_metrics": reset_metrics}
+        if conversation_id is not None:
+            body["id"] = str(conversation_id)
+        if title is not None:
+            body["title"] = title
+        if tags is not None:
+            body["tags"] = tags
+
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/fork",
+            json=body,
+        )
+        fork_info = resp.json()
+        fork_uuid = uuid.UUID(fork_info["id"])
+
+        agent_cls = type(self.agent)
+        fork_agent = agent_cls.model_validate(
+            self.agent.model_dump(context={"expose_secrets": True}),
+        )
+
+        # Use server-returned tags (which include merged title) rather than
+        # the input tags, so the client-side object stays consistent.
+        server_tags: dict[str, str] | None = fork_info.get("tags") or None
+
+        return RemoteConversation(
+            agent=fork_agent,
+            workspace=self.workspace,
+            conversation_id=fork_uuid,
+            max_iteration_per_run=self.max_iteration_per_run,
+            delete_on_close=self.delete_on_close,
+            tags=server_tags,
         )
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":

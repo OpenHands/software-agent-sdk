@@ -61,6 +61,11 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
         ("litellm_proxy/gemini-3-flash-preview", True),
+        # LiteLLM proxy with deployment path prefixes (prod/, dev/, staging/, test/)
+        ("litellm_proxy/prod/claude-opus-4-5-20251101", True),
+        ("litellm_proxy/dev/claude-opus-4-5", True),
+        ("litellm_proxy/staging/gpt-5", True),
+        ("litellm_proxy/test/o1", True),
         ("unknown-model", False),
     ],
 )

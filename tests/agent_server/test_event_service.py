@@ -1725,3 +1725,49 @@ class TestSearchEventsBlockedByRunLoop:
             f"for {hold_seconds}s.  The read path is blocked by the write lock "
             f"(see HANG_REPRO.md)."
         )
+
+
+class TestEventServiceClose:
+    """Tests for EventService.close() awaiting conversation teardown."""
+
+    @pytest.mark.asyncio
+    async def test_close_awaits_conversation_close(self, event_service):
+        """close() must await conversation.close(), not fire-and-forget."""
+        conversation = MagicMock(spec=Conversation)
+        event_service._conversation = conversation
+
+        closed = asyncio.Event()
+
+        def slow_close():
+            # Simulate non-trivial teardown work
+            time.sleep(0.05)
+            closed.set()
+
+        conversation.close = slow_close
+
+        await event_service.close()
+
+        assert closed.is_set(), (
+            "EventService.close() returned before conversation.close() finished"
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_clears_conversation_reference(self, event_service):
+        """close() must set _conversation to None after closing."""
+        conversation = MagicMock()
+        event_service._conversation = conversation
+
+        await event_service.close()
+
+        assert event_service._conversation is None
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self, event_service):
+        """Calling close() twice must not raise."""
+        conversation = MagicMock()
+        event_service._conversation = conversation
+
+        await event_service.close()
+        await event_service.close()  # second call — _conversation is already None
+
+        conversation.close.assert_called_once()

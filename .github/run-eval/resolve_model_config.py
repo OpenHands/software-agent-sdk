@@ -71,6 +71,15 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    # https://www.kimi.com/blog/kimi-k2-6
+    "kimi-k2.6": {
+        "id": "kimi-k2.6",
+        "display_name": "Kimi K2.6",
+        "llm_config": {
+            "model": "litellm_proxy/moonshot/kimi-k2.6",
+            "temperature": 1.0,
+        },
+    },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
     "qwen3-max-thinking": {
         "id": "qwen3-max-thinking",
@@ -110,6 +119,13 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-opus-4-6",
             "temperature": 0.0,
+        },
+    },
+    "claude-opus-4-7": {
+        "id": "claude-opus-4-7",
+        "display_name": "Claude Opus 4.7",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-7",
         },
     },
     "claude-sonnet-4-6": {
@@ -242,6 +258,16 @@ MODELS = {
             "disable_vision": True,
         },
     },
+    "glm-5.1": {
+        "id": "glm-5.1",
+        "display_name": "GLM-5.1",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5.1",
+            "temperature": 0.0,
+            # OpenRouter glm-5.1 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
+    },
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",
         "display_name": "Qwen3 Coder Next",
@@ -280,6 +306,15 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/converse-nemotron-super-3-120b",
             "temperature": 0.0,
+        },
+    },
+    "trinity-large-thinking": {
+        "id": "trinity-large-thinking",
+        "display_name": "Trinity Large Thinking",
+        "llm_config": {
+            "model": "litellm_proxy/trinity-large-thinking",
+            "temperature": 1.0,
+            "top_p": 0.95,
         },
     },
 }

@@ -1,6 +1,8 @@
 """Tests for read_file tool."""
 
-from openhands.tools.gemini.read_file.definition import ReadFileAction
+from pathlib import Path
+
+from openhands.tools.gemini.read_file.definition import ReadFileAction, ReadFileTool
 from openhands.tools.gemini.read_file.impl import ReadFileExecutor
 
 
@@ -108,3 +110,29 @@ def test_read_file_offset_beyond_length(tmp_path):
 
     assert obs.is_error
     assert "beyond" in obs.text.lower()
+
+
+def test_declared_resources_locks_on_file_path(fake_conv_state):
+    """declared_resources returns a file-path key for per-file locking."""
+    tool = ReadFileTool.create(conv_state=fake_conv_state)[0]
+    action = ReadFileAction(file_path="/a/b.py")
+    resources = tool.declared_resources(action)
+    assert resources.declared is True
+    assert len(resources.keys) == 1
+    assert resources.keys[0] == f"file:{Path('/a/b.py').resolve()}"
+
+
+def test_declared_resources_different_files_different_keys(fake_conv_state):
+    """Different file paths produce different resource keys."""
+    tool = ReadFileTool.create(conv_state=fake_conv_state)[0]
+    a = tool.declared_resources(ReadFileAction(file_path="/a.py"))
+    b = tool.declared_resources(ReadFileAction(file_path="/b.py"))
+    assert a.keys != b.keys
+
+
+def test_declared_resources_relative_path_resolves_against_workspace(fake_conv_state):
+    """Relative paths must resolve against workspace_root, not process CWD."""
+    tool = ReadFileTool.create(conv_state=fake_conv_state)[0]
+    workspace = fake_conv_state.workspace.working_dir
+    resources = tool.declared_resources(ReadFileAction(file_path="src/foo.py"))
+    assert resources.keys[0] == f"file:{(Path(workspace) / 'src' / 'foo.py').resolve()}"
