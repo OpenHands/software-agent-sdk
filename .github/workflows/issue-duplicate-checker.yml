@@ -21,11 +21,6 @@ on:
                 description: Existing issue number to analyze when mode is issue-check
                 required: false
                 type: number
-            repository:
-                description: Repository to inspect when mode is issue-check
-                required: false
-                type: string
-                default: OpenHands/agent-sdk
             close_after_days:
                 description: Days to wait before auto-closing duplicate candidates in auto-close mode
                 required: false
@@ -80,7 +75,6 @@ jobs:
               env:
                   OPENHANDS_API_KEY: ${{ secrets.OPENHANDS_API_KEY }}
                   ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
-                  TARGET_REPOSITORY: ${{ inputs.repository || github.event.repository.full_name }}
               run: |
                   if [ -z "$OPENHANDS_API_KEY" ]; then
                     echo "Error: OPENHANDS_API_KEY secret is required"
@@ -90,14 +84,6 @@ jobs:
                     echo "Error: ISSUE_NUMBER is required"
                     exit 1
                   fi
-                  if [ -z "$TARGET_REPOSITORY" ]; then
-                    echo "Error: TARGET_REPOSITORY is required"
-                    exit 1
-                  fi
-                  echo "$TARGET_REPOSITORY" | grep -qE '^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$' || {
-                    echo "Error: TARGET_REPOSITORY must be in owner/repo format"
-                    exit 1
-                  }
 
             - name: Run OpenHands duplicate check conversation
               id: run_check
@@ -105,11 +91,10 @@ jobs:
                   OPENHANDS_API_KEY: ${{ secrets.OPENHANDS_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC || github.token }}
                   ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
-                  TARGET_REPOSITORY: ${{ inputs.repository || github.event.repository.full_name }}
                   OUTPUT_PATH: ${{ runner.temp }}/issue-duplicate-check-result.json
               run: |
                   python scripts/issue_duplicate_check_openhands.py \
-                    --repository "$TARGET_REPOSITORY" \
+                    --repository "${{ github.repository }}" \
                     --issue-number "$ISSUE_NUMBER" \
                     --output "$OUTPUT_PATH"
                   test -f "$OUTPUT_PATH" || {
