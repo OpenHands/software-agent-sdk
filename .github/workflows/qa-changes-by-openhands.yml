@@ -6,12 +6,15 @@
 # executing tests, exercising changed behavior, and posting a structured
 # QA report as a PR comment.
 #
-# This is an early experiment; expect rough edges.  The plugin source is
+# This is an early experiment; expect rough edges. The plugin source is
 # pinned to the extensions feature branch while we iterate.
 name: QA Changes by OpenHands [experimental]
 
 on:
-    pull_request:
+    # Use pull_request_target so QA can also run on fork PRs.
+    # The bot token used here is intentionally scoped to PR QA/comment operations,
+    # so the remaining blast radius is bounded even though PR content is untrusted.
+    pull_request_target:
         types: [opened, ready_for_review, labeled, review_requested]
 
 permissions:
@@ -21,16 +24,20 @@ permissions:
 
 jobs:
     qa-changes:
-        # Only run for same-repo PRs (secrets aren't available for forks).
-        # Trigger conditions mirror pr-review, but use the 'qa-this' label
-        # and openhands-agent reviewer request.
+        # Trigger conditions mirror pr-review, but use the 'qa-this' label.
+        # FIRST_TIME_CONTRIBUTOR and NONE PRs require manual trigger via label/reviewer request.
         if: |
-            github.event.pull_request.head.repo.full_name == github.repository && (
+            (
                 (github.event.action == 'opened' && github.event.pull_request.draft == false && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
                 (github.event.action == 'ready_for_review' && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR' && github.event.pull_request.author_association != 'NONE') ||
-                github.event.label.name == 'qa-this' ||
-                github.event.requested_reviewer.login == 'openhands-agent' ||
-                github.event.requested_reviewer.login == 'all-hands-bot'
+                (github.event.action == 'labeled' && github.event.label.name == 'qa-this') ||
+                (
+                    github.event.action == 'review_requested' &&
+                    (
+                        github.event.requested_reviewer.login == 'openhands-agent' ||
+                        github.event.requested_reviewer.login == 'all-hands-bot'
+                    )
+                )
             )
         concurrency:
             group: qa-changes-${{ github.event.pull_request.number }}

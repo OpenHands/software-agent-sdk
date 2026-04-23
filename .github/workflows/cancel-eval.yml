@@ -28,14 +28,14 @@ jobs:
         steps:
             - name: Cancel evaluation job
               env:
-                  PAT_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH }}
+                  DISPATCH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH }}
                   RUN_ID: ${{ github.event.inputs.run_id }}
                   REASON: ${{ github.event.inputs.reason }}
               run: |-
                   set -euo pipefail
 
-                  if [ -z "$PAT_TOKEN" ]; then
-                    echo "Missing PAT token" >&2
+                  if [ -z "$DISPATCH_TOKEN" ]; then
+                    echo "Missing dispatch token" >&2
                     exit 1
                   fi
 
@@ -49,7 +49,7 @@ jobs:
                     '{ref: $ref, inputs: {run_id: $run_id, reason: $reason}}')
 
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
-                    -H "Authorization: token $PAT_TOKEN" \
+                    -H "Authorization: token $DISPATCH_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
                     -d "$PAYLOAD" \
                     "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches")
