@@ -45,20 +45,17 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v6
 
-            - name: Clone OpenHands and agent-sdk
+            - name: Clone software-agent-sdk
               run: |
-                  git clone --depth 1 https://github.com/OpenHands/OpenHands.git /tmp/OpenHands
-                  git clone --depth 1 https://github.com/OpenHands/agent-sdk.git /tmp/agent-sdk
-                  echo "OpenHands HEAD: $(git -C /tmp/OpenHands rev-parse --short HEAD)"
-                  echo "agent-sdk HEAD: $(git -C /tmp/agent-sdk rev-parse --short HEAD)"
+                  git clone --depth 1 "https://github.com/${{ github.repository }}.git" /tmp/software-agent-sdk
+                  echo "software-agent-sdk HEAD: $(git -C /tmp/software-agent-sdk rev-parse --short HEAD)"
 
             - name: Summarize smoke test
               run: |
                   {
                     echo "## Smoke clone completed"
                     echo
-                    echo "- OpenHands cloned to /tmp/OpenHands"
-                    echo "- agent-sdk cloned to /tmp/agent-sdk"
+                    echo "- software-agent-sdk cloned to /tmp/software-agent-sdk"
                   } >> "$GITHUB_STEP_SUMMARY"
 
     issue-duplicate-check:
