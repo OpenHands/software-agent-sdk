@@ -126,9 +126,9 @@ RUN set -eux; \
     PATH="$ACP_NODE_DIR/bin:$PATH"; \
     node --version; \
     npm install -g \
-      @agentclientprotocol/claude-agent-acp \
-      @zed-industries/codex-acp \
-      @google/gemini-cli; \
+      @agentclientprotocol/claude-agent-acp@0.30.0 \
+      @zed-industries/codex-acp@0.11.1 \
+      @google/gemini-cli@0.38.0; \
     # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
     # This ensures the ACP binary's #!/usr/bin/env node shebang resolves to
     # Node 22, while the repo's own node (NVM/system) stays untouched for tests.
