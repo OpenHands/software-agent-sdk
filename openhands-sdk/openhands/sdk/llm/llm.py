@@ -777,7 +777,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"for model {self.model}"
             )
             formatted_messages, kwargs = self.pre_request_prompt_mock(
-                formatted_messages, cc_tools or [], kwargs
+                formatted_messages,
+                cc_tools or [],
+                kwargs,
+                include_security_params=add_security_risk_prediction,
             )
 
         # 3) normalize provider params
@@ -826,7 +829,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if use_mock_tools:
                 raw_resp = copy.deepcopy(resp)
                 resp = self.post_response_prompt_mock(
-                    resp, nonfncall_msgs=formatted_messages, tools=cc_tools
+                    resp,
+                    nonfncall_msgs=formatted_messages,
+                    tools=cc_tools,
+                    include_security_params=add_security_risk_prediction,
                 )
             # 6) telemetry
             self._telemetry.on_response(resp, raw_resp=raw_resp)
