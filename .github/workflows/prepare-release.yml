@@ -24,7 +24,7 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v6
               with:
-                  token: ${{ secrets.PAT_TOKEN }}
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -69,7 +69,7 @@ jobs:
 
             - name: Create Pull Request
               env:
-                  GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+                  GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
               run: |
                   cat > pr_body.txt << 'EOF'
                   ## Release v${{ inputs.version }}

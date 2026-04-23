@@ -4,8 +4,7 @@ import os
 import subprocess
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool
-from tests.integration.base import BaseIntegrationTest, TestResult, get_tools_for_preset
+from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 INSTRUCTION = (
@@ -20,11 +19,6 @@ class GitStagingTest(BaseIntegrationTest):
     """Test that an agent can write a git commit message and commit changes."""
 
     INSTRUCTION: str = INSTRUCTION
-
-    @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent based on configured tool preset."""
-        return get_tools_for_preset(self.tool_preset, enable_browser=False)
 
     def setup(self) -> None:
         """Set up git repository with staged changes."""
