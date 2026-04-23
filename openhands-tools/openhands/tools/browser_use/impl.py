@@ -338,11 +338,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
-        # Use a shorter timeout after multiple consecutive timeout failures
+        # Use a shorter timeout on the last retry before a reset would trigger,
         # to avoid long cascading waits against a dead browser.
         effective_timeout = (
             DEGRADED_TIMEOUT_SECONDS
-            if self._consecutive_failures >= 2
+            if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES - 1
             else self._action_timeout_seconds
         )
 
@@ -366,7 +366,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._consecutive_failures = 0
         return result
 
-    def _handle_timeout_failure(self, error_text: str):
+    def _handle_timeout_failure(self, error_text: str) -> BrowserObservation:
         """Track consecutive timeout failures and reset session if needed."""
         self._consecutive_failures += 1
         logger.debug(
