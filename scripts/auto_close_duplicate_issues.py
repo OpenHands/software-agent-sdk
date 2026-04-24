@@ -18,6 +18,7 @@ MAX_PAGES = 100
 DUPLICATE_CANDIDATE_LABEL = "duplicate-candidate"
 DUPLICATE_VETO_MARKER = "<!-- openhands-duplicate-veto -->"
 AUTOMATION_BOT_LOGINS = {"all-hands-bot"}
+REPOSITORY_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$")
 DUPLICATE_MARKER_RE = re.compile(
     r"<!-- openhands-duplicate-check canonical=(?P<canonical>\d+) "
     r"auto-close=(?P<auto_close>true|false) -->"
@@ -31,7 +32,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--close-after-days", type=int, default=3)
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not REPOSITORY_PATTERN.fullmatch(args.repository):
+        raise ValueError(f"Invalid repository format: {args.repository}")
+    return args
 
 
 def github_headers() -> dict[str, str]:
@@ -294,16 +298,11 @@ def close_issue_as_duplicate(
         return
 
     request_json(
-        f"/repos/{repository}/issues/{issue_number}",
-        method="PATCH",
-        body={"state": "closed", "state_reason": "duplicate"},
-    )
-    request_json(
         f"/repos/{repository}/issues/{issue_number}/comments",
         method="POST",
         body={
             "body": (
-                "This issue has been automatically closed as a duplicate of "
+                "This issue is being closed as a duplicate of "
                 f"#{canonical_issue_number}.\n\n"
                 "If this is incorrect, please add a comment and it can be "
                 "reopened.\n\n"
@@ -311,6 +310,11 @@ def close_issue_as_duplicate(
                 "(OpenHands) on behalf of the repository maintainer._"
             )
         },
+    )
+    request_json(
+        f"/repos/{repository}/issues/{issue_number}",
+        method="PATCH",
+        body={"state": "closed", "state_reason": "duplicate"},
     )
     remove_candidate_label(repository, issue_number, dry_run=False)
 
@@ -352,107 +356,118 @@ def main() -> int:
         except (TypeError, ValueError):
             continue
 
-        comments = list_issue_comments(args.repository, issue_number)
-        latest_comment, canonical_issue_number = find_latest_auto_close_comment(
-            comments
-        )
-        if latest_comment is None or canonical_issue_number is None:
-            continue
-
-        comment_created_at_str = latest_comment.get("created_at")
-        comment_id = latest_comment.get("id")
-        if not comment_created_at_str or comment_id is None:
-            continue
         try:
-            comment_id = int(comment_id)
-        except (TypeError, ValueError):
-            continue
-        try:
-            comment_created_at = parse_timestamp(comment_created_at_str)
-        except ValueError as exc:
-            print(
-                "Warning: Skipping issue "
-                f"#{issue_number} due to invalid duplicate-comment timestamp: {exc}",
-                file=sys.stderr,
+            comments = list_issue_comments(args.repository, issue_number)
+            latest_comment, canonical_issue_number = find_latest_auto_close_comment(
+                comments
             )
-            continue
-        if comment_created_at > cutoff:
-            continue
+            if latest_comment is None or canonical_issue_number is None:
+                continue
 
-        author_id = user_id_from_item(issue)
-        reactions = list_comment_reactions(args.repository, comment_id)
-        author_thumbs_down = has_reaction_from_user(reactions, author_id, "-1")
-        author_thumbs_up = has_reaction_from_user(reactions, author_id, "+1")
-        if author_thumbs_down:
-            label_removed = False
-            if issue_has_label(issue, DUPLICATE_CANDIDATE_LABEL):
-                label_removed = remove_candidate_label(
-                    args.repository,
-                    issue_number,
-                    dry_run=args.dry_run,
-                )
-            veto_note_posted = False
-            if not has_veto_note(comments):
-                veto_note_posted = post_veto_note(
-                    args.repository,
-                    issue_number,
-                    dry_run=args.dry_run,
-                )
-            summary.append(
-                {
-                    "issue_number": issue_number,
-                    "action": "kept-open",
-                    "reason": "author-thumbed-down-duplicate-comment",
-                    "label_removed": label_removed,
-                    "veto_note_posted": veto_note_posted,
-                    "author_thumbs_up": author_thumbs_up,
-                }
-            )
-            continue
-
-        newer_comments = []
-        for comment in comments:
-            created_at = comment.get("created_at")
-            if not created_at or not is_non_bot_comment(comment):
+            comment_created_at_str = latest_comment.get("created_at")
+            comment_id = latest_comment.get("id")
+            if not comment_created_at_str or comment_id is None:
                 continue
             try:
-                newer_comment_created_at = parse_timestamp(created_at)
+                comment_id = int(comment_id)
+            except (TypeError, ValueError):
+                continue
+            try:
+                comment_created_at = parse_timestamp(comment_created_at_str)
             except ValueError as exc:
                 print(
-                    "Warning: Ignoring newer comment with invalid timestamp on "
-                    f"issue #{issue_number}: {exc}",
+                    "Warning: Skipping issue "
+                    f"#{issue_number} due to invalid duplicate-comment timestamp: "
+                    f"{exc}",
                     file=sys.stderr,
                 )
                 continue
-            if newer_comment_created_at > comment_created_at:
-                newer_comments.append(comment)
-        if newer_comments:
-            summary.append(
-                keep_open_due_to_newer_comments(
-                    args.repository,
-                    issue,
-                    issue_number,
-                    dry_run=args.dry_run,
-                )
-            )
-            continue
+            if comment_created_at > cutoff:
+                continue
 
-        close_issue_as_duplicate(
-            args.repository,
-            issue_number,
-            canonical_issue_number,
-            dry_run=args.dry_run,
-        )
-        summary.append(
-            {
-                "issue_number": issue_number,
-                "action": "closed-as-duplicate"
-                if not args.dry_run
-                else "would-close-as-duplicate",
-                "canonical_issue_number": canonical_issue_number,
-                "author_thumbs_up": author_thumbs_up,
-            }
-        )
+            author_id = user_id_from_item(issue)
+            reactions = list_comment_reactions(args.repository, comment_id)
+            author_thumbs_down = has_reaction_from_user(reactions, author_id, "-1")
+            author_thumbs_up = has_reaction_from_user(reactions, author_id, "+1")
+            if author_thumbs_down:
+                label_removed = False
+                if issue_has_label(issue, DUPLICATE_CANDIDATE_LABEL):
+                    label_removed = remove_candidate_label(
+                        args.repository,
+                        issue_number,
+                        dry_run=args.dry_run,
+                    )
+                veto_note_posted = False
+                if not has_veto_note(comments):
+                    veto_note_posted = post_veto_note(
+                        args.repository,
+                        issue_number,
+                        dry_run=args.dry_run,
+                    )
+                summary.append(
+                    {
+                        "issue_number": issue_number,
+                        "action": "kept-open",
+                        "reason": "author-thumbed-down-duplicate-comment",
+                        "label_removed": label_removed,
+                        "veto_note_posted": veto_note_posted,
+                        "author_thumbs_up": author_thumbs_up,
+                    }
+                )
+                continue
+
+            newer_comments = []
+            for comment in comments:
+                created_at = comment.get("created_at")
+                if not created_at or not is_non_bot_comment(comment):
+                    continue
+                try:
+                    newer_comment_created_at = parse_timestamp(created_at)
+                except ValueError as exc:
+                    print(
+                        "Warning: Ignoring newer comment with invalid timestamp on "
+                        f"issue #{issue_number}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+                if newer_comment_created_at > comment_created_at:
+                    newer_comments.append(comment)
+            if newer_comments:
+                summary.append(
+                    keep_open_due_to_newer_comments(
+                        args.repository,
+                        issue,
+                        issue_number,
+                        dry_run=args.dry_run,
+                    )
+                )
+                continue
+
+            close_issue_as_duplicate(
+                args.repository,
+                issue_number,
+                canonical_issue_number,
+                dry_run=args.dry_run,
+            )
+            summary.append(
+                {
+                    "issue_number": issue_number,
+                    "action": "closed-as-duplicate"
+                    if not args.dry_run
+                    else "would-close-as-duplicate",
+                    "canonical_issue_number": canonical_issue_number,
+                    "author_thumbs_up": author_thumbs_up,
+                }
+            )
+        except RuntimeError as exc:
+            print(f"Error processing issue #{issue_number}: {exc}", file=sys.stderr)
+            summary.append(
+                {
+                    "issue_number": issue_number,
+                    "action": "failed",
+                    "error": str(exc),
+                }
+            )
 
     print(json.dumps({"repository": args.repository, "results": summary}, indent=2))
     return 0

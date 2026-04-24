@@ -348,7 +348,7 @@ def poll_conversation(
     while time.time() < deadline:
         payload = request_json(
             OPENHANDS_BASE_URL,
-            f"/api/v1/app-conversations?ids={urllib.parse.quote(app_conversation_id)}",
+            f"/api/v1/app-conversations?ids={app_conversation_id}",
             headers={"Authorization": openhands_headers()["Authorization"]},
         )
         item = extract_first_item(payload)
@@ -378,7 +378,7 @@ def validate_event_search_results(events: list[dict[str, Any]]) -> list[dict[str
 def fetch_app_server_events(app_conversation_id: str) -> list[dict[str, Any]]:
     payload = request_json(
         OPENHANDS_BASE_URL,
-        f"/api/v1/conversation/{urllib.parse.quote(app_conversation_id)}/events/search?limit={EVENT_SEARCH_LIMIT}",
+        f"/api/v1/conversation/{app_conversation_id}/events/search?limit={EVENT_SEARCH_LIMIT}",
         headers={"Authorization": openhands_headers()["Authorization"]},
     )
     if isinstance(payload, dict):
@@ -394,7 +394,7 @@ def fetch_agent_server_events(
 ) -> list[dict[str, Any]]:
     payload = request_json(
         agent_server_url,
-        f"/api/conversations/{urllib.parse.quote(app_conversation_id)}/events/search?limit={EVENT_SEARCH_LIMIT}",
+        f"/api/conversations/{app_conversation_id}/events/search?limit={EVENT_SEARCH_LIMIT}",
         headers={"X-Session-API-Key": session_api_key},
     )
     if isinstance(payload, dict):
@@ -410,7 +410,7 @@ def fetch_agent_server_final_response(
 ) -> str:
     payload = request_json(
         agent_server_url,
-        f"/api/conversations/{urllib.parse.quote(app_conversation_id)}/agent_final_response",
+        f"/api/conversations/{app_conversation_id}/agent_final_response",
         headers={"X-Session-API-Key": session_api_key},
     )
     if not isinstance(payload, dict):

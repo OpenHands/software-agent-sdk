@@ -163,6 +163,21 @@ def test_github_headers_requires_token(monkeypatch):
         module.github_headers()
 
 
+def test_auto_close_parse_args_rejects_invalid_repository(monkeypatch):
+    module = load_module("auto_close_duplicate_issues.py")
+
+    monkeypatch.setattr(
+        module.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: argparse.Namespace(
+            repository="bad/repo/name", close_after_days=3, dry_run=False
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Invalid repository format"):
+        module.parse_args()
+
+
 def test_auto_close_request_json_reports_urlerror(monkeypatch):
     module = load_module("auto_close_duplicate_issues.py")
 
@@ -371,7 +386,6 @@ def test_close_issue_propagates_comment_failure(monkeypatch):
         module.close_issue_as_duplicate("OpenHands/agent-sdk", 123, 45, dry_run=False)
 
     assert calls == [
-        ("PATCH", "/repos/OpenHands/agent-sdk/issues/123"),
         ("POST", "/repos/OpenHands/agent-sdk/issues/123/comments"),
     ]
 
@@ -423,8 +437,8 @@ def test_close_issue_as_duplicate_removes_label_on_success(monkeypatch):
     module.close_issue_as_duplicate("OpenHands/agent-sdk", 123, 45, dry_run=False)
 
     assert calls == [
-        ("PATCH", "/repos/OpenHands/agent-sdk/issues/123"),
         ("POST", "/repos/OpenHands/agent-sdk/issues/123/comments"),
+        ("PATCH", "/repos/OpenHands/agent-sdk/issues/123"),
         ("REMOVE_LABEL", "OpenHands/agent-sdk#123:False"),
     ]
 
@@ -594,6 +608,87 @@ def test_auto_close_main_closes_old_duplicate(monkeypatch, capsys):
         ],
     }
     assert closed == [("OpenHands/agent-sdk", 123, 45, False)]
+
+
+def test_auto_close_main_continues_after_close_failure(monkeypatch, capsys):
+    module = load_module("auto_close_duplicate_issues.py")
+    now = datetime.now(UTC)
+    old_timestamp = iso_timestamp(now - timedelta(days=5))
+    issues = [
+        {
+            "number": 123,
+            "created_at": old_timestamp,
+            "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+            "user": {"id": 7},
+        },
+        {
+            "number": 124,
+            "created_at": old_timestamp,
+            "labels": [{"name": module.DUPLICATE_CANDIDATE_LABEL}],
+            "user": {"id": 8},
+        },
+    ]
+    comments = [
+        {
+            "id": 11,
+            "body": "<!-- openhands-duplicate-check canonical=45 auto-close=true -->",
+            "created_at": old_timestamp,
+        }
+    ]
+    closed: list[int] = []
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk", close_after_days=3, dry_run=False
+        ),
+    )
+    monkeypatch.setattr(module, "list_open_issues", lambda repository: issues)
+    monkeypatch.setattr(
+        module, "list_issue_comments", lambda repository, number: comments
+    )
+    monkeypatch.setattr(
+        module, "list_comment_reactions", lambda repository, comment_id: []
+    )
+
+    def fake_close_issue_as_duplicate(
+        repository: str,
+        issue_number: int,
+        canonical_issue_number: int,
+        *,
+        dry_run: bool,
+    ) -> None:
+        if issue_number == 123:
+            raise RuntimeError("comment failed")
+        closed.append(issue_number)
+
+    monkeypatch.setattr(
+        module, "close_issue_as_duplicate", fake_close_issue_as_duplicate
+    )
+
+    assert module.main() == 0
+
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert summary == {
+        "repository": "OpenHands/agent-sdk",
+        "results": [
+            {
+                "issue_number": 123,
+                "action": "failed",
+                "error": "comment failed",
+            },
+            {
+                "issue_number": 124,
+                "action": "closed-as-duplicate",
+                "canonical_issue_number": 45,
+                "author_thumbs_up": False,
+            },
+        ],
+    }
+    assert "Error processing issue #123: comment failed" in captured.err
+    assert closed == [124]
 
 
 def test_auto_close_main_skips_malformed_issue_data(monkeypatch, capsys):
@@ -1213,6 +1308,53 @@ def test_openhands_headers_requires_api_key(monkeypatch):
         RuntimeError, match="OPENHANDS_API_KEY environment variable is required"
     ):
         module.openhands_headers()
+
+
+def test_app_conversation_helpers_preserve_raw_ids(monkeypatch):
+    module = load_module("issue_duplicate_check_openhands.py")
+    requested_paths: list[tuple[str, str]] = []
+
+    def fake_request_json(base_url: str, path: str, **kwargs):
+        requested_paths.append((base_url, path))
+        if path.startswith("/api/v1/app-conversations?"):
+            return {"items": [{"execution_status": "completed"}]}
+        if path.endswith("/agent_final_response"):
+            return {"response": "done"}
+        return {"items": []}
+
+    monkeypatch.setattr(module, "request_json", fake_request_json)
+    monkeypatch.setattr(
+        module, "openhands_headers", lambda: {"Authorization": "Bearer test-token"}
+    )
+
+    module.poll_conversation("conv:123", poll_interval_seconds=1, max_wait_seconds=10)
+    module.fetch_app_server_events("conv:123")
+    module.fetch_agent_server_events("conv:123", "https://runtime.example", "session")
+    assert (
+        module.fetch_agent_server_final_response(
+            "conv:123", "https://runtime.example", "session"
+        )
+        == "done"
+    )
+
+    assert requested_paths == [
+        (
+            module.OPENHANDS_BASE_URL,
+            "/api/v1/app-conversations?ids=conv:123",
+        ),
+        (
+            module.OPENHANDS_BASE_URL,
+            f"/api/v1/conversation/conv:123/events/search?limit={module.EVENT_SEARCH_LIMIT}",
+        ),
+        (
+            "https://runtime.example",
+            f"/api/conversations/conv:123/events/search?limit={module.EVENT_SEARCH_LIMIT}",
+        ),
+        (
+            "https://runtime.example",
+            "/api/conversations/conv:123/agent_final_response",
+        ),
+    ]
 
 
 def test_normalize_result_promotes_actionable_duplicates():
