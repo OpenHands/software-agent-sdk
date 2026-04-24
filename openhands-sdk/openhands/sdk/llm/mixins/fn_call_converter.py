@@ -34,9 +34,9 @@ class TextPart(TypedDict):
 Content = str | list[TextPart]
 
 # Inspired by: https://docs.together.ai/docs/llama-3-function-calling#function-calling-w-llama-31-70b
-MISSING_DESCRIPTION_PLACEHOLDER = "No description provided"
-SCHEMA_INDENT_STEP = 2
-SCHEMA_UNION_KEYS = ("anyOf", "oneOf", "allOf")
+MISSING_DESCRIPTION_PLACEHOLDER: Final[str] = "No description provided"
+SCHEMA_INDENT_STEP: Final[int] = 2
+SCHEMA_UNION_KEYS: Final[tuple[str, str, str]] = ("anyOf", "oneOf", "allOf")
 
 
 system_message_suffix_TEMPLATE = """
@@ -91,16 +91,12 @@ TOOL_RESULT_REGEX_PATTERN = r"EXECUTION RESULT of \[(.*?)\]:\n(.*)"
 
 def convert_tool_call_to_string(tool_call: dict) -> str:
     """Convert tool call to content in string format."""
-    if "function" not in tool_call:
-        raise FunctionCallConversionError("Tool call must contain 'function' key.")
-    if "id" not in tool_call:
-        raise FunctionCallConversionError("Tool call must contain 'id' key.")
-    if "type" not in tool_call:
-        raise FunctionCallConversionError("Tool call must contain 'type' key.")
+    for key in ("function", "id", "type"):
+        if key not in tool_call:
+            raise FunctionCallConversionError(f"Tool call must contain '{key}' key.")
     if tool_call["type"] != "function":
         raise FunctionCallConversionError("Tool call type must be 'function'.")
 
-    ret = f"<function={tool_call['function']['name']}>\n"
     try:
         args = json.loads(tool_call["function"]["arguments"])
     except json.JSONDecodeError as e:
@@ -108,20 +104,19 @@ def convert_tool_call_to_string(tool_call: dict) -> str:
             f"Failed to parse arguments as JSON. "
             f"Arguments: {tool_call['function']['arguments']}"
         ) from e
-    for param_name, param_value in args.items():
-        is_multiline = isinstance(param_value, str) and "\n" in param_value
-        ret += f"<parameter={param_name}>"
-        if is_multiline:
-            ret += "\n"
-        if isinstance(param_value, list) or isinstance(param_value, dict):
-            ret += json.dumps(param_value)
+
+    parts = [f"<function={tool_call['function']['name']}>"]
+    for name, value in args.items():
+        if isinstance(value, (list, dict)):
+            rendered = json.dumps(value)
         else:
-            ret += f"{param_value}"
-        if is_multiline:
-            ret += "\n"
-        ret += "</parameter>\n"
-    ret += "</function>"
-    return ret
+            rendered = str(value)
+        if isinstance(value, str) and "\n" in value:
+            parts.append(f"<parameter={name}>\n{rendered}\n</parameter>")
+        else:
+            parts.append(f"<parameter={name}>{rendered}</parameter>")
+    parts.append("</function>")
+    return "\n".join(parts)
 
 
 def _summarize_schema_type(schema: object | None) -> str:
@@ -523,82 +518,54 @@ def _extract_and_validate_params(
     param_matches: Iterable[re.Match],
     fn_name: str,
 ) -> dict:
-    params = {}
-    # Parse and validate parameters
-    required_params = set()
-    if "parameters" in matching_tool and "required" in matching_tool["parameters"]:
-        required_params = set(matching_tool["parameters"].get("required", []))
+    parameters = matching_tool.get("parameters") or {}
+    properties: dict[str, dict] = parameters.get("properties") or {}
+    required_params = set(parameters.get("required") or [])
+    allowed_params = set(properties)
 
-    allowed_params = set()
-    if "parameters" in matching_tool and "properties" in matching_tool["parameters"]:
-        allowed_params = set(matching_tool["parameters"]["properties"].keys())
+    params: dict = {}
+    found_params: set[str] = set()
 
-    param_name_to_type = {}
-    if "parameters" in matching_tool and "properties" in matching_tool["parameters"]:
-        param_name_to_type = {
-            name: val.get("type", "string")
-            for name, val in matching_tool["parameters"]["properties"].items()
-        }
-
-    # Collect parameters
-    found_params = set()
     for param_match in param_matches:
         param_name = param_match.group(1)
-        param_value = param_match.group(2)
-        # Normalize whitespace: some models add extra newlines around values
-        if isinstance(param_value, str):
-            param_value = param_value.strip()
+        param_value: Any = param_match.group(2).strip()
 
-        # Validate parameter is allowed
         if allowed_params and param_name not in allowed_params:
             raise FunctionCallValidationError(
                 f"Parameter '{param_name}' is not allowed for function '{fn_name}'. "
                 f"Allowed parameters: {allowed_params}"
             )
 
-        # Validate and convert parameter type
-        # supported: string, integer, array
-        if param_name in param_name_to_type:
-            if param_name_to_type[param_name] == "integer":
-                try:
-                    param_value = int(param_value)
-                except ValueError:
-                    raise FunctionCallValidationError(
-                        f"Parameter '{param_name}' is expected to be an integer."
-                    )
-            elif param_name_to_type[param_name] == "array":
-                try:
-                    param_value = json.loads(param_value)
-                except json.JSONDecodeError:
-                    raise FunctionCallValidationError(
-                        f"Parameter '{param_name}' is expected to be an array."
-                    )
-            else:
-                # string
-                pass
+        prop = properties.get(param_name, {})
+        param_type = prop.get("type", "string")
 
-        # Enum check
-        if (
-            "parameters" in matching_tool
-            and "enum" in matching_tool["parameters"]["properties"][param_name]
-        ):
-            if (
-                param_value
-                not in matching_tool["parameters"]["properties"][param_name]["enum"]
-            ):
+        if param_type == "integer":
+            try:
+                param_value = int(param_value)
+            except ValueError:
                 raise FunctionCallValidationError(
-                    f"Parameter '{param_name}' is expected to be one of "
-                    f"{matching_tool['parameters']['properties'][param_name]['enum']}."
+                    f"Parameter '{param_name}' is expected to be an integer."
                 )
+        elif param_type == "array":
+            try:
+                param_value = json.loads(param_value)
+            except json.JSONDecodeError:
+                raise FunctionCallValidationError(
+                    f"Parameter '{param_name}' is expected to be an array."
+                )
+
+        enum = prop.get("enum")
+        if enum is not None and param_value not in enum:
+            raise FunctionCallValidationError(
+                f"Parameter '{param_name}' is expected to be one of {enum}."
+            )
 
         params[param_name] = param_value
         found_params.add(param_name)
 
-    # Check all required parameters are present
-    # Note: security_risk is excluded here because its validation happens later
-    # in Agent._extract_security_risk(), which has context about whether a security
-    # analyzer is configured. This allows weaker models to omit it when no analyzer
-    # is active, while still enforcing it for stronger models with LLMSecurityAnalyzer.
+    # security_risk is excluded: it's validated later in Agent._extract_security_risk,
+    # which knows whether a security analyzer is configured. Weaker models may omit it
+    # when no analyzer is active; LLMSecurityAnalyzer enforces it for stronger ones.
     missing_params = required_params - found_params - {"security_risk"}
     if missing_params:
         raise FunctionCallValidationError(
@@ -718,26 +685,18 @@ def _strip_in_context_example(
 ) -> Content:
     """Remove in-context learning examples from content."""
     example = IN_CONTEXT_LEARNING_EXAMPLE_PREFIX(tools)
+    suffix = IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX
 
     if isinstance(content, str):
-        if content.startswith(example):
-            content = content.replace(example, "", 1)
-        if content.endswith(IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX):
-            content = content.replace(IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX, "", 1)
-    elif isinstance(content, list):
+        return content.removeprefix(example).removesuffix(suffix)
+    if isinstance(content, list):
         for item in content:
             if item["type"] == "text":
-                if item["text"].startswith(example):
-                    item["text"] = item["text"].replace(example, "", 1)
-                if item["text"].endswith(IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX):
-                    item["text"] = item["text"].replace(
-                        IN_CONTEXT_LEARNING_EXAMPLE_SUFFIX, "", 1
-                    )
-    else:
-        raise FunctionCallConversionError(
-            f"Unexpected content type {type(content)}. Expected str or list."
-        )
-    return content
+                item["text"] = item["text"].removeprefix(example).removesuffix(suffix)
+        return content
+    raise FunctionCallConversionError(
+        f"Unexpected content type {type(content)}. Expected str or list."
+    )
 
 
 def _find_tool_result_match(content: Content) -> re.Match | None:
