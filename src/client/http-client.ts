@@ -8,17 +8,20 @@ export interface HttpClientOptions {
   timeout?: number;
 }
 
+export type ResponseType = 'auto' | 'json' | 'text' | 'blob' | 'arrayBuffer';
+
 export interface RequestOptions {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   url: string;
-  params?: Record<string, any>;
-  data?: any;
+  params?: Record<string, unknown>;
+  data?: unknown;
   headers?: Record<string, string>;
   timeout?: number;
   acceptableStatusCodes?: Set<number>;
+  responseType?: ResponseType;
 }
 
-export interface HttpResponse<T = any> {
+export interface HttpResponse<T = unknown> {
   data: T;
   status: number;
   statusText: string;
@@ -29,7 +32,7 @@ export class HttpError extends Error {
   constructor(
     public status: number,
     public statusText: string,
-    public response?: any,
+    public response?: unknown,
     message?: string
   ) {
     super(message || `HTTP ${status}: ${statusText}`);
@@ -48,19 +51,15 @@ export class HttpClient {
     this.timeout = options.timeout || 60000;
   }
 
-  async request<T = any>(options: RequestOptions): Promise<HttpResponse<T>> {
-    // Strip leading slash so the path is resolved relative to the full baseUrl
-    // (including any path prefix), not just the origin. This allows serverUrl
-    // values like "https://example.com/apps/assistant/api" to work correctly.
+  async request<T = unknown>(options: RequestOptions): Promise<HttpResponse<T>> {
     const relativePath = options.url.startsWith('/') ? options.url.slice(1) : options.url;
     const url = new URL(relativePath, this.baseUrl + '/');
 
-    // Add query parameters
     if (options.params) {
       Object.entries(options.params).forEach(([key, value]) => {
         if (value !== undefined && value !== null) {
           if (Array.isArray(value)) {
-            value.forEach((v: unknown) => url.searchParams.append(key, String(v)));
+            value.forEach((item) => url.searchParams.append(key, String(item)));
           } else {
             url.searchParams.append(key, String(value));
           }
@@ -73,7 +72,6 @@ export class HttpClient {
       ...options.headers,
     };
 
-    // Add API key header if available
     if (this.apiKey) {
       headers['X-Session-API-Key'] = this.apiKey;
     }
@@ -84,10 +82,8 @@ export class HttpClient {
       signal: AbortSignal.timeout(options.timeout || this.timeout),
     };
 
-    // Add body for non-GET requests
     if (options.data && options.method !== 'GET') {
       if (options.data instanceof FormData) {
-        // Remove content-type header for FormData (browser will set it with boundary)
         delete headers['Content-Type'];
         requestInit.body = options.data;
       } else {
@@ -98,13 +94,12 @@ export class HttpClient {
     try {
       const response = await fetch(url.toString(), requestInit);
 
-      // Check if status code is acceptable
       const isAcceptable =
         options.acceptableStatusCodes?.has(response.status) ||
         (!options.acceptableStatusCodes && response.ok);
 
       if (!isAcceptable) {
-        let errorContent: any;
+        let errorContent: unknown;
         try {
           const contentType = response.headers.get('content-type');
           if (contentType?.includes('application/json')) {
@@ -124,16 +119,8 @@ export class HttpClient {
         );
       }
 
-      // Parse response
-      let data: T;
-      const contentType = response.headers.get('content-type');
-      if (contentType?.includes('application/json')) {
-        data = await response.json();
-      } else {
-        data = (await response.text()) as unknown as T;
-      }
+      const data = (await this.parseResponse<T>(response, options.responseType || 'auto')) as T;
 
-      // Convert headers to plain object
       const responseHeaders: Record<string, string> = {};
       response.headers.forEach((value, key) => {
         responseHeaders[key] = value;
@@ -163,38 +150,62 @@ export class HttpClient {
     }
   }
 
-  async get<T = any>(
+  private async parseResponse<T>(response: Response, responseType: ResponseType): Promise<T> {
+    if (responseType === 'json') {
+      return (await response.json()) as T;
+    }
+
+    if (responseType === 'text') {
+      return (await response.text()) as T;
+    }
+
+    if (responseType === 'blob') {
+      return (await response.blob()) as T;
+    }
+
+    if (responseType === 'arrayBuffer') {
+      return (await response.arrayBuffer()) as T;
+    }
+
+    const contentType = response.headers.get('content-type');
+    if (contentType?.includes('application/json')) {
+      return (await response.json()) as T;
+    }
+    return (await response.text()) as T;
+  }
+
+  async get<T = unknown>(
     url: string,
     options?: Omit<RequestOptions, 'method' | 'url'>
   ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'GET', url, ...options });
   }
 
-  async post<T = any>(
+  async post<T = unknown>(
     url: string,
-    data?: any,
+    data?: unknown,
     options?: Omit<RequestOptions, 'method' | 'url' | 'data'>
   ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'POST', url, data, ...options });
   }
 
-  async put<T = any>(
+  async put<T = unknown>(
     url: string,
-    data?: any,
+    data?: unknown,
     options?: Omit<RequestOptions, 'method' | 'url' | 'data'>
   ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'PUT', url, data, ...options });
   }
 
-  async patch<T = any>(
+  async patch<T = unknown>(
     url: string,
-    data?: any,
+    data?: unknown,
     options?: Omit<RequestOptions, 'method' | 'url' | 'data'>
   ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'PATCH', url, data, ...options });
   }
 
-  async delete<T = any>(
+  async delete<T = unknown>(
     url: string,
     options?: Omit<RequestOptions, 'method' | 'url'>
   ): Promise<HttpResponse<T>> {

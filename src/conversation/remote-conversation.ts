@@ -31,6 +31,8 @@ import {
   AskAgentRequest,
   AskAgentResponse,
   SetSecurityAnalyzerRequest,
+  AgentResponseResult,
+  ForkConversationRequest,
 } from '../models/conversation';
 import { IConversation, BaseConversationOptions } from './base';
 import { Success } from '../types/base';
@@ -269,6 +271,58 @@ export class RemoteConversation implements IConversation {
       request
     );
     return response.data.response;
+  }
+
+  /**
+   * Get the agent's final response text for this conversation.
+   */
+  async getAgentFinalResponse(): Promise<string> {
+    const response = await this.client.get<AgentResponseResult>(
+      `/api/conversations/${this.id}/agent_final_response`
+    );
+    return response.data.response;
+  }
+
+  /**
+   * Switch the conversation to a named LLM profile.
+   */
+  async switchProfile(profileName: string): Promise<void> {
+    await this.client.post(`/api/conversations/${this.id}/switch_profile`, {
+      profile_name: profileName,
+    });
+  }
+
+  /**
+   * Fork the current conversation and return a new RemoteConversation instance.
+   */
+  async fork(request: ForkConversationRequest = {}): Promise<RemoteConversation> {
+    const response = await this.client.post<ConversationInfo>(
+      `/api/conversations/${this.id}/fork`,
+      request
+    );
+
+    const forkWorkspace = new RemoteWorkspace({
+      host: this.workspace.host,
+      workingDir: this.workspace.workingDir,
+      apiKey: this.workspace.apiKey,
+    });
+
+    return new RemoteConversation(response.data.agent, forkWorkspace, {
+      conversationId: response.data.id,
+      callback: this.callback,
+      onError: this.onError,
+      hookConfig: response.data.hook_config ?? this.hookConfig,
+    });
+  }
+
+  /**
+   * Download the persisted conversation trajectory as a ZIP blob.
+   */
+  async downloadTrajectory(): Promise<Blob> {
+    const response = await this.client.get<Blob>(`/api/file/download-trajectory/${this.id}`, {
+      responseType: 'blob',
+    });
+    return response.data;
   }
 
   /**

@@ -6,6 +6,18 @@
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./clients": {
+      "types": "./dist/clients.d.ts",
+      "import": "./dist/clients.js",
+      "default": "./dist/clients.js"
+    }
+  },
   "overrides": {
     "eslint": {
       "minimatch": "^10.2.1"
@@ -22,6 +34,8 @@
     "test:coverage": "jest --config jest.config.cjs --coverage",
     "test:integration": "jest --config jest.integration.config.cjs",
     "test:integration:verbose": "jest --config jest.integration.config.cjs --verbose",
+    "test:integration:deterministic": "jest --config jest.integration.config.cjs --runInBand --testPathPatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
+    "test:integration:llm": "jest --config jest.integration.config.cjs --runInBand --testPathIgnorePatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
     "test:all": "npm run test && npm run test:integration",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",

@@ -63,7 +63,16 @@ export interface LLM {
 }
 
 export interface ServerInfo {
+  uptime: number;
+  idle_time: number;
+  title?: string;
   version: string;
+  sdk_version?: string;
+  tools_version?: string;
+  workspace_version?: string;
+  build_git_sha?: string;
+  build_git_date?: string;
+  build_semver?: string;
   [key: string]: unknown;
 }
 
@@ -80,7 +89,13 @@ export interface EventPage {
 
 export enum EventSortOrder {
   TIMESTAMP = 'TIMESTAMP',
-  REVERSE_TIMESTAMP = 'REVERSE_TIMESTAMP',
+  TIMESTAMP_DESC = 'TIMESTAMP_DESC',
+}
+
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace EventSortOrder {
+  /** @deprecated Use TIMESTAMP_DESC instead. */
+  export const REVERSE_TIMESTAMP: EventSortOrder = 'TIMESTAMP_DESC' as EventSortOrder;
 }
 
 /**

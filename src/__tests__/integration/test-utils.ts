@@ -4,7 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { getTestConfig } from './test-config';
+import { getServerTestConfig } from './test-config';
 
 /**
  * Wait for a condition to become true, with timeout
@@ -37,7 +37,7 @@ export function sleep(ms: number): Promise<void> {
  * Read a file from the host workspace directory
  */
 export function readWorkspaceFile(relativePath: string): string {
-  const config = getTestConfig();
+  const config = getServerTestConfig();
   const fullPath = path.join(config.hostWorkspaceDir, relativePath);
   return fs.readFileSync(fullPath, 'utf-8');
 }
@@ -46,7 +46,7 @@ export function readWorkspaceFile(relativePath: string): string {
  * Write a file to the host workspace directory
  */
 export function writeWorkspaceFile(relativePath: string, content: string): void {
-  const config = getTestConfig();
+  const config = getServerTestConfig();
   const fullPath = path.join(config.hostWorkspaceDir, relativePath);
   const dir = path.dirname(fullPath);
   if (!fs.existsSync(dir)) {
@@ -59,7 +59,7 @@ export function writeWorkspaceFile(relativePath: string, content: string): void 
  * Check if a file exists in the host workspace directory
  */
 export function workspaceFileExists(relativePath: string): boolean {
-  const config = getTestConfig();
+  const config = getServerTestConfig();
   const fullPath = path.join(config.hostWorkspaceDir, relativePath);
   return fs.existsSync(fullPath);
 }
@@ -68,7 +68,7 @@ export function workspaceFileExists(relativePath: string): boolean {
  * Delete a file from the host workspace directory
  */
 export function deleteWorkspaceFile(relativePath: string): void {
-  const config = getTestConfig();
+  const config = getServerTestConfig();
   const fullPath = path.join(config.hostWorkspaceDir, relativePath);
   if (fs.existsSync(fullPath)) {
     fs.unlinkSync(fullPath);
@@ -79,7 +79,7 @@ export function deleteWorkspaceFile(relativePath: string): void {
  * Clean the workspace directory (remove all files)
  */
 export function cleanWorkspace(): void {
-  const config = getTestConfig();
+  const config = getServerTestConfig();
   if (fs.existsSync(config.hostWorkspaceDir)) {
     const files = fs.readdirSync(config.hostWorkspaceDir);
     for (const file of files) {

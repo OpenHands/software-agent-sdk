@@ -135,6 +135,8 @@ export {
 // WebSocket client for real-time events
 export { WebSocketCallbackClient } from './events/websocket-client';
 export type { ErrorCallbackType } from './events/websocket-client';
+export { BashWebSocketClient } from './events/bash-websocket-client';
+export type { BashWebSocketClientOptions } from './events/bash-websocket-client';
 
 // HTTP client
 export { HttpClient, HttpError } from './client/http-client';
@@ -162,6 +164,7 @@ export type {
 export type { AgentOptions } from './agent/agent';
 
 export { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
+export { ConversationSortOrder } from './models/conversation';
 
 // Workspace models
 export type {
@@ -170,6 +173,15 @@ export type {
   FileDownloadResult,
   GitChange,
   GitDiff,
+  ExecuteBashRequest,
+  BashEventBase,
+  BashCommand,
+  BashOutput,
+  BashError,
+  BashEvent,
+  BashEventPage,
+  BashEventSearchOptions,
+  ClearBashEventsResponse,
 } from './models/workspace';
 
 // Workspace base types and interface
@@ -187,9 +199,12 @@ export type {
 // Conversation models
 export type {
   ConversationInfo,
+  ACPAgentConfig,
+  ACPConversationInfo,
   SendMessageRequest,
   ConfirmationResponseRequest,
   CreateConversationRequest,
+  CreateACPConversationRequest,
   GenerateTitleRequest,
   GenerateTitleResponse,
   UpdateConversationRequest,
@@ -199,13 +214,35 @@ export type {
   SecretObject,
   ConversationSearchRequest,
   ConversationSearchResponse,
+  ACPConversationSearchResponse,
   AskAgentRequest,
   AskAgentResponse,
   SetSecurityAnalyzerRequest,
+  ForkConversationRequest,
+  AgentResponseResult,
 } from './models/conversation';
 
 // Client options
 export type { HttpClientOptions, RequestOptions, HttpResponse } from './client/http-client';
+
+export type {
+  AliveStatus,
+  ReadyStatus,
+  ProvidersResponse,
+  ModelsResponse,
+  VerifiedModelsResponse,
+  SettingsSchema,
+  ExposedUrl,
+  OrgConfig,
+  SandboxConfig,
+  SkillsRequest,
+  SkillInfo,
+  SkillsResponse,
+  SyncResponse,
+  DesktopUrlResponse,
+  VSCodeUrlResponse,
+  VSCodeStatusResponse,
+} from './models/api';
 
 export type { WebSocketClientOptions } from './events/websocket-client';
 
@@ -265,8 +302,10 @@ import { Workspace, createWorkspace, createWorkspaceAuto } from './workspace/wor
 import { RemoteState } from './conversation/remote-state';
 import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
+import { BashWebSocketClient } from './events/bash-websocket-client';
 import { HttpClient, HttpError } from './client/http-client';
 import { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
+import { ConversationSortOrder } from './models/conversation';
 import { Agent } from './agent/agent';
 import { LLM, OpenRouterLLM, createLLM, createOpenRouterLLM } from './llm';
 import {
@@ -303,9 +342,11 @@ export default {
   RemoteState,
   RemoteEventsList,
   WebSocketCallbackClient,
+  BashWebSocketClient,
   HttpClient,
   HttpError,
   EventSortOrder,
+  ConversationSortOrder,
   AgentExecutionStatus,
   ConversationExecutionStatus,
   Agent,

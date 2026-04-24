@@ -9,6 +9,21 @@ import { getTestConfig, skipIfNoConfig } from './test-config';
 
 const SKIP_TESTS = skipIfNoConfig();
 
+type ServerInfoResponse = {
+  version?: string;
+};
+
+type CreateConversationResponse = {
+  id: string;
+};
+
+type ConversationResourceResponse = {
+  id?: string;
+  full_state?: {
+    id?: string;
+  };
+};
+
 describe('HttpClient Integration Tests', () => {
   let client: HttpClient;
   let config: ReturnType<typeof getTestConfig>;
@@ -61,7 +76,7 @@ describe('HttpClient Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const response = await client.get('/server_info');
+        const response = await client.get<ServerInfoResponse>('/server_info');
 
         expect(response.status).toBe(200);
         expect(response.data).toBeDefined();
@@ -115,7 +130,7 @@ describe('HttpClient Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         // Create a conversation to test POST
-        const response = await client.post('/api/conversations', {
+        const response = await client.post<CreateConversationResponse>('/api/conversations', {
           agent: {
             kind: 'Agent',
             llm: {
@@ -209,7 +224,7 @@ describe('HttpClient Integration Tests', () => {
       if (SKIP_TESTS) return;
 
       // Create a conversation to test with
-      const response = await client.post('/api/conversations', {
+      const response = await client.post<CreateConversationResponse>('/api/conversations', {
         agent: {
           kind: 'Agent',
           llm: {
@@ -234,7 +249,9 @@ describe('HttpClient Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const response = await client.get(`/api/conversations/${testConversationId}`);
+        const response = await client.get<ConversationResourceResponse>(
+          `/api/conversations/${testConversationId}`
+        );
 
         expect(response.status).toBe(200);
         expect(response.data).toBeDefined();

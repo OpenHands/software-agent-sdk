@@ -1,14 +1,14 @@
 # OpenHands Agent Server TypeScript Client
 
 > ⚠️ **ALPHA SOFTWARE WARNING** ⚠️
-> 
+>
 > This TypeScript SDK is currently in **alpha** and is **not stable**. The API may change significantly between versions without notice. This software is intended for early testing and development purposes only.
-> 
+>
 > - Breaking changes may occur in any release
 > - Features may be incomplete or contain bugs
 > - Documentation may be outdated or incomplete
 > - Not recommended for production use
-> 
+>
 > Please use with caution and expect frequent updates.
 
 A TypeScript client library for the OpenHands Agent Server API. Mirrors the structure and functionality of the Python [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk),
@@ -23,17 +23,21 @@ This client is **fully browser-compatible** and works without Node.js dependenci
 This package is published to GitHub Packages. You have two installation options:
 
 ### Option 1: Configure .npmrc (Recommended)
+
 Add this to your `.npmrc` file:
+
 ```
 @openhands:registry=https://npm.pkg.github.com
 ```
 
 Then install normally:
+
 ```bash
 npm install @openhands/typescript-client
 ```
 
 ### Option 2: Direct install with registry flag
+
 ```bash
 npm install @openhands/typescript-client --registry=https://npm.pkg.github.com
 ```
@@ -41,7 +45,9 @@ npm install @openhands/typescript-client --registry=https://npm.pkg.github.com
 ## Quick Start
 
 ### Start an AgentServer
+
 You'll need an AgentServer running somewhere for the client to connect to. You can run one in docker:
+
 ```bash
 docker run -p 8000:8000 -p 8001:8001 \
   -e OH_ENABLE_VNC=false \
@@ -58,26 +64,26 @@ import { Conversation, Agent, Workspace } from '@openhands/typescript-client';
 const agent = new Agent({
   llm: {
     model: 'gpt-4',
-    api_key: 'your-openai-api-key'
-  }
+    api_key: 'your-openai-api-key',
+  },
 });
 
 // Create a remote workspace
 const workspace = new Workspace({
   host: 'http://localhost:3000',
   workingDir: '/tmp',
-  apiKey: 'your-session-api-key'
+  apiKey: 'your-session-api-key',
 });
 
 const conversation = new Conversation(agent, workspace, {
   callback: (event) => {
     console.log('Received event:', event);
-  }
+  },
 });
 
 // Start the conversation with an initial message
 await conversation.start({
-  initialMessage: 'Hello, can you help me write some code?'
+  initialMessage: 'Hello, can you help me write some code?',
 });
 
 // Start WebSocket for real-time events
@@ -95,11 +101,11 @@ await conversation.run();
 const workspace = new Workspace({
   host: 'http://localhost:3000',
   workingDir: '/tmp',
-  apiKey: 'your-session-api-key'
+  apiKey: 'your-session-api-key',
 });
 
 const conversation = new Conversation(agent, workspace, {
-  conversationId: 'conversation-id-here'
+  conversationId: 'conversation-id-here',
 });
 
 // Connect to the existing conversation
@@ -114,6 +120,13 @@ const result = await conversation.workspace.executeCommand('ls -la');
 console.log('Command output:', result.stdout);
 console.log('Exit code:', result.exit_code);
 
+// Access lower-level bash APIs from the workspace
+const bashCommand = await conversation.workspace.bash.startCommand('ls -la');
+const bashEvents = await conversation.workspace.bash.searchEvents({
+  command_id__eq: bashCommand.id,
+  limit: 20,
+});
+
 // Upload a file
 const uploadResult = await conversation.workspace.fileUpload(
   './local-file.txt',
@@ -125,6 +138,28 @@ const downloadResult = await conversation.workspace.fileDownload(
   '/remote/path/file.txt',
   './downloaded-file.txt'
 );
+```
+
+### Server-wide Operations
+
+```typescript
+import { ConversationManager } from '@openhands/typescript-client';
+
+const manager = new ConversationManager({
+  host: 'http://localhost:3000',
+  apiKey: 'your-session-api-key',
+});
+
+const serverInfo = await manager.server.getServerInfo();
+const providers = await manager.llm.getProviders();
+const tools = await manager.tools.listTools();
+const acpCount = await manager.acp.countConversations();
+```
+
+If you need the lower-level endpoint-specific clients directly, import them from the secondary entrypoint:
+
+```typescript
+import { ServerClient, BashClient } from '@openhands/typescript-client/clients';
 ```
 
 ### Working with Events
@@ -156,8 +191,8 @@ await conversation.setConfirmationPolicy({ type: 'always' });
 
 // Update secrets
 await conversation.updateSecrets({
-  'API_KEY': 'secret-value',
-  'DATABASE_URL': () => process.env.DATABASE_URL || 'default-url'
+  API_KEY: 'secret-value',
+  DATABASE_URL: () => process.env.DATABASE_URL || 'default-url',
 });
 ```
 
@@ -328,27 +363,31 @@ Integration tests require a running agent-server in Docker with a mounted worksp
 #### Running Integration Tests Locally
 
 1. Create a workspace directory:
+
    ```bash
    mkdir -p /tmp/agent-workspace
    chmod 777 /tmp/agent-workspace
    ```
 
-2. Start the agent-server container:
+2. Start the agent-server container (software-agent-sdk v1.18.1):
+
    ```bash
    docker run -d \
      --name agent-server \
      -p 8010:8000 \
      -v /tmp/agent-workspace:/workspace \
-     ghcr.io/openhands/agent-server:b471909-python
+     ghcr.io/openhands/agent-server:7c37803-python
    ```
 
 3. Wait for the server to be ready:
+
    ```bash
    # Check server health
    curl http://localhost:8010/health
    ```
 
 4. Run integration tests:
+
    ```bash
    export LLM_API_KEY="your-api-key"
    export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"
@@ -362,15 +401,15 @@ Integration tests require a running agent-server in Docker with a mounted worksp
 
 #### Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `LLM_API_KEY` | Yes | - | API key for the LLM provider |
-| `LLM_MODEL` | Yes | - | LLM model name (e.g., `anthropic/claude-sonnet-4-5-20250929`) |
-| `LLM_BASE_URL` | No | - | Custom base URL for LLM API |
-| `AGENT_SERVER_URL` | No | `http://localhost:8010` | URL of the agent server |
-| `HOST_WORKSPACE_DIR` | No | `/tmp/agent-workspace` | Path to workspace on host |
-| `AGENT_WORKSPACE_DIR` | No | `/workspace` | Path to workspace inside container |
-| `TEST_TIMEOUT` | No | `120000` | Test timeout in milliseconds |
+| Variable              | Required | Default                 | Description                                                   |
+| --------------------- | -------- | ----------------------- | ------------------------------------------------------------- |
+| `LLM_API_KEY`         | Yes      | -                       | API key for the LLM provider                                  |
+| `LLM_MODEL`           | Yes      | -                       | LLM model name (e.g., `anthropic/claude-sonnet-4-5-20250929`) |
+| `LLM_BASE_URL`        | No       | -                       | Custom base URL for LLM API                                   |
+| `AGENT_SERVER_URL`    | No       | `http://localhost:8010` | URL of the agent server                                       |
+| `HOST_WORKSPACE_DIR`  | No       | `/tmp/agent-workspace`  | Path to workspace on host                                     |
+| `AGENT_WORKSPACE_DIR` | No       | `/workspace`            | Path to workspace inside container                            |
+| `TEST_TIMEOUT`        | No       | `120000`                | Test timeout in milliseconds                                  |
 
 #### Integration Test Coverage
 
@@ -385,11 +424,13 @@ The integration tests cover:
 #### CI/CD
 
 Integration tests run automatically in GitHub Actions when:
+
 - Pushing to `main` or `develop` branches
 - Opening pull requests to these branches
 - Manually triggering the workflow
 
 The workflow requires the following secrets:
+
 - `LLM_API_KEY`: API key for the LLM provider
 - `LLM_MODEL` (optional): Override the default model
 

@@ -5,6 +5,7 @@
  * agent server. It mirrors the Python SDK's RemoteWorkspace class.
  */
 
+import { BashClient } from '../client/bash-client';
 import { HttpClient } from '../client/http-client';
 import {
   CommandResult,
@@ -31,23 +32,13 @@ export interface RemoteWorkspaceOptions extends BaseWorkspaceOptions {
  * RemoteWorkspace provides access to a sandboxed environment running on a remote
  * OpenHands agent server. This is the recommended approach for production deployments
  * as it provides better isolation and security.
- *
- * Example:
- * ```typescript
- * const workspace = new RemoteWorkspace({
- *   host: 'https://agent-server.example.com',
- *   workingDir: '/workspace',
- *   apiKey: 'your-api-key'
- * });
- * const result = await workspace.executeCommand('ls -la');
- * workspace.close();
- * ```
  */
 export class RemoteWorkspace implements IWorkspace {
   public readonly host: string;
   public readonly workingDir: string;
   public readonly apiKey?: string;
   public readonly client: HttpClient;
+  public readonly bash: BashClient;
 
   constructor(options: RemoteWorkspaceOptions) {
     this.host = options.host.replace(/\/$/, '');
@@ -58,6 +49,11 @@ export class RemoteWorkspace implements IWorkspace {
       baseUrl: this.host,
       apiKey: this.apiKey,
       timeout: 60000,
+    });
+
+    this.bash = new BashClient({
+      host: this.host,
+      ...(this.apiKey ? { apiKey: this.apiKey } : {}),
     });
   }
 
@@ -75,15 +71,11 @@ export class RemoteWorkspace implements IWorkspace {
       payload.cwd = cwd;
     }
 
-    // The API waits for the command to complete and returns the result directly.
-    // Network/HTTP errors are intentionally NOT caught here — callers should
-    // handle HttpError (infrastructure failure) separately from CommandResult
-    // (actual command execution result).
     const response = await this.client.post('/api/bash/execute_bash_command', payload, {
-      timeout: (timeout + 10) * 1000, // Add buffer for network latency
+      timeout: (timeout + 10) * 1000,
     });
 
-    const bashOutput = response.data;
+    const bashOutput = response.data as { exit_code?: number; stdout?: string; stderr?: string };
 
     return {
       command,
@@ -117,15 +109,15 @@ export class RemoteWorkspace implements IWorkspace {
 
     formData.append('file', blob, finalFileName);
 
-    const encodedPath = encodeURIComponent(destinationPath);
     const response = await this.client.request({
       method: 'POST',
-      url: `/api/file/upload/${encodedPath}`,
+      url: '/api/file/upload',
+      params: { path: destinationPath },
       data: formData,
       timeout: 60000,
     });
 
-    const resultData = response.data;
+    const resultData = response.data as { success?: boolean; file_size?: number; error?: string };
 
     return {
       success: resultData.success ?? true,
@@ -137,7 +129,8 @@ export class RemoteWorkspace implements IWorkspace {
   }
 
   async fileDownload(sourcePath: string): Promise<FileDownloadResult> {
-    const response = await this.client.get(`/api/file/download/${encodeURIComponent(sourcePath)}`, {
+    const response = await this.client.get('/api/file/download', {
+      params: { path: sourcePath },
       timeout: 60000,
     });
 
@@ -162,16 +155,16 @@ export class RemoteWorkspace implements IWorkspace {
     return {
       success: true,
       source_path: sourcePath,
-      content: content,
+      content,
       file_size: fileSize,
     };
   }
 
   async gitChanges(path: string): Promise<GitChange[]> {
     try {
-      // The API expects the path in the URL, not as a query parameter
-      const encodedPath = encodeURIComponent(path);
-      const response = await this.client.get(`/api/git/changes/${encodedPath}`);
+      const response = await this.client.get<GitChange[]>('/api/git/changes', {
+        params: { path },
+      });
       return response.data;
     } catch (error) {
       throw new Error(
@@ -183,9 +176,9 @@ export class RemoteWorkspace implements IWorkspace {
 
   async gitDiff(path: string): Promise<GitDiff> {
     try {
-      // The API expects the path in the URL, not as a query parameter
-      const encodedPath = encodeURIComponent(path);
-      const response = await this.client.get(`/api/git/diff/${encodedPath}`);
+      const response = await this.client.get<GitDiff>('/api/git/diff', {
+        params: { path },
+      });
       return response.data;
     } catch (error) {
       throw new Error(
@@ -255,22 +248,18 @@ export class RemoteWorkspace implements IWorkspace {
   async downloadAndSave(sourcePath: string, saveAsFileName?: string): Promise<void> {
     const blob = await this.downloadAsBlob(sourcePath);
 
-    // Create a temporary URL for the blob
     const url = URL.createObjectURL(blob);
-
-    // Create a temporary anchor element to trigger download
     const a = document.createElement('a');
     a.href = url;
     a.download = saveAsFileName || sourcePath.split('/').pop() || 'download';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-
-    // Clean up the temporary URL
     URL.revokeObjectURL(url);
   }
 
   close(): void {
+    this.bash.close();
     this.client.close();
   }
 }

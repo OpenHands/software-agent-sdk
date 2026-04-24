@@ -1,26 +1,27 @@
 /**
  * Integration test configuration
- *
- * Tests assume an agent-server is running inside a Docker container
- * with a volume mounted as the agent's workspace.
- *
- * Environment variables:
- * - AGENT_SERVER_URL: URL of the agent server (default: http://localhost:8010)
- * - AGENT_WORKSPACE_DIR: Path to the mounted workspace inside the container (default: /workspace)
- * - HOST_WORKSPACE_DIR: Path to the mounted workspace on the host (default: /tmp/agent-workspace)
- * - LLM_MODEL: LLM model to use (required, e.g., 'anthropic/claude-sonnet-4-5-20250929')
- * - LLM_API_KEY: API key for the LLM provider (required)
- * - LLM_BASE_URL: Optional base URL for LLM API
  */
 
-export interface TestConfig {
+export interface ServerTestConfig {
   agentServerUrl: string;
   agentWorkspaceDir: string;
   hostWorkspaceDir: string;
+  testTimeout: number;
+}
+
+export interface TestConfig extends ServerTestConfig {
   llmModel: string;
   llmApiKey: string;
   llmBaseUrl?: string;
-  testTimeout: number;
+}
+
+export function getServerTestConfig(): ServerTestConfig {
+  return {
+    agentServerUrl: process.env.AGENT_SERVER_URL || 'http://localhost:8010',
+    agentWorkspaceDir: process.env.AGENT_WORKSPACE_DIR || '/workspace',
+    hostWorkspaceDir: process.env.HOST_WORKSPACE_DIR || '/tmp/agent-workspace',
+    testTimeout: parseInt(process.env.TEST_TIMEOUT || '120000', 10),
+  };
 }
 
 export function getTestConfig(): TestConfig {
@@ -42,13 +43,10 @@ export function getTestConfig(): TestConfig {
   }
 
   return {
-    agentServerUrl: process.env.AGENT_SERVER_URL || 'http://localhost:8010',
-    agentWorkspaceDir: process.env.AGENT_WORKSPACE_DIR || '/workspace',
-    hostWorkspaceDir: process.env.HOST_WORKSPACE_DIR || '/tmp/agent-workspace',
+    ...getServerTestConfig(),
     llmModel,
     llmApiKey,
     llmBaseUrl: process.env.LLM_BASE_URL,
-    testTimeout: parseInt(process.env.TEST_TIMEOUT || '120000', 10),
   };
 }
 

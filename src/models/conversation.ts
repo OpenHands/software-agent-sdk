@@ -4,7 +4,6 @@
 
 import {
   ConversationID,
-  // Event, // Unused for now
   ConversationExecutionStatus,
   AgentExecutionStatus,
   ConfirmationPolicyBase,
@@ -13,6 +12,13 @@ import {
   Message,
 } from '../types/base';
 import type { HookConfig } from '../hooks';
+
+export enum ConversationSortOrder {
+  CREATED_AT = 'CREATED_AT',
+  UPDATED_AT = 'UPDATED_AT',
+  CREATED_AT_DESC = 'CREATED_AT_DESC',
+  UPDATED_AT_DESC = 'UPDATED_AT_DESC',
+}
 
 export interface ConversationInfo {
   id: ConversationID;
@@ -27,9 +33,12 @@ export interface ConversationInfo {
   agent_status?: AgentExecutionStatus;
   confirmation_policy: ConfirmationPolicyBase;
   activated_knowledge_skills: string[];
+  invoked_skills?: string[];
   agent: AgentBase;
   workspace: unknown;
   persistence_dir: string;
+  max_iterations?: number;
+  stuck_detection?: boolean;
   conversation_stats?: ConversationStats;
   /** API may return stats instead of conversation_stats */
   stats?: ConversationStats;
@@ -39,12 +48,22 @@ export interface ConversationInfo {
   title?: string;
   created_at?: string;
   updated_at?: string;
+  tags?: Record<string, string>;
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */
   status?: ConversationExecutionStatus;
   [key: string]: unknown;
 }
+
+export interface ACPAgentConfig {
+  kind?: string;
+  [key: string]: unknown;
+}
+
+export type ACPConversationInfo = ConversationInfo & {
+  agent: ACPAgentConfig;
+};
 
 export interface SendMessageRequest {
   role: 'user';
@@ -66,13 +85,22 @@ export interface CreateConversationRequest {
   initial_message?: Message;
   max_iterations: number;
   stuck_detection: boolean;
-  workspace: any;
+  workspace: Record<string, unknown>;
+  hook_config?: HookConfig | null;
+}
+
+export interface CreateACPConversationRequest {
+  agent: ACPAgentConfig;
+  initial_message?: Message;
+  max_iterations: number;
+  stuck_detection: boolean;
+  workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
 }
 
 export interface GenerateTitleRequest {
   max_length: number;
-  llm?: any;
+  llm?: unknown;
 }
 
 export interface GenerateTitleResponse {
@@ -107,7 +135,7 @@ export interface ConversationSearchRequest {
   page_id?: string;
   limit?: number;
   status?: ConversationExecutionStatus;
-  sort_order?: string;
+  sort_order?: ConversationSortOrder;
   tag?: string[];
 }
 
@@ -120,11 +148,28 @@ export interface AskAgentResponse {
 }
 
 export interface SetSecurityAnalyzerRequest {
-  security_analyzer: any | null;
+  security_analyzer: unknown | null;
 }
 
 export interface ConversationSearchResponse {
   items: ConversationInfo[];
   next_page_id?: string;
   total_count?: number;
+}
+
+export interface ACPConversationSearchResponse {
+  items: ACPConversationInfo[];
+  next_page_id?: string;
+  total_count?: number;
+}
+
+export interface ForkConversationRequest {
+  id?: string;
+  title?: string;
+  tags?: Record<string, string>;
+  reset_metrics?: boolean;
+}
+
+export interface AgentResponseResult {
+  response: string;
 }

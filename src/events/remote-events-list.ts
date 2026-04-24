@@ -2,11 +2,11 @@
  * Remote events list — thin wrapper around the events search API.
  *
  * Events received via WebSocket are kept in a local cache so callers can
- * iterate them without extra network calls.  For historical events use
+ * iterate them without extra network calls. For historical events use
  * `search()` or `getEvents()` which hit the server on demand.
  */
 
-import { HttpClient } from '../client/http-client';
+import { HttpClient, HttpError } from '../client/http-client';
 import { Event, ConversationCallbackType } from '../types/base';
 import { EventPage } from '../types/base';
 
@@ -48,7 +48,7 @@ export class RemoteEventsList {
    * Queries the server directly.
    */
   async search(options: EventSearchOptions = {}): Promise<EventPage> {
-    const params: any = {
+    const params: Record<string, unknown> = {
       limit: options.limit ?? 100,
     };
 
@@ -74,7 +74,7 @@ export class RemoteEventsList {
   async count(
     options: Omit<EventSearchOptions, 'limit' | 'page_id' | 'sort_order'> = {}
   ): Promise<number> {
-    const params: any = {};
+    const params: Record<string, unknown> = {};
 
     if (options.kind) params.kind = options.kind;
     if (options.source) params.source = options.source;
@@ -88,6 +88,34 @@ export class RemoteEventsList {
     );
 
     return response.data;
+  }
+
+  /**
+   * Get a server event by ID.
+   */
+  async getEventById(eventId: string): Promise<Event> {
+    const response = await this.client.get<Event>(
+      `/api/conversations/${this.conversationId}/events/${eventId}`
+    );
+    return response.data;
+  }
+
+  /**
+   * Batch get server events by ID.
+   */
+  async getEventsById(eventIds: string[]): Promise<Array<Event | null>> {
+    return Promise.all(
+      eventIds.map(async (eventId) => {
+        try {
+          return await this.getEventById(eventId);
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 404) {
+            return null;
+          }
+          throw error;
+        }
+      })
+    );
   }
 
   async addEvent(event: Event): Promise<void> {
@@ -130,9 +158,8 @@ export class RemoteEventsList {
     const remote: Event[] = [];
     let pageId: string | undefined;
 
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const params: any = { limit: 100 };
+    for (;;) {
+      const params: Record<string, unknown> = { limit: 100 };
       if (pageId) params.page_id = pageId;
 
       const response = await this.client.get<EventPage>(
@@ -147,9 +174,8 @@ export class RemoteEventsList {
       pageId = data.next_page_id;
     }
 
-    // Merge: remote events first, then any cached events not yet on the server
-    const remoteIds = new Set(remote.map((e) => e.id));
-    const merged = [...remote, ...this.cachedEvents.filter((e) => !remoteIds.has(e.id))];
+    const remoteIds = new Set(remote.map((event) => event.id));
+    const merged = [...remote, ...this.cachedEvents.filter((event) => !remoteIds.has(event.id))];
 
     if (start === undefined && end === undefined) {
       return merged;
