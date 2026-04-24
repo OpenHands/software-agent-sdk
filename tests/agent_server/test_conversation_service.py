@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from litellm.types.utils import ChatCompletionMessageToolCall, Function
 from pydantic import SecretStr
 
 from openhands.agent_server.conversation_service import (
@@ -32,11 +33,15 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 
 
 @pytest.fixture
@@ -61,6 +66,29 @@ def sample_stored_conversation():
     )
 
 
+def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
+    tool_call = MessageToolCall.from_chat_tool_call(
+        ChatCompletionMessageToolCall(
+            id=tool_call_id,
+            type="function",
+            function=Function(
+                name="terminal",
+                arguments='{"command": "sleep 30"}',
+            ),
+        )
+    )
+    return ActionEvent(
+        thought=[TextContent(text="run sleep")],
+        action=TerminalAction(command="sleep 30"),
+        tool_name="terminal",
+        tool_call_id=tool_call_id,
+        tool_call=tool_call,
+        llm_response_id="response_1",
+        security_risk=SecurityRisk.LOW,
+        summary="run sleep",
+    )
+
+
 @pytest.fixture
 def conversation_service():
     """Create a ConversationService instance for testing."""
@@ -71,6 +99,56 @@ def conversation_service():
         # Initialize the _event_services dict to simulate an active service
         service._event_services = {}
         yield service
+
+
+@pytest.mark.asyncio
+async def test_second_service_does_not_resume_active_running_conversation(tmp_path):
+    """A second service should not attach to a live running conversation."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        primary_event_service = primary._event_services[conversation_info.id]
+        primary_state = await primary_event_service.get_state()
+
+        running_action = _create_running_terminal_action()
+        primary_state.events.append(running_action)
+        primary_state.execution_status = ConversationExecutionStatus.RUNNING
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+        ) as secondary:
+            assert conversation_info.id not in secondary._event_services
+
+            primary_state.events.append(
+                ObservationEvent(
+                    observation=TerminalObservation.from_text(
+                        "done",
+                        command="sleep 30",
+                        exit_code=0,
+                    ),
+                    action_id=running_action.id,
+                    tool_name="terminal",
+                    tool_call_id=running_action.tool_call_id,
+                )
+            )
+
+        events = primary_state.events[:]
+        assert [type(event).__name__ for event in events] == [
+            "ActionEvent",
+            "ConversationStateUpdateEvent",
+            "ObservationEvent",
+        ]
+        assert not any(isinstance(event, AgentErrorEvent) for event in events)
+
 
 
 class TestConversationServiceSearchConversations:
