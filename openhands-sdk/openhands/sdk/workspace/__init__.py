@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .base import BaseWorkspace
+    from .local import LocalWorkspace
+    from .models import CommandResult, FileOperationResult, PlatformType, TargetType
+    from .remote import AsyncRemoteWorkspace, RemoteWorkspace
+    from .workspace import Workspace
 
 
 __all__ = [

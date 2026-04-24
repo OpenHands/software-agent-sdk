@@ -1,8 +1,40 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .auth import (
+        OPENAI_CODEX_MODELS,
+        CredentialStore,
+        OAuthCredentials,
+        OpenAISubscriptionAuth,
+    )
+    from .fallback_strategy import FallbackStrategy
+    from .llm import LLM
+    from .llm_profile_store import LLMProfileStore
+    from .llm_registry import LLMRegistry, RegistryEvent
+    from .llm_response import LLMResponse
+    from .message import (
+        ImageContent,
+        Message,
+        MessageToolCall,
+        ReasoningItemModel,
+        RedactedThinkingBlock,
+        TextContent,
+        ThinkingBlock,
+        content_to_str,
+    )
+    from .router import RouterLLM
+    from .streaming import LLMStreamChunk, TokenCallbackType
+    from .utils.metrics import Metrics, MetricsSnapshot, TokenUsage
+    from .utils.unverified_models import (
+        UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
+        get_unverified_models,
+    )
+    from .utils.verified_models import VERIFIED_MODELS
 
 
 __all__ = [

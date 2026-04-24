@@ -1,8 +1,35 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .acp_tool_call import ACPToolCallEvent
+    from .base import Event, LLMConvertibleEvent
+    from .condenser import (
+        Condensation,
+        CondensationRequest,
+        CondensationSummaryEvent,
+    )
+    from .conversation_state import ConversationStateUpdateEvent
+    from .hook_execution import HookExecutionEvent
+    from .llm_completion_log import LLMCompletionLogEvent
+    from .llm_convertible import (
+        ActionEvent,
+        AgentErrorEvent,
+        MessageEvent,
+        ObservationBaseEvent,
+        ObservationEvent,
+        RejectionSource,
+        SystemPromptEvent,
+        UserRejectObservation,
+    )
+    from .streaming_delta import StreamingDeltaEvent
+    from .token import TokenEvent
+    from .types import EventID, ToolCallID
+    from .user_action import PauseEvent
 
 
 __all__ = [

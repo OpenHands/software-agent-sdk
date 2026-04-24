@@ -1,8 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .builtins import BUILT_IN_TOOL_CLASSES, BUILT_IN_TOOLS, FinishTool, ThinkTool
+    from .registry import list_registered_tools, register_tool, resolve_tool
+    from .schema import Action, Observation
+    from .spec import Tool
+    from .tool import (
+        DeclaredResources,
+        ExecutableTool,
+        ToolAnnotations,
+        ToolDefinition,
+        ToolExecutor,
+    )
 
 
 __all__ = [

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .base import FileStore
+    from .local import LocalFileStore
+    from .memory import InMemoryFileStore
 
 
 __all__ = ["LocalFileStore", "FileStore", "InMemoryFileStore"]

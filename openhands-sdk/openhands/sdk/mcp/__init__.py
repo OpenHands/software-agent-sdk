@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .client import MCPClient
+    from .definition import MCPToolAction, MCPToolObservation
+    from .exceptions import MCPError, MCPTimeoutError
+    from .tool import MCPToolDefinition, MCPToolExecutor
+    from .utils import create_mcp_tools
 
 
 __all__ = [

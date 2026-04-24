@@ -17,9 +17,51 @@ importing them from here will emit a deprecation warning.
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.marketplace import (
+        Marketplace,
+        MarketplaceEntry,
+        MarketplaceMetadata,
+        MarketplaceOwner,
+        MarketplacePluginEntry,
+        MarketplacePluginSource,
+    )
+
+    from .fetch import PluginFetchError, fetch_plugin_with_resolution
+    from .installed import (
+        InstalledPluginInfo,
+        InstalledPluginsMetadata,
+        disable_plugin,
+        enable_plugin,
+        get_installed_plugin,
+        get_installed_plugins_dir,
+        install_plugin,
+        list_installed_plugins,
+        load_installed_plugins,
+        uninstall_plugin,
+        update_plugin,
+    )
+    from .loader import load_plugins
+    from .plugin import Plugin
+    from .source import (
+        GitHubURLComponents,
+        is_local_path,
+        parse_github_url,
+        resolve_source_path,
+        validate_source_path,
+    )
+    from .types import (
+        CommandDefinition,
+        PluginAuthor,
+        PluginManifest,
+        PluginSource,
+        ResolvedPluginSource,
+    )
 
 
 _DEPRECATED_MARKETPLACE_IMPORTS = {

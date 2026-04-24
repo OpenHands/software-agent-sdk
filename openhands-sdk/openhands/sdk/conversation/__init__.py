@@ -1,8 +1,32 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .base import BaseConversation
+    from .conversation import Conversation
+    from .event_store import EventLog
+    from .events_list_base import EventsListBase
+    from .exceptions import WebSocketConnectionError
+    from .impl.local_conversation import LocalConversation
+    from .impl.remote_conversation import RemoteConversation
+    from .resource_lock_manager import ResourceLockManager, ResourceLockTimeout
+    from .response_utils import get_agent_final_response
+    from .secret_registry import SecretRegistry
+    from .state import ConversationExecutionStatus, ConversationState
+    from .stuck_detector import StuckDetector
+    from .types import (
+        ConversationCallbackType,
+        ConversationTags,
+        ConversationTokenCallbackType,
+    )
+    from .visualizer import (
+        ConversationVisualizerBase,
+        DefaultConversationVisualizer,
+    )
 
 
 __all__ = [

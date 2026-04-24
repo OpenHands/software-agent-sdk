@@ -34,9 +34,51 @@ This module provides the unified API for working with skills:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from .exceptions import SkillError, SkillValidationError
+    from .fetch import SkillFetchError, fetch_skill_with_resolution
+    from .installed import (
+        InstalledSkillInfo,
+        InstalledSkillsMetadata,
+        disable_skill,
+        enable_skill,
+        get_installed_skill,
+        get_installed_skills_dir,
+        install_skill,
+        install_skills_from_marketplace,
+        list_installed_skills,
+        load_installed_skills,
+        uninstall_skill,
+        update_skill,
+    )
+    from .skill import (
+        Skill,
+        SkillInfo,
+        SkillResources,
+        load_available_skills,
+        load_project_skills,
+        load_public_skills,
+        load_skills_from_dir,
+        load_user_skills,
+        to_prompt,
+    )
+    from .trigger import BaseTrigger, KeywordTrigger, TaskTrigger
+    from .types import (
+        InputMetadata,
+        SkillContentResponse,
+        SkillKnowledge,
+        SkillResponse,
+    )
+    from .utils import (
+        RESOURCE_DIRECTORIES,
+        discover_skill_resources,
+        validate_skill_name,
+    )
 
 
 __all__ = [

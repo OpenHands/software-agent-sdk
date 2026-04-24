@@ -1,10 +1,99 @@
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
 from openhands.sdk.banner import _print_banner
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.agent.agent import Agent
+    from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.context.condenser.llm_summarizing_condenser import (
+        LLMSummarizingCondenser,
+    )
+    from openhands.sdk.conversation.base import BaseConversation
+    from openhands.sdk.conversation.conversation import Conversation
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.conversation.types import ConversationCallbackType
+    from openhands.sdk.event.base import Event, LLMConvertibleEvent
+    from openhands.sdk.event.hook_execution import HookExecutionEvent
+    from openhands.sdk.event.llm_convertible import MessageEvent
+    from openhands.sdk.io.base import FileStore
+    from openhands.sdk.io.local import LocalFileStore
+    from openhands.sdk.llm.fallback_strategy import FallbackStrategy
+    from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
+    from openhands.sdk.llm.message import (
+        ImageContent,
+        Message,
+        RedactedThinkingBlock,
+        TextContent,
+        ThinkingBlock,
+    )
+    from openhands.sdk.llm.streaming import LLMStreamChunk, TokenCallbackType
+    from openhands.sdk.llm.utils.metrics import TokenUsage
+    from openhands.sdk.logger.logger import get_logger
+    from openhands.sdk.mcp.client import MCPClient
+    from openhands.sdk.mcp.definition import MCPToolObservation
+    from openhands.sdk.mcp.tool import MCPToolDefinition
+    from openhands.sdk.mcp.utils import create_mcp_tools
+    from openhands.sdk.plugin.plugin import Plugin
+    from openhands.sdk.settings.metadata import (
+        SettingProminence,
+        SettingsFieldMetadata,
+        SettingsSectionMetadata,
+        field_meta,
+    )
+    from openhands.sdk.settings.model import (
+        ACPAgentSettings,
+        AgentSettings,
+        AgentSettingsConfig,
+        CondenserSettings,
+        ConversationSettings,
+        LLMAgentSettings,
+        SettingsChoice,
+        SettingsFieldSchema,
+        SettingsSchema,
+        SettingsSectionSchema,
+        VerificationSettings,
+        default_agent_settings,
+        export_agent_settings_schema,
+        export_settings_schema,
+        validate_agent_settings,
+    )
+    from openhands.sdk.skills.skill import (
+        load_project_skills,
+        load_skills_from_dir,
+        load_user_skills,
+    )
+    from openhands.sdk.subagent.load import (
+        load_agents_from_dir,
+        load_project_agents,
+        load_user_agents,
+    )
+    from openhands.sdk.subagent.registry import (
+        agent_definition_to_factory,
+        register_agent,
+    )
+    from openhands.sdk.tool.registry import (
+        list_registered_tools,
+        register_tool,
+        resolve_tool,
+    )
+    from openhands.sdk.tool.schema import Action, Observation
+    from openhands.sdk.tool.spec import Tool
+    from openhands.sdk.tool.tool import ToolDefinition
+    from openhands.sdk.utils.paging import page_iterator
+    from openhands.sdk.workspace.local import LocalWorkspace
+    from openhands.sdk.workspace.remote import AsyncRemoteWorkspace, RemoteWorkspace
+    from openhands.sdk.workspace.workspace import Workspace
 
 
 try:

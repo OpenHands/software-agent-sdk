@@ -11,7 +11,35 @@ Migration guide:
     from openhands.sdk.skills import Skill, load_skills_from_dir
 """
 
+from typing import TYPE_CHECKING
+
 from openhands.sdk.utils.deprecation import warn_deprecated
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.skills import (
+        RESOURCE_DIRECTORIES,
+        BaseTrigger,
+        InputMetadata,
+        KeywordTrigger,
+        Skill,
+        SkillContentResponse,
+        SkillError,
+        SkillInfo,
+        SkillKnowledge,
+        SkillResources,
+        SkillResponse,
+        SkillValidationError,
+        TaskTrigger,
+        discover_skill_resources,
+        load_available_skills,
+        load_project_skills,
+        load_public_skills,
+        load_skills_from_dir,
+        load_user_skills,
+        to_prompt,
+        validate_skill_name,
+    )
 
 
 def __getattr__(name: str):

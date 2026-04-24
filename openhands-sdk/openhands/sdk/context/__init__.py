@@ -1,8 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
+
+
+if TYPE_CHECKING:
+    from ..skills.exceptions import SkillValidationError
+    from ..skills.skill import (
+        Skill,
+        load_project_skills,
+        load_skills_from_dir,
+        load_user_skills,
+    )
+    from ..skills.trigger import BaseTrigger, KeywordTrigger, TaskTrigger
+    from ..skills.types import SkillKnowledge
+    from .agent_context import AgentContext
+    from .prompts import render_template
 
 
 __all__ = [
