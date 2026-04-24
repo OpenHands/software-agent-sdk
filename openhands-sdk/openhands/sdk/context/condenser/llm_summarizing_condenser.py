@@ -17,6 +17,7 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.unknown import UnknownEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -32,6 +33,7 @@ class Reason(Enum):
     REQUEST = "request"
     TOKENS = "tokens"
     EVENTS = "events"
+    UNKNOWN_EVENTS = "unknown_events"
 
 
 class LLMSummarizingCondenser(RollingCondenser):
@@ -111,6 +113,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         if len(view) > self.max_size:
             reasons.add(Reason.EVENTS)
 
+        # Reason 4: View contains UnknownEvent placeholders that must be swept.
+        if any(isinstance(e, UnknownEvent) for e in view.events):
+            reasons.add(Reason.UNKNOWN_EVENTS)
+
         return reasons
 
     def condensation_requirement(
@@ -135,7 +141,8 @@ class LLMSummarizingCondenser(RollingCondenser):
         # requirements. We need to condense now because:
         # 1. the user expects it
         # 2. the agent has no more room in the context window and can't continue
-        if Reason.REQUEST in reasons:
+        # 3. the view contains UnknownEvents that would otherwise reach the LLM
+        if Reason.REQUEST in reasons or Reason.UNKNOWN_EVENTS in reasons:
             return CondensationRequirement.HARD
 
     def _generate_condensation(

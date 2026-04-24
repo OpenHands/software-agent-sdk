@@ -507,6 +507,34 @@ def test_agent_verify_validates_tools_match():
         different_tools_agent.verify(persisted_agent)
 
 
+def test_agent_verify_allows_removed_tools_when_condenser_configured(caplog):
+    """With a condenser available, removing tools must be allowed (the condenser
+    sweeps any history referencing removed tools via UnknownEvent)."""
+    from openhands.sdk.agent import AgentBase
+    from openhands.sdk.context.condenser.llm_summarizing_condenser import (
+        LLMSummarizingCondenser,
+    )
+    from openhands.sdk.tool import Tool
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    persisted_agent = AgentBase.model_validate_json(
+        Agent(
+            llm=llm, tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        ).model_dump_json()
+    )
+
+    condenser = LLMSummarizingCondenser(llm=llm)
+    runtime_agent = Agent(
+        llm=llm, tools=[Tool(name="TerminalTool")], condenser=condenser
+    )
+
+    with caplog.at_level("WARNING"):
+        result = runtime_agent.verify(persisted_agent)
+
+    assert result is runtime_agent
+    assert any("FileEditorTool" in rec.message for rec in caplog.records)
+
+
 def test_agent_verify_allows_different_llm():
     """Test that agent.verify() allows different LLM configuration."""
     from openhands.sdk.agent import AgentBase

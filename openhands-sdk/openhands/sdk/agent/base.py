@@ -607,14 +607,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 persisted_names.add(tool_class.name)
 
         # Removing tools breaks backward compatibility because the LLM may
-        # have already been told about them.  Adding new tools is safe — the
-        # LLM simply gains new capabilities on the next turn.
+        # have already been told about them. A configured condenser can sweep
+        # history referencing removed tools (loaded as UnknownEvent).
         missing_in_runtime = persisted_names - runtime_names
         if missing_in_runtime:
-            raise ValueError(
-                f"Cannot resume conversation: tools were removed mid-conversation "
-                f"(removed: {sorted(missing_in_runtime)}). "
-                f"To use different tools, start a new conversation."
+            if self.condenser is None:
+                raise ValueError(
+                    "Cannot resume: tools were removed mid-conversation "
+                    f"(removed: {sorted(missing_in_runtime)}). Attach a "
+                    "condenser, or start a new conversation."
+                )
+            logger.warning(
+                "Resuming with removed tools %s; condenser will sweep history "
+                "referencing them.",
+                sorted(missing_in_runtime),
             )
 
         return self

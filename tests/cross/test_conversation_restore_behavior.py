@@ -345,8 +345,14 @@ def test_conversation_restore_preserves_security_risk_and_summary(mock_completio
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
-def test_conversation_restore_fails_when_removing_tools(mock_completion):
-    """Restore must fail when runtime tools remove a persisted tool."""
+def test_conversation_restore_allows_removing_tools_with_condenser(
+    mock_completion, caplog
+):
+    """Restore is permitted when a condenser is configured on the runtime agent.
+
+    The condenser is expected to sweep any history referencing removed tools
+    (materialized as UnknownEvent). A warning is logged for observability.
+    """
 
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
@@ -379,13 +385,11 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
             skill_keyword="alpha",
         )
 
-        with pytest.raises(
-            ValueError, match="tools were removed mid-conversation"
-        ) as exc:
-            lifecycle.restore(runtime_agent)
+        with caplog.at_level("WARNING"):
+            restored = lifecycle.restore(runtime_agent)
 
-        assert "removed:" in str(exc.value)
-        assert "FileEditorTool" in str(exc.value)
+        assert restored is not None
+        assert any("FileEditorTool" in rec.message for rec in caplog.records)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -474,8 +478,11 @@ def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
-def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
-    """Restore must fail if include_default_tools removes a built-in tool."""
+def test_conversation_restore_allows_removing_default_tools_with_condenser(
+    mock_completion, caplog
+):
+    """Restore is permitted when include_default_tools drops a built-in tool,
+    provided the runtime agent has a condenser to sweep any references."""
 
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
@@ -510,13 +517,11 @@ def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
             include_default_tools=["FinishTool"],
         )
 
-        with pytest.raises(
-            ValueError, match="tools were removed mid-conversation"
-        ) as exc:
-            lifecycle.restore(runtime_agent)
+        with caplog.at_level("WARNING"):
+            restored = lifecycle.restore(runtime_agent)
 
-        assert "removed:" in str(exc.value)
-        assert "think" in str(exc.value)
+        assert restored is not None
+        assert any("think" in rec.message for rec in caplog.records)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

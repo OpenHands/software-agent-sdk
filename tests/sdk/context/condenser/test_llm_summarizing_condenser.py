@@ -799,3 +799,24 @@ def test_minimum_progress_threshold_met(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
+
+
+def test_unknown_events_trigger_hard_condensation(mock_llm: LLM) -> None:
+    """A view containing an UnknownEvent must force HARD condensation even when
+    the view is otherwise small — UnknownEvents cannot safely reach the LLM."""
+    from openhands.sdk.event import UnknownEvent
+
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=1000)
+    unknown = UnknownEvent(
+        source="agent",
+        original_kind="RemovedFooAction",
+        original_data={"kind": "RemovedFooAction"},
+        tool_call_id="call_x",
+        llm_response_id="resp_x",
+    )
+    events: list[Event] = [message_event("hello"), unknown, message_event("world")]
+    view = View.from_events(events)
+
+    reasons = condenser.get_condensation_reasons(view)
+    assert Reason.UNKNOWN_EVENTS in reasons
+    assert condenser.condensation_requirement(view) == CondensationRequirement.HARD
