@@ -1494,7 +1494,15 @@ def test_poll_start_task_raises_on_failed_status(monkeypatch):
     monkeypatch.setattr(
         module,
         "request_json",
-        lambda *args, **kwargs: {"items": [{"status": "FAILED", "error": "boom"}]},
+        lambda *args, **kwargs: {
+            "items": [
+                {
+                    "status": "FAILED",
+                    "error": "boom",
+                    "session_api_key": "secret-session-key",
+                }
+            ]
+        },
     )
     monkeypatch.setattr(
         module, "openhands_headers", lambda: {"Authorization": "Bearer test-token"}
@@ -1502,8 +1510,12 @@ def test_poll_start_task_raises_on_failed_status(monkeypatch):
     monkeypatch.setattr(module.time, "time", lambda: 0)
     monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
 
-    with pytest.raises(RuntimeError, match="OpenHands start task failed"):
+    with pytest.raises(RuntimeError, match="OpenHands start task failed") as exc:
         module.poll_start_task("task-123", poll_interval_seconds=1, max_wait_seconds=10)
+
+    assert "boom" in str(exc.value)
+    assert "secret-session-key" not in str(exc.value)
+    assert "sensitive_keys_present" in str(exc.value)
 
 
 def test_poll_conversation_retries_after_empty_items(monkeypatch):
@@ -1570,6 +1582,7 @@ def test_poll_conversation_raises_on_failed_status(monkeypatch):
                     "execution_status": "failed",
                     "conversation_url": "https://example.test",
                     "error_detail": "boom",
+                    "session_api_key": "secret-session-key",
                 }
             ]
         },
@@ -1588,6 +1601,8 @@ def test_poll_conversation_raises_on_failed_status(monkeypatch):
         )
 
     assert "boom" in str(exc.value)
+    assert "secret-session-key" not in str(exc.value)
+    assert "sensitive_keys_present" in str(exc.value)
 
 
 def test_issue_duplicate_main_rejects_pull_requests(monkeypatch, tmp_path):
@@ -2067,3 +2082,48 @@ def test_issue_duplicate_main_reports_missing_start_task_id(monkeypatch, tmp_pat
 
     with pytest.raises(RuntimeError, match="Missing id in start task response"):
         module.main()
+
+
+def test_issue_duplicate_main_redacts_missing_ready_task_fields(monkeypatch, tmp_path):
+    module = load_module("issue_duplicate_check_openhands.py")
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: argparse.Namespace(
+            repository="OpenHands/agent-sdk",
+            issue_number=123,
+            output=str(tmp_path / "result.json"),
+            poll_interval_seconds=1,
+            max_wait_seconds=10,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_issue",
+        lambda repository, issue_number: {
+            "number": issue_number,
+            "title": "Issue title",
+            "body": "Issue body",
+            "html_url": f"https://github.com/{repository}/issues/{issue_number}",
+        },
+    )
+    monkeypatch.setattr(
+        module, "start_conversation", lambda *args, **kwargs: {"id": "task-123"}
+    )
+    monkeypatch.setattr(
+        module,
+        "poll_start_task",
+        lambda task_id, poll_interval_seconds, max_wait_seconds: {
+            "status": "READY",
+            "session_api_key": "secret-session-key",
+        },
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Missing app_conversation_id in response"
+    ) as exc:
+        module.main()
+
+    assert "secret-session-key" not in str(exc.value)
+    assert "sensitive_keys_present" in str(exc.value)

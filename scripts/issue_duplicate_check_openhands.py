@@ -35,6 +35,18 @@ EVENT_SEARCH_LIMIT_HIT_MESSAGE = (
     f"Event search returned at least {EVENT_SEARCH_LIMIT} events; results may be "
     "incomplete"
 )
+OPENHANDS_DEBUG_KEYS = (
+    "id",
+    "status",
+    "app_conversation_id",
+    "execution_status",
+    "conversation_url",
+    "error",
+    "error_detail",
+    "detail",
+    "message",
+)
+OPENHANDS_SENSITIVE_KEYS = frozenset({"session_api_key"})
 
 
 def parse_args() -> argparse.Namespace:
@@ -277,6 +289,31 @@ def extract_first_item(payload: Any) -> dict[str, Any] | None:
     return payload
 
 
+def summarize_openhands_item(item: dict[str, Any]) -> str:
+    summary = {}
+    for key in OPENHANDS_DEBUG_KEYS:
+        if key not in item:
+            continue
+        value = item[key]
+        if value in (None, "", [], {}):
+            continue
+        summary[key] = value
+
+    available_keys = sorted(
+        key
+        for key in item
+        if key not in summary and key not in OPENHANDS_SENSITIVE_KEYS
+    )
+    if available_keys:
+        summary["available_keys"] = available_keys
+    sensitive_keys_present = sorted(
+        key for key in item if key in OPENHANDS_SENSITIVE_KEYS
+    )
+    if sensitive_keys_present:
+        summary["sensitive_keys_present"] = sensitive_keys_present
+    return json.dumps(summary or {"available_keys": sorted(item)}, ensure_ascii=False)
+
+
 def poll_start_task(
     start_task_id: str, poll_interval_seconds: int, max_wait_seconds: int
 ) -> dict[str, Any]:
@@ -295,7 +332,9 @@ def poll_start_task(
         if status == "READY" and item.get("app_conversation_id"):
             return item
         if status in {"ERROR", "FAILED"}:
-            raise RuntimeError(f"OpenHands start task failed: {json.dumps(item)}")
+            raise RuntimeError(
+                f"OpenHands start task failed: {summarize_openhands_item(item)}"
+            )
         time.sleep(poll_interval_seconds)
     raise TimeoutError(
         f"Timed out waiting for start task {start_task_id} to become ready"
@@ -320,7 +359,7 @@ def poll_conversation(
         if execution_status in FAILED_EXECUTION_STATUSES:
             raise RuntimeError(
                 "OpenHands conversation ended with "
-                f"{execution_status}: {json.dumps(item)}"
+                f"{execution_status}: {summarize_openhands_item(item)}"
             )
         if execution_status in SUCCESSFUL_TERMINAL_EXECUTION_STATUSES:
             return item
@@ -529,7 +568,10 @@ def main() -> int:
     if not app_conversation_id:
         task_id = start_task.get("id")
         if not task_id:
-            raise RuntimeError(f"Missing id in start task response: {start_task}")
+            raise RuntimeError(
+                "Missing id in start task response: "
+                f"{summarize_openhands_item(start_task)}"
+            )
         ready_task = poll_start_task(
             task_id,
             args.poll_interval_seconds,
@@ -537,7 +579,10 @@ def main() -> int:
         )
         app_conversation_id = ready_task.get("app_conversation_id")
         if not app_conversation_id:
-            raise RuntimeError(f"Missing app_conversation_id in response: {ready_task}")
+            raise RuntimeError(
+                "Missing app_conversation_id in response: "
+                f"{summarize_openhands_item(ready_task)}"
+            )
 
     conversation = poll_conversation(
         app_conversation_id,
