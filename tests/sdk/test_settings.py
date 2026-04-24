@@ -55,12 +55,20 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
 
     # -- general section (top-level scalar fields) --
     general_fields = {f.key: f for f in sections["general"].fields}
-    assert set(general_fields) == {"agent", "tools", "mcp_config"}
+    assert set(general_fields) == {
+        "agent",
+        "tools",
+        "enable_sub_agents",
+        "mcp_config",
+    }
     assert general_fields["agent"].default == "CodeActAgent"
     assert general_fields["agent"].prominence is SettingProminence.MAJOR
     assert general_fields["tools"].value_type == "array"
     assert general_fields["tools"].default == []
     assert general_fields["tools"].prominence is SettingProminence.MAJOR
+    assert general_fields["enable_sub_agents"].value_type == "boolean"
+    assert general_fields["enable_sub_agents"].default is False
+    assert general_fields["enable_sub_agents"].prominence is SettingProminence.MAJOR
 
     # -- llm section --
     llm_fields = {f.key: f for f in sections["llm"].fields}
@@ -236,7 +244,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     general = by_keyvariant.get(("general", None))
     assert general is not None
     general_keys = {f.key for f in general.fields}
-    assert general_keys == {"agent", "tools", "mcp_config"}
+    assert general_keys == {"agent", "tools", "enable_sub_agents", "mcp_config"}
     # No agent_kind field — each variant has its own settings page and
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys

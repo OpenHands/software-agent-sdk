@@ -549,6 +549,17 @@ class LLMAgentSettings(BaseModel):
             ).model_dump()
         },
     )
+    enable_sub_agents: bool = Field(
+        default=False,
+        description="Enable sub-agent delegation via TaskToolSet.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Enable sub-agents",
+                prominence=SettingProminence.MAJOR,
+                variant="llm",
+            ).model_dump()
+        },
+    )
     mcp_config: MCPConfig | None = Field(
         default=None,
         description="MCP server configuration for the agent.",
