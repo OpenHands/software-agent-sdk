@@ -1,0 +1,63 @@
+---
+name: Cancel Eval
+
+run-name: Cancel Eval (${{ inputs.run_id }})
+
+on:
+    workflow_dispatch:
+        inputs:
+            run_id:
+                description: Workflow run ID to cancel
+                required: true
+                type: string
+            reason:
+                description: Reason for cancellation
+                required: false
+                type: string
+
+env:
+    EVAL_REPO: OpenHands/evaluation
+    EVAL_WORKFLOW: kill-eval-job.yml
+
+permissions:
+    contents: read
+
+jobs:
+    cancel-eval:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Cancel evaluation job
+              env:
+                  PAT_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH }}
+                  RUN_ID: ${{ github.event.inputs.run_id }}
+                  REASON: ${{ github.event.inputs.reason }}
+              run: |-
+                  set -euo pipefail
+
+                  if [ -z "$PAT_TOKEN" ]; then
+                    echo "Missing PAT token" >&2
+                    exit 1
+                  fi
+
+                  echo "Canceling evaluation workflow run: $RUN_ID"
+
+                  # Dispatch kill workflow in evaluation repo
+                  PAYLOAD=$(jq -n \
+                    --arg ref "main" \
+                    --arg run_id "$RUN_ID" \
+                    --arg reason "$REASON" \
+                    '{ref: $ref, inputs: {run_id: $run_id, reason: $reason}}')
+
+                  RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
+                    -H "Authorization: token $PAT_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -d "$PAYLOAD" \
+                    "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches")
+
+                  if [ "$RESPONSE" != "204" ]; then
+                    echo "Dispatch failed (status $RESPONSE):" >&2
+                    cat /tmp/dispatch.out >&2
+                    exit 1
+                  fi
+
+                  echo "Cancellation dispatched successfully for run: $RUN_ID"
