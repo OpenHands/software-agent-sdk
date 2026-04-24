@@ -278,37 +278,125 @@ class AgentContext(BaseModel):
             return self.system_message_suffix.strip()
         return None
 
-    def get_skill_catalog_prompt(self) -> str | None:
-        """Return a prompt-only catalog of available skills.
+    def to_acp_prompt_context(
+        self,
+        *,
+        include_skill_catalog: bool = True,
+        include_system_suffix: bool = True,
+        include_user_suffix: bool = True,
+        include_secret_catalog: bool = True,
+        include_current_datetime: bool = True,
+        include_full_skill_content: bool = False,
+    ) -> str | None:
+        """Return the AgentContext fields that ACP can consume as prompt text.
 
-        This is intentionally limited to skill names and descriptions. It does not
-        include full skill content, trigger-matched knowledge, file locations,
-        secrets, or execution guidance. ACP servers own tool execution, so SDK
-        consumers should only use this catalog to provide lightweight awareness of
-        SDK-loaded skills and plugin-contributed skills.
+        ACP servers own their tools, MCP servers, hooks, and execution model, so
+        this adapter only emits prompt-only context. Unsupported AgentContext
+        semantics must fail here instead of being silently approximated by
+        ACPAgent.
         """
-        if not self.skills:
-            return None
+        supported_fields = {
+            "skills",
+            "system_message_suffix",
+            "user_message_suffix",
+            "load_user_skills",
+            "load_public_skills",
+            "marketplace_path",
+            "secrets",
+            "current_datetime",
+        }
+        unsupported_fields = set(type(self).model_fields) - supported_fields
+        if unsupported_fields:
+            fields = ", ".join(sorted(unsupported_fields))
+            raise NotImplementedError(
+                "ACP prompt context does not support AgentContext field(s): "
+                f"{fields}"
+            )
 
-        lines = ["<SKILLS>", "The following skills are available:"]
-        lines.append("<available_skills>")
-        for skill in self.skills:
-            name = xml_escape(skill.name.strip())
-            description = skill.description
-            if not description:
-                for line in skill.content.split("\n"):
-                    stripped = line.strip()
-                    if stripped and not stripped.startswith("#"):
-                        description = stripped
-                        break
-            description = xml_escape((description or "").strip())
-            lines.append("  <skill>")
-            lines.append(f"    <name>{name}</name>")
-            lines.append(f"    <description>{description}</description>")
-            lines.append("  </skill>")
-        lines.append("</available_skills>")
-        lines.append("</SKILLS>")
-        return "\n".join(lines)
+        parts: list[str] = []
+
+        if include_current_datetime:
+            formatted_datetime = self.get_formatted_datetime()
+            if formatted_datetime:
+                parts.append(
+                    "\n".join(
+                        [
+                            "<CURRENT_DATETIME>",
+                            f"The current date and time is: {formatted_datetime}",
+                            "</CURRENT_DATETIME>",
+                        ]
+                    )
+                )
+
+        if include_skill_catalog and self.skills:
+            lines = ["<SKILLS>", "The following skills are available:"]
+            lines.append("<available_skills>")
+            for skill in self.skills:
+                name = xml_escape(skill.name.strip())
+                description = xml_escape((skill.description or "").strip())
+                lines.append("  <skill>")
+                lines.append(f"    <name>{name}</name>")
+                lines.append(f"    <description>{description}</description>")
+                if include_full_skill_content:
+                    content = xml_escape(skill.content.strip())
+                    lines.append(f"    <content>{content}</content>")
+                lines.append("  </skill>")
+            lines.append("</available_skills>")
+            lines.append("</SKILLS>")
+            parts.append("\n".join(lines))
+
+        if include_system_suffix and self.system_message_suffix:
+            system_suffix = self.system_message_suffix.strip()
+            if system_suffix:
+                parts.append(
+                    "\n".join(
+                        [
+                            "<SYSTEM_CONTEXT>",
+                            system_suffix,
+                            "</SYSTEM_CONTEXT>",
+                        ]
+                    )
+                )
+
+        if include_user_suffix and self.user_message_suffix:
+            user_suffix = self.user_message_suffix.strip()
+            if user_suffix:
+                parts.append(
+                    "\n".join(
+                        [
+                            "<USER_CONTEXT>",
+                            user_suffix,
+                            "</USER_CONTEXT>",
+                        ]
+                    )
+                )
+
+        if include_secret_catalog:
+            secret_infos = self.get_secret_infos()
+            if secret_infos:
+                lines = [
+                    "<SECRET_CATALOG>",
+                    (
+                        "The following secret names are registered. "
+                        "Secret values are not included."
+                    ),
+                ]
+                for secret_info in secret_infos:
+                    name = xml_escape(secret_info["name"] or "")
+                    description = xml_escape((secret_info["description"] or "").strip())
+                    if description:
+                        lines.append(
+                            f"  <secret><name>{name}</name>"
+                            f"<description>{description}</description></secret>"
+                        )
+                    else:
+                        lines.append(f"  <secret><name>{name}</name></secret>")
+                lines.append("</SECRET_CATALOG>")
+                parts.append("\n".join(lines))
+
+        if not parts:
+            return None
+        return "\n\n".join(parts)
 
     def get_user_message_suffix(
         self, user_message: Message, skip_skill_names: list[str]

@@ -1129,9 +1129,16 @@ class ACPAgent(AgentBase):
                     if isinstance(content, TextContent) and content.text.strip()
                 ]
                 if self.agent_context:
-                    catalog_prompt = self.agent_context.get_skill_catalog_prompt()
-                    if catalog_prompt:
-                        text_parts.append(catalog_prompt)
+                    acp_prompt_context = self.agent_context.to_acp_prompt_context(
+                        include_skill_catalog=True,
+                        include_system_suffix=True,
+                        include_user_suffix=True,
+                        include_secret_catalog=True,
+                        include_current_datetime=True,
+                        include_full_skill_content=False,
+                    )
+                    if acp_prompt_context:
+                        text_parts.append(acp_prompt_context)
                 if text_parts:
                     user_message = "\n\n".join(text_parts)
                 if user_message:

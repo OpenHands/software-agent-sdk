@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
+from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -30,6 +31,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.workspace.local import LocalWorkspace
 
@@ -210,6 +212,60 @@ class TestACPAgentValidation:
         )
 
         self._init_with_patches(agent, tmp_path)
+
+    def test_agent_context_to_acp_prompt_context(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="review",
+                    content="Full review instructions",
+                    trigger=KeywordTrigger(keywords=["/review"]),
+                    description="Review pull requests.",
+                )
+            ],
+            system_message_suffix="Follow repository rules.",
+            user_message_suffix="Prefer concise responses.",
+            secrets={
+                "GITHUB_TOKEN": StaticSecret(
+                    value=SecretStr("ghp_secret"),
+                    description="GitHub API token",
+                )
+            },
+            current_datetime="2026-04-24T00:00:00",
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        assert "<CURRENT_DATETIME>" in prompt
+        assert "2026-04-24T00:00:00" in prompt
+        assert "<name>review</name>" in prompt
+        assert "<description>Review pull requests.</description>" in prompt
+        assert "Full review instructions" not in prompt
+        assert "<SYSTEM_CONTEXT>" in prompt
+        assert "Follow repository rules." in prompt
+        assert "<USER_CONTEXT>" in prompt
+        assert "Prefer concise responses." in prompt
+        assert "<SECRET_CATALOG>" in prompt
+        assert "GITHUB_TOKEN" in prompt
+        assert "GitHub API token" in prompt
+        assert "ghp_secret" not in prompt
+
+    def test_agent_context_to_acp_prompt_context_can_include_full_skill_content(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="review",
+                    content="Full review instructions",
+                    description="Review pull requests.",
+                )
+            ]
+        )
+
+        prompt = context.to_acp_prompt_context(include_full_skill_content=True)
+
+        assert prompt is not None
+        assert "<content>Full review instructions</content>" in prompt
 
 
 # ---------------------------------------------------------------------------
