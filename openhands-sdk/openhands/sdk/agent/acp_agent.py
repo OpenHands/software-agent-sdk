@@ -3,7 +3,9 @@
 The Agent Client Protocol (ACP) lets OpenHands power conversations using
 ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
 LLM calls.  The ACP server manages its own LLM, tools, and execution;
-the ACPAgent simply relays user messages and collects the response.
+the ACPAgent relays user messages and collects the response. OpenHands
+can still append prompt-only context, such as activated skills, to the
+user message before it is sent to the ACP server.
 
 Unlike the built-in Agent, one ACP ``step()`` maps to one complete remote
 assistant turn. ACPAgent therefore emits a terminal ``FinishAction`` at the
@@ -810,7 +812,10 @@ class ACPAgent(AgentBase):
             )
         )
 
-        # Validate no unsupported features
+        # Validate unsupported execution features. agent_context is allowed
+        # because it contributes prompt-only extensions to user messages; ACP
+        # server tools, MCP configuration, and context-window management remain
+        # owned by the server.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "
@@ -825,11 +830,6 @@ class ACPAgent(AgentBase):
             raise NotImplementedError(
                 "ACPAgent does not support condenser; "
                 "the ACP server manages its own context"
-            )
-        if self.agent_context is not None:
-            raise NotImplementedError(
-                "ACPAgent does not support agent_context; "
-                "configure the ACP server directly"
             )
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
@@ -1110,15 +1110,19 @@ class ACPAgent(AgentBase):
         """Send the latest user message to the ACP server and emit the response."""
         state = conversation.state
 
-        # Find the latest user message
+        # Find the latest user message, including any prompt-only extensions
+        # that Conversation.send_message() attached from AgentContext skills.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                # Extract text from the message
-                for content in event.llm_message.content:
-                    if isinstance(content, TextContent) and content.text.strip():
-                        user_message = content.text
-                        break
+                message = event.to_llm_message()
+                text_parts = [
+                    content.text
+                    for content in message.content
+                    if isinstance(content, TextContent) and content.text.strip()
+                ]
+                if text_parts:
+                    user_message = "\n\n".join(text_parts)
                 if user_message:
                     break
 

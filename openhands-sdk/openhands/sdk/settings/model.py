@@ -436,9 +436,9 @@ class ConversationSettings(BaseModel):
             payload["agent"] = self.agent_settings.create_agent()
 
         # --- secrets (from agent's context) ---------------------------------
-        # ACPAgent doesn't carry an ``agent_context`` at all; its context is
-        # owned by the subprocess. ``getattr(..., None)`` keeps this no-op
-        # for the ACP variant.
+        # ACPAgent may carry prompt-only context, but its execution context is
+        # owned by the subprocess. ``getattr(..., None)`` keeps this no-op for
+        # agents without AgentContext.
         agent = payload.get("agent")
         if "secrets" not in payload and agent is not None:
             ctx = getattr(agent, "agent_context", None)

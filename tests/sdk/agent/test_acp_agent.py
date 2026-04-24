@@ -23,12 +23,14 @@ from openhands.sdk.agent.acp_agent import (
     _serialize_tool_content,
 )
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -192,6 +194,22 @@ class TestACPAgentValidation:
         )
         with pytest.raises(NotImplementedError, match="mcp_config"):
             self._init_with_patches(agent, tmp_path)
+
+    def test_allows_agent_context_for_prompt_extensions(self, tmp_path):
+        agent = ACPAgent(
+            acp_command=["echo"],
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="review",
+                        content="Review instructions",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                    )
+                ]
+            ),
+        )
+
+        self._init_with_patches(agent, tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +574,48 @@ class TestACPAgentStep:
         content_block = events[0].llm_message.content[0]
         assert isinstance(content_block, TextContent)
         assert content_block.text == "The answer is 4"
+
+    def test_step_sends_extended_content_to_acp_server(self, tmp_path):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text="Review this PR.")],
+                ),
+                extended_content=[
+                    TextContent(
+                        text="<skill_context>Use strict review.</skill_context>"
+                    )
+                ],
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._conn.prompt = AsyncMock(return_value=None)
+        agent._session_id = "test-session"
+
+        def _fake_run_async(coro_factory, **_kwargs):
+            return asyncio.run(coro_factory())
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_blocks = agent._conn.prompt.await_args.args[0]
+        assert len(prompt_blocks) == 1
+        prompt_text = prompt_blocks[0].text
+        assert "Review this PR." in prompt_text
+        assert "<skill_context>Use strict review.</skill_context>" in prompt_text
 
     def test_step_includes_reasoning(self, tmp_path):
         agent = _make_agent()
