@@ -1326,3 +1326,44 @@ def test_v1_11_5_cli_default_conversation_resumes_when_runtime_adds_delegate(
         persistence_dir=persistence_root,
         conversation_id=conversation_id,
     )
+
+
+def test_v1_17_0_conversation_with_mcp_config_restores(tmp_path: Path) -> None:
+    """Test resuming a legacy conversation that persisted agent.mcp_config."""
+    fixture_path = (
+        Path(__file__).resolve().parents[3]
+        / "fixtures"
+        / "conversations"
+        / "v1_17_0_with_mcp_config"
+        / "base_state.json"
+    )
+    conversation_id = uuid.UUID("22222222-3333-4444-5555-666666666666")
+    persistence_root = tmp_path / "persist"
+    persistence_dir = Path(
+        LocalConversation.get_persistence_dir(persistence_root, conversation_id)
+    )
+    persistence_dir.mkdir(parents=True)
+    (persistence_dir / "base_state.json").write_text(fixture_path.read_text())
+    (persistence_dir / "events").mkdir()
+
+    llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+    runtime_mcp_config = {
+        "mcpServers": {
+            "runtime-server": {"command": "python", "args": ["-m", "runtime"]}
+        }
+    }
+    runtime_agent = Agent(llm=llm, tools=[], mcp_config=runtime_mcp_config)
+
+    conversation = Conversation(
+        agent=runtime_agent,
+        workspace=tmp_path,
+        persistence_dir=persistence_root,
+        conversation_id=conversation_id,
+    )
+
+    assert isinstance(conversation, LocalConversation)
+    assert conversation.state.agent.mcp_config == runtime_mcp_config

@@ -246,3 +246,22 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
 
     opts_other_resp = select_responses_options(llm_other, {}, include=None, store=None)
     assert "prompt_cache_retention" not in opts_other_resp
+
+
+def test_responses_options_forwards_prompt_cache_key_when_set():
+    """Regression test for #2904."""
+    llm = LLM(model="openai/gpt-5.1")
+    llm._prompt_cache_key = "conv-abc123"
+    assert (
+        select_responses_options(llm, {}, include=None, store=None).get(
+            "prompt_cache_key"
+        )
+        == "conv-abc123"
+    )
+
+
+def test_responses_options_omits_prompt_cache_key_when_unset():
+    llm = LLM(model="openai/gpt-5.1")
+    assert "prompt_cache_key" not in select_responses_options(
+        llm, {}, include=None, store=None
+    )

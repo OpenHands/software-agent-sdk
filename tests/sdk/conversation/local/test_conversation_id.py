@@ -77,3 +77,10 @@ def test_conversation_id_persists():
 
     # Check that the ID hasn't changed
     assert conversation.id == original_id
+
+
+def test_conversation_pins_llm_prompt_cache_key_to_id():
+    """Regression test for #2904."""
+    agent = ConversationIdDummyAgent()
+    conversation = Conversation(agent=agent)
+    assert agent.llm._prompt_cache_key == str(conversation.id)

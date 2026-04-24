@@ -14,6 +14,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
+from openhands.sdk.skills.utils import SecretLookup, expand_mcp_variables
 
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ def load_plugins(
     plugin_specs: list[PluginSource],
     agent: AgentBase,
     max_skills: int = 100,
+    get_secret: SecretLookup | None = None,
 ) -> tuple[AgentBase, HookConfig | None]:
     """Load multiple plugins and merge them into the agent.
 
@@ -44,6 +46,9 @@ def load_plugins(
         plugin_specs: List of plugin sources to load.
         agent: Agent to merge plugins into.
         max_skills: Maximum total skills allowed (defense-in-depth limit).
+        get_secret: Optional callback to look up per-conversation secrets.
+            Used for expanding ${VAR} placeholders in MCP configuration files.
+            See expand_mcp_variables() for details on why this is a callback.
 
     Returns:
         Tuple of (updated_agent, merged_hook_config).
@@ -96,6 +101,14 @@ def load_plugins(
         # Collect hooks for later combination
         if plugin.hooks and not plugin.hooks.is_empty():
             all_hooks.append(plugin.hooks)
+
+    # Expand MCP config variables with per-conversation secrets
+    # This handles ${VAR} placeholders that reference secrets injected via API
+    if merged_mcp and get_secret:
+        merged_mcp = expand_mcp_variables(
+            merged_mcp, {}, get_secret=get_secret, expand_defaults=True
+        )
+        logger.debug("Expanded MCP config variables")
 
     # Combine all hook configs (concatenation semantics)
     combined_hooks = HookConfig.merge(all_hooks)
