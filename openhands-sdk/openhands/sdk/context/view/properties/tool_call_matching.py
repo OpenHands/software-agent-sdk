@@ -13,7 +13,14 @@ from openhands.sdk.event import (
 
 
 class ToolCallMatchingProperty(ViewPropertyBase):
-    """Actions and observations must be paired."""
+    """Actions and observations must be paired.
+
+    The view that eventually gets serialized for the LLM should contain exactly
+    one observation-like event for each action ``tool_call_id``. Some providers
+    (for example Anthropic tool use) require every ``tool_use`` to have one
+    corresponding ``tool_result`` in the immediately following user message, so
+    duplicate observation-like events are not safe to silently tolerate.
+    """
 
     def enforce(
         self,
@@ -77,6 +84,12 @@ class ToolCallMatchingProperty(ViewPropertyBase):
                 case ActionEvent():
                     pending_tool_call_ids.add(event.tool_call_id)
                 case ObservationBaseEvent():
+                    # Intentionally use remove(), not discard(): a second
+                    # observation-like event for the same tool_call_id means the
+                    # view has already violated the 1 action -> 1 result
+                    # invariant that downstream LLM APIs expect. That case must
+                    # be fixed by de-duplicating the view before serialization,
+                    # not by silently tolerating it here.
                     pending_tool_call_ids.remove(event.tool_call_id)
 
             if pending_tool_call_ids:

@@ -319,11 +319,16 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        file_store = (
-            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
-            if persistence_dir
-            else InMemoryFileStore()
-        )
+        if persistence_dir:
+            file_store = LocalFileStore(
+                persistence_dir, cache_limit_size=max_iterations
+            )
+        else:
+            logger.warning(
+                "No persistence_dir provided; falling back to InMemoryFileStore. "
+                "EventLog data will not persist across requests."
+            )
+            file_store = InMemoryFileStore()
 
         try:
             base_text = file_store.read(BASE_STATE)
