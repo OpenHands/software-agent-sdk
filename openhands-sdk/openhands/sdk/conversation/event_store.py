@@ -1,7 +1,10 @@
 # state.py
+import json
 import operator
 from collections.abc import Iterator
 from typing import SupportsIndex, overload
+
+from pydantic import ValidationError
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -9,7 +12,7 @@ from openhands.sdk.conversation.persistence_const import (
     EVENT_NAME_RE,
     EVENTS_DIR,
 )
-from openhands.sdk.event import Event, EventID
+from openhands.sdk.event import Event, EventID, UnknownEvent
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
 
@@ -18,6 +21,32 @@ logger = get_logger(__name__)
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
+
+
+def _deserialize_event(txt: str, path: str) -> Event:
+    """Deserialize an event, falling back to ``UnknownEvent`` when its tool
+    schema is no longer registered."""
+    try:
+        return Event.model_validate_json(txt)
+    except ValidationError:
+        data = json.loads(txt)
+        if not isinstance(data, dict):
+            raise
+        kind = str(data.get("kind") or "<unknown>")
+        logger.warning(
+            "Unloadable event at %s (kind=%s); using UnknownEvent.", path, kind
+        )
+        return UnknownEvent(
+            id=data["id"],
+            timestamp=data["timestamp"],
+            source=data["source"],
+            original_kind=kind,
+            original_data=data,
+            tool_name=data.get("tool_name"),
+            tool_call_id=data.get("tool_call_id"),
+            llm_response_id=data.get("llm_response_id"),
+            action_id=data.get("action_id"),
+        )
 
 
 class EventLog(EventsListBase):
@@ -92,14 +121,15 @@ class EventLog(EventsListBase):
         txt = self._fs.read(path)
         if not txt:
             raise FileNotFoundError(f"Missing event file: {path}")
-        return Event.model_validate_json(txt)
+        return _deserialize_event(txt, path)
 
     def __iter__(self) -> Iterator[Event]:
         for i in range(self._length):
-            txt = self._fs.read(self._path(i))
+            path = self._path(i)
+            txt = self._fs.read(path)
             if not txt:
                 continue
-            evt = Event.model_validate_json(txt)
+            evt = _deserialize_event(txt, path)
             evt_id = evt.id
             if i not in self._idx_to_id:
                 self._idx_to_id[i] = evt_id

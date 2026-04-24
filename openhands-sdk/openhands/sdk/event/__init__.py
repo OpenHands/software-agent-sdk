@@ -21,6 +21,7 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.token import TokenEvent
 from openhands.sdk.event.types import EventID, ToolCallID
+from openhands.sdk.event.unknown import UnknownEvent
 from openhands.sdk.event.user_action import PauseEvent
 
 
@@ -45,6 +46,7 @@ __all__ = [
     "ConversationStateUpdateEvent",
     "HookExecutionEvent",
     "LLMCompletionLogEvent",
+    "UnknownEvent",
     "EventID",
     "ToolCallID",
 ]
