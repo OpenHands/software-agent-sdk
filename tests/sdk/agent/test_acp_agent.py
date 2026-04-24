@@ -611,7 +611,9 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None)
 
-        prompt_blocks = agent._conn.prompt.await_args.args[0]
+        prompt_call = agent._conn.prompt.await_args
+        assert prompt_call is not None
+        prompt_blocks = prompt_call.args[0]
         assert len(prompt_blocks) == 1
         prompt_text = prompt_blocks[0].text
         assert "Review this PR." in prompt_text
