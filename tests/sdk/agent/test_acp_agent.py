@@ -2184,6 +2184,14 @@ class TestSelectAuthMethod:
         env = {"UNRELATED": "value"}
         assert _select_auth_method(methods, env) is None
 
+    def test_chatgpt_auth_file(self, tmp_path):
+        methods = [self._make_auth_method("chatgpt")]
+        auth_dir = tmp_path / ".codex"
+        auth_dir.mkdir()
+        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+
+        assert _select_auth_method(methods, {"HOME": str(tmp_path)}) == "chatgpt"
+
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
 

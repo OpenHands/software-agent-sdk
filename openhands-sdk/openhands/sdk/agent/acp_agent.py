@@ -23,6 +23,7 @@ import threading
 import time
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from acp.client.connection import ClientSideConnection
@@ -146,7 +147,7 @@ _DEFAULT_BYPASS_MODE = "full-access"
 
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
-# required env var is set.
+# required credential source is present.
 # Note: claude-login is intentionally NOT included because Claude Code ACP
 # uses bypassPermissions mode instead of API key authentication.
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
@@ -154,21 +155,26 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "openai-api-key": "OPENAI_API_KEY",
     "gemini-api-key": "GEMINI_API_KEY",
 }
+_CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 
 
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
 ) -> str | None:
-    """Pick an auth method whose required env var is present.
+    """Pick an auth method whose required credentials are present.
 
     Returns the ``id`` of the first matching method, or ``None`` if no
-    env-var-based method is available (the server may not require auth).
+    supported credential source is available (the server may not require auth).
     """
     method_ids = {m.id for m in auth_methods}
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
             return method_id
+    if "chatgpt" in method_ids:
+        home = env.get("HOME")
+        if home and (Path(home) / _CHATGPT_AUTH_PATH).is_file():
+            return "chatgpt"
     return None
 
 
