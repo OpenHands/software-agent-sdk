@@ -14,82 +14,58 @@ They are still importable from this module for backward compatibility, but
 importing them from here will emit a deprecation warning.
 """
 
+from __future__ import annotations
+
+from importlib import import_module
 from typing import Any
 
-# Import marketplace classes from new location for internal use
-# (no deprecation warning since we're importing from the canonical location)
-from openhands.sdk.marketplace import (
-    Marketplace as _Marketplace,
-    MarketplaceEntry as _MarketplaceEntry,
-    MarketplaceMetadata as _MarketplaceMetadata,
-    MarketplaceOwner as _MarketplaceOwner,
-    MarketplacePluginEntry as _MarketplacePluginEntry,
-    MarketplacePluginSource as _MarketplacePluginSource,
-)
-from openhands.sdk.plugin.fetch import (
-    PluginFetchError,
-    fetch_plugin_with_resolution,
-)
-from openhands.sdk.plugin.installed import (
-    InstalledPluginInfo,
-    InstalledPluginsMetadata,
-    disable_plugin,
-    enable_plugin,
-    get_installed_plugin,
-    get_installed_plugins_dir,
-    install_plugin,
-    list_installed_plugins,
-    load_installed_plugins,
-    uninstall_plugin,
-    update_plugin,
-)
-from openhands.sdk.plugin.loader import load_plugins
-from openhands.sdk.plugin.plugin import Plugin
-from openhands.sdk.plugin.source import (
-    GitHubURLComponents,
-    is_local_path,
-    parse_github_url,
-    resolve_source_path,
-    validate_source_path,
-)
-from openhands.sdk.plugin.types import (
-    CommandDefinition,
-    PluginAuthor,
-    PluginManifest,
-    PluginSource,
-    ResolvedPluginSource,
-)
+from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
 
 
-# Deprecated marketplace names that trigger warnings when accessed
-_DEPRECATED_MARKETPLACE_NAMES = {
-    "Marketplace": _Marketplace,
-    "MarketplaceEntry": _MarketplaceEntry,
-    "MarketplaceMetadata": _MarketplaceMetadata,
-    "MarketplaceOwner": _MarketplaceOwner,
-    "MarketplacePluginEntry": _MarketplacePluginEntry,
-    "MarketplacePluginSource": _MarketplacePluginSource,
+_DEPRECATED_MARKETPLACE_IMPORTS = {
+    "Marketplace": ("openhands.sdk.marketplace", "Marketplace"),
+    "MarketplaceEntry": ("openhands.sdk.marketplace", "MarketplaceEntry"),
+    "MarketplaceMetadata": ("openhands.sdk.marketplace", "MarketplaceMetadata"),
+    "MarketplaceOwner": ("openhands.sdk.marketplace", "MarketplaceOwner"),
+    "MarketplacePluginEntry": (
+        "openhands.sdk.marketplace",
+        "MarketplacePluginEntry",
+    ),
+    "MarketplacePluginSource": (
+        "openhands.sdk.marketplace",
+        "MarketplacePluginSource",
+    ),
 }
 
-
-def __getattr__(name: str) -> Any:
-    """Provide deprecated marketplace names with warnings."""
-    if name in _DEPRECATED_MARKETPLACE_NAMES:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            f"Importing {name} from openhands.sdk.plugin",
-            deprecated_in="1.16.0",
-            removed_in="1.19.0",
-            details="Import from openhands.sdk.marketplace instead.",
-            stacklevel=3,
-        )
-        return _DEPRECATED_MARKETPLACE_NAMES[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
+_LAZY_IMPORTS = {
+    "Plugin": (".plugin", "Plugin"),
+    "PluginFetchError": (".fetch", "PluginFetchError"),
+    "fetch_plugin_with_resolution": (".fetch", "fetch_plugin_with_resolution"),
+    "InstalledPluginInfo": (".installed", "InstalledPluginInfo"),
+    "InstalledPluginsMetadata": (".installed", "InstalledPluginsMetadata"),
+    "disable_plugin": (".installed", "disable_plugin"),
+    "enable_plugin": (".installed", "enable_plugin"),
+    "get_installed_plugin": (".installed", "get_installed_plugin"),
+    "get_installed_plugins_dir": (".installed", "get_installed_plugins_dir"),
+    "install_plugin": (".installed", "install_plugin"),
+    "list_installed_plugins": (".installed", "list_installed_plugins"),
+    "load_installed_plugins": (".installed", "load_installed_plugins"),
+    "uninstall_plugin": (".installed", "uninstall_plugin"),
+    "update_plugin": (".installed", "update_plugin"),
+    "load_plugins": (".loader", "load_plugins"),
+    "GitHubURLComponents": (".source", "GitHubURLComponents"),
+    "is_local_path": (".source", "is_local_path"),
+    "parse_github_url": (".source", "parse_github_url"),
+    "resolve_source_path": (".source", "resolve_source_path"),
+    "validate_source_path": (".source", "validate_source_path"),
+    "CommandDefinition": (".types", "CommandDefinition"),
+    "PluginAuthor": (".types", "PluginAuthor"),
+    "PluginManifest": (".types", "PluginManifest"),
+    "PluginSource": (".types", "PluginSource"),
+    "ResolvedPluginSource": (".types", "ResolvedPluginSource"),
+}
 
 __all__ = [
-    # Plugin classes
     "Plugin",
     "PluginFetchError",
     "PluginManifest",
@@ -97,23 +73,19 @@ __all__ = [
     "PluginSource",
     "ResolvedPluginSource",
     "CommandDefinition",
-    # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",
-    # Marketplace classes (deprecated - import from openhands.sdk.marketplace)
     "Marketplace",
     "MarketplaceEntry",
     "MarketplaceOwner",
     "MarketplacePluginEntry",
     "MarketplacePluginSource",
     "MarketplaceMetadata",
-    # Source path utilities
     "GitHubURLComponents",
     "parse_github_url",
     "is_local_path",
     "validate_source_path",
     "resolve_source_path",
-    # Installed plugins management
     "InstalledPluginInfo",
     "InstalledPluginsMetadata",
     "install_plugin",
@@ -126,3 +98,25 @@ __all__ = [
     "disable_plugin",
     "update_plugin",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEPRECATED_MARKETPLACE_IMPORTS:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            f"Importing {name} from openhands.sdk.plugin",
+            deprecated_in="1.16.0",
+            removed_in="1.19.0",
+            details="Import from openhands.sdk.marketplace instead.",
+            stacklevel=3,
+        )
+        module_name, attr_name = _DEPRECATED_MARKETPLACE_IMPORTS[name]
+        value = getattr(import_module(module_name), attr_name)
+        globals()[name] = value
+        return value
+    return import_lazy_symbol(__name__, globals(), _LAZY_IMPORTS, name)
+
+
+def __dir__() -> list[str]:
+    return lazy_dir(globals(), __all__)

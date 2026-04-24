@@ -1,26 +1,8 @@
-from openhands.sdk.tool.builtins import (
-    BUILT_IN_TOOL_CLASSES,
-    BUILT_IN_TOOLS,
-    FinishTool,
-    ThinkTool,
-)
-from openhands.sdk.tool.registry import (
-    list_registered_tools,
-    register_tool,
-    resolve_tool,
-)
-from openhands.sdk.tool.schema import (
-    Action,
-    Observation,
-)
-from openhands.sdk.tool.spec import Tool
-from openhands.sdk.tool.tool import (
-    DeclaredResources,
-    ExecutableTool,
-    ToolAnnotations,
-    ToolDefinition,
-    ToolExecutor,
-)
+from __future__ import annotations
+
+from typing import Any
+
+from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
 
 
 __all__ = [
@@ -40,3 +22,29 @@ __all__ = [
     "resolve_tool",
     "list_registered_tools",
 ]
+
+_LAZY_IMPORTS = {
+    "DeclaredResources": (".tool", "DeclaredResources"),
+    "Tool": (".spec", "Tool"),
+    "ToolDefinition": (".tool", "ToolDefinition"),
+    "ToolAnnotations": (".tool", "ToolAnnotations"),
+    "ToolExecutor": (".tool", "ToolExecutor"),
+    "ExecutableTool": (".tool", "ExecutableTool"),
+    "Action": (".schema", "Action"),
+    "Observation": (".schema", "Observation"),
+    "FinishTool": (".builtins", "FinishTool"),
+    "ThinkTool": (".builtins", "ThinkTool"),
+    "BUILT_IN_TOOLS": (".builtins", "BUILT_IN_TOOLS"),
+    "BUILT_IN_TOOL_CLASSES": (".builtins", "BUILT_IN_TOOL_CLASSES"),
+    "register_tool": (".registry", "register_tool"),
+    "resolve_tool": (".registry", "resolve_tool"),
+    "list_registered_tools": (".registry", "list_registered_tools"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    return import_lazy_symbol(__name__, globals(), _LAZY_IMPORTS, name)
+
+
+def __dir__() -> list[str]:
+    return lazy_dir(globals(), __all__)

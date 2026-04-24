@@ -32,72 +32,18 @@ This module provides the unified API for working with skills:
 - `to_prompt` - Generate XML prompt block for available skills
 """
 
-# Exceptions
-from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
+from __future__ import annotations
 
-# Fetch utilities
-from openhands.sdk.skills.fetch import SkillFetchError, fetch_skill_with_resolution
+from typing import Any
 
-# Installed skills management
-from openhands.sdk.skills.installed import (
-    InstalledSkillInfo,
-    InstalledSkillsMetadata,
-    disable_skill,
-    enable_skill,
-    get_installed_skill,
-    get_installed_skills_dir,
-    install_skill,
-    install_skills_from_marketplace,
-    list_installed_skills,
-    load_installed_skills,
-    uninstall_skill,
-    update_skill,
-)
-
-# Core skill model and loading
-from openhands.sdk.skills.skill import (
-    Skill,
-    SkillInfo,
-    SkillResources,
-    load_available_skills,
-    load_project_skills,
-    load_public_skills,
-    load_skills_from_dir,
-    load_user_skills,
-    to_prompt,
-)
-
-# Triggers
-from openhands.sdk.skills.trigger import (
-    BaseTrigger,
-    KeywordTrigger,
-    TaskTrigger,
-)
-
-# Types
-from openhands.sdk.skills.types import (
-    InputMetadata,
-    SkillContentResponse,
-    SkillKnowledge,
-    SkillResponse,
-)
-
-# Utilities
-from openhands.sdk.skills.utils import (
-    RESOURCE_DIRECTORIES,
-    discover_skill_resources,
-    validate_skill_name,
-)
+from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
 
 
 __all__ = [
-    # Exceptions
     "SkillError",
     "SkillValidationError",
-    # Fetch
     "SkillFetchError",
     "fetch_skill_with_resolution",
-    # Installed skills management
     "InstalledSkillInfo",
     "InstalledSkillsMetadata",
     "install_skill",
@@ -110,7 +56,6 @@ __all__ = [
     "enable_skill",
     "disable_skill",
     "update_skill",
-    # Core skill model and loading
     "Skill",
     "SkillInfo",
     "SkillResources",
@@ -120,17 +65,63 @@ __all__ = [
     "load_public_skills",
     "load_available_skills",
     "to_prompt",
-    # Triggers
     "BaseTrigger",
     "KeywordTrigger",
     "TaskTrigger",
-    # Types
     "SkillKnowledge",
     "InputMetadata",
     "SkillResponse",
     "SkillContentResponse",
-    # Utilities
     "discover_skill_resources",
     "RESOURCE_DIRECTORIES",
     "validate_skill_name",
 ]
+
+_LAZY_IMPORTS = {
+    "SkillError": (".exceptions", "SkillError"),
+    "SkillValidationError": (".exceptions", "SkillValidationError"),
+    "SkillFetchError": (".fetch", "SkillFetchError"),
+    "fetch_skill_with_resolution": (".fetch", "fetch_skill_with_resolution"),
+    "InstalledSkillInfo": (".installed", "InstalledSkillInfo"),
+    "InstalledSkillsMetadata": (".installed", "InstalledSkillsMetadata"),
+    "install_skill": (".installed", "install_skill"),
+    "install_skills_from_marketplace": (
+        ".installed",
+        "install_skills_from_marketplace",
+    ),
+    "uninstall_skill": (".installed", "uninstall_skill"),
+    "list_installed_skills": (".installed", "list_installed_skills"),
+    "load_installed_skills": (".installed", "load_installed_skills"),
+    "get_installed_skills_dir": (".installed", "get_installed_skills_dir"),
+    "get_installed_skill": (".installed", "get_installed_skill"),
+    "enable_skill": (".installed", "enable_skill"),
+    "disable_skill": (".installed", "disable_skill"),
+    "update_skill": (".installed", "update_skill"),
+    "Skill": (".skill", "Skill"),
+    "SkillInfo": (".skill", "SkillInfo"),
+    "SkillResources": (".skill", "SkillResources"),
+    "load_skills_from_dir": (".skill", "load_skills_from_dir"),
+    "load_project_skills": (".skill", "load_project_skills"),
+    "load_user_skills": (".skill", "load_user_skills"),
+    "load_public_skills": (".skill", "load_public_skills"),
+    "load_available_skills": (".skill", "load_available_skills"),
+    "to_prompt": (".skill", "to_prompt"),
+    "BaseTrigger": (".trigger", "BaseTrigger"),
+    "KeywordTrigger": (".trigger", "KeywordTrigger"),
+    "TaskTrigger": (".trigger", "TaskTrigger"),
+    "SkillKnowledge": (".types", "SkillKnowledge"),
+    "InputMetadata": (".types", "InputMetadata"),
+    "SkillResponse": (".types", "SkillResponse"),
+    "SkillContentResponse": (".types", "SkillContentResponse"),
+    "discover_skill_resources": (".utils", "discover_skill_resources"),
+    "RESOURCE_DIRECTORIES": (".utils", "RESOURCE_DIRECTORIES"),
+    "validate_skill_name": (".utils", "validate_skill_name"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    return import_lazy_symbol(__name__, globals(), _LAZY_IMPORTS, name)
+
+
+def __dir__() -> list[str]:
+    return lazy_dir(globals(), __all__)

@@ -115,6 +115,8 @@ When reviewing code, provide constructive feedback:
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 - `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
+- CLI startup is highly sensitive to eager SDK imports. Keep `openhands.sdk.__init__` and package-level `__init__.py` exports lazy so `import openhands.sdk` stays a lightweight banner/version path; guard this with `tests/sdk/test_lazy_imports.py`.
+
 
 
 ## Package-specific guidance

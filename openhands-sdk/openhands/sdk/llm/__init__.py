@@ -1,41 +1,15 @@
-from openhands.sdk.llm.auth import (
-    OPENAI_CODEX_MODELS,
-    CredentialStore,
-    OAuthCredentials,
-    OpenAISubscriptionAuth,
-)
-from openhands.sdk.llm.fallback_strategy import FallbackStrategy
-from openhands.sdk.llm.llm import LLM
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
-from openhands.sdk.llm.llm_response import LLMResponse
-from openhands.sdk.llm.message import (
-    ImageContent,
-    Message,
-    MessageToolCall,
-    ReasoningItemModel,
-    RedactedThinkingBlock,
-    TextContent,
-    ThinkingBlock,
-    content_to_str,
-)
-from openhands.sdk.llm.router import RouterLLM
-from openhands.sdk.llm.streaming import LLMStreamChunk, TokenCallbackType
-from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot, TokenUsage
-from openhands.sdk.llm.utils.unverified_models import (
-    UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
-    get_unverified_models,
-)
-from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
+from __future__ import annotations
+
+from typing import Any
+
+from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
 
 
 __all__ = [
-    # Auth
     "CredentialStore",
     "OAuthCredentials",
     "OpenAISubscriptionAuth",
     "OPENAI_CODEX_MODELS",
-    # Core
     "FallbackStrategy",
     "LLMResponse",
     "LLM",
@@ -43,7 +17,6 @@ __all__ = [
     "LLMProfileStore",
     "RouterLLM",
     "RegistryEvent",
-    # Messages
     "Message",
     "MessageToolCall",
     "TextContent",
@@ -52,15 +25,53 @@ __all__ = [
     "RedactedThinkingBlock",
     "ReasoningItemModel",
     "content_to_str",
-    # Streaming
     "LLMStreamChunk",
     "TokenCallbackType",
-    # Metrics
     "Metrics",
     "MetricsSnapshot",
     "TokenUsage",
-    # Models
     "VERIFIED_MODELS",
     "UNVERIFIED_MODELS_EXCLUDING_BEDROCK",
     "get_unverified_models",
 ]
+
+_LAZY_IMPORTS = {
+    "CredentialStore": (".auth", "CredentialStore"),
+    "OAuthCredentials": (".auth", "OAuthCredentials"),
+    "OpenAISubscriptionAuth": (".auth", "OpenAISubscriptionAuth"),
+    "OPENAI_CODEX_MODELS": (".auth", "OPENAI_CODEX_MODELS"),
+    "FallbackStrategy": (".fallback_strategy", "FallbackStrategy"),
+    "LLMResponse": (".llm_response", "LLMResponse"),
+    "LLM": (".llm", "LLM"),
+    "LLMRegistry": (".llm_registry", "LLMRegistry"),
+    "LLMProfileStore": (".llm_profile_store", "LLMProfileStore"),
+    "RouterLLM": (".router", "RouterLLM"),
+    "RegistryEvent": (".llm_registry", "RegistryEvent"),
+    "Message": (".message", "Message"),
+    "MessageToolCall": (".message", "MessageToolCall"),
+    "TextContent": (".message", "TextContent"),
+    "ImageContent": (".message", "ImageContent"),
+    "ThinkingBlock": (".message", "ThinkingBlock"),
+    "RedactedThinkingBlock": (".message", "RedactedThinkingBlock"),
+    "ReasoningItemModel": (".message", "ReasoningItemModel"),
+    "content_to_str": (".message", "content_to_str"),
+    "LLMStreamChunk": (".streaming", "LLMStreamChunk"),
+    "TokenCallbackType": (".streaming", "TokenCallbackType"),
+    "Metrics": (".utils.metrics", "Metrics"),
+    "MetricsSnapshot": (".utils.metrics", "MetricsSnapshot"),
+    "TokenUsage": (".utils.metrics", "TokenUsage"),
+    "VERIFIED_MODELS": (".utils.verified_models", "VERIFIED_MODELS"),
+    "UNVERIFIED_MODELS_EXCLUDING_BEDROCK": (
+        ".utils.unverified_models",
+        "UNVERIFIED_MODELS_EXCLUDING_BEDROCK",
+    ),
+    "get_unverified_models": (".utils.unverified_models", "get_unverified_models"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    return import_lazy_symbol(__name__, globals(), _LAZY_IMPORTS, name)
+
+
+def __dir__() -> list[str]:
+    return lazy_dir(globals(), __all__)

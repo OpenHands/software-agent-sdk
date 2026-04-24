@@ -1,30 +1,8 @@
-from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.conversation import Conversation
-from openhands.sdk.conversation.event_store import EventLog
-from openhands.sdk.conversation.events_list_base import EventsListBase
-from openhands.sdk.conversation.exceptions import WebSocketConnectionError
-from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
-from openhands.sdk.conversation.resource_lock_manager import (
-    ResourceLockManager,
-    ResourceLockTimeout,
-)
-from openhands.sdk.conversation.response_utils import get_agent_final_response
-from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.state import (
-    ConversationExecutionStatus,
-    ConversationState,
-)
-from openhands.sdk.conversation.stuck_detector import StuckDetector
-from openhands.sdk.conversation.types import (
-    ConversationCallbackType,
-    ConversationTags,
-    ConversationTokenCallbackType,
-)
-from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizerBase,
-    DefaultConversationVisualizer,
-)
+from __future__ import annotations
+
+from typing import Any
+
+from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
 
 
 __all__ = [
@@ -48,3 +26,36 @@ __all__ = [
     "get_agent_final_response",
     "WebSocketConnectionError",
 ]
+
+_LAZY_IMPORTS = {
+    "Conversation": (".conversation", "Conversation"),
+    "BaseConversation": (".base", "BaseConversation"),
+    "ConversationState": (".state", "ConversationState"),
+    "ConversationExecutionStatus": (".state", "ConversationExecutionStatus"),
+    "ConversationCallbackType": (".types", "ConversationCallbackType"),
+    "ConversationTags": (".types", "ConversationTags"),
+    "ConversationTokenCallbackType": (".types", "ConversationTokenCallbackType"),
+    "DefaultConversationVisualizer": (
+        ".visualizer",
+        "DefaultConversationVisualizer",
+    ),
+    "ConversationVisualizerBase": (".visualizer", "ConversationVisualizerBase"),
+    "SecretRegistry": (".secret_registry", "SecretRegistry"),
+    "StuckDetector": (".stuck_detector", "StuckDetector"),
+    "EventLog": (".event_store", "EventLog"),
+    "ResourceLockManager": (".resource_lock_manager", "ResourceLockManager"),
+    "ResourceLockTimeout": (".resource_lock_manager", "ResourceLockTimeout"),
+    "LocalConversation": (".impl.local_conversation", "LocalConversation"),
+    "RemoteConversation": (".impl.remote_conversation", "RemoteConversation"),
+    "EventsListBase": (".events_list_base", "EventsListBase"),
+    "get_agent_final_response": (".response_utils", "get_agent_final_response"),
+    "WebSocketConnectionError": (".exceptions", "WebSocketConnectionError"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    return import_lazy_symbol(__name__, globals(), _LAZY_IMPORTS, name)
+
+
+def __dir__() -> list[str]:
+    return lazy_dir(globals(), __all__)

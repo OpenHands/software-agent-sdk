@@ -1,100 +1,10 @@
-from importlib.metadata import PackageNotFoundError, version
+from __future__ import annotations
 
-from openhands.sdk.agent import (
-    Agent,
-    AgentBase,
-)
+from importlib.metadata import PackageNotFoundError, version
+from typing import Any
+
+from openhands.sdk._lazy_imports import import_lazy_symbol, lazy_dir
 from openhands.sdk.banner import _print_banner
-from openhands.sdk.context import AgentContext
-from openhands.sdk.context.condenser import (
-    LLMSummarizingCondenser,
-)
-from openhands.sdk.conversation import (
-    BaseConversation,
-    Conversation,
-    ConversationCallbackType,
-    ConversationExecutionStatus,
-    LocalConversation,
-    RemoteConversation,
-)
-from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
-from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.io import FileStore, LocalFileStore
-from openhands.sdk.llm import (
-    LLM,
-    FallbackStrategy,
-    ImageContent,
-    LLMProfileStore,
-    LLMRegistry,
-    LLMStreamChunk,
-    Message,
-    RedactedThinkingBlock,
-    RegistryEvent,
-    TextContent,
-    ThinkingBlock,
-    TokenCallbackType,
-    TokenUsage,
-)
-from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp import (
-    MCPClient,
-    MCPToolDefinition,
-    MCPToolObservation,
-    create_mcp_tools,
-)
-from openhands.sdk.plugin import Plugin
-from openhands.sdk.settings import (
-    ACPAgentSettings,
-    AgentSettings,
-    AgentSettingsConfig,
-    CondenserSettings,
-    ConversationSettings,
-    LLMAgentSettings,
-    SettingsChoice,
-    SettingsFieldSchema,
-    SettingsSchema,
-    SettingsSectionSchema,
-    VerificationSettings,
-    default_agent_settings,
-    export_agent_settings_schema,
-    export_settings_schema,
-    validate_agent_settings,
-)
-from openhands.sdk.settings.metadata import (
-    SettingProminence,
-    SettingsFieldMetadata,
-    SettingsSectionMetadata,
-    field_meta,
-)
-from openhands.sdk.skills import (
-    load_project_skills,
-    load_skills_from_dir,
-    load_user_skills,
-)
-from openhands.sdk.subagent import (
-    agent_definition_to_factory,
-    load_agents_from_dir,
-    load_project_agents,
-    load_user_agents,
-    register_agent,
-)
-from openhands.sdk.tool import (
-    Action,
-    Observation,
-    Tool,
-    ToolDefinition,
-    list_registered_tools,
-    register_tool,
-    resolve_tool,
-)
-from openhands.sdk.utils import page_iterator
-from openhands.sdk.workspace import (
-    AsyncRemoteWorkspace,
-    LocalWorkspace,
-    RemoteWorkspace,
-    Workspace,
-)
 
 
 try:
@@ -102,7 +12,7 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0"  # fallback for editable/unbuilt environments
 
-# Print startup banner
+# Print the startup banner before importing the rest of the SDK surface.
 _print_banner(__version__)
 
 __all__ = [
@@ -183,3 +93,107 @@ __all__ = [
     "page_iterator",
     "__version__",
 ]
+
+_LAZY_IMPORTS = {
+    "LLM": (".llm.llm", "LLM"),
+    "LLMRegistry": (".llm.llm_registry", "LLMRegistry"),
+    "LLMProfileStore": (".llm.llm_profile_store", "LLMProfileStore"),
+    "LLMStreamChunk": (".llm.streaming", "LLMStreamChunk"),
+    "FallbackStrategy": (".llm.fallback_strategy", "FallbackStrategy"),
+    "TokenCallbackType": (".llm.streaming", "TokenCallbackType"),
+    "TokenUsage": (".llm.utils.metrics", "TokenUsage"),
+    "ConversationStats": (".conversation.conversation_stats", "ConversationStats"),
+    "RegistryEvent": (".llm.llm_registry", "RegistryEvent"),
+    "Message": (".llm.message", "Message"),
+    "TextContent": (".llm.message", "TextContent"),
+    "ImageContent": (".llm.message", "ImageContent"),
+    "ThinkingBlock": (".llm.message", "ThinkingBlock"),
+    "RedactedThinkingBlock": (".llm.message", "RedactedThinkingBlock"),
+    "Tool": (".tool.spec", "Tool"),
+    "ToolDefinition": (".tool.tool", "ToolDefinition"),
+    "AgentBase": (".agent.base", "AgentBase"),
+    "Agent": (".agent.agent", "Agent"),
+    "Action": (".tool.schema", "Action"),
+    "Observation": (".tool.schema", "Observation"),
+    "MCPClient": (".mcp.client", "MCPClient"),
+    "MCPToolDefinition": (".mcp.tool", "MCPToolDefinition"),
+    "MCPToolObservation": (".mcp.definition", "MCPToolObservation"),
+    "MessageEvent": (".event.llm_convertible", "MessageEvent"),
+    "HookExecutionEvent": (".event.hook_execution", "HookExecutionEvent"),
+    "create_mcp_tools": (".mcp.utils", "create_mcp_tools"),
+    "get_logger": (".logger.logger", "get_logger"),
+    "Conversation": (".conversation.conversation", "Conversation"),
+    "BaseConversation": (".conversation.base", "BaseConversation"),
+    "LocalConversation": (".conversation.impl.local_conversation", "LocalConversation"),
+    "RemoteConversation": (
+        ".conversation.impl.remote_conversation",
+        "RemoteConversation",
+    ),
+    "ConversationExecutionStatus": (
+        ".conversation.state",
+        "ConversationExecutionStatus",
+    ),
+    "ConversationCallbackType": (".conversation.types", "ConversationCallbackType"),
+    "Event": (".event.base", "Event"),
+    "LLMConvertibleEvent": (".event.base", "LLMConvertibleEvent"),
+    "AgentContext": (".context.agent_context", "AgentContext"),
+    "LLMSummarizingCondenser": (
+        ".context.condenser.llm_summarizing_condenser",
+        "LLMSummarizingCondenser",
+    ),
+    "CondenserSettings": (".settings.model", "CondenserSettings"),
+    "ConversationSettings": (".settings.model", "ConversationSettings"),
+    "VerificationSettings": (".settings.model", "VerificationSettings"),
+    "ACPAgentSettings": (".settings.model", "ACPAgentSettings"),
+    "AgentSettings": (".settings.model", "AgentSettings"),
+    "AgentSettingsConfig": (".settings.model", "AgentSettingsConfig"),
+    "LLMAgentSettings": (".settings.model", "LLMAgentSettings"),
+    "default_agent_settings": (".settings.model", "default_agent_settings"),
+    "export_agent_settings_schema": (
+        ".settings.model",
+        "export_agent_settings_schema",
+    ),
+    "validate_agent_settings": (".settings.model", "validate_agent_settings"),
+    "SettingsChoice": (".settings.model", "SettingsChoice"),
+    "SettingProminence": (".settings.metadata", "SettingProminence"),
+    "SettingsFieldMetadata": (".settings.metadata", "SettingsFieldMetadata"),
+    "SettingsFieldSchema": (".settings.model", "SettingsFieldSchema"),
+    "SettingsSchema": (".settings.model", "SettingsSchema"),
+    "SettingsSectionMetadata": (
+        ".settings.metadata",
+        "SettingsSectionMetadata",
+    ),
+    "SettingsSectionSchema": (".settings.model", "SettingsSectionSchema"),
+    "export_settings_schema": (".settings.model", "export_settings_schema"),
+    "field_meta": (".settings.metadata", "field_meta"),
+    "FileStore": (".io.base", "FileStore"),
+    "LocalFileStore": (".io.local", "LocalFileStore"),
+    "Plugin": (".plugin.plugin", "Plugin"),
+    "register_tool": (".tool.registry", "register_tool"),
+    "resolve_tool": (".tool.registry", "resolve_tool"),
+    "list_registered_tools": (".tool.registry", "list_registered_tools"),
+    "Workspace": (".workspace.workspace", "Workspace"),
+    "LocalWorkspace": (".workspace.local", "LocalWorkspace"),
+    "RemoteWorkspace": (".workspace.remote", "RemoteWorkspace"),
+    "AsyncRemoteWorkspace": (".workspace.remote", "AsyncRemoteWorkspace"),
+    "register_agent": (".subagent.registry", "register_agent"),
+    "load_project_agents": (".subagent.load", "load_project_agents"),
+    "load_user_agents": (".subagent.load", "load_user_agents"),
+    "load_agents_from_dir": (".subagent.load", "load_agents_from_dir"),
+    "agent_definition_to_factory": (
+        ".subagent.registry",
+        "agent_definition_to_factory",
+    ),
+    "load_project_skills": (".skills.skill", "load_project_skills"),
+    "load_skills_from_dir": (".skills.skill", "load_skills_from_dir"),
+    "load_user_skills": (".skills.skill", "load_user_skills"),
+    "page_iterator": (".utils.paging", "page_iterator"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    return import_lazy_symbol(__name__, globals(), _LAZY_IMPORTS, name)
+
+
+def __dir__() -> list[str]:
+    return lazy_dir(globals(), __all__)
