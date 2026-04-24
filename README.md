@@ -20,9 +20,9 @@ This client is **fully browser-compatible** and works without Node.js dependenci
 
 ## Installation
 
-This package is published to GitHub Packages. You have two installation options:
+This package is published to GitHub Packages. You can install it either from GitHub Packages or directly from this repository.
 
-### Option 1: Configure .npmrc (Recommended)
+### Option 1: Configure .npmrc
 
 Add this to your `.npmrc` file:
 
@@ -41,6 +41,14 @@ npm install @openhands/typescript-client
 ```bash
 npm install @openhands/typescript-client --registry=https://npm.pkg.github.com
 ```
+
+### Option 3: Install directly from the GitHub repository
+
+```bash
+npm install github:OpenHands/typescript-client
+```
+
+This git-based install runs the package `prepare` script during installation so the published `dist/` entrypoints and subpath exports are built automatically.
 
 ## Quick Start
 

@@ -16,6 +16,21 @@
       "types": "./dist/clients.d.ts",
       "import": "./dist/clients.js",
       "default": "./dist/clients.js"
+    },
+    "./client/http-client": {
+      "types": "./dist/client/http-client.d.ts",
+      "import": "./dist/client/http-client.js",
+      "default": "./dist/client/http-client.js"
+    },
+    "./events/remote-events-list": {
+      "types": "./dist/events/remote-events-list.d.ts",
+      "import": "./dist/events/remote-events-list.js",
+      "default": "./dist/events/remote-events-list.js"
+    },
+    "./workspace/remote-workspace": {
+      "types": "./dist/workspace/remote-workspace.d.ts",
+      "import": "./dist/workspace/remote-workspace.js",
+      "default": "./dist/workspace/remote-workspace.js"
     }
   },
   "overrides": {
@@ -39,6 +54,7 @@
     "test:all": "npm run test && npm run test:integration",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "keywords": [
