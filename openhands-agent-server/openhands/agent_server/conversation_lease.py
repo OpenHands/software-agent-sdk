@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 from filelock import FileLock
 
@@ -21,6 +22,12 @@ DEFAULT_LEASE_TTL_SECONDS = 45.0
 class LeaseClaim:
     generation: int
     takeover: bool
+
+
+class LeasePayload(TypedDict):
+    owner_instance_id: str
+    generation: int
+    expires_at: float
 
 
 class ConversationLeaseHeldError(RuntimeError):
@@ -50,9 +57,7 @@ class ConversationOwnershipLostError(RuntimeError):
         self.conversation_dir = conversation_dir
         self.owner_instance_id = owner_instance_id
         self.generation = generation
-        super().__init__(
-            "conversation ownership was lost before the write completed"
-        )
+        super().__init__("conversation ownership was lost before the write completed")
 
 
 class ConversationLease:
@@ -75,13 +80,10 @@ class ConversationLease:
             now = time.time()
             payload = self._read_payload()
             if payload is not None:
-                current_owner = str(payload["owner_instance_id"])
-                current_generation = int(payload["generation"])
-                expires_at = float(payload["expires_at"])
-                if (
-                    current_owner != self._owner_instance_id
-                    and expires_at > now
-                ):
+                current_owner = payload["owner_instance_id"]
+                current_generation = payload["generation"]
+                expires_at = payload["expires_at"]
+                if current_owner != self._owner_instance_id and expires_at > now:
                     raise ConversationLeaseHeldError(
                         conversation_dir=self._conversation_dir,
                         owner_instance_id=current_owner,
@@ -115,16 +117,14 @@ class ConversationLease:
             self._assert_owner_locked(generation)
             yield
 
-
-
     def release(self, generation: int) -> None:
         with FileLock(str(self._lock_path)):
             payload = self._read_payload()
             if payload is None:
                 return
             if (
-                str(payload["owner_instance_id"]) != self._owner_instance_id
-                or int(payload["generation"]) != generation
+                payload["owner_instance_id"] != self._owner_instance_id
+                or payload["generation"] != generation
             ):
                 return
             self._lease_path.unlink(missing_ok=True)
@@ -138,8 +138,8 @@ class ConversationLease:
                 generation=generation,
             )
         if (
-            str(payload["owner_instance_id"]) != self._owner_instance_id
-            or int(payload["generation"]) != generation
+            payload["owner_instance_id"] != self._owner_instance_id
+            or payload["generation"] != generation
         ):
             raise ConversationOwnershipLostError(
                 conversation_dir=self._conversation_dir,
@@ -147,11 +147,29 @@ class ConversationLease:
                 generation=generation,
             )
 
-    def _read_payload(self) -> dict[str, object] | None:
+    def _read_payload(self) -> LeasePayload | None:
         if not self._lease_path.exists():
             return None
         try:
-            return json.loads(self._lease_path.read_text())
+            raw_payload = json.loads(self._lease_path.read_text())
+            if not isinstance(raw_payload, dict):
+                raise ValueError("lease payload must be an object")
+
+            owner_instance_id = raw_payload.get("owner_instance_id")
+            generation = raw_payload.get("generation")
+            expires_at = raw_payload.get("expires_at")
+            if not isinstance(owner_instance_id, str):
+                raise ValueError("lease owner_instance_id must be a string")
+            if not isinstance(generation, int):
+                raise ValueError("lease generation must be an integer")
+            if not isinstance(expires_at, int | float):
+                raise ValueError("lease expires_at must be numeric")
+
+            return LeasePayload(
+                owner_instance_id=owner_instance_id,
+                generation=generation,
+                expires_at=float(expires_at),
+            )
         except Exception:
             logger.warning(
                 "Failed to parse conversation lease file; treating as stale: %s",

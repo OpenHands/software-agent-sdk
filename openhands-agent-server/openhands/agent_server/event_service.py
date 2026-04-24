@@ -601,14 +601,12 @@ class EventService:
         # the pod during long conn.prompt() calls.
         self._setup_acp_activity_heartbeat(self._conversation.agent)
 
-        # Only convert an in-progress tool call into an error when this service
-        # had to take over an expired lease. A clean restart should fence off the
-        # old owner first; otherwise duplicate observation-like events can leak in.
+        # Any conversation loaded from disk with RUNNING status is stale. Active
+        # split-brain resumes are prevented earlier by the lease claim itself, so if
+        # we made it this far there is no live owner and the interrupted tool call
+        # should be surfaced back to the agent.
         state = self._conversation.state
-        if (
-            lease_claim.takeover
-            and state.execution_status == ConversationExecutionStatus.RUNNING
-        ):
+        if state.execution_status == ConversationExecutionStatus.RUNNING:
             state.execution_status = ConversationExecutionStatus.ERROR
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:

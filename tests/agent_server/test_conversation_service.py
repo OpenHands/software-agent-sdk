@@ -128,6 +128,8 @@ async def test_second_service_does_not_resume_active_running_conversation(tmp_pa
 
     async with ConversationService(conversations_dir=conversations_dir) as primary:
         conversation_info, _ = await primary.start_conversation(request)
+        assert primary._event_services is not None
+
         primary_event_service = primary._event_services[conversation_info.id]
         primary_state = await primary_event_service.get_state()
 
@@ -138,6 +140,7 @@ async def test_second_service_does_not_resume_active_running_conversation(tmp_pa
         async with ConversationService(
             conversations_dir=conversations_dir,
         ) as secondary:
+            assert secondary._event_services is not None
             assert conversation_info.id not in secondary._event_services
 
             primary_state.events.append(
@@ -176,6 +179,7 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
     async with ConversationService(conversations_dir=conversations_dir) as primary:
         conversation_info, _ = await primary.start_conversation(request)
+        assert primary._event_services is not None
         primary_event_service = primary._event_services[conversation_info.id]
         primary_state = await primary_event_service.get_state()
 
@@ -187,6 +191,7 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
         async with ConversationService(
             conversations_dir=conversations_dir,
         ) as secondary:
+            assert secondary._event_services is not None
             secondary_event_service = secondary._event_services[conversation_info.id]
             secondary_state = await secondary_event_service.get_state()
 
@@ -211,9 +216,6 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
             with pytest.raises(ConversationOwnershipLostError):
                 primary_state.execution_status = ConversationExecutionStatus.ERROR
-
-
-
 
 
 class TestConversationServiceSearchConversations:

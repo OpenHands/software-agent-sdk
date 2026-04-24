@@ -732,6 +732,7 @@ class ConversationService:
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
         for conversation_dir in self.conversations_dir.iterdir():
+            stored: StoredConversation | None = None
             try:
                 meta_file = conversation_dir / "meta.json"
                 if not meta_file.exists():
@@ -779,9 +780,12 @@ class ConversationService:
                     )
                 await self._start_event_service(stored)
             except ConversationLeaseHeldError as exc:
+                conversation_id = (
+                    stored.id if stored is not None else conversation_dir.name
+                )
                 logger.info(
                     "Skipping active conversation %s owned by %s until %s",
-                    stored.id,
+                    conversation_id,
                     exc.owner_instance_id,
                     exc.expires_at,
                 )
