@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import threading
 import time
@@ -11,6 +12,10 @@ import pytest
 from litellm.types.utils import ChatCompletionMessageToolCall, Function
 from pydantic import SecretStr
 
+from openhands.agent_server.conversation_lease import (
+    LEASE_FILE_NAME,
+    ConversationOwnershipLostError,
+)
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationContractMismatchError,
@@ -89,6 +94,13 @@ def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent
     )
 
 
+def _expire_conversation_lease(conversations_dir: Path, conversation_id) -> None:
+    lease_path = conversations_dir / conversation_id.hex / LEASE_FILE_NAME
+    payload = json.loads(lease_path.read_text())
+    payload["expires_at"] = 0
+    lease_path.write_text(json.dumps(payload))
+
+
 @pytest.fixture
 def conversation_service():
     """Create a ConversationService instance for testing."""
@@ -148,6 +160,59 @@ async def test_second_service_does_not_resume_active_running_conversation(tmp_pa
             "ObservationEvent",
         ]
         assert not any(isinstance(event, AgentErrorEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        primary_event_service = primary._event_services[conversation_info.id]
+        primary_state = await primary_event_service.get_state()
+
+        running_action = _create_running_terminal_action()
+        primary_state.events.append(running_action)
+        primary_state.execution_status = ConversationExecutionStatus.RUNNING
+        _expire_conversation_lease(conversations_dir, conversation_info.id)
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+        ) as secondary:
+            secondary_event_service = secondary._event_services[conversation_info.id]
+            secondary_state = await secondary_event_service.get_state()
+
+            assert any(
+                isinstance(event, AgentErrorEvent)
+                for event in secondary_state.events[:]
+            )
+
+            with pytest.raises(ConversationOwnershipLostError):
+                primary_state.events.append(
+                    ObservationEvent(
+                        observation=TerminalObservation.from_text(
+                            "late result",
+                            command="sleep 30",
+                            exit_code=0,
+                        ),
+                        action_id=running_action.id,
+                        tool_name="terminal",
+                        tool_call_id=running_action.tool_call_id,
+                    )
+                )
+
+            with pytest.raises(ConversationOwnershipLostError):
+                primary_state.execution_status = ConversationExecutionStatus.ERROR
+
+
 
 
 
