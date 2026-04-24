@@ -4,7 +4,7 @@ The Agent Client Protocol (ACP) lets OpenHands power conversations using
 ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
 LLM calls.  The ACP server manages its own LLM, tools, and execution;
 the ACPAgent relays user messages and collects the response. OpenHands
-can still append prompt-only context, such as activated skills, to the
+can still append prompt-only context, such as a skill catalog, to the
 user message before it is sent to the ACP server.
 
 Unlike the built-in Agent, one ACP ``step()`` maps to one complete remote
@@ -1116,17 +1116,22 @@ class ACPAgent(AgentBase):
         """Send the latest user message to the ACP server and emit the response."""
         state = conversation.state
 
-        # Find the latest user message, including any prompt-only extensions
-        # that Conversation.send_message() attached from AgentContext skills.
+        # Find the latest user message. ACP receives only a prompt-only skill
+        # catalog from AgentContext; triggered skill content remains an OpenHands
+        # Agent feature because ACP servers own their own execution model.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                message = event.to_llm_message()
+                message = event.llm_message
                 text_parts = [
                     content.text
                     for content in message.content
                     if isinstance(content, TextContent) and content.text.strip()
                 ]
+                if self.agent_context:
+                    catalog_prompt = self.agent_context.get_skill_catalog_prompt()
+                    if catalog_prompt:
+                        text_parts.append(catalog_prompt)
                 if text_parts:
                     user_message = "\n\n".join(text_parts)
                 if user_message:

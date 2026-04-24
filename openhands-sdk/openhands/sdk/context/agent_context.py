@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
+from xml.sax.saxutils import escape as xml_escape
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -276,6 +277,38 @@ class AgentContext(BaseModel):
         elif self.system_message_suffix and self.system_message_suffix.strip():
             return self.system_message_suffix.strip()
         return None
+
+    def get_skill_catalog_prompt(self) -> str | None:
+        """Return a prompt-only catalog of available skills.
+
+        This is intentionally limited to skill names and descriptions. It does not
+        include full skill content, trigger-matched knowledge, file locations,
+        secrets, or execution guidance. ACP servers own tool execution, so SDK
+        consumers should only use this catalog to provide lightweight awareness of
+        SDK-loaded skills and plugin-contributed skills.
+        """
+        if not self.skills:
+            return None
+
+        lines = ["<SKILLS>", "The following skills are available:"]
+        lines.append("<available_skills>")
+        for skill in self.skills:
+            name = xml_escape(skill.name.strip())
+            description = skill.description
+            if not description:
+                for line in skill.content.split("\n"):
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#"):
+                        description = stripped
+                        break
+            description = xml_escape((description or "").strip())
+            lines.append("  <skill>")
+            lines.append(f"    <name>{name}</name>")
+            lines.append(f"    <description>{description}</description>")
+            lines.append("  </skill>")
+        lines.append("</available_skills>")
+        lines.append("</SKILLS>")
+        return "\n".join(lines)
 
     def get_user_message_suffix(
         self, user_message: Message, skip_skill_names: list[str]

@@ -575,8 +575,19 @@ class TestACPAgentStep:
         assert isinstance(content_block, TextContent)
         assert content_block.text == "The answer is 4"
 
-    def test_step_sends_extended_content_to_acp_server(self, tmp_path):
-        agent = _make_agent()
+    def test_step_sends_skill_catalog_to_acp_server(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="review",
+                        content="Full review instructions that ACP should not receive.",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                        description="Review pull requests.",
+                    )
+                ]
+            )
+        )
         state = _make_state(tmp_path)
         state.events.append(
             MessageEvent(
@@ -617,7 +628,12 @@ class TestACPAgentStep:
         assert len(prompt_blocks) == 1
         prompt_text = prompt_blocks[0].text
         assert "Review this PR." in prompt_text
-        assert "<skill_context>Use strict review.</skill_context>" in prompt_text
+        assert "<name>review</name>" in prompt_text
+        assert "<description>Review pull requests.</description>" in prompt_text
+        assert "<skill_context>Use strict review.</skill_context>" not in prompt_text
+        assert (
+            "Full review instructions that ACP should not receive." not in prompt_text
+        )
 
     def test_step_includes_reasoning(self, tmp_path):
         agent = _make_agent()
