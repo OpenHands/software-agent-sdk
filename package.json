@@ -39,11 +39,11 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node ./scripts/rewrite-relative-imports.mjs",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
-    "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"examples/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"examples/**/*.ts\" \"scripts/**/*.mjs\"",
     "test": "jest --config jest.config.cjs",
     "test:watch": "jest --config jest.config.cjs --watch",
     "test:coverage": "jest --config jest.config.cjs --coverage",
@@ -51,11 +51,12 @@
     "test:integration:verbose": "jest --config jest.integration.config.cjs --verbose",
     "test:integration:deterministic": "jest --config jest.integration.config.cjs --runInBand --testPathPatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
     "test:integration:llm": "jest --config jest.integration.config.cjs --runInBand --testPathIgnorePatterns=\"deterministic-api.integration.test.ts|bash.integration.test.ts\"",
-    "test:all": "npm run test && npm run test:integration",
+    "test:git-dependency": "node ./scripts/smoke-test-git-dependency.mjs",
+    "test:all": "npm run test && npm run test:integration && npm run test:git-dependency",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
-    "prepare": "npm run build",
-    "prepublishOnly": "npm run clean && npm run build && npm test"
+    "prepare": "npm run clean && npm run build",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "openhands",
