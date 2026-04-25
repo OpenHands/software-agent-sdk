@@ -1133,7 +1133,6 @@ class ACPAgent(AgentBase):
                         include_skill_catalog=True,
                         include_system_suffix=True,
                         include_user_suffix=False,
-                        include_secret_catalog=True,
                         include_current_datetime=True,
                         include_full_skill_content=False,
                     )

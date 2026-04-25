@@ -3,7 +3,6 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
-from xml.sax.saxutils import escape as xml_escape
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -284,7 +283,6 @@ class AgentContext(BaseModel):
         include_skill_catalog: bool = True,
         include_system_suffix: bool = True,
         include_user_suffix: bool = True,
-        include_secret_catalog: bool = True,
         include_current_datetime: bool = True,
         include_full_skill_content: bool = False,
     ) -> str | None:
@@ -310,6 +308,10 @@ class AgentContext(BaseModel):
             fields = ", ".join(sorted(unsupported_fields))
             raise NotImplementedError(
                 f"ACP prompt context does not support AgentContext field(s): {fields}"
+            )
+        if self.secrets:
+            raise NotImplementedError(
+                "ACP prompt context does not support AgentContext field(s): secrets"
             )
 
         parts: list[str] = []
@@ -388,29 +390,6 @@ class AgentContext(BaseModel):
                         ]
                     )
                 )
-
-        if include_secret_catalog:
-            secret_infos = self.get_secret_infos()
-            if secret_infos:
-                lines = [
-                    "<SECRET_CATALOG>",
-                    (
-                        "The following secret names are registered. "
-                        "Secret values are not included."
-                    ),
-                ]
-                for secret_info in secret_infos:
-                    name = xml_escape(secret_info["name"] or "")
-                    description = xml_escape((secret_info["description"] or "").strip())
-                    if description:
-                        lines.append(
-                            f"  <secret><name>{name}</name>"
-                            f"<description>{description}</description></secret>"
-                        )
-                    else:
-                        lines.append(f"  <secret><name>{name}</name></secret>")
-                lines.append("</SECRET_CATALOG>")
-                parts.append("\n".join(lines))
 
         if not parts:
             return None

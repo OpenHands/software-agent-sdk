@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
-from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -31,7 +30,6 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
-from openhands.sdk.secret import StaticSecret
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.workspace.local import LocalWorkspace
 
@@ -225,12 +223,6 @@ class TestACPAgentValidation:
             ],
             system_message_suffix="Follow repository rules.",
             user_message_suffix="Prefer concise responses.",
-            secrets={
-                "GITHUB_TOKEN": StaticSecret(
-                    value=SecretStr("ghp_secret"),
-                    description="GitHub API token",
-                )
-            },
             current_datetime="2026-04-24T00:00:00",
         )
 
@@ -246,10 +238,12 @@ class TestACPAgentValidation:
         assert "Follow repository rules." in prompt
         assert "<USER_CONTEXT>" in prompt
         assert "Prefer concise responses." in prompt
-        assert "<SECRET_CATALOG>" in prompt
-        assert "GITHUB_TOKEN" in prompt
-        assert "GitHub API token" in prompt
-        assert "ghp_secret" not in prompt
+
+    def test_agent_context_to_acp_prompt_context_rejects_secrets(self):
+        context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_secret"})
+
+        with pytest.raises(NotImplementedError, match="secrets"):
+            context.to_acp_prompt_context()
 
     def test_agent_context_to_acp_prompt_context_includes_legacy_repo_skills(self):
         context = AgentContext(
