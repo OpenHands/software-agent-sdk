@@ -1117,9 +1117,8 @@ class ACPAgent(AgentBase):
         state = conversation.state
 
         # Find the latest user message. ACP receives AgentSkills as a prompt-only
-        # catalog by default, but explicit keyword triggers still contribute the
-        # matched skill content as prompt text because ACP has no invoke_skill
-        # tool path to retrieve it later.
+        # catalog by default, and shares AgentContext's normal per-turn trigger
+        # injection so explicit keyword matches still contribute skill content.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
@@ -1130,14 +1129,15 @@ class ACPAgent(AgentBase):
                     if isinstance(content, TextContent) and content.text.strip()
                 ]
                 if self.agent_context:
-                    legacy_user_context = self.agent_context.get_user_message_suffix(
-                        user_message=message,
-                        skip_skill_names=[],
-                        include_agentskills_format=True,
-                        include_user_message_suffix=False,
+                    prompt_extensions, _activated_skill_names = (
+                        self.agent_context.get_user_message_prompt_extensions(
+                            user_message=message,
+                            skip_skill_names=[],
+                            include_agentskills_format=True,
+                            include_user_message_suffix=False,
+                        )
                     )
-                    if legacy_user_context:
-                        content, _activated_skill_names = legacy_user_context
+                    for content in prompt_extensions:
                         if content.text.strip():
                             text_parts.append(content.text)
                     acp_prompt_context = self.agent_context.to_acp_prompt_context(

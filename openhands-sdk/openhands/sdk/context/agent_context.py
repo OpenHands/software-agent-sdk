@@ -488,3 +488,35 @@ class AgentContext(BaseModel):
         if user_message_suffix:
             return TextContent(text=user_message_suffix), []
         return None
+
+    def get_user_message_prompt_extensions(
+        self,
+        user_message: Message,
+        skip_skill_names: list[str],
+        *,
+        include_agentskills_format: bool = True,
+        include_legacy_skills: bool = True,
+        include_user_message_suffix: bool = True,
+    ) -> tuple[list[TextContent], list[str]]:
+        """Return per-turn prompt extensions for a user message.
+
+        This is the shared entry point for conversation implementations and
+        prompt-only adapters that need trigger-based skill injection. It keeps
+        the matching behavior in one place while allowing adapters to decide
+        whether user_message_suffix should be included in this per-turn block
+        or injected through another prompt-context path.
+        """
+        suffix = self.get_user_message_suffix(
+            user_message=user_message,
+            skip_skill_names=skip_skill_names,
+            include_agentskills_format=include_agentskills_format,
+            include_legacy_skills=include_legacy_skills,
+            include_user_message_suffix=include_user_message_suffix,
+        )
+        if suffix is None:
+            return [], []
+
+        content, activated_skill_names = suffix
+        if not content.text.strip():
+            return [], activated_skill_names
+        return [content], activated_skill_names
