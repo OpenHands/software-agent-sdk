@@ -21,7 +21,7 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.llm.llm_registry import RegistryEvent
+from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -55,14 +55,21 @@ class _DifferentAgentForVerifyTest(AgentBase):
         pass
 
 
-def test_conversation_state_basic_serialization():
+def test_conversation_state_basic_serialization(tmp_path, monkeypatch):
     """Test basic ConversationState serialization and deserialization."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
+    registry = LLMRegistry()
+
     state = ConversationState.create(
         agent=agent,
         id=uuid.UUID("12345678-1234-5678-9abc-123456789001"),
         workspace=LocalWorkspace(working_dir="/tmp"),
+        llm_registry=registry,
     )
 
     # Add some events
@@ -81,7 +88,10 @@ def test_conversation_state_basic_serialization():
     assert isinstance(serialized, str)
 
     # Test deserialization - events won't be included in base state
-    deserialized = ConversationState.model_validate_json(serialized)
+    deserialized = ConversationState.model_validate_json(
+        serialized,
+        context={"llm_registry": registry},
+    )
     assert deserialized.id == state.id
 
     # Events are stored separately, so we need to check the actual events
@@ -163,12 +173,127 @@ def test_conversation_state_persistence_save_load():
         assert isinstance(loaded_state.events[1], MessageEvent)
         assert loaded_state.agent.llm.model == agent.llm.model
         assert loaded_state.agent.__class__ == agent.__class__
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
-
+        # Test model_dump equality ignoring any additional runtime stats
+        loaded_dump = loaded_state.model_dump(mode="json")
+        original_dump = state.model_dump(mode="json")
+        loaded_stats = loaded_dump.pop("stats", None)
+        original_stats = original_dump.pop("stats", None)
+        assert loaded_dump == original_dump
+        if original_stats is not None:
+            assert loaded_stats is not None
+            loaded_metrics = loaded_stats.get("service_to_metrics", {})
+            for key, metric in original_stats.get("service_to_metrics", {}).items():
+                assert key in loaded_metrics
+                assert loaded_metrics[key] == metric
         # Also verify key fields are preserved
         assert loaded_state.id == state.id
         assert len(loaded_state.events) == len(state.events)
+
+
+def test_conversation_state_profile_reference_mode(tmp_path, monkeypatch):
+    """When inline persistence is disabled we store profile references."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    registry = LLMRegistry()
+    llm = LLM(model="litellm_proxy/openai/gpt-5-mini", usage_id="agent")
+    registry.save_profile("profile-tests", llm)
+
+    agent = Agent(llm=registry.load_profile("profile-tests"), tools=[])
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890ff")
+    persistence_root = tmp_path / "conv"
+    persistence_dir = LocalConversation.get_persistence_dir(persistence_root, conv_id)
+
+    ConversationState.create(
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        persistence_dir=persistence_dir,
+        agent=agent,
+        id=conv_id,
+        llm_registry=registry,
+    )
+
+    base_state = json.loads((Path(persistence_dir) / "base_state.json").read_text())
+    assert base_state["agent"]["llm"] == {
+        "kind": "profile_ref",
+        "profile_id": "profile-tests",
+    }
+
+    conversation = Conversation(
+        agent=agent,
+        persistence_dir=persistence_root,
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        conversation_id=conv_id,
+    )
+
+    loaded_state = conversation.state
+    assert loaded_state.agent.llm.profile_id == "profile-tests"
+    assert loaded_state.agent.llm.model == llm.model
+
+
+def test_conversation_state_persists_profile_reference_by_default(
+    tmp_path, monkeypatch
+):
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    registry = LLMRegistry()
+    llm = LLM(model="litellm_proxy/openai/gpt-5-mini", usage_id="agent")
+    registry.save_profile("profile-inline", llm)
+    agent = Agent(llm=registry.load_profile("profile-inline"), tools=[])
+
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890aa")
+    persistence_root = tmp_path / "conv"
+    persistence_dir = LocalConversation.get_persistence_dir(persistence_root, conv_id)
+
+    ConversationState.create(
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        persistence_dir=persistence_dir,
+        agent=agent,
+        id=conv_id,
+        llm_registry=registry,
+    )
+
+    conversation = Conversation(
+        agent=agent,
+        persistence_dir=persistence_root,
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        conversation_id=conv_id,
+    )
+
+    assert conversation.state.agent.llm.profile_id == "profile-inline"
+
+
+def test_conversation_state_missing_profile_reference_raises(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    registry = LLMRegistry()
+    llm = LLM(model="litellm_proxy/openai/gpt-5-mini", usage_id="agent")
+    registry.save_profile("profile-orphan", llm)
+    agent = Agent(llm=registry.load_profile("profile-orphan"), tools=[])
+
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890ab")
+    persistence_root = tmp_path / "conv"
+    persistence_dir = LocalConversation.get_persistence_dir(persistence_root, conv_id)
+
+    ConversationState.create(
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        persistence_dir=persistence_dir,
+        agent=agent,
+        id=conv_id,
+        llm_registry=registry,
+    )
+
+    (registry.get_profile_path("profile-orphan")).unlink()
+
+    with pytest.raises(FileNotFoundError):
+        Conversation(
+            agent=agent,
+            persistence_dir=persistence_root,
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            conversation_id=conv_id,
+        )
 
 
 def test_conversation_state_incremental_save():
@@ -224,8 +349,18 @@ def test_conversation_state_incremental_save():
         assert conversation.state.persistence_dir == persist_path_for_state
         loaded_state = conversation._state
         assert len(loaded_state.events) == 2
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+        # Test model_dump equality ignoring any additional runtime stats
+        loaded_dump = loaded_state.model_dump(mode="json")
+        original_dump = state.model_dump(mode="json")
+        loaded_stats = loaded_dump.pop("stats", None)
+        original_stats = original_dump.pop("stats", None)
+        assert loaded_dump == original_dump
+        if original_stats is not None:
+            assert loaded_stats is not None
+            loaded_metrics = loaded_stats.get("service_to_metrics", {})
+            for key, metric in original_stats.get("service_to_metrics", {}).items():
+                assert key in loaded_metrics
+                assert loaded_metrics[key] == metric
 
 
 def test_conversation_state_event_file_scanning():
@@ -540,8 +675,20 @@ def test_agent_verify_different_class_raises_error():
         original_agent.verify(different_agent)
 
 
-def test_conversation_state_flags_persistence():
+def test_agent_base_unknown_kind_raises_validation_error():
+    """Test that AgentBase.model_validate raises ValidationError for unknown kinds."""
+    from openhands.sdk.agent.base import AgentBase
+
+    with pytest.raises(ValidationError, match="Unknown kind"):
+        AgentBase.model_validate({"kind": "NotARealAgent"})
+
+
+def test_conversation_state_flags_persistence(tmp_path, monkeypatch):
     """Test that conversation state flags are properly persisted."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
@@ -551,11 +698,13 @@ def test_conversation_state_flags_persistence():
         persist_path_for_state = LocalConversation.get_persistence_dir(
             temp_dir, conv_id
         )
+        registry = LLMRegistry()
         state = ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
             persistence_dir=persist_path_for_state,
             agent=agent,
             id=conv_id,
+            llm_registry=registry,
         )
 
         state.stats.register_llm(RegistryEvent(llm=llm))
@@ -571,6 +720,7 @@ def test_conversation_state_flags_persistence():
             persistence_dir=persist_path_for_state,
             agent=agent,
             id=conv_id,
+            llm_registry=registry,
         )
 
         # Verify key fields are preserved
@@ -584,8 +734,12 @@ def test_conversation_state_flags_persistence():
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
 
-def test_conversation_with_agent_different_llm_config():
+def test_conversation_with_agent_different_llm_config(tmp_path, monkeypatch):
     """Test conversation with agent having different LLM configuration."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with original LLM config
         original_llm = LLM(
@@ -642,8 +796,12 @@ def test_conversation_with_agent_different_llm_config():
         assert new_dump == original_state_dump
 
 
-def test_resume_uses_runtime_workspace_and_max_iterations():
+def test_resume_uses_runtime_workspace_and_max_iterations(tmp_path, monkeypatch):
     """Test that resume uses runtime-provided workspace and max_iterations."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
@@ -675,8 +833,14 @@ def test_resume_uses_runtime_workspace_and_max_iterations():
         assert resumed_state.max_iterations == 200
 
 
-def test_resume_preserves_persisted_execution_status_and_stuck_detection():
+def test_resume_preserves_persisted_execution_status_and_stuck_detection(
+    tmp_path, monkeypatch
+):
     """Test that resume preserves execution_status and stuck_detection."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
@@ -706,8 +870,12 @@ def test_resume_preserves_persisted_execution_status_and_stuck_detection():
         assert resumed_state.stuck_detection is False
 
 
-def test_resume_preserves_blocked_actions_and_messages():
+def test_resume_preserves_blocked_actions_and_messages(tmp_path, monkeypatch):
     """Test that resume preserves blocked_actions and blocked_messages."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
@@ -736,8 +904,12 @@ def test_resume_preserves_blocked_actions_and_messages():
         assert resumed_state.blocked_messages["msg-1"] == "inappropriate content"
 
 
-def test_conversation_state_stats_preserved_on_resume():
+def test_conversation_state_stats_preserved_on_resume(tmp_path, monkeypatch):
     """Regression: stats should not be reset when resuming a conversation."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"

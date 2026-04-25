@@ -150,6 +150,11 @@ class LocalConversation(BaseConversation):
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
         """
+        # Initialize the registry early so profile references resolve during
+        # resume. The registry must exist before ConversationState.create()
+        # attempts to load persisted state that may contain profile_ref payloads.
+        self.llm_registry = LLMRegistry()
+
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
@@ -186,6 +191,7 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            llm_registry=self.llm_registry,
             cipher=cipher,
             tags=tags,
         )
@@ -263,7 +269,6 @@ class LocalConversation(BaseConversation):
 
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
-        self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore()
 
         # Initialize secrets if provided

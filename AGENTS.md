@@ -116,6 +116,8 @@ When reviewing code, provide constructive feedback:
 - `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
 - The duplicate-issue automation scripts should validate `owner/repo` arguments before interpolating GitHub API paths, handle per-issue auto-close failures without aborting the whole batch, and keep `app_conversation_id` paths unquoted because OpenHands conversation IDs are already canonicalized for those endpoints.
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
+- `LocalConversation.switch_profile()` still uses the public `LLMProfileStore` compatibility path (`~/.openhands/profiles` by default), while persisted `profile_ref` restoration flows through `LLMRegistry` (`LLM_PROFILES_DIR` / `~/.openhands/llm-profiles`). Treat them as separate compatibility surfaces unless you deliberately migrate both together.
+
 
 
 ## Package-specific guidance
@@ -289,6 +291,8 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
 
+## Example Scripts
+- Example scripts in `examples/` should run code directly at module level without wrapping in `if __name__ == "__main__":` guards. This saves a level of indentation and keeps examples concise.
 </CODE>
 
 <TESTING>
