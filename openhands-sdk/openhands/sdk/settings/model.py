@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, get_args, get_origin
@@ -296,6 +296,92 @@ _RequestT = TypeVar("_RequestT")
 AGENT_SETTINGS_SCHEMA_VERSION = 1
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
+PersistedSettingsMigrator = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def _copy_persisted_payload(data: Any) -> dict[str, Any]:
+    if isinstance(data, BaseModel):
+        payload = data.model_dump(mode="json")
+        if not isinstance(payload, dict):
+            raise TypeError("Persisted settings payload must serialize to a mapping.")
+        return payload
+    if isinstance(data, Mapping):
+        return dict(data)
+    raise TypeError("Persisted settings payload must be a mapping or BaseModel.")
+
+
+def _apply_persisted_migrations(
+    data: Any,
+    *,
+    current_version: int,
+    migrations: dict[int, PersistedSettingsMigrator],
+    payload_name: str,
+) -> dict[str, Any]:
+    payload = _copy_persisted_payload(data)
+    version_raw = payload.get("schema_version", 0)
+    if version_raw is None:
+        version = 0
+    elif isinstance(version_raw, int) and not isinstance(version_raw, bool):
+        version = version_raw
+    else:
+        raise TypeError(
+            f"{payload_name} schema_version must be an integer, got "
+            f"{type(version_raw).__name__}."
+        )
+
+    if version < 0:
+        raise ValueError(f"{payload_name} schema_version must be non-negative.")
+    if version > current_version:
+        raise ValueError(
+            f"{payload_name} schema_version {version} is newer than supported "
+            f"version {current_version}."
+        )
+
+    while version < current_version:
+        migrate = migrations.get(version)
+        if migrate is None:
+            raise ValueError(
+                f"No migration registered for {payload_name} schema_version {version}."
+            )
+        payload = migrate(dict(payload))
+        next_version = payload.get("schema_version")
+        if not isinstance(next_version, int) or isinstance(next_version, bool):
+            raise ValueError(
+                f"Migration for {payload_name} schema_version {version} did not "
+                "produce a valid integer schema_version."
+            )
+        if next_version <= version:
+            raise ValueError(
+                f"Migration for {payload_name} schema_version {version} did not "
+                "advance the schema_version."
+            )
+        version = next_version
+
+    return payload
+
+
+def _migrate_agent_settings_v0_to_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_version"] = 1
+    migrated.setdefault("agent_kind", _agent_settings_discriminator(migrated))
+    return migrated
+
+
+def _migrate_conversation_settings_v0_to_v1(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    migrated = dict(payload)
+    migrated["schema_version"] = 1
+    return migrated
+
+
+_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
+    0: _migrate_agent_settings_v0_to_v1,
+}
+_CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
+    0: _migrate_conversation_settings_v0_to_v1,
+}
+
 
 class ConversationSettings(BaseModel):
     schema_version: int = Field(default=CONVERSATION_SETTINGS_SCHEMA_VERSION, ge=1)
@@ -400,6 +486,17 @@ class ConversationSettings(BaseModel):
     def export_schema(cls) -> SettingsSchema:
         """Export a structured schema describing configurable conversation settings."""
         return export_settings_schema(cls)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> ConversationSettings:
+        """Load persisted conversation settings, applying any schema migrations."""
+        payload = _apply_persisted_migrations(
+            data,
+            current_version=CONVERSATION_SETTINGS_SCHEMA_VERSION,
+            migrations=_CONVERSATION_SETTINGS_MIGRATIONS,
+            payload_name="ConversationSettings",
+        )
+        return cls.model_validate(payload)
 
     def _build_confirmation_policy(self):
         from openhands.sdk.security.confirmation_policy import (
@@ -971,6 +1068,17 @@ class AgentSettings(LLMAgentSettings):
     Scheduled for removal in v1.22.0 (5 minor releases after the
     discriminated-union landing in v1.17.1).
     """
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> LLMAgentSettings | ACPAgentSettings:
+        """Load persisted agent settings, applying any schema migrations."""
+        payload = _apply_persisted_migrations(
+            data,
+            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+            migrations=_AGENT_SETTINGS_MIGRATIONS,
+            payload_name="AgentSettings",
+        )
+        return validate_agent_settings(payload)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         from openhands.sdk.utils.deprecation import warn_deprecated
