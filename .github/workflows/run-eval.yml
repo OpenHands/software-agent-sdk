@@ -17,6 +17,7 @@ on:
                 options:
                     - gaia
                     - swebench
+                    - swebenchpro
                     - swtbench
                     - commit0
                     - swebenchmultimodal
