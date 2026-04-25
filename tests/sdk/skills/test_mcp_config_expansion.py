@@ -3,7 +3,6 @@
 import json
 import os
 
-import pytest
 from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
 
 from openhands.sdk.skills.utils import expand_mcp_variables, load_mcp_config

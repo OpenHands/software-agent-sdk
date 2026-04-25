@@ -75,9 +75,10 @@ def _serialize_for_json(obj: object) -> object:
     This handles the case where MCP config contains Pydantic model objects
     (RemoteMCPServer, StdioMCPServer) instead of plain dicts.
     """
-    if hasattr(obj, "model_dump"):
-        # Pydantic v2 model
-        return obj.model_dump()
+    # Check for Pydantic v2 model_dump method
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        return model_dump()
     elif isinstance(obj, dict):
         return {k: _serialize_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
