@@ -1116,34 +1116,23 @@ class ACPAgent(AgentBase):
         """Send the latest user message to the ACP server and emit the response."""
         state = conversation.state
 
-        # Find the latest user message. ACP receives AgentSkills as a prompt-only
-        # catalog by default, and shares AgentContext's normal per-turn trigger
-        # injection so explicit keyword matches still contribute skill content.
+        # Find the latest user message. Conversation implementations already
+        # attach per-turn AgentContext extensions to MessageEvent.extended_content;
+        # MessageEvent.to_llm_message() merges those extensions with the user text.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                message = event.llm_message
+                message = event.to_llm_message()
                 text_parts = [
                     content.text
                     for content in message.content
                     if isinstance(content, TextContent) and content.text.strip()
                 ]
                 if self.agent_context:
-                    prompt_extensions, _activated_skill_names = (
-                        self.agent_context.get_user_message_prompt_extensions(
-                            user_message=message,
-                            skip_skill_names=[],
-                            include_agentskills_format=True,
-                            include_user_message_suffix=False,
-                        )
-                    )
-                    for content in prompt_extensions:
-                        if content.text.strip():
-                            text_parts.append(content.text)
                     acp_prompt_context = self.agent_context.to_acp_prompt_context(
                         include_skill_catalog=True,
                         include_system_suffix=True,
-                        include_user_suffix=True,
+                        include_user_suffix=False,
                         include_secret_catalog=True,
                         include_current_datetime=True,
                         include_full_skill_content=False,

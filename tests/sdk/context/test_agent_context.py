@@ -294,34 +294,6 @@ class TestAgentContext:
         assert text_content.text == expected_output
         assert triggered_names == ["python_tips"]
 
-    def test_get_user_message_prompt_extensions_reuses_suffix_logic(self):
-        """Prompt extensions wrap triggered content for conversation adapters."""
-        skill = Skill(
-            name="review-guide",
-            content="All review output must be Chinese.",
-            trigger=KeywordTrigger(keywords=["/codereview"]),
-            is_agentskills_format=True,
-        )
-        context = AgentContext(
-            skills=[skill],
-            user_message_suffix="Prefer concise responses.",
-        )
-        user_message = Message(
-            role="user",
-            content=[TextContent(text="/codereview this change")],
-        )
-
-        extensions, activated_names = context.get_user_message_prompt_extensions(
-            user_message=user_message,
-            skip_skill_names=[],
-            include_user_message_suffix=False,
-        )
-
-        assert activated_names == ["review-guide"]
-        assert len(extensions) == 1
-        assert "All review output must be Chinese." in extensions[0].text
-        assert "Prefer concise responses." not in extensions[0].text
-
     def test_get_user_message_suffix_with_multiple_triggers(self):
         """Test user message suffix with multiple triggered skills."""
         python_agent = Skill(

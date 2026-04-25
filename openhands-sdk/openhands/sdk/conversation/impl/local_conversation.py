@@ -691,21 +691,21 @@ class LocalConversation(BaseConversation):
 
             # Handle per-turn user message (i.e., knowledge agent trigger)
             if self.agent.agent_context:
-                extended_content, activated_skill_names = (
-                    self.agent.agent_context.get_user_message_prompt_extensions(
-                        user_message=message,
-                        # We skip skills that were already activated
-                        skip_skill_names=self._state.activated_knowledge_skills,
-                    )
+                ctx = self.agent.agent_context.get_user_message_suffix(
+                    user_message=message,
+                    # We skip skills that were already activated
+                    skip_skill_names=self._state.activated_knowledge_skills,
                 )
                 # TODO(calvin): we need to update
                 # self._state.activated_knowledge_skills
                 # so condenser can work
-                if extended_content:
+                if ctx:
+                    content, activated_skill_names = ctx
                     logger.debug(
-                        f"Got augmented user message content: {extended_content}, "
+                        f"Got augmented user message content: {content}, "
                         f"activated skills: {activated_skill_names}"
                     )
+                    extended_content.append(content)
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
 
             user_msg_event = MessageEvent(

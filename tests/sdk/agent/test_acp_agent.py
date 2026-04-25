@@ -771,7 +771,7 @@ class TestACPAgentStep:
         assert "Review this PR." in prompt_text
         assert "<name>review</name>" in prompt_text
         assert "<description>Review pull requests.</description>" in prompt_text
-        assert "<skill_context>Use strict review.</skill_context>" not in prompt_text
+        assert "<skill_context>Use strict review.</skill_context>" in prompt_text
         assert (
             "Full review instructions that ACP should not receive." not in prompt_text
         )
@@ -803,11 +803,6 @@ class TestACPAgentStep:
                     role="user",
                     content=[TextContent(text="Review this PR.")],
                 ),
-                extended_content=[
-                    TextContent(
-                        text="AgentSkills full instructions should not be sent."
-                    )
-                ],
             )
         )
         conversation = MagicMock()
@@ -870,6 +865,10 @@ class TestACPAgentStep:
                     role="user",
                     content=[TextContent(text="/review this PR.")],
                 ),
+                extended_content=[
+                    TextContent(text="Legacy triggered review instructions."),
+                    TextContent(text="AgentSkills triggered review instructions."),
+                ],
             )
         )
         conversation = MagicMock()
