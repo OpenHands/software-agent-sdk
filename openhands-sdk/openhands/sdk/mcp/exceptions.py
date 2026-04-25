@@ -7,6 +7,24 @@ class MCPError(Exception):
     pass
 
 
+class MCPInitializationError(MCPError):
+    """Exception raised when MCP initialization fails.
+
+    This exception is raised during MCP initialization when:
+    - MCP config serialization fails (e.g., Pydantic models not converted to dicts)
+    - MCP config validation fails
+    - Variable expansion in MCP config fails
+    - MCP server connection fails
+
+    CLI applications can catch this to offer graceful degradation,
+    e.g., retrying without MCP servers.
+    """
+
+    def __init__(self, message: str, cause: Exception | None = None):
+        self.cause = cause
+        super().__init__(message)
+
+
 class MCPTimeoutError(MCPError):
     """Exception raised when MCP operations timeout."""
 

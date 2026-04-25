@@ -29,6 +29,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.exceptions import MCPInitializationError
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -470,8 +471,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
             # Collect results as they complete
             for future in futures:
-                result = future.result()
-                tools.extend(result)
+                try:
+                    result = future.result()
+                    tools.extend(result)
+                except MCPInitializationError:
+                    # Re-raise MCPInitializationError as-is for CLI to handle
+                    raise
+                except Exception as e:
+                    # Wrap other MCP-related exceptions
+                    if self.mcp_config and "MCP" in type(e).__name__:
+                        raise MCPInitializationError(
+                            f"Failed to initialize MCP tools: {e}",
+                            cause=e,
+                        ) from e
+                    raise
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
