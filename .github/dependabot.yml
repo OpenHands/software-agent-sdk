@@ -1,14 +1,19 @@
 ---
-# Dependabot configuration for automated dependency updates
+# Dependabot configuration for automated dependency updates.
 # See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
-# Note: Python (pip) ecosystem is not configured here because Dependabot does not
-# fully support uv workspaces yet. See issue #2510 for tracking.
+# Note: Python dependency updates are still intentionally disabled here.
+# Dependabot now has a native `uv` ecosystem, but the remaining workspace
+# blockers still make it a poor fit for this monorepo:
+# - workspace member dependencies are not updated: dependabot-core#14103
+# - workspace members can be treated as external dependencies: #14004
+# - `dependency-type` groups are ignored for `uv`: #13202
+# - grouped security updates can silently drop packages: #14665
+# Revisit `package-ecosystem: uv` once those issues are resolved.
 
 version: 2
 
 updates:
-  # GitHub Actions
     - package-ecosystem: github-actions
       directory: /
       schedule:
