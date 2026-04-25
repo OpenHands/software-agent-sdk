@@ -349,24 +349,19 @@ class AgentContext(BaseModel):
                 parts.append(repo_context)
 
         if include_skill_catalog and available_skills:
-            lines = [
-                "<SKILLS>",
-                "The following skills are available:",
-                "<available_skills>",
-            ]
-            for skill in available_skills:
-                name = xml_escape(skill.name.strip())
-                description = xml_escape((skill.description or "").strip())
-                lines.append("  <skill>")
-                lines.append(f"    <name>{name}</name>")
-                lines.append(f"    <description>{description}</description>")
-                if include_full_skill_content:
-                    content = xml_escape(skill.content.strip())
-                    lines.append(f"    <content>{content}</content>")
-                lines.append("  </skill>")
-            lines.append("</available_skills>")
-            lines.append("</SKILLS>")
-            parts.append("\n".join(lines))
+            parts.append(
+                "\n".join(
+                    [
+                        "<SKILLS>",
+                        "The following skills are available:",
+                        to_prompt(
+                            available_skills,
+                            include_content=include_full_skill_content,
+                        ),
+                        "</SKILLS>",
+                    ]
+                )
+            )
 
         if include_system_suffix and self.system_message_suffix:
             system_suffix = self.system_message_suffix.strip()

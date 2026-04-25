@@ -57,6 +57,23 @@ def test_to_prompt_escapes_xml() -> None:
     assert '"quotes"' in result
 
 
+def test_to_prompt_can_include_full_content() -> None:
+    """to_prompt() can render full skill content for prompt-only adapters."""
+    skill = Skill(
+        name="review",
+        content="Use <strict> review rules & explain findings.",
+        description="Review pull requests.",
+    )
+
+    result = to_prompt([skill], include_content=True)
+
+    assert "<description>Review pull requests.</description>" in result
+    assert (
+        "<content>Use &lt;strict&gt; review rules &amp; explain findings.</content>"
+        in result
+    )
+
+
 def test_to_prompt_uses_content_fallback() -> None:
     """to_prompt() should use content when no description."""
     skill = Skill(name="test", content="# Header\n\nActual content here.")
