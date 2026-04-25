@@ -239,6 +239,11 @@ class TestACPAgentValidation:
         assert "<USER_CONTEXT>" in prompt
         assert "Prefer concise responses." in prompt
 
+    def test_agent_context_to_acp_prompt_context_returns_none_for_empty_skills(self):
+        context = AgentContext(skills=[])
+
+        assert context.to_acp_prompt_context() is None
+
     def test_agent_context_to_acp_prompt_context_rejects_secrets(self):
         context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_secret"})
 
@@ -345,6 +350,32 @@ class TestACPAgentValidation:
         assert activated_skills == ["legacy-review"]
         assert "Legacy triggered instructions." in content.text
         assert "AgentSkills triggered instructions." not in content.text
+
+    def test_build_acp_prompt_preserves_all_text_blocks(self):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                user_message_suffix="Prefer concise responses.",
+                current_datetime=None,
+            )
+        )
+        event = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[
+                    TextContent(text="First block."),
+                    TextContent(text="Second block."),
+                ],
+            ),
+            extended_content=[TextContent(text="Prefer concise responses.")],
+        )
+
+        prompt = agent._build_acp_prompt(event)
+
+        assert prompt is not None
+        assert "First block." in prompt
+        assert "Second block." in prompt
+        assert prompt.count("Prefer concise responses.") == 1
 
 
 # ---------------------------------------------------------------------------

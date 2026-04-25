@@ -1109,6 +1109,8 @@ class ACPAgent(AgentBase):
     def _build_acp_prompt(self, event: MessageEvent) -> str | None:
         """Build the prompt text for one ACP user turn."""
         message = event.to_llm_message()
+        # Preserve all text blocks produced by the conversation layer, including
+        # any extended_content it already attached to the user turn.
         text_parts = [
             content.text
             for content in message.content
@@ -1118,6 +1120,8 @@ class ACPAgent(AgentBase):
             acp_prompt_context = self.agent_context.to_acp_prompt_context(
                 include_skill_catalog=True,
                 include_system_suffix=True,
+                # LocalConversation already applies user_message_suffix through
+                # event.to_llm_message(); adding it here would duplicate it.
                 include_user_suffix=False,
                 include_current_datetime=True,
                 include_full_skill_content=False,

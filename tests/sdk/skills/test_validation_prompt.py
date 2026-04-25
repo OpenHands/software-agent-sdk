@@ -72,6 +72,7 @@ def test_to_prompt_can_include_full_content() -> None:
         "<content>Use &lt;strict&gt; review rules &amp; explain findings.</content>"
         in result
     )
+    assert "invoke_skill" not in result
 
 
 def test_to_prompt_uses_content_fallback() -> None:
@@ -80,6 +81,18 @@ def test_to_prompt_uses_content_fallback() -> None:
     result = to_prompt([skill])
     assert "Actual content here." in result
     assert "# Header" not in result
+
+
+def test_to_prompt_include_content_with_content_fallback() -> None:
+    """include_content=True should include fallback description and full content."""
+    skill = Skill(name="test", content="# Header\n\nBody.\n\nMore details.")
+
+    result = to_prompt([skill], include_content=True)
+
+    assert "<description>Body.</description>" in result
+    assert "<content># Header\n\nBody.\n\nMore details.</content>" in result
+    assert "characters truncated" not in result
+    assert "invoke_skill" not in result
 
 
 def test_to_prompt_content_fallback_counts_remaining_as_truncated() -> None:

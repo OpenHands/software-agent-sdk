@@ -138,19 +138,41 @@ def test_load_project_skills_with_top_level_skills_directory(tmp_path):
     assert isinstance(skills[0].trigger, KeywordTrigger)
 
 
+def test_load_project_skills_with_top_level_regular_md_file(tmp_path):
+    """Test load_project_skills loads regular md files from top-level skills/."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir(parents=True)
+
+    (skills_dir / "review.md").write_text(
+        "---\nname: review\ntriggers:\n  - review\n---\nRegular markdown skill content."
+    )
+
+    skills = load_project_skills(tmp_path)
+
+    assert len(skills) == 1
+    assert skills[0].name == "review"
+    assert skills[0].content == "Regular markdown skill content."
+    assert isinstance(skills[0].trigger, KeywordTrigger)
+
+
 def test_load_project_skills_agents_directory_precedence(tmp_path):
-    """Test .agents/skills takes precedence over other directories."""
+    """Test project skill directories follow the documented precedence order."""
     agents_dir = tmp_path / ".agents" / "skills"
-    skills_dir = tmp_path / ".openhands" / "skills"
+    top_level_dir = tmp_path / "skills"
+    openhands_dir = tmp_path / ".openhands" / "skills"
     microagents_dir = tmp_path / ".openhands" / "microagents"
     agents_dir.mkdir(parents=True)
-    skills_dir.mkdir(parents=True)
+    top_level_dir.mkdir(parents=True)
+    openhands_dir.mkdir(parents=True)
     microagents_dir.mkdir(parents=True)
 
     (agents_dir / "duplicate.md").write_text(
         "---\nname: duplicate\n---\nFrom .agents/skills."
     )
-    (skills_dir / "duplicate.md").write_text(
+    (top_level_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom top-level skills."
+    )
+    (openhands_dir / "duplicate.md").write_text(
         "---\nname: duplicate\n---\nFrom .openhands/skills."
     )
     (microagents_dir / "duplicate.md").write_text(
@@ -161,6 +183,27 @@ def test_load_project_skills_agents_directory_precedence(tmp_path):
     assert len(skills) == 1
     assert skills[0].name == "duplicate"
     assert skills[0].content == "From .agents/skills."
+
+
+def test_load_project_skills_top_level_directory_precedes_openhands(tmp_path):
+    """Test top-level skills/ takes precedence over legacy OpenHands dirs."""
+    top_level_dir = tmp_path / "skills"
+    openhands_dir = tmp_path / ".openhands" / "skills"
+    top_level_dir.mkdir(parents=True)
+    openhands_dir.mkdir(parents=True)
+
+    (top_level_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom top-level skills."
+    )
+    (openhands_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom .openhands/skills."
+    )
+
+    skills = load_project_skills(tmp_path)
+
+    assert len(skills) == 1
+    assert skills[0].name == "duplicate"
+    assert skills[0].content == "From top-level skills."
 
 
 def test_load_project_skills_merges_agents_and_openhands(tmp_path):

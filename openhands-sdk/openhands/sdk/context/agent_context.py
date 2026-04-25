@@ -319,7 +319,13 @@ class AgentContext(BaseModel):
             else:
                 repo_skills.append(skill)
 
-        if include_current_datetime:
+        has_explicit_prompt_context = (
+            bool(self.skills)
+            or bool(self.system_message_suffix)
+            or bool(self.user_message_suffix)
+            or "current_datetime" in self.model_fields_set
+        )
+        if include_current_datetime and has_explicit_prompt_context:
             formatted_datetime = self.get_formatted_datetime()
             if formatted_datetime:
                 parts.append(
@@ -333,6 +339,8 @@ class AgentContext(BaseModel):
                 )
 
         if repo_skills:
+            # Reuse the shared template only for REPO_CONTEXT rendering; ACP
+            # prompt-only sections are assembled explicitly below.
             repo_context = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",

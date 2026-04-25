@@ -1209,12 +1209,14 @@ def to_prompt(
                 break
         description = description or ""
 
-        # Calculate total truncated characters
-        total_truncated = content_truncated
+        # Calculate total truncated characters. If full content is included,
+        # the catalog is self-contained and does not need invoke_skill guidance.
+        total_truncated = 0 if include_content else content_truncated
 
-        # Truncate description if needed and add truncation indicator
+        # Truncate description if needed and add truncation indicator.
         if len(description) > max_description_length:
-            total_truncated += len(description) - max_description_length
+            if not include_content:
+                total_truncated += len(description) - max_description_length
             description = description[:max_description_length]
 
         if total_truncated > 0:
