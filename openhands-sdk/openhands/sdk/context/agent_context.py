@@ -293,25 +293,20 @@ class AgentContext(BaseModel):
         semantics must fail here instead of being silently approximated by
         ACPAgent.
         """
-        supported_fields = {
+        compatible_fields = {
             "skills",
             "system_message_suffix",
             "user_message_suffix",
             "load_user_skills",
             "load_public_skills",
             "marketplace_path",
-            "secrets",
             "current_datetime",
         }
-        unsupported_fields = set(type(self).model_fields) - supported_fields
+        unsupported_fields = set(self.model_fields_set) - compatible_fields
         if unsupported_fields:
             fields = ", ".join(sorted(unsupported_fields))
             raise NotImplementedError(
                 f"ACP prompt context does not support AgentContext field(s): {fields}"
-            )
-        if self.secrets:
-            raise NotImplementedError(
-                "ACP prompt context does not support AgentContext field(s): secrets"
             )
 
         parts: list[str] = []

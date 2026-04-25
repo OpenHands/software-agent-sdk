@@ -1106,6 +1106,28 @@ class ACPAgent(AgentBase):
                     exc_info=True,
                 )
 
+    def _build_acp_prompt(self, event: MessageEvent) -> str | None:
+        """Build the prompt text for one ACP user turn."""
+        message = event.to_llm_message()
+        text_parts = [
+            content.text
+            for content in message.content
+            if isinstance(content, TextContent) and content.text.strip()
+        ]
+        if self.agent_context:
+            acp_prompt_context = self.agent_context.to_acp_prompt_context(
+                include_skill_catalog=True,
+                include_system_suffix=True,
+                include_user_suffix=False,
+                include_current_datetime=True,
+                include_full_skill_content=False,
+            )
+            if acp_prompt_context:
+                text_parts.append(acp_prompt_context)
+        if not text_parts:
+            return None
+        return "\n\n".join(text_parts)
+
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
@@ -1122,24 +1144,7 @@ class ACPAgent(AgentBase):
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                message = event.to_llm_message()
-                text_parts = [
-                    content.text
-                    for content in message.content
-                    if isinstance(content, TextContent) and content.text.strip()
-                ]
-                if self.agent_context:
-                    acp_prompt_context = self.agent_context.to_acp_prompt_context(
-                        include_skill_catalog=True,
-                        include_system_suffix=True,
-                        include_user_suffix=False,
-                        include_current_datetime=True,
-                        include_full_skill_content=False,
-                    )
-                    if acp_prompt_context:
-                        text_parts.append(acp_prompt_context)
-                if text_parts:
-                    user_message = "\n\n".join(text_parts)
+                user_message = self._build_acp_prompt(event)
                 if user_message:
                     break
 
