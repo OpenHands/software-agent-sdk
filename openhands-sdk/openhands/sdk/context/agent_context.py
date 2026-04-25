@@ -314,6 +314,14 @@ class AgentContext(BaseModel):
 
         parts: list[str] = []
 
+        repo_skills: list[Skill] = []
+        available_skills: list[Skill] = []
+        for skill in self.skills:
+            if skill.is_agentskills_format or skill.trigger is not None:
+                available_skills.append(skill)
+            else:
+                repo_skills.append(skill)
+
         if include_current_datetime:
             formatted_datetime = self.get_formatted_datetime()
             if formatted_datetime:
@@ -327,10 +335,26 @@ class AgentContext(BaseModel):
                     )
                 )
 
-        if include_skill_catalog and self.skills:
-            lines = ["<SKILLS>", "The following skills are available:"]
-            lines.append("<available_skills>")
-            for skill in self.skills:
+        if repo_skills:
+            repo_context = render_template(
+                prompt_dir=str(PROMPT_DIR),
+                template_name="system_message_suffix.j2",
+                repo_skills=repo_skills,
+                system_message_suffix="",
+                secret_infos=[],
+                available_skills_prompt="",
+                current_datetime=None,
+            ).strip()
+            if repo_context:
+                parts.append(repo_context)
+
+        if include_skill_catalog and available_skills:
+            lines = [
+                "<SKILLS>",
+                "The following skills are available:",
+                "<available_skills>",
+            ]
+            for skill in available_skills:
                 name = xml_escape(skill.name.strip())
                 description = xml_escape((skill.description or "").strip())
                 lines.append("  <skill>")
@@ -398,7 +422,13 @@ class AgentContext(BaseModel):
         return "\n\n".join(parts)
 
     def get_user_message_suffix(
-        self, user_message: Message, skip_skill_names: list[str]
+        self,
+        user_message: Message,
+        skip_skill_names: list[str],
+        *,
+        include_agentskills_format: bool = True,
+        include_legacy_skills: bool = True,
+        include_user_message_suffix: bool = True,
     ) -> tuple[TextContent, list[str]] | None:
         """Augment the user’s message with knowledge recalled from skills.
 
@@ -409,7 +439,11 @@ class AgentContext(BaseModel):
         """  # noqa: E501
 
         user_message_suffix = None
-        if self.user_message_suffix and self.user_message_suffix.strip():
+        if (
+            include_user_message_suffix
+            and self.user_message_suffix
+            and self.user_message_suffix.strip()
+        ):
             user_message_suffix = self.user_message_suffix.strip()
 
         query = "\n".join(
@@ -424,6 +458,10 @@ class AgentContext(BaseModel):
         # Search for skill triggers in the query
         for skill in self.skills:
             if not isinstance(skill, Skill):
+                continue
+            if skill.is_agentskills_format and not include_agentskills_format:
+                continue
+            if not skill.is_agentskills_format and not include_legacy_skills:
                 continue
             trigger = skill.match_trigger(query)
             if trigger and skill.name not in skip_skill_names:

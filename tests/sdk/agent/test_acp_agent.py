@@ -251,6 +251,56 @@ class TestACPAgentValidation:
         assert "GitHub API token" in prompt
         assert "ghp_secret" not in prompt
 
+    def test_agent_context_to_acp_prompt_context_includes_legacy_repo_skills(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="claude",
+                    content="Always follow the repository review checklist.",
+                    trigger=None,
+                ),
+                Skill(
+                    name="repo-skill",
+                    content="Full AgentSkills instructions should stay out.",
+                    description="Use repo-specific tools.",
+                    is_agentskills_format=True,
+                ),
+            ],
+            current_datetime=None,
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        assert "<REPO_CONTEXT>" in prompt
+        assert "[BEGIN context from [claude]]" in prompt
+        assert "Always follow the repository review checklist." in prompt
+        assert "<name>repo-skill</name>" in prompt
+        assert "<description>Use repo-specific tools.</description>" in prompt
+        assert "Full AgentSkills instructions should stay out." not in prompt
+        assert "<name>claude</name>" not in prompt
+
+    def test_agent_context_to_acp_prompt_context_lists_legacy_triggered_skills(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="roasted-review",
+                    content="Use a stricter review tone.",
+                    trigger=KeywordTrigger(keywords=["/roasted"]),
+                    description="Run a stricter review.",
+                )
+            ],
+            current_datetime=None,
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        assert "<REPO_CONTEXT>" not in prompt
+        assert "<name>roasted-review</name>" in prompt
+        assert "<description>Run a stricter review.</description>" in prompt
+        assert "Use a stricter review tone." not in prompt
+
     def test_agent_context_to_acp_prompt_context_can_include_full_skill_content(self):
         context = AgentContext(
             skills=[
@@ -258,6 +308,7 @@ class TestACPAgentValidation:
                     name="review",
                     content="Full review instructions",
                     description="Review pull requests.",
+                    is_agentskills_format=True,
                 )
             ]
         )
@@ -266,6 +317,40 @@ class TestACPAgentValidation:
 
         assert prompt is not None
         assert "<content>Full review instructions</content>" in prompt
+
+    def test_agent_context_acp_legacy_trigger_suffix_excludes_agentskills(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="legacy-review",
+                    content="Legacy triggered instructions.",
+                    trigger=KeywordTrigger(keywords=["/review"]),
+                ),
+                Skill(
+                    name="agentskill-review",
+                    content="AgentSkills triggered instructions.",
+                    trigger=KeywordTrigger(keywords=["/review"]),
+                    is_agentskills_format=True,
+                ),
+            ]
+        )
+        message = Message(
+            role="user",
+            content=[TextContent(text="/review this change")],
+        )
+
+        suffix = context.get_user_message_suffix(
+            message,
+            skip_skill_names=[],
+            include_agentskills_format=False,
+            include_user_message_suffix=False,
+        )
+
+        assert suffix is not None
+        content, activated_skills = suffix
+        assert activated_skills == ["legacy-review"]
+        assert "Legacy triggered instructions." in content.text
+        assert "AgentSkills triggered instructions." not in content.text
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +775,129 @@ class TestACPAgentStep:
         assert (
             "Full review instructions that ACP should not receive." not in prompt_text
         )
+
+    def test_step_sends_legacy_repo_context_to_acp_server(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="claude",
+                        content="Always follow repository-specific review rules.",
+                        trigger=None,
+                    ),
+                    Skill(
+                        name="agent-skill",
+                        content="AgentSkills full instructions should not be sent.",
+                        is_agentskills_format=True,
+                        description="Use the agent skill catalog entry.",
+                    ),
+                ],
+                current_datetime=None,
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text="Review this PR.")],
+                ),
+                extended_content=[
+                    TextContent(
+                        text="AgentSkills full instructions should not be sent."
+                    )
+                ],
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._conn.prompt = AsyncMock(return_value=None)
+        agent._session_id = "test-session"
+
+        def _fake_run_async(coro_factory, **_kwargs):
+            return asyncio.run(coro_factory())
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_call = agent._conn.prompt.await_args
+        assert prompt_call is not None
+        prompt_text = prompt_call.args[0][0].text
+        assert "Review this PR." in prompt_text
+        assert "<REPO_CONTEXT>" in prompt_text
+        assert "Always follow repository-specific review rules." in prompt_text
+        assert "<name>agent-skill</name>" in prompt_text
+        assert (
+            "<description>Use the agent skill catalog entry.</description>"
+            in prompt_text
+        )
+        assert "AgentSkills full instructions should not be sent." not in prompt_text
+
+    def test_step_sends_legacy_triggered_skill_content_to_acp_server(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="legacy-review",
+                        content="Legacy triggered review instructions.",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                    ),
+                    Skill(
+                        name="agentskill-review",
+                        content="AgentSkills triggered review instructions.",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                        is_agentskills_format=True,
+                        description="AgentSkills review catalog.",
+                    ),
+                ],
+                current_datetime=None,
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text="/review this PR.")],
+                ),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._conn.prompt = AsyncMock(return_value=None)
+        agent._session_id = "test-session"
+
+        def _fake_run_async(coro_factory, **_kwargs):
+            return asyncio.run(coro_factory())
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_call = agent._conn.prompt.await_args
+        assert prompt_call is not None
+        prompt_text = prompt_call.args[0][0].text
+        assert "Legacy triggered review instructions." in prompt_text
+        assert "AgentSkills triggered review instructions." not in prompt_text
+        assert "<name>agentskill-review</name>" in prompt_text
+        assert "<description>AgentSkills review catalog.</description>" in prompt_text
 
     def test_step_includes_reasoning(self, tmp_path):
         agent = _make_agent()

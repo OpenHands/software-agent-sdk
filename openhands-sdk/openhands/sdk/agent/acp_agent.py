@@ -1129,6 +1129,16 @@ class ACPAgent(AgentBase):
                     if isinstance(content, TextContent) and content.text.strip()
                 ]
                 if self.agent_context:
+                    legacy_user_context = self.agent_context.get_user_message_suffix(
+                        user_message=message,
+                        skip_skill_names=[],
+                        include_agentskills_format=False,
+                        include_user_message_suffix=False,
+                    )
+                    if legacy_user_context:
+                        content, _activated_skill_names = legacy_user_context
+                        if content.text.strip():
+                            text_parts.append(content.text)
                     acp_prompt_context = self.agent_context.to_acp_prompt_context(
                         include_skill_catalog=True,
                         include_system_suffix=True,
