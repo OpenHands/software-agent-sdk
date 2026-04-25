@@ -1,4 +1,4 @@
-"""Tests for primary-field-first extraction ordering (issue #2706).
+"""Tests for primary-field-first extraction ordering.
 
 The extraction pipeline applies a global 30,000-character budget across
 all fields. Before this fix, fields were processed in declared order
@@ -111,7 +111,7 @@ class TestPrimaryFirstOrdering:
 
         Arguments is extracted first, so it receives its full content
         regardless of the size of tool_name or tool_call.name. The
-        ``both_oversized`` case is the main #2706 regression class:
+        ``both_oversized`` case is the main starvation regression:
         fields processed before arguments could collectively consume the
         full budget. With argument-first ordering, arguments is processed
         first and is unaffected by subsequent field sizes.
@@ -264,12 +264,12 @@ class TestSizeAccounting:
 
 
 # -------------------------------------------------------------------
-# End-to-end: analyzer returns HIGH for #2706 attack patterns
+# End-to-end: analyzer returns HIGH for the starvation-class attack
 # -------------------------------------------------------------------
 
 
 class TestEndToEnd:
-    """PatternSecurityAnalyzer detects the #2706 starvation-class attack."""
+    """PatternSecurityAnalyzer detects the starvation-class attack."""
 
     @pytest.mark.parametrize(
         "tool_name,tool_call_name",
@@ -285,9 +285,9 @@ class TestEndToEnd:
     def test_malicious_arguments_detected_despite_oversized_fields(
         self, tool_name: str, tool_call_name: str
     ) -> None:
-        """Analyzer returns HIGH for #2706 attack regardless of padding.
+        """Analyzer returns HIGH for the starvation attack regardless of padding.
 
-        The ``oversized_tool_name`` case is the original #2706 attack.
+        The ``oversized_tool_name`` case is the original starvation attack.
         The ``both_fields_oversized`` case is the hardened variant where
         both tool_name and tool_call.name are at the 30K cap.
         """
