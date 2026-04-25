@@ -122,16 +122,26 @@ jobs:
 
                 For each PR that truly has NO reviewers:
                 1) Read git blame for changed files to identify recent, active contributors.
-                2) From those candidates, ONLY consider maintainers — repository collaborators with write access or higher. Verify via the GitHub API before
-                requesting review:
+                2) From those blame-derived candidates, ONLY consider maintainers who are repository collaborators with write access or higher. Verify that
+                with the GitHub API before requesting review:
                    - Preferred: GET /repos/{owner}/{repo}/collaborators (no permission filter). Filter client-side using either:
                      role_name in ["write", "maintain", "admin"] OR permissions.push || permissions.admin. Note: paginate if > 30 collaborators.
                    - Alternative: GET /repos/{owner}/{repo}/collaborators/{username}/permission and accept if permission in {push, maintain, admin}.
-                3) If multiple maintainers qualify, avoid assigning too many reviews to any single one.
-                4) Request review from exactly one maintainer and add this message:
+                3) If one or more blame-derived maintainers qualify, request review from exactly one of them. Prefer the maintainer with the lowest current
+                review load. Add this message:
 
                 [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame information.
                 Thanks in advance for the help!
+
+                4) If no blame-derived maintainer qualifies, read the MAINTAINERS file in the repository root. Parse usernames from lines starting with
+                "- @username" and treat that file as the canonical list of active maintainers.
+                5) From that MAINTAINERS list, keep only users who still have write access or higher via the GitHub API, exclude the PR author, and request
+                review from exactly one of them, again preferring the maintainer with the lowest current review load. Add this message:
+
+                [Automatic Post]: I have assigned {reviewer} as a reviewer based on the repository MAINTAINERS file.
+                Thanks in advance for the help!
+
+                6) If neither path yields a qualified maintainer, do not request review from anyone and do not fall back to a broader collaborator pool.
 
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
             LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
@@ -190,7 +200,7 @@ jobs:
             - name: Run task
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+                  GITHUB_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
                   PYTHONPATH: ''
               run: |
                   echo "Running agent script: $AGENT_SCRIPT_URL"

@@ -1,5 +1,6 @@
 """Tests for conversation directory handling."""
 
+import logging
 import os
 import tempfile
 import uuid
@@ -140,3 +141,23 @@ def test_conversation_factory_persistence_dir_only(mock_agent):
         # persistence_dir should include conversation ID subdirectory
         expected_dir = os.path.join(persistence_dir, conversation.state.id.hex)
         assert conversation.state.persistence_dir == expected_dir
+
+
+def test_no_persistence_dir_logs_warning(mock_agent, caplog):
+    """Test that a warning is logged when no persistence_dir is provided."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        working_dir = Path(temp_dir) / "work"
+        working_dir.mkdir()
+
+        with caplog.at_level(logging.WARNING):
+            ConversationState.create(
+                id=uuid.uuid4(),
+                agent=mock_agent,
+                workspace=LocalWorkspace(working_dir=working_dir),
+            )
+
+        assert any(
+            "No persistence_dir provided; falling back to InMemoryFileStore"
+            in record.message
+            for record in caplog.records
+        )

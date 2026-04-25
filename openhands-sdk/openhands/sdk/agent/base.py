@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -13,6 +14,10 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    SecretStr,
+    SerializationInfo,
+    ValidationInfo,
+    model_serializer,
     model_validator,
 )
 
@@ -32,7 +37,7 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
-from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
 
 if TYPE_CHECKING:
@@ -41,6 +46,7 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
+    from openhands.sdk.utils.cipher import Cipher
 
 logger = get_logger(__name__)
 
@@ -196,6 +202,111 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "'system_prompt_filename'. Use one or the other."
             )
         return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _decrypt_mcp_config(cls, data: Any, info: ValidationInfo) -> Any:
+        """Decrypt encrypted_mcp_config if present and cipher is in context.
+
+        Handles backward compatibility:
+        - If encrypted_mcp_config exists and cipher is present: decrypt and
+          set mcp_config
+        - If mcp_config exists directly: use it as-is (plaintext or
+          expose_secrets case)
+        - If neither exists: default empty dict will be used
+        """
+        if not isinstance(data, dict):
+            return data
+        # - Empty config: omit (default value, nothing to protect)
+        encrypted = data.pop("encrypted_mcp_config", None)
+        if encrypted is None:
+            return data
+
+        # If no cipher in context, we can't decrypt - the encrypted value is lost
+        if not info.context or not info.context.get("cipher"):
+            logger.warning(
+                "Found encrypted_mcp_config but no cipher in context - "
+                "MCP configuration will be lost. Provide a cipher to preserve it."
+            )
+            return data
+
+        cipher: Cipher = info.context["cipher"]
+        decrypted = cipher.decrypt(encrypted)
+        if decrypted is None:
+            logger.warning(
+                "Failed to decrypt mcp_config (cipher mismatch or corruption) - "
+                "MCP configuration will be lost."
+            )
+            return data
+
+        try:
+            data["mcp_config"] = json.loads(decrypted.get_secret_value())
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse decrypted mcp_config as JSON: {e}")
+
+        return data
+
+    @model_serializer(mode="wrap")
+    def _serialize_with_mcp_handling(self, handler, info: SerializationInfo):
+        """Serialize the agent, handling mcp_config encryption/redaction.
+
+        This serializer handles:
+        1. Polymorphic serialization for subclasses (e.g., ACPAgent)
+        2. mcp_config encryption when cipher is in context
+        3. mcp_config redaction (omission) when neither cipher nor expose_secrets
+
+        The mcp_config handling is done here (not in a field_serializer) to avoid
+        changing the field's schema type, which would break REST API compatibility.
+        """
+        if isinstance(self, dict):
+            # Sometimes pydantic passes a dict in here.
+            return self
+
+        # Check if handler is for the current (actual) class
+        # See get_handler_class_name() for details on the fragile string parsing
+        handler_class = get_handler_class_name(handler)
+
+        if handler_class != self.__class__.__name__:
+            # Handler is for a base class, delegate to model_dump for proper
+            # subclass serialization (e.g., ACPAgent fields)
+            result = self.model_dump(
+                mode=info.mode,
+                context=info.context,
+                by_alias=info.by_alias,
+                exclude_unset=info.exclude_unset,
+                exclude_defaults=info.exclude_defaults,
+                exclude_none=info.exclude_none,
+                round_trip=info.round_trip,
+                serialize_as_any=info.serialize_as_any,
+            )
+        else:
+            result = handler(self)
+
+        # Handle mcp_config based on context:
+        # - Empty config: omit (nothing sensitive)
+        # - expose_secrets=True: keep as-is (explicitly requested)
+        # - cipher present: encrypt and store in encrypted_mcp_config, omit original
+        # - default: omit (redact sensitive data)
+        if not self.mcp_config:  # Only process non-empty configs
+            result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("cipher"):
+            # Encrypt and add encrypted_mcp_config
+            cipher: Cipher = info.context["cipher"]
+            json_str = json.dumps(self.mcp_config)
+            encrypted = cipher.encrypt(SecretStr(json_str))
+            if encrypted:
+                result["encrypted_mcp_config"] = encrypted
+            # Remove plaintext mcp_config
+            result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("expose_secrets"):
+            # Keep mcp_config as-is (already in result from handler)
+            return result
+        else:
+            # Default: redact by omitting
+            result.pop("mcp_config", None)
+            return result
 
     condenser: CondenserBase | None = Field(
         default=None,

@@ -1,5 +1,6 @@
 import warnings
 
+import pytest
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
@@ -74,7 +75,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert llm_fields["llm.api_key"].label == "API Key"
     assert llm_fields["llm.api_key"].secret is True
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL
-    assert llm_fields["llm.base_url"].prominence is SettingProminence.CRITICAL
+    assert llm_fields["llm.base_url"].prominence is SettingProminence.MAJOR
 
     # Excluded fields must not appear
     assert "llm.fallback_strategy" not in llm_fields
@@ -303,6 +304,47 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
     )
     assert isinstance(acp, ACPAgentSettings)
     assert acp.acp_command == ["npx", "-y", "claude-agent-acp"]
+
+
+def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
+    settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
+
+    assert isinstance(settings, LLMAgentSettings)
+    assert settings.schema_version == 1
+    assert settings.agent_kind == "llm"
+    assert settings.llm.model == "test-model"
+
+
+def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
+    settings = AgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "acp",
+            "acp_command": ["npx", "-y", "claude-agent-acp"],
+            "acp_model": "claude-opus-4-6",
+        }
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == 1
+    assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
+
+
+def test_agent_settings_from_persisted_rejects_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer than supported version 1"):
+        AgentSettings.from_persisted({"schema_version": 2, "llm": {"model": "m"}})
+
+
+def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
+    settings = ConversationSettings.from_persisted({"max_iterations": 42})
+
+    assert settings.schema_version == 1
+    assert settings.max_iterations == 42
+
+
+def test_conversation_settings_from_persisted_rejects_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer than supported version 1"):
+        ConversationSettings.from_persisted({"schema_version": 2})
 
 
 # ---------------------------------------------------------------------------
