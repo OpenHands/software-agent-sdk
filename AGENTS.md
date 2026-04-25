@@ -259,6 +259,31 @@ src/hooks/
 3. **Testing**: All functionality should be tested against a running OpenHands Agent Server instance
 4. **Documentation**: API changes should be reflected in the README.md and example code
 
+## Local Setup and Validation
+
+Use the same bootstrap command as CI and `.openhands/setup.sh`:
+
+```bash
+npm ci
+```
+
+Use the same fast checks as `.github/workflows/ci.yml` and `.openhands/pre-commit.sh` before committing:
+
+```bash
+npm run lint
+npm run build
+npm run test:coverage
+npm run format:check
+```
+
+For Docker-backed server coverage, run the deterministic integration subset from `.github/workflows/integration-tests.yml` first:
+
+```bash
+npm run test:integration:deterministic
+```
+
+LLM-backed integration tests additionally require `LLM_API_KEY`, with optional `LLM_MODEL` and `LLM_BASE_URL` overrides.
+
 ## Testing
 
 ### Unit Tests
