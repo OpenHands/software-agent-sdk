@@ -69,6 +69,22 @@ def find_mcp_config(skill_dir: Path) -> Path | None:
     return None
 
 
+def _serialize_for_json(obj: object) -> object:
+    """Recursively convert Pydantic models to dicts for JSON serialization.
+
+    This handles the case where MCP config contains Pydantic model objects
+    (RemoteMCPServer, StdioMCPServer) instead of plain dicts.
+    """
+    if hasattr(obj, "model_dump"):
+        # Pydantic v2 model
+        return obj.model_dump()
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_for_json(item) for item in obj]
+    return obj
+
+
 def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
@@ -89,7 +105,9 @@ def expand_mcp_variables(
     4. Default value (if specified and expand_defaults=True)
 
     Args:
-        config: MCP configuration dictionary.
+        config: MCP configuration dictionary. May contain Pydantic model objects
+            (e.g., RemoteMCPServer, StdioMCPServer) which will be converted to
+            dicts before JSON serialization.
         variables: Dictionary of variable names to values (e.g., SKILL_ROOT).
         get_secret: Callback to look up a secret by name. We use a callback
             rather than a dict to avoid extracting all secrets into plain text.
@@ -101,8 +119,10 @@ def expand_mcp_variables(
     Returns:
         Configuration with variables expanded.
     """
+    # Convert Pydantic models to dicts before JSON serialization
+    serializable_config = _serialize_for_json(config)
     # Convert to JSON string for easy replacement
-    config_str = json.dumps(config)
+    config_str = json.dumps(serializable_config)
 
     # Pattern for ${VAR} or ${VAR:-default}
     var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
