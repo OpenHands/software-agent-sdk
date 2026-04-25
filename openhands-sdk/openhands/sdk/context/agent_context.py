@@ -309,8 +309,7 @@ class AgentContext(BaseModel):
         if unsupported_fields:
             fields = ", ".join(sorted(unsupported_fields))
             raise NotImplementedError(
-                "ACP prompt context does not support AgentContext field(s): "
-                f"{fields}"
+                f"ACP prompt context does not support AgentContext field(s): {fields}"
             )
 
         parts: list[str] = []
