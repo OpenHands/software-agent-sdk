@@ -842,7 +842,7 @@ class TestACPAgentStep:
         )
         assert "AgentSkills full instructions should not be sent." not in prompt_text
 
-    def test_step_sends_legacy_triggered_skill_content_to_acp_server(self, tmp_path):
+    def test_step_sends_triggered_skill_content_to_acp_server(self, tmp_path):
         agent = _make_agent(
             agent_context=AgentContext(
                 skills=[
@@ -895,7 +895,7 @@ class TestACPAgentStep:
         assert prompt_call is not None
         prompt_text = prompt_call.args[0][0].text
         assert "Legacy triggered review instructions." in prompt_text
-        assert "AgentSkills triggered review instructions." not in prompt_text
+        assert "AgentSkills triggered review instructions." in prompt_text
         assert "<name>agentskill-review</name>" in prompt_text
         assert "<description>AgentSkills review catalog.</description>" in prompt_text
 

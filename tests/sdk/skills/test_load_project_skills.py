@@ -112,6 +112,32 @@ def test_load_project_skills_with_agents_directory(tmp_path):
     assert isinstance(skills[0].trigger, KeywordTrigger)
 
 
+def test_load_project_skills_with_top_level_skills_directory(tmp_path):
+    """Test load_project_skills loads AgentSkills from top-level skills/."""
+    skills_dir = tmp_path / "skills" / "custom-review"
+    skills_dir.mkdir(parents=True)
+
+    (skills_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: custom-review\n"
+        "description: Custom review guidance.\n"
+        "triggers:\n"
+        "  - /codereview\n"
+        "---\n"
+        "# Custom Review\n\n"
+        "All review output must be Chinese."
+    )
+
+    skills = load_project_skills(tmp_path)
+
+    assert len(skills) == 1
+    assert skills[0].name == "custom-review"
+    assert skills[0].is_agentskills_format is True
+    assert skills[0].description == "Custom review guidance."
+    assert "All review output must be Chinese." in skills[0].content
+    assert isinstance(skills[0].trigger, KeywordTrigger)
+
+
 def test_load_project_skills_agents_directory_precedence(tmp_path):
     """Test .agents/skills takes precedence over other directories."""
     agents_dir = tmp_path / ".agents" / "skills"

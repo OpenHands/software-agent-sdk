@@ -1116,9 +1116,10 @@ class ACPAgent(AgentBase):
         """Send the latest user message to the ACP server and emit the response."""
         state = conversation.state
 
-        # Find the latest user message. ACP receives only a prompt-only skill
-        # catalog from AgentContext; triggered skill content remains an OpenHands
-        # Agent feature because ACP servers own their own execution model.
+        # Find the latest user message. ACP receives AgentSkills as a prompt-only
+        # catalog by default, but explicit keyword triggers still contribute the
+        # matched skill content as prompt text because ACP has no invoke_skill
+        # tool path to retrieve it later.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
@@ -1132,7 +1133,7 @@ class ACPAgent(AgentBase):
                     legacy_user_context = self.agent_context.get_user_message_suffix(
                         user_message=message,
                         skip_skill_names=[],
-                        include_agentskills_format=False,
+                        include_agentskills_format=True,
                         include_user_message_suffix=False,
                     )
                     if legacy_user_context:
