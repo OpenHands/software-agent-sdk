@@ -29,7 +29,7 @@ class AsyncExecutor:
     def _ensure_portal(self):
         with self._lock:
             if self._portal is None:
-                self._portal_cm = start_blocking_portal()
+                self._portal_cm = start_blocking_portal(backend="asyncio")
                 self._portal = self._portal_cm.__enter__()
                 # Register atexit handler to ensure cleanup on interpreter shutdown
                 if not self._atexit_registered:
@@ -57,14 +57,20 @@ class AsyncExecutor:
     ) -> Any:
         """
         Run a coroutine or async function from sync code.
-
-        Args:
-            awaitable_or_fn: coroutine or async function
-            *args: positional arguments (only used if awaitable_or_fn is a function)
-            timeout: optional timeout in seconds
-            **kwargs: keyword arguments (only used if awaitable_or_fn is a function)
         """
         portal = self._ensure_portal()
+
+        # Ensure the current thread has access to the portal's loop
+        # This fixes errors in sub-agents and libraries that call asyncio.get_event_loop()
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                # If no loop is running in this thread, associate it with the portal's loop
+                asyncio.set_event_loop(portal._event_loop)
+            except Exception:
+                pass
 
         # Construct coroutine
         if inspect.iscoroutine(awaitable_or_fn):
