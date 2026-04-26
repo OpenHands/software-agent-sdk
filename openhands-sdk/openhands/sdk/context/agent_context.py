@@ -282,7 +282,6 @@ class AgentContext(BaseModel):
         *,
         include_skill_catalog: bool = True,
         include_system_suffix: bool = True,
-        include_user_suffix: bool = True,
         include_current_datetime: bool = True,
         include_full_skill_content: bool = False,
     ) -> str | None:
@@ -292,6 +291,10 @@ class AgentContext(BaseModel):
         this adapter only emits prompt-only context. Unsupported AgentContext
         semantics must fail here instead of being silently approximated by
         ACPAgent.
+
+        ``user_message_suffix`` is a compatible field but is not emitted here
+        because ``LocalConversation`` already applies it through
+        ``event.to_llm_message()``; including it would duplicate it.
         """
         compatible_fields = {
             "skills",
@@ -377,19 +380,6 @@ class AgentContext(BaseModel):
                             "<SYSTEM_CONTEXT>",
                             system_suffix,
                             "</SYSTEM_CONTEXT>",
-                        ]
-                    )
-                )
-
-        if include_user_suffix and self.user_message_suffix:
-            user_suffix = self.user_message_suffix.strip()
-            if user_suffix:
-                parts.append(
-                    "\n".join(
-                        [
-                            "<USER_CONTEXT>",
-                            user_suffix,
-                            "</USER_CONTEXT>",
                         ]
                     )
                 )

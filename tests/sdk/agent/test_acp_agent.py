@@ -236,8 +236,10 @@ class TestACPAgentValidation:
         assert "Full review instructions" not in prompt
         assert "<SYSTEM_CONTEXT>" in prompt
         assert "Follow repository rules." in prompt
-        assert "<USER_CONTEXT>" in prompt
-        assert "Prefer concise responses." in prompt
+        # user_message_suffix is not emitted by to_acp_prompt_context because
+        # LocalConversation already applies it via event.to_llm_message().
+        assert "<USER_CONTEXT>" not in prompt
+        assert "Prefer concise responses." not in prompt
 
     def test_agent_context_to_acp_prompt_context_returns_none_for_empty_skills(self):
         context = AgentContext(skills=[])

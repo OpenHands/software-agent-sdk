@@ -1120,9 +1120,6 @@ class ACPAgent(AgentBase):
             acp_prompt_context = self.agent_context.to_acp_prompt_context(
                 include_skill_catalog=True,
                 include_system_suffix=True,
-                # LocalConversation already applies user_message_suffix through
-                # event.to_llm_message(); adding it here would duplicate it.
-                include_user_suffix=False,
                 include_current_datetime=True,
                 include_full_skill_content=False,
             )
