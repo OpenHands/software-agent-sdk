@@ -830,8 +830,8 @@ def _load_and_merge_from_dirs(
 def load_project_skills(work_dir: str | Path) -> list[Skill]:
     """Load skills from project-specific directories.
 
-    Searches for skills in {work_dir}/.agents/skills/, {work_dir}/skills/,
-    {work_dir}/.openhands/skills/, and {work_dir}/.openhands/microagents/ (legacy).
+    Searches for skills in {work_dir}/.agents/skills/, {work_dir}/.openhands/skills/,
+    and {work_dir}/.openhands/microagents/ (legacy).
 
     If the working directory is inside a Git repository, this function also loads
     skills from the Git repo root, so running from a subdirectory still picks up
@@ -840,9 +840,8 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
     Skills are merged in priority order, with the *working directory* taking
     precedence over the Git repo root when duplicates exist.
 
-    Use .agents/skills or the AgentSkills-compatible skills/ layout for new
-    skills. .openhands/skills is the legacy OpenHands location, and
-    .openhands/microagents is deprecated.
+    Use .agents/skills for new skills. .openhands/skills is the legacy OpenHands
+    location, and .openhands/microagents is deprecated.
 
     Example: If "my-skill" exists in both .agents/skills/ and .openhands/skills/,
     the version from .agents/skills/ is used.
@@ -887,14 +886,11 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
             except (SkillError, OSError, yaml.YAMLError) as e:
                 logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
-    # Load project-specific skills from .agents/skills, skills/,
-    # .openhands/skills, and legacy microagents (priority order; first wins
-    # for duplicates). The top-level skills/ layout is the AgentSkills
-    # convention used by repositories that keep shareable skills in-tree.
+    # Load project-specific skills from .agents/skills, .openhands/skills,
+    # and legacy microagents (priority order; first wins for duplicates)
     for root in search_roots:
         project_skills_dirs = [
             root / ".agents" / "skills",
-            root / "skills",
             root / ".openhands" / "skills",
             root / ".openhands" / "microagents",  # Legacy support
         ]
