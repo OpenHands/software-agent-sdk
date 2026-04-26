@@ -1117,12 +1117,7 @@ class ACPAgent(AgentBase):
             if isinstance(content, TextContent) and content.text.strip()
         ]
         if self.agent_context:
-            acp_prompt_context = self.agent_context.to_acp_prompt_context(
-                include_skill_catalog=True,
-                include_system_suffix=True,
-                include_current_datetime=True,
-                include_full_skill_content=False,
-            )
+            acp_prompt_context = self.agent_context.to_acp_prompt_context()
             if acp_prompt_context:
                 text_parts.append(acp_prompt_context)
         if not text_parts:

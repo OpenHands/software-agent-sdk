@@ -277,14 +277,7 @@ class AgentContext(BaseModel):
             return self.system_message_suffix.strip()
         return None
 
-    def to_acp_prompt_context(
-        self,
-        *,
-        include_skill_catalog: bool = True,
-        include_system_suffix: bool = True,
-        include_current_datetime: bool = True,
-        include_full_skill_content: bool = False,
-    ) -> str | None:
+    def to_acp_prompt_context(self) -> str | None:
         """Return the AgentContext fields that ACP can consume as prompt text.
 
         ACP servers own their tools, MCP servers, hooks, and execution model, so
@@ -328,7 +321,7 @@ class AgentContext(BaseModel):
             or bool(self.user_message_suffix)
             or "current_datetime" in self.model_fields_set
         )
-        if include_current_datetime and has_explicit_prompt_context:
+        if has_explicit_prompt_context:
             formatted_datetime = self.get_formatted_datetime()
             if formatted_datetime:
                 parts.append(
@@ -356,22 +349,19 @@ class AgentContext(BaseModel):
             if repo_context:
                 parts.append(repo_context)
 
-        if include_skill_catalog and available_skills:
+        if available_skills:
             parts.append(
                 "\n".join(
                     [
                         "<SKILLS>",
                         "The following skills are available:",
-                        to_prompt(
-                            available_skills,
-                            include_content=include_full_skill_content,
-                        ),
+                        to_prompt(available_skills),
                         "</SKILLS>",
                     ]
                 )
             )
 
-        if include_system_suffix and self.system_message_suffix:
+        if self.system_message_suffix:
             system_suffix = self.system_message_suffix.strip()
             if system_suffix:
                 parts.append(
@@ -389,13 +379,7 @@ class AgentContext(BaseModel):
         return "\n\n".join(parts)
 
     def get_user_message_suffix(
-        self,
-        user_message: Message,
-        skip_skill_names: list[str],
-        *,
-        include_agentskills_format: bool = True,
-        include_legacy_skills: bool = True,
-        include_user_message_suffix: bool = True,
+        self, user_message: Message, skip_skill_names: list[str]
     ) -> tuple[TextContent, list[str]] | None:
         """Augment the user’s message with knowledge recalled from skills.
 
@@ -406,11 +390,7 @@ class AgentContext(BaseModel):
         """  # noqa: E501
 
         user_message_suffix = None
-        if (
-            include_user_message_suffix
-            and self.user_message_suffix
-            and self.user_message_suffix.strip()
-        ):
+        if self.user_message_suffix and self.user_message_suffix.strip():
             user_message_suffix = self.user_message_suffix.strip()
 
         query = "\n".join(
@@ -425,10 +405,6 @@ class AgentContext(BaseModel):
         # Search for skill triggers in the query
         for skill in self.skills:
             if not isinstance(skill, Skill):
-                continue
-            if skill.is_agentskills_format and not include_agentskills_format:
-                continue
-            if not skill.is_agentskills_format and not include_legacy_skills:
                 continue
             trigger = skill.match_trigger(query)
             if trigger and skill.name not in skip_skill_names:

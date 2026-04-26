@@ -302,57 +302,6 @@ class TestACPAgentValidation:
         assert "<description>Run a stricter review.</description>" in prompt
         assert "Use a stricter review tone." not in prompt
 
-    def test_agent_context_to_acp_prompt_context_can_include_full_skill_content(self):
-        context = AgentContext(
-            skills=[
-                Skill(
-                    name="review",
-                    content="Full review instructions",
-                    description="Review pull requests.",
-                    is_agentskills_format=True,
-                )
-            ]
-        )
-
-        prompt = context.to_acp_prompt_context(include_full_skill_content=True)
-
-        assert prompt is not None
-        assert "<content>Full review instructions</content>" in prompt
-
-    def test_agent_context_acp_legacy_trigger_suffix_excludes_agentskills(self):
-        context = AgentContext(
-            skills=[
-                Skill(
-                    name="legacy-review",
-                    content="Legacy triggered instructions.",
-                    trigger=KeywordTrigger(keywords=["/review"]),
-                ),
-                Skill(
-                    name="agentskill-review",
-                    content="AgentSkills triggered instructions.",
-                    trigger=KeywordTrigger(keywords=["/review"]),
-                    is_agentskills_format=True,
-                ),
-            ]
-        )
-        message = Message(
-            role="user",
-            content=[TextContent(text="/review this change")],
-        )
-
-        suffix = context.get_user_message_suffix(
-            message,
-            skip_skill_names=[],
-            include_agentskills_format=False,
-            include_user_message_suffix=False,
-        )
-
-        assert suffix is not None
-        content, activated_skills = suffix
-        assert activated_skills == ["legacy-review"]
-        assert "Legacy triggered instructions." in content.text
-        assert "AgentSkills triggered instructions." not in content.text
-
     def test_build_acp_prompt_preserves_all_text_blocks(self):
         agent = _make_agent(
             agent_context=AgentContext(
