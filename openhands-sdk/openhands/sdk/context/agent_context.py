@@ -50,12 +50,17 @@ class AgentContext(BaseModel):
     skills: list[Skill] = Field(
         default_factory=list,
         description="List of available skills that can extend the user's input.",
+        json_schema_extra={"acp_compatible": True},
     )
     system_message_suffix: str | None = Field(
-        default=None, description="Optional suffix to append to the system prompt."
+        default=None,
+        description="Optional suffix to append to the system prompt.",
+        json_schema_extra={"acp_compatible": True},
     )
     user_message_suffix: str | None = Field(
-        default=None, description="Optional suffix to append to the user's message."
+        default=None,
+        description="Optional suffix to append to the user's message.",
+        json_schema_extra={"acp_compatible": True},
     )
     load_user_skills: bool = Field(
         default=False,
@@ -63,6 +68,7 @@ class AgentContext(BaseModel):
             "Whether to automatically load user skills from ~/.openhands/skills/ "
             "and ~/.openhands/microagents/ (for backward compatibility). "
         ),
+        json_schema_extra={"acp_compatible": True},
     )
     load_public_skills: bool = Field(
         default=False,
@@ -71,6 +77,7 @@ class AgentContext(BaseModel):
             "skills repository at https://github.com/OpenHands/extensions. "
             "This allows you to get the latest skills without SDK updates."
         ),
+        json_schema_extra={"acp_compatible": True},
     )
     marketplace_path: str | None = Field(
         default=DEFAULT_MARKETPLACE_PATH,
@@ -78,6 +85,7 @@ class AgentContext(BaseModel):
             "Relative marketplace JSON path within the public skills repository. "
             "Set to None to load all public skills without marketplace filtering."
         ),
+        json_schema_extra={"acp_compatible": True},
     )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
@@ -87,6 +95,7 @@ class AgentContext(BaseModel):
             "Values can be either strings or SecretSource instances "
             "(str | SecretSource)."
         ),
+        json_schema_extra={"acp_compatible": False},
     )
     current_datetime: datetime | str | None = Field(
         default_factory=datetime.now,
@@ -97,6 +106,7 @@ class AgentContext(BaseModel):
             "included in the system prompt to give the agent awareness of "
             "the current time context. Defaults to the current datetime."
         ),
+        json_schema_extra={"acp_compatible": True},
     )
 
     @field_validator("skills")
@@ -282,21 +292,19 @@ class AgentContext(BaseModel):
             return self.system_message_suffix.strip()
         return None
 
-    _ACP_COMPATIBLE_FIELDS: frozenset[str] = frozenset(
-        {
-            "skills",
-            "system_message_suffix",
-            "user_message_suffix",
-            "load_user_skills",
-            "load_public_skills",
-            "marketplace_path",
-            "current_datetime",
-        }
-    )
-
     def validate_acp_compatibility(self) -> None:
-        """Raise if this context uses fields unsupported by ACP prompt mode."""
-        unsupported = set(self.model_fields_set) - self._ACP_COMPATIBLE_FIELDS
+        """Raise if this context uses fields unsupported by ACP prompt mode.
+
+        Compatibility is determined by the ``acp_compatible`` tag in each
+        field's ``json_schema_extra``.
+        """
+        acp_compatible = {
+            name
+            for name, info in type(self).model_fields.items()
+            if isinstance(info.json_schema_extra, dict)
+            and info.json_schema_extra.get("acp_compatible") is True
+        }
+        unsupported = set(self.model_fields_set) - acp_compatible
         if unsupported:
             fields = ", ".join(sorted(unsupported))
             raise NotImplementedError(
