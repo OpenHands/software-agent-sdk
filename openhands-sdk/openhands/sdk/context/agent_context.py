@@ -331,7 +331,6 @@ class AgentContext(BaseModel):
             bool(self.skills)
             or bool(self.system_message_suffix)
             or bool(self.user_message_suffix)
-            or "current_datetime" in self.model_fields_set
         )
 
         parts: list[str] = []
