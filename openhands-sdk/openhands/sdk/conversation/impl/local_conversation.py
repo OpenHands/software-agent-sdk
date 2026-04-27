@@ -629,7 +629,11 @@ class LocalConversation(BaseConversation):
 
     def _pin_prompt_cache_key(self) -> None:
         # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
-        self.agent.llm._prompt_cache_key = str(self._state.id)
+        # Skip if a key is already set: sub-agent LLMs inherit the parent's
+        # via model_copy, and overwriting would put each sub-agent on its own
+        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
+        if self.agent.llm._prompt_cache_key is None:
+            self.agent.llm._prompt_cache_key = str(self._state.id)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a named profile.
