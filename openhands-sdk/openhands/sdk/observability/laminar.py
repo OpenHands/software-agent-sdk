@@ -49,13 +49,16 @@ def maybe_init_laminar():
     OTEL_EXPORTER=otlp_http # or otlp_grpc
     ```
 
-    For self-hosted Laminar, set the ports via environment variables:
+    For self-hosted Laminar, set the base URL and ports via environment variables:
+    LMNR_BASE_URL=https://api.lmnr.ai  # optional, defaults to https://api.lmnr.ai
     LMNR_HTTP_PORT=8000
     LMNR_GRPC_PORT=8001
     """
+    base_url = get_env("LMNR_BASE_URL") or None
     if should_enable_observability():
         if _is_otel_backend_laminar():
             Laminar.initialize(
+                base_url=base_url,
                 http_port=_get_int_env("LMNR_HTTP_PORT"),
                 grpc_port=_get_int_env("LMNR_GRPC_PORT"),
             )
