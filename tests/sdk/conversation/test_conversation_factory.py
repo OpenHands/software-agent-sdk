@@ -147,6 +147,23 @@ def test_conversation_factory_file_store_forwarded_to_state(agent):
     assert conv._state._fs is custom_store
 
 
+def test_conversation_state_create_raises_when_both_file_store_and_persistence_dir(
+    agent,
+):
+    """Passing File_store and persistence_dir raises ValueError"""
+    custom_store = InMemoryFileStore()
+    workspace = LocalWorkspace(working_dir="/tmp/test")
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            file_store=custom_store,
+            persistence_dir="/tmp/some_dir",
+        )
+
+
 def test_conversation_factory_file_store_rejected_for_remote(agent, remote_workspace):
     """Passing file_store with a RemoteWorkspace raises ValueError."""
     with pytest.raises(ValueError, match="file_store should not be set"):
