@@ -211,13 +211,15 @@ class TestACPAgentValidation:
 
         self._init_with_patches(agent, tmp_path)
 
-    def test_rejects_unsupported_agent_context_at_init(self, tmp_path):
+    def test_allows_agent_context_with_secrets(self, tmp_path):
+        """Secrets are now ACP-compatible: they are injected into the subprocess
+        env by _start_acp_server and advertised in the prompt via <CUSTOM_SECRETS>."""
         agent = ACPAgent(
             acp_command=["echo"],
             agent_context=AgentContext(secrets={"GITHUB_TOKEN": "ghp_secret"}),
         )
-        with pytest.raises(NotImplementedError, match="secrets"):
-            self._init_with_patches(agent, tmp_path)
+        # Should not raise
+        self._init_with_patches(agent, tmp_path)
 
     def test_agent_context_to_acp_prompt_context(self):
         context = AgentContext(
@@ -261,11 +263,30 @@ class TestACPAgentValidation:
         assert prompt is not None
         assert "<CURRENT_DATETIME>" in prompt
 
-    def test_agent_context_to_acp_prompt_context_rejects_secrets(self):
-        context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_secret"})
+    def test_agent_context_to_acp_prompt_context_includes_secrets(self):
+        """Secrets appear in the ACP prompt as a <CUSTOM_SECRETS> block so the
+        ACP subprocess knows which environment variables are available."""
+        from openhands.sdk.secret import StaticSecret
+        from pydantic import SecretStr
 
-        with pytest.raises(NotImplementedError, match="secrets"):
-            context.to_acp_prompt_context()
+        context = AgentContext(
+            secrets={
+                "GITHUB_TOKEN": StaticSecret(
+                    value=SecretStr("ghp_secret"),
+                    description="GitHub authentication token",
+                ),
+                "MY_API_KEY": StaticSecret(value=SecretStr("key123")),
+            },
+            current_datetime=None,
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        assert "<CUSTOM_SECRETS>" in prompt
+        assert "$GITHUB_TOKEN" in prompt
+        assert "GitHub authentication token" in prompt
+        assert "$MY_API_KEY" in prompt
 
     def test_agent_context_to_acp_prompt_context_includes_legacy_repo_skills(self):
         context = AgentContext(
@@ -3291,3 +3312,127 @@ class TestACPSessionIdPersistence:
         assert kwargs["cwd"] == str(workspace)
         conn2.new_session.assert_not_awaited()
         assert agent2._session_id == "roundtrip-sess"
+
+
+class TestACPSecretsEnvInjection:
+    """Tests for secret injection into the ACP subprocess environment.
+
+    Secrets passed via ``agent_context.secrets`` must land in the subprocess
+    env so the ACP server (Claude Code, Codex CLI, etc.) can use them.
+    ``acp_env`` entries take precedence over agent_context secrets.
+    """
+
+    @staticmethod
+    def _make_conn():
+        conn = MagicMock()
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = []
+        conn.initialize = AsyncMock(return_value=init_response)
+        new_response = MagicMock()
+        new_response.session_id = "sess-1"
+        conn.new_session = AsyncMock(return_value=new_response)
+        conn.load_session = AsyncMock(return_value=MagicMock())
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _run_start_capturing_env(agent, tmp_path) -> dict:
+        """Run _start_acp_server and return the env dict passed to the subprocess."""
+        from contextlib import ExitStack
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict = {}
+        conn = TestACPSecretsEnvInjection._make_conn()
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
+            captured.update(env or {})
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        state = _make_state(tmp_path)
+        agent._executor = AsyncExecutor()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_create_subprocess_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+
+        return captured
+
+    def test_static_secret_injected_into_subprocess_env(self, tmp_path):
+        """A StaticSecret in agent_context.secrets lands in the subprocess env."""
+        from openhands.sdk.secret import StaticSecret
+        from pydantic import SecretStr
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={
+                    "GITHUB_TOKEN": StaticSecret(
+                        value=SecretStr("ghp_test123"),
+                        description="GitHub token",
+                    )
+                }
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert env.get("GITHUB_TOKEN") == "ghp_test123"
+
+    def test_acp_env_takes_precedence_over_agent_context_secret(self, tmp_path):
+        """An explicit acp_env entry wins over the same key in agent_context.secrets."""
+        from openhands.sdk.secret import StaticSecret
+        from pydantic import SecretStr
+
+        agent = _make_agent(
+            acp_env={"MY_TOKEN": "acp-env-wins"},
+            agent_context=AgentContext(
+                secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
+            ),
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert env.get("MY_TOKEN") == "acp-env-wins"
+
+    def test_none_value_secret_not_injected(self, tmp_path):
+        """A StaticSecret with value=None is not added to the subprocess env."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"ABSENT_SECRET": StaticSecret(value=None)}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert "ABSENT_SECRET" not in env
