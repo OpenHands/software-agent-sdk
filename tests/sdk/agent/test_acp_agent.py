@@ -211,6 +211,14 @@ class TestACPAgentValidation:
 
         self._init_with_patches(agent, tmp_path)
 
+    def test_rejects_unsupported_agent_context_at_init(self, tmp_path):
+        agent = ACPAgent(
+            acp_command=["echo"],
+            agent_context=AgentContext(secrets={"GITHUB_TOKEN": "ghp_secret"}),
+        )
+        with pytest.raises(NotImplementedError, match="secrets"):
+            self._init_with_patches(agent, tmp_path)
+
     def test_agent_context_to_acp_prompt_context(self):
         context = AgentContext(
             skills=[

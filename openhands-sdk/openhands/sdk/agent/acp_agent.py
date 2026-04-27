@@ -837,6 +837,8 @@ class ACPAgent(AgentBase):
                 "ACPAgent does not support condenser; "
                 "the ACP server manages its own context"
             )
+        if self.agent_context:
+            self.agent_context.validate_acp_compatibility()
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
 

@@ -282,6 +282,27 @@ class AgentContext(BaseModel):
             return self.system_message_suffix.strip()
         return None
 
+    _ACP_COMPATIBLE_FIELDS: frozenset[str] = frozenset(
+        {
+            "skills",
+            "system_message_suffix",
+            "user_message_suffix",
+            "load_user_skills",
+            "load_public_skills",
+            "marketplace_path",
+            "current_datetime",
+        }
+    )
+
+    def validate_acp_compatibility(self) -> None:
+        """Raise if this context uses fields unsupported by ACP prompt mode."""
+        unsupported = set(self.model_fields_set) - self._ACP_COMPATIBLE_FIELDS
+        if unsupported:
+            fields = ", ".join(sorted(unsupported))
+            raise NotImplementedError(
+                f"ACP prompt context does not support AgentContext field(s): {fields}"
+            )
+
     def to_acp_prompt_context(self) -> str | None:
         """Return the AgentContext fields that ACP can consume as prompt text.
 
@@ -294,21 +315,7 @@ class AgentContext(BaseModel):
         because ``LocalConversation`` already applies it through
         ``event.to_llm_message()``; including it would duplicate it.
         """
-        compatible_fields = {
-            "skills",
-            "system_message_suffix",
-            "user_message_suffix",
-            "load_user_skills",
-            "load_public_skills",
-            "marketplace_path",
-            "current_datetime",
-        }
-        unsupported_fields = set(self.model_fields_set) - compatible_fields
-        if unsupported_fields:
-            fields = ", ".join(sorted(unsupported_fields))
-            raise NotImplementedError(
-                f"ACP prompt context does not support AgentContext field(s): {fields}"
-            )
+        self.validate_acp_compatibility()
 
         repo_skills, available_skills = self._partition_skills()
 
@@ -318,7 +325,7 @@ class AgentContext(BaseModel):
             or bool(self.user_message_suffix)
             or "current_datetime" in self.model_fields_set
         )
-        
+
         parts: list[str] = []
         if has_explicit_prompt_context:
             formatted_datetime = self.get_formatted_datetime()
