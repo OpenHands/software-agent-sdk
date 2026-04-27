@@ -3,6 +3,7 @@
 import functools
 import inspect
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 
 class EncodingManager:
     """Manages file encodings across multiple operations to ensure consistency."""
+
+    CODING_COOKIE_RE = re.compile(rb"coding[:=]\s*([-\w.]+)")
 
     # Default maximum number of entries in the cache
     DEFAULT_MAX_CACHE_SIZE: int = 1000  # ~= 300 KB
@@ -48,6 +51,16 @@ class EncodingManager:
         sample_size = min(os.path.getsize(path), 1024 * 1024)  # Max 1MB sample
         with open(path, "rb") as f:
             raw_data = f.read(sample_size)
+
+        # Honor explicit Python coding cookies when present.
+        for line in raw_data.splitlines()[:2]:
+            match = self.CODING_COOKIE_RE.search(line)
+            if not match:
+                continue
+            try:
+                return match.group(1).decode("ascii")
+            except UnicodeDecodeError:
+                break
 
         # Use charset_normalizer instead of chardet
         results = charset_normalizer.detect(raw_data)
