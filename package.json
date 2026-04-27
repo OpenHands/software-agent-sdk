@@ -54,7 +54,7 @@
     "test:git-dependency": "node ./scripts/smoke-test-git-dependency.mjs",
     "test:all": "npm run test && npm run test:integration && npm run test:git-dependency",
     "dev": "tsc --watch",
-    "clean": "rm -rf dist",
+    "clean": "rimraf dist",
     "prepare": "npm run clean && npm run build",
     "prepublishOnly": "npm test"
   },
@@ -83,6 +83,7 @@
     "globals": "^17.5.0",
     "jest": "^30.3.0",
     "prettier": "^3.8.3",
+    "rimraf": "^6.1.3",
     "ts-jest": "^29.4.9",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.58.2"
