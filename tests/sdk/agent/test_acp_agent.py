@@ -2410,14 +2410,13 @@ class TestSelectAuthMethod:
 
     def test_openai_api_key(self):
         methods = [
-            self._make_auth_method("chatgpt"),
             self._make_auth_method("codex-api-key"),
             self._make_auth_method("openai-api-key"),
         ]
         env = {"OPENAI_API_KEY": "sk-test"}
         assert _select_auth_method(methods, env) == "openai-api-key"
 
-    def test_codex_api_key_preferred(self):
+    def test_codex_api_key_preferred_over_openai(self):
         """CODEX_API_KEY is checked first (appears first in the map)."""
         methods = [
             self._make_auth_method("codex-api-key"),
@@ -2426,7 +2425,31 @@ class TestSelectAuthMethod:
         env = {"CODEX_API_KEY": "key1", "OPENAI_API_KEY": "key2"}
         assert _select_auth_method(methods, env) == "codex-api-key"
 
-    def test_no_matching_env_var(self):
+    def test_chatgpt_preferred_over_api_key(self, tmp_path):
+        """ChatGPT subscription login takes precedence over API keys."""
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        auth_dir = tmp_path / ".codex"
+        auth_dir.mkdir()
+        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+
+        env = {"OPENAI_API_KEY": "sk-test"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "chatgpt"
+
+    def test_api_key_fallback_when_no_chatgpt_file(self):
+        """Falls back to API key when chatgpt is offered but auth file absent."""
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"OPENAI_API_KEY": "sk-test"}
+        # Path.home() points to a real dir without .codex/auth.json
+        assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_no_matching_credentials(self):
         methods = [
             self._make_auth_method("chatgpt"),
             self._make_auth_method("openai-api-key"),
@@ -2440,17 +2463,8 @@ class TestSelectAuthMethod:
         auth_dir.mkdir()
         (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
 
-        assert _select_auth_method(methods, {"HOME": str(tmp_path)}) == "chatgpt"
-
-    def test_chatgpt_auth_file_userprofile(self, tmp_path):
-        """USERPROFILE is used as fallback on Windows."""
-        methods = [self._make_auth_method("chatgpt")]
-        auth_dir = tmp_path / ".codex"
-        auth_dir.mkdir()
-        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
-
-        env = {"USERPROFILE": str(tmp_path)}
-        assert _select_auth_method(methods, env) == "chatgpt"
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {}) == "chatgpt"
 
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None

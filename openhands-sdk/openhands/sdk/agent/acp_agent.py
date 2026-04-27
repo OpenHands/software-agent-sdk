@@ -166,15 +166,20 @@ def _select_auth_method(
 
     Returns the ``id`` of the first matching method, or ``None`` if no
     supported credential source is available (the server may not require auth).
+
+    ChatGPT subscription login (device-code flow stored in
+    ``~/.codex/auth.json``) is checked first so it takes precedence over
+    explicit API keys, which serve as the fallback.
     """
     method_ids = {m.id for m in auth_methods}
+    # Prefer ChatGPT subscription login when the auth file is present.
+    if "chatgpt" in method_ids:
+        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
+            return "chatgpt"
+    # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
             return method_id
-    if "chatgpt" in method_ids:
-        home = env.get("HOME") or env.get("USERPROFILE")
-        if home and (Path(home) / _CHATGPT_AUTH_PATH).is_file():
-            return "chatgpt"
     return None
 
 
