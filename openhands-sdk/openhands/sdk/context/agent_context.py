@@ -327,25 +327,18 @@ class AgentContext(BaseModel):
 
         repo_skills, available_skills = self._partition_skills()
 
-        has_explicit_prompt_context = (
-            bool(self.skills)
-            or bool(self.system_message_suffix)
-            or bool(self.user_message_suffix)
-        )
-
         parts: list[str] = []
-        if has_explicit_prompt_context:
-            formatted_datetime = self.get_formatted_datetime()
-            if formatted_datetime:
-                parts.append(
-                    "\n".join(
-                        [
-                            "<CURRENT_DATETIME>",
-                            f"The current date and time is: {formatted_datetime}",
-                            "</CURRENT_DATETIME>",
-                        ]
-                    )
+        formatted_datetime = self.get_formatted_datetime()
+        if formatted_datetime:
+            parts.append(
+                "\n".join(
+                    [
+                        "<CURRENT_DATETIME>",
+                        f"The current date and time is: {formatted_datetime}",
+                        "</CURRENT_DATETIME>",
+                    ]
                 )
+            )
 
         if repo_skills:
             # Reuse the shared template only for REPO_CONTEXT rendering; ACP

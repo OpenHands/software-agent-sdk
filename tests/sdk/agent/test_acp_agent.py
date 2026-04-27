@@ -249,10 +249,17 @@ class TestACPAgentValidation:
         assert "<USER_CONTEXT>" not in prompt
         assert "Prefer concise responses." not in prompt
 
-    def test_agent_context_to_acp_prompt_context_returns_none_for_empty_skills(self):
-        context = AgentContext(skills=[])
+    def test_agent_context_to_acp_prompt_context_returns_none_when_empty(self):
+        context = AgentContext(skills=[], current_datetime=None)
 
         assert context.to_acp_prompt_context() is None
+
+    def test_agent_context_to_acp_prompt_context_emits_datetime_by_default(self):
+        context = AgentContext(skills=[])
+
+        prompt = context.to_acp_prompt_context()
+        assert prompt is not None
+        assert "<CURRENT_DATETIME>" in prompt
 
     def test_agent_context_to_acp_prompt_context_rejects_secrets(self):
         context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_secret"})
