@@ -237,16 +237,16 @@ class TestACPAgentValidation:
         prompt = context.to_acp_prompt_context()
 
         assert prompt is not None
+        # Reuses the same system_message_suffix.j2 template as the general
+        # agent, so the rendered sections are identical.
         assert "<CURRENT_DATETIME>" in prompt
         assert "2026-04-24T00:00:00" in prompt
         assert "<name>review</name>" in prompt
         assert "<description>Review pull requests.</description>" in prompt
         assert "Full review instructions" not in prompt
-        assert "<SYSTEM_CONTEXT>" in prompt
         assert "Follow repository rules." in prompt
         # user_message_suffix is not emitted by to_acp_prompt_context because
         # LocalConversation already applies it via event.to_llm_message().
-        assert "<USER_CONTEXT>" not in prompt
         assert "Prefer concise responses." not in prompt
 
     def test_agent_context_to_acp_prompt_context_returns_none_when_empty(self):

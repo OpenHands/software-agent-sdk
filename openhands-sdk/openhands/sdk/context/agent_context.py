@@ -315,74 +315,22 @@ class AgentContext(BaseModel):
         """Return the AgentContext fields that ACP can consume as prompt text.
 
         ACP servers own their tools, MCP servers, hooks, and execution model, so
-        this adapter only emits prompt-only context. Unsupported AgentContext
-        semantics must fail here instead of being silently approximated by
-        ACPAgent.
+        this adapter only emits prompt-only context.  Unsupported AgentContext
+        semantics (e.g. secrets) are rejected by
+        :meth:`validate_acp_compatibility`.
+
+        The rendering reuses :meth:`get_system_message_suffix` with the same
+        ``system_message_suffix.j2`` template so that ACP agents receive the
+        identical prompt layout as the general agent (minus secrets).
 
         ``user_message_suffix`` is a compatible field but is not emitted here
         because ``LocalConversation`` already applies it through
         ``event.to_llm_message()``; including it would duplicate it.
         """
         self.validate_acp_compatibility()
-
-        repo_skills, available_skills = self._partition_skills()
-
-        parts: list[str] = []
-        formatted_datetime = self.get_formatted_datetime()
-        if formatted_datetime:
-            parts.append(
-                "\n".join(
-                    [
-                        "<CURRENT_DATETIME>",
-                        f"The current date and time is: {formatted_datetime}",
-                        "</CURRENT_DATETIME>",
-                    ]
-                )
-            )
-
-        if repo_skills:
-            # Reuse the shared template only for REPO_CONTEXT rendering; ACP
-            # prompt-only sections are assembled explicitly below.
-            repo_context = render_template(
-                prompt_dir=str(PROMPT_DIR),
-                template_name="system_message_suffix.j2",
-                repo_skills=repo_skills,
-                system_message_suffix="",
-                secret_infos=[],
-                available_skills_prompt="",
-                current_datetime=None,
-            ).strip()
-            if repo_context:
-                parts.append(repo_context)
-
-        if available_skills:
-            parts.append(
-                "\n".join(
-                    [
-                        "<SKILLS>",
-                        "The following skills are available:",
-                        to_prompt(available_skills),
-                        "</SKILLS>",
-                    ]
-                )
-            )
-
-        if self.system_message_suffix:
-            system_suffix = self.system_message_suffix.strip()
-            if system_suffix:
-                parts.append(
-                    "\n".join(
-                        [
-                            "<SYSTEM_CONTEXT>",
-                            system_suffix,
-                            "</SYSTEM_CONTEXT>",
-                        ]
-                    )
-                )
-
-        if not parts:
-            return None
-        return "\n\n".join(parts)
+        # ACP doesn't support secrets (enforced above) and has no model-specific
+        # skill filtering, so we delegate to the shared renderer with no extras.
+        return self.get_system_message_suffix()
 
     def get_user_message_suffix(
         self, user_message: Message, skip_skill_names: list[str]
