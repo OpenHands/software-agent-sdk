@@ -178,14 +178,14 @@ def main(files: list[str] | None = None) -> int:
 
         errors = check_tool_registration(file_path, is_special_file=is_special)
         if errors:
-            print(f"❌ Tool registration issues in {rel_path}:")
+            print(f"[ERROR] Tool registration issues in {rel_path}:")
             for error in errors:
                 print(f"  {error}")
             all_errors.extend(errors)
 
     if all_errors:
         print(
-            "\n💡 Tool registration rules:\n"
+            "\nTool registration rules:\n"
             "  - All ToolDefinition subclasses must be registered using "
             "register_tool()\n"
             "  - Add at module level: register_tool(ToolName.name, ToolName)\n"
@@ -193,7 +193,7 @@ def main(files: list[str] | None = None) -> int:
         )
         return 1
 
-    print("✅ All Tool subclasses are properly registered!")
+    print("All Tool subclasses are properly registered!")
     return 0
 
 

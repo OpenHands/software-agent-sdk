@@ -2,6 +2,7 @@
 
 import gc
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -136,15 +137,18 @@ def test_file_editor_memory_leak(temp_file):
 
     # Set memory limit to 170MB to make it more likely to catch issues
     memory_limit = 170 * 1024 * 1024  # 170MB in bytes
-    try:
-        import resource
+    if sys.platform != "win32":
+        try:
+            import resource
 
-        resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-        print("Memory limit set successfully")
-    except Exception as e:
-        print(f"Warning: Could not set memory limit: {str(e)}")
-        # If we can't set memory limit, we'll still run the test but rely on
-        # growth checks
+            resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
+            print("Memory limit set successfully")
+        except Exception as e:
+            print(f"Warning: Could not set memory limit: {str(e)}")
+            # If we can't set memory limit, we'll still run the test but rely on
+            # growth checks
+    else:
+        print("Memory limit not available on Windows")
 
     initial_memory = psutil.Process(os.getpid()).memory_info().rss
     print(f"\nInitial memory usage: {initial_memory / 1024 / 1024:.2f} MB")
