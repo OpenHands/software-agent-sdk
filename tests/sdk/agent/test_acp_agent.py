@@ -266,8 +266,9 @@ class TestACPAgentValidation:
     def test_agent_context_to_acp_prompt_context_includes_secrets(self):
         """Secrets appear in the ACP prompt as a <CUSTOM_SECRETS> block so the
         ACP subprocess knows which environment variables are available."""
-        from openhands.sdk.secret import StaticSecret
         from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
 
         context = AgentContext(
             secrets={
@@ -3345,6 +3346,7 @@ class TestACPSecretsEnvInjection:
     def _run_start_capturing_env(agent, tmp_path) -> dict:
         """Run _start_acp_server and return the env dict passed to the subprocess."""
         from contextlib import ExitStack
+
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         captured: dict = {}
@@ -3395,8 +3397,9 @@ class TestACPSecretsEnvInjection:
 
     def test_static_secret_injected_into_subprocess_env(self, tmp_path):
         """A StaticSecret in agent_context.secrets lands in the subprocess env."""
-        from openhands.sdk.secret import StaticSecret
         from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
             agent_context=AgentContext(
@@ -3413,8 +3416,9 @@ class TestACPSecretsEnvInjection:
 
     def test_acp_env_takes_precedence_over_agent_context_secret(self, tmp_path):
         """An explicit acp_env entry wins over the same key in agent_context.secrets."""
-        from openhands.sdk.secret import StaticSecret
         from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
             acp_env={"MY_TOKEN": "acp-env-wins"},
@@ -3436,3 +3440,17 @@ class TestACPSecretsEnvInjection:
         )
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "ABSENT_SECRET" not in env
+
+    def test_empty_string_secret_not_injected(self, tmp_path):
+        """Empty string secrets are not injected into the subprocess env."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"EMPTY_SECRET": StaticSecret(value=SecretStr(""))}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert "EMPTY_SECRET" not in env
