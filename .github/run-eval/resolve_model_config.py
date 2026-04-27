@@ -230,6 +230,12 @@ MODELS = {
         "display_name": "DeepSeek V3.2 Reasoner",
         "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
     },
+    # https://api-docs.deepseek.com/news/news260424
+    "deepseek-v4-flash": {
+        "id": "deepseek-v4-flash",
+        "display_name": "DeepSeek V4 Flash",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-flash"},
+    },
     "qwen-3-coder": {
         "id": "qwen-3-coder",
         "display_name": "Qwen 3 Coder",
