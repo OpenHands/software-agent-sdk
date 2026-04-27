@@ -18,6 +18,7 @@ Run against a real PostgreSQL instance to verify actual SQL round-trips.
 import os
 import threading
 import uuid
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -257,7 +258,7 @@ _skip_no_pg = pytest.mark.skipif(
 
 
 @pytest.fixture()
-def pg_store() -> PostgreSQLFileStore:
+def pg_store() -> Generator[PostgreSQLFileStore]:
     """Create a PostgreSQLFileStore against a real PostgreSQL instance.
 
     Uses a unique namespace per test run to avoid collisions.

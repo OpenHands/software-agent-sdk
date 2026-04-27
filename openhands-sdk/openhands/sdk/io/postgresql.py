@@ -25,7 +25,7 @@ import re
 import threading
 from collections.abc import Coroutine, Iterator
 from contextlib import contextmanager
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar, cast
 
 import asyncpg
 
@@ -33,6 +33,10 @@ from .base import FileStore
 
 
 _T = TypeVar("_T")
+
+
+class _DDLConnection(Protocol):
+    async def execute(self, query: str, *args: Any) -> str: ...
 
 
 __all__ = ["PostgreSQLFileStore"]
@@ -123,7 +127,7 @@ class PostgreSQLFileStore(FileStore):
     # ------------------------------------------------------------------ #
 
     @classmethod
-    async def _create_schema(cls, conn: asyncpg.Connection, table: str) -> None:
+    async def _create_schema(cls, conn: _DDLConnection, table: str) -> None:
         """Execute DDL to create the table and index."""
         await conn.execute(
             f"""
@@ -144,9 +148,7 @@ class PostgreSQLFileStore(FileStore):
         )
 
     @classmethod
-    async def ensure_schema(
-        cls, dsn: str, table: str = DEFAULT_TABLE
-    ) -> None:
+    async def ensure_schema(cls, dsn: str, table: str = DEFAULT_TABLE) -> None:
         """Create the table and index if they don't exist.
 
         Intended to be called once during deployment or migration rather than
@@ -179,7 +181,7 @@ class PostgreSQLFileStore(FileStore):
         pool = await asyncpg.create_pool(dsn)
         if auto_create_schema:
             async with pool.acquire() as conn:
-                await self._create_schema(conn, self._table)
+                await self._create_schema(cast(_DDLConnection, conn), self._table)
         return pool
 
     def _run(self, coro: Coroutine[Any, Any, _T]) -> _T:
