@@ -12,11 +12,13 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
+    AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    ForkConversationRequest,
     GenerateTitleRequest,
     GenerateTitleResponse,
     SendMessageRequest,
@@ -111,6 +113,27 @@ async def get_conversation(
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return conversation
+
+
+@conversation_router.get(
+    "/{conversation_id}/agent_final_response",
+    responses={404: {"description": "Conversation not found"}},
+)
+async def get_conversation_agent_final_response(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> AgentResponseResult:
+    """Get the agent's final response for a conversation.
+
+    Returns the text of the last agent finish message (FinishAction) or
+    the last agent text response (MessageEvent). Returns an empty string
+    if the agent has not produced a final response yet.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    response = await event_service.get_agent_final_response()
+    return AgentResponseResult(response=response)
 
 
 @conversation_router.get("")
@@ -266,6 +289,38 @@ async def set_conversation_security_analyzer(
     return Success()
 
 
+@conversation_router.post(
+    "/{conversation_id}/switch_profile",
+    responses={
+        400: {"description": "Invalid or corrupted profile"},
+        404: {"description": "Conversation or profile not found"},
+    },
+)
+async def switch_conversation_profile(
+    conversation_id: UUID,
+    profile_name: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Switch the conversation's LLM profile to a named profile."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    conversation = event_service.get_conversation()
+    try:
+        conversation.switch_profile(profile_name)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{profile_name}' not found",
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    return Success()
+
+
 @conversation_router.patch(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )
@@ -338,3 +393,43 @@ async def condense_conversation(
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/fork",
+    responses={
+        201: {"description": "Forked conversation created"},
+        404: {"description": "Source conversation not found"},
+        409: {"description": "Fork ID already in use"},
+    },
+    status_code=status.HTTP_201_CREATED,
+)
+async def fork_conversation(
+    conversation_id: UUID,
+    request: Annotated[ForkConversationRequest, Body()] = ForkConversationRequest(),  # noqa: B008
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Fork a conversation, deep-copying its event history.
+
+    The fork starts in ``idle`` status with a fresh event loop.
+    Calling ``run`` on the fork resumes from the copied state, meaning
+    the agent has full event memory of the source conversation.
+    """
+    try:
+        info = await conversation_service.fork_conversation(
+            conversation_id,
+            fork_id=request.id,
+            title=request.title,
+            tags=request.tags if request.tags is not None else None,
+            reset_metrics=request.reset_metrics,
+        )
+    except ValueError as exc:
+        if "already exists" in str(exc):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise
+    if info is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Source conversation not found",
+        )
+    return info

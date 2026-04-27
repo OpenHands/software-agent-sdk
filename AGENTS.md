@@ -106,9 +106,15 @@ When reviewing code, provide constructive feedback:
 - `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
+- Persisted SDK settings should use the direct `model_dump()` shape with a top-level `schema_version`; avoid adding wrapped payload formats or legacy migration shims in `openhands/sdk/settings/model.py`.
+- Because persisted settings are not in production yet, prefer removing temporary compatibility fields and serializers outright instead of carrying legacy settings shims in the SDK.
+- Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
+- `ConversationSettings` owns the conversation-scoped confirmation controls directly (`confirmation_mode`, `security_analyzer`); keep those fields top-level on the model and grouped into the exported `verification` section via schema metadata rather than nested helper models, and prefer the direct settings-model constructor `create_request(...)` over separate request-wrapper helpers.
+- Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
 - AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 - `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
+- The duplicate-issue automation scripts should validate `owner/repo` arguments before interpolating GitHub API paths, handle per-issue auto-close failures without aborting the whole batch, and keep `app_conversation_id` paths unquoted because OpenHands conversation IDs are already canonicalized for those endpoints.
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
 
 
@@ -128,12 +134,17 @@ consult each relevant package-level AGENTS.md.
 
 - For SDK Python API deprecation/removal policy, read
   [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
-  Public API removals require deprecation before removal, and breaking SDK API
+  Public API removals require deprecation metadata with a removal target at
+  least **5 minor releases** after `deprecated_in`, and breaking SDK API
   changes require at least a **MINOR** SemVer bump.
 - The SDK API breakage checker should treat metadata-only changes to
   Pydantic `Field(...)` declarations as non-breaking, including adding,
   removing, or editing `description`, `title`, `examples`,
   `json_schema_extra`, and `deprecated` kwargs.
+- The SDK API breakage checker compares stringified `Field(...)` values by
+  parsing them as Python expressions after escaping literal newlines inside
+  quoted strings; this avoids false positives on multiline descriptions that
+  include embedded quotes like `'security_policy.j2'`.
 - For public REST APIs, read
   [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
   REST contract breaks need a deprecation notice and a runway of

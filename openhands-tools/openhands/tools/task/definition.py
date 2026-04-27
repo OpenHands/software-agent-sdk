@@ -20,6 +20,7 @@ from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.subagent import get_factory_info, get_registered_agent_definitions
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -44,7 +45,7 @@ class TaskAction(Action):
         description="The task for the agent to perform.",
     )
     subagent_type: str = Field(
-        default="default",
+        default="general-purpose",
         description="The type of specialized agent to use for this task.",
     )
     resume: str | None = Field(
@@ -167,6 +168,9 @@ Example — Perform a multi-step task involving code editing and shell commands:
 
 class TaskTool(ToolDefinition[TaskAction, TaskObservation]):
     """Tool for launching (blocking) sub-agent tasks."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        return DeclaredResources(keys=(), declared=True)
 
     @classmethod
     def create(

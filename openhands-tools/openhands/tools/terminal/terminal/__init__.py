@@ -3,8 +3,10 @@ from typing import TYPE_CHECKING
 
 from openhands.tools.terminal.terminal.factory import create_terminal_session
 from openhands.tools.terminal.terminal.interface import (
+    SUPPORTED_SPECIAL_KEYS,
     TerminalInterface,
     TerminalSessionBase,
+    parse_ctrl_key,
 )
 from openhands.tools.terminal.terminal.terminal_session import (
     TerminalCommandStatus,
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "SUPPORTED_SPECIAL_KEYS",
     "TerminalInterface",
     "TerminalSessionBase",
     "TmuxTerminal",
@@ -34,4 +37,5 @@ __all__ = [
     "TerminalSession",
     "TerminalCommandStatus",
     "create_terminal_session",
+    "parse_ctrl_key",
 ]

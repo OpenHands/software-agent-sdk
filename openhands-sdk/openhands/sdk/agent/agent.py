@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -12,11 +13,17 @@ import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+from openhands.sdk.agent.response_dispatch import (
+    LLMResponseType,
+    ResponseDispatchMixin,
+    classify_response,
+)
 from openhands.sdk.agent.utils import (
     fix_malformed_tool_arguments,
     make_llm_completion,
+    normalize_tool_call,
+    parse_tool_call_arguments,
     prepare_llm_messages,
-    sanitize_json_control_chars,
 )
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -51,6 +58,7 @@ from openhands.sdk.llm import (
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContextWindowExceedError,
+    LLMMalformedConversationHistoryError,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
@@ -229,7 +237,7 @@ class _ActionBatch:
             mark_finished()
 
 
-class Agent(CriticMixin, AgentBase):
+class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
@@ -240,8 +248,16 @@ class Agent(CriticMixin, AgentBase):
     Attributes:
         llm: The language model instance used for reasoning.
         tools: List of tools available to the agent.
-        name: Optional agent identifier.
-        system_prompt: Custom system prompt (uses default if not provided).
+        system_prompt: Inline system prompt string. When provided the agent
+            uses this text verbatim instead of rendering from a template.
+            Mutually exclusive with a non-default ``system_prompt_filename``.
+            **Not recommended** unless you know what you are doing (e.g.
+            customising agent behaviour for a completely different task) —
+            this will override OpenHands' built-in system instructions.
+        system_prompt_filename: Jinja2 template filename resolved relative to
+            the agent's prompts directory, or an absolute path. Defaults to
+            ``"system_prompt.j2"``.
+        system_prompt_kwargs: Extra kwargs forwarded to the Jinja2 template.
 
     Example:
         ```python
@@ -252,6 +268,14 @@ class Agent(CriticMixin, AgentBase):
         tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         agent = Agent(llm=llm, tools=tools)
         ```
+
+        To override the system prompt entirely::
+
+            agent = Agent(
+                llm=llm,
+                tools=tools,
+                system_prompt="You are a helpful coding assistant.",
+            )
     """
 
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
@@ -516,6 +540,30 @@ class Agent(CriticMixin, AgentBase):
             )
             on_event(error_message)
             return
+        except LLMMalformedConversationHistoryError as e:
+            # The provider rejected the current message history as structurally
+            # invalid (for example, broken tool_use/tool_result pairing). Route
+            # this into condensation recovery, but keep the logs distinct from
+            # true context-window exhaustion so upstream event-stream bugs remain
+            # visible.
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised malformed conversation history error, "
+                    "triggering condensation retry with condensed history: "
+                    f"{e}"
+                )
+                on_event(CondensationRequest())
+                return
+            logger.warning(
+                "LLM raised malformed conversation history error but no "
+                "condenser can handle condensation requests. This usually "
+                "indicates an upstream event-stream or resume bug: "
+                f"{e}"
+            )
+            raise e
         except LLMContextWindowExceedError as e:
             # If condenser is available and handles requests, trigger condensation
             if (
@@ -533,117 +581,26 @@ class Agent(CriticMixin, AgentBase):
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
+        response_type = classify_response(message)
 
-        # Check if this is a reasoning-only response (e.g., from reasoning models)
-        # or a message-only response without tool calls
-        has_reasoning = (
-            message.responses_reasoning_item is not None
-            or message.reasoning_content is not None
-            or (message.thinking_blocks and len(message.thinking_blocks) > 0)
-        )
-        has_content = any(
-            isinstance(c, TextContent) and c.text.strip() for c in message.content
-        )
-
-        if message.tool_calls and len(message.tool_calls) > 0:
-            if not all(isinstance(c, TextContent) for c in message.content):
-                logger.warning(
-                    "LLM returned tool calls but message content is not all "
-                    "TextContent - ignoring non-text content"
+        match response_type:
+            case LLMResponseType.TOOL_CALLS:
+                self._handle_tool_calls(
+                    message, llm_response, conversation, state, on_event
                 )
-
-            # Generate unique batch ID for this LLM response
-            thought_content = [c for c in message.content if isinstance(c, TextContent)]
-
-            action_events: list[ActionEvent] = []
-            for i, tool_call in enumerate(message.tool_calls):
-                action_event = self._get_action_event(
-                    tool_call,
-                    conversation=conversation,
-                    llm_response_id=llm_response.id,
-                    on_event=on_event,
-                    security_analyzer=state.security_analyzer,
-                    thought=thought_content
-                    if i == 0
-                    else [],  # Only first gets thought
-                    # Only first gets reasoning content
-                    reasoning_content=message.reasoning_content if i == 0 else None,
-                    # Only first gets thinking blocks
-                    thinking_blocks=list(message.thinking_blocks) if i == 0 else [],
-                    responses_reasoning_item=message.responses_reasoning_item
-                    if i == 0
-                    else None,
+            case LLMResponseType.CONTENT:
+                self._handle_content_response(
+                    message, llm_response, conversation, state, on_event
                 )
-                if action_event is None:
-                    continue
-                action_events.append(action_event)
-
-            # Handle confirmation mode - exit early if actions need confirmation
-            if self._requires_user_confirmation(state, action_events):
-                return
-
-            if action_events:
-                self._execute_actions(conversation, action_events, on_event)
-
-            # Emit VLLM token ids if enabled before returning
-            self._maybe_emit_vllm_tokens(llm_response, on_event)
-            return
-
-        # No tool calls - emit message event for reasoning or content responses
-        if not has_reasoning and not has_content:
-            logger.warning("LLM produced empty response - continuing agent loop")
-
-        msg_event = MessageEvent(
-            source="agent",
-            llm_message=message,
-            llm_response_id=llm_response.id,
-        )
-        # Run critic evaluation if configured for finish_and_message mode
-        if self.critic is not None and self.critic.mode == "finish_and_message":
-            critic_result = self._evaluate_with_critic(conversation, msg_event)
-            if critic_result is not None:
-                # Create new event with critic result
-                msg_event = msg_event.model_copy(
-                    update={"critic_result": critic_result}
+            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                self._handle_no_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    response_type=response_type,
                 )
-        on_event(msg_event)
-
-        # Emit VLLM token ids if enabled
-        self._maybe_emit_vllm_tokens(llm_response, on_event)
-
-        # Finish conversation if LLM produced content (awaits user input)
-        # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
-        if has_content:
-            logger.debug("LLM produced a message response - awaits user input")
-            state.execution_status = ConversationExecutionStatus.FINISHED
-            return
-
-        # When the LLM produced no tool call and no user-facing content,
-        # inject corrective feedback so the model knows it must act.
-        # This prevents the monologue stuck-detector from firing when the
-        # model simply forgot to emit a function call (common with Qwen,
-        # which sometimes places tool-call XML inside reasoning_content).
-        if not has_content:
-            logger.warning(
-                "LLM response contained no tool call and no content"
-                " - sending corrective feedback"
-            )
-            nudge = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[
-                        TextContent(
-                            text=(
-                                "Your last response did not include a "
-                                "function call or a message. Please "
-                                "use a tool to proceed with the task."
-                            )
-                        )
-                    ],
-                ),
-            )
-            on_event(nudge)
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
@@ -773,6 +730,40 @@ class Agent(CriticMixin, AgentBase):
         args_str = json.dumps(arguments)
         return f"{tool_name}: {args_str}"
 
+    def _emit_tool_error(
+        self,
+        *,
+        error: str,
+        tool_name: str,
+        tool_call: MessageToolCall,
+        llm_response_id: str,
+        on_event: ConversationCallbackType,
+        thought: list[TextContent] | None = None,
+        reasoning_content: str | None = None,
+        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
+        responses_reasoning_item: ReasoningItemModel | None = None,
+    ) -> None:
+        tc_event = ActionEvent(
+            source="agent",
+            thought=thought or [],
+            reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks or [],
+            responses_reasoning_item=responses_reasoning_item,
+            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
+            llm_response_id=llm_response_id,
+            action=None,
+        )
+        on_event(tc_event)
+        on_event(
+            AgentErrorEvent(
+                error=error,
+                tool_name=tool_name,
+                tool_call_id=tool_call.id,
+            )
+        )
+
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
@@ -789,52 +780,51 @@ class Agent(CriticMixin, AgentBase):
 
         NOTE: state will be mutated in-place.
         """
-        tool_name = tool_call.name
-        tool = self.tools_map.get(tool_name, None)
-        # Handle non-existing tools
-        if tool is None:
-            available = list(self.tools_map.keys())
-            err = f"Tool '{tool_name}' not found. Available: {available}"
-            logger.error(err)
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
-                error=err,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
-            )
-            on_event(event)
-            return
+        # Track the originally-requested tool name (before normalization) for
+        # error messages when the tool is not found or validation fails.
+        requested_tool_name = tool_call.name
+        tool: ToolDefinition | None = None
+        # Store the normalized tool call to persist correct name/args in events.
+        normalized_tool_call = tool_call
+        arguments: dict[str, object] | None = None
 
-        # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
-            # Try parsing arguments as-is first.  Raw newlines / tabs are
-            # legal JSON whitespace and many models emit them between tokens
-            # (e.g. Qwen: "view_range": \n[1, 100]\n).  sanitize_json_
-            # control_chars would escape those to \\n, which breaks parsing.
-            # Fall back to sanitization only when the raw string is invalid
-            # (handles models that emit raw control chars *inside* strings).
-            try:
-                arguments = json.loads(tool_call.arguments)
-            except json.JSONDecodeError:
-                sanitized_args = sanitize_json_control_chars(tool_call.arguments)
-                arguments = json.loads(sanitized_args)
+            # Parse arguments inside the try block so JSONDecodeError is caught.
+            arguments = parse_tool_call_arguments(tool_call.arguments)
 
-            # Fix malformed arguments (e.g., JSON strings for list/dict fields)
+            # Normalize tool call (handles aliasing, terminal fallback, etc.)
+            tool_name, arguments = normalize_tool_call(
+                requested_tool_name,
+                arguments,
+                self.tools_map.keys(),
+            )
+
+            tool = self.tools_map.get(tool_name, None)
+            if tool is None:
+                available = list(self.tools_map.keys())
+                err = f"Tool '{tool_name}' not found. Available: {available}"
+                logger.error(err)
+                self._emit_tool_error(
+                    error=err,
+                    tool_name=tool_name,
+                    tool_call=tool_call,
+                    llm_response_id=llm_response_id,
+                    on_event=on_event,
+                    thought=thought,
+                    reasoning_content=reasoning_content,
+                    thinking_blocks=thinking_blocks,
+                    responses_reasoning_item=responses_reasoning_item,
+                )
+                return
+
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
+            normalized_tool_call = tool_call.model_copy(
+                update={
+                    "name": tool_name,
+                    "arguments": json.dumps(arguments),
+                }
+            )
             security_risk = self._extract_security_risk(
                 arguments,
                 tool.name,
@@ -848,31 +838,41 @@ class Agent(CriticMixin, AgentBase):
             summary = self._extract_summary(tool.name, arguments, tool=tool)
 
             action: Action = tool.action_from_arguments(arguments)
-        except (json.JSONDecodeError, ValidationError, ValueError) as e:
-            err = (
-                f"Error validating args {tool_call.arguments} for tool "
-                f"'{tool.name}': {e}"
+
+        except (ValueError, json.JSONDecodeError, ValidationError) as e:
+            # normalize_tool_call or Pydantic validation raised an error.
+            # Build concise error message with parameter names only (not values).
+            # Try to extract keys for the error message, but gracefully handle
+            # truly unparseable JSON by showing "unparseable JSON" instead.
+
+            # When normalize_tool_call raises about file_editor "Cannot infer",
+            # the error message contains the alias target (e.g. "file_editor"),
+            # not the original tool name. Extract it so error messages match.
+            err_str = str(e)
+            display_tool_name = requested_tool_name
+            if "Cannot infer" in err_str:
+                match = re.search(r"for tool '([^']+)'", err_str)
+                if match:
+                    display_tool_name = match.group(1)
+
+            keys = list(arguments.keys()) if isinstance(arguments, dict) else None
+            params = (
+                f"Parameters provided: {keys}"
+                if keys is not None
+                else "Arguments: unparseable JSON"
             )
-            # Persist assistant function_call so next turn has matching call_id
-            tc_event = ActionEvent(
-                source="agent",
-                thought=thought or [],
-                reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks or [],
-                responses_reasoning_item=responses_reasoning_item,
-                tool_call=tool_call,
-                tool_name=tool_call.name,
-                tool_call_id=tool_call.id,
-                llm_response_id=llm_response_id,
-                action=None,
-            )
-            on_event(tc_event)
-            event = AgentErrorEvent(
+            err = f"Error validating tool '{display_tool_name}': {e}. {params}"
+            self._emit_tool_error(
                 error=err,
-                tool_name=tool_name,
-                tool_call_id=tool_call.id,
+                tool_name=display_tool_name,
+                tool_call=tool_call,
+                llm_response_id=llm_response_id,
+                on_event=on_event,
+                thought=thought,
+                reasoning_content=reasoning_content,
+                thinking_blocks=thinking_blocks,
+                responses_reasoning_item=responses_reasoning_item,
             )
-            on_event(event)
             return
 
         # Create initial action event
@@ -883,8 +883,8 @@ class Agent(CriticMixin, AgentBase):
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
             tool_name=tool.name,
-            tool_call_id=tool_call.id,
-            tool_call=tool_call,
+            tool_call_id=normalized_tool_call.id,
+            tool_call=normalized_tool_call,
             llm_response_id=llm_response_id,
             security_risk=security_risk,
             summary=summary,
@@ -902,7 +902,6 @@ class Agent(CriticMixin, AgentBase):
         on_event(action_event)
         return action_event
 
-    @observe()
     def _execute_action_event(
         self,
         conversation: LocalConversation,

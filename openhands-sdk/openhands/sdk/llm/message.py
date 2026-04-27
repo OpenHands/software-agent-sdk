@@ -29,6 +29,10 @@ class MessageToolCall(BaseModel):
     """
 
     id: str = Field(..., description="Canonical tool call id")
+    responses_item_id: str | None = Field(
+        default=None,
+        description="Original Responses function_call.id, echoed verbatim on replay",
+    )
     name: str = Field(..., description="Tool/function name")
     arguments: str = Field(..., description="JSON string of arguments")
     origin: Literal["completion", "responses"] = Field(
@@ -76,6 +80,7 @@ class MessageToolCall(BaseModel):
 
         return cls(
             id=str(call_id),
+            responses_item_id=str(item.id) if item.id else None,
             name=str(name),
             arguments=arguments_str,
             origin="responses",
@@ -94,8 +99,11 @@ class MessageToolCall(BaseModel):
 
     def to_responses_dict(self) -> dict[str, Any]:
         """Serialize to OpenAI Responses 'function_call' input item format."""
-        # Responses requires ids to begin with 'fc'
-        resp_id = self.id if str(self.id).startswith("fc") else f"fc_{self.id}"
+        # Echo the original function_call.id verbatim when we have it, so
+        # replays stay byte-identical and OpenAI's prefix cache keeps matching.
+        item_id = self.responses_item_id or (
+            self.id if str(self.id).startswith("fc") else f"fc_{self.id}"
+        )
         # Responses requires arguments to be a JSON string
         args_str = (
             self.arguments
@@ -104,8 +112,8 @@ class MessageToolCall(BaseModel):
         )
         return {
             "type": "function_call",
-            "id": resp_id,
-            "call_id": resp_id,
+            "id": item_id,
+            "call_id": self.id,
             "name": self.name,
             "arguments": args_str,
         }
@@ -530,20 +538,13 @@ class Message(BaseModel):
 
         if self.role == "tool":
             if self.tool_call_id is not None:
-                # Responses requires function_call_output.call_id
-                # to match a previous function_call id
-                resp_call_id = (
-                    self.tool_call_id
-                    if str(self.tool_call_id).startswith("fc")
-                    else f"fc_{self.tool_call_id}"
-                )
                 for c in self.content:
                     if isinstance(c, TextContent):
                         output_text = self._maybe_truncate_tool_text(c.text)
                         items.append(
                             {
                                 "type": "function_call_output",
-                                "call_id": resp_call_id,
+                                "call_id": self.tool_call_id,
                                 "output": output_text,
                             }
                         )
@@ -552,7 +553,7 @@ class Message(BaseModel):
                             items.append(
                                 {
                                     "type": "function_call_output",
-                                    "call_id": resp_call_id,
+                                    "call_id": self.tool_call_id,
                                     "output": [
                                         {
                                             "type": "input_image",
@@ -650,40 +651,66 @@ class Message(BaseModel):
         tool_calls: list[MessageToolCall] = []
         responses_reasoning_item: ReasoningItemModel | None = None
 
+        # Helper to access fields from typed Pydantic objects, generic
+        # litellm base objects (BaseLiteLLMOpenAIResponseObject), or dicts.
+        def _get(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
         for item in output or []:
+            item_type = _get(item, "type")
+
             if (
-                isinstance(item, GenericResponseOutputItem)
-                or isinstance(item, ResponseOutputMessage)
-            ) and item.type == "message":
-                for part in item.content or []:
-                    if part.type == "output_text" and part.text:
-                        assistant_text_parts.append(part.text)
+                isinstance(item, (GenericResponseOutputItem, ResponseOutputMessage))
+                or item_type == "message"
+            ) and item_type == "message":
+                content = _get(item, "content")
+                for part in content or []:
+                    part_type = _get(part, "type")
+                    part_text = _get(part, "text")
+                    if part_type == "output_text" and part_text:
+                        assistant_text_parts.append(part_text)
             elif (
                 isinstance(item, (OutputFunctionToolCall, ResponseFunctionToolCall))
-                and item.type == "function_call"
+                and item_type == "function_call"
             ):
                 tc = MessageToolCall.from_responses_function_call(item)
                 tool_calls.append(tc)
-            elif isinstance(item, ResponseReasoningItem) and item.type == "reasoning":
-                # Parse OpenAI typed Responses "reasoning" output item
-                # (Pydantic BaseModel)
-                rid = item.id
-                summaries = item.summary or []
-                contents = item.content or []
-                enc = item.encrypted_content
-                status = item.status
-
-                summary_list: list[str] = [s.text for s in summaries]
-                content_texts: list[str] = [c.text for c in contents]
-                content_list: list[str] | None = content_texts or None
-
-                responses_reasoning_item = ReasoningItemModel(
-                    id=rid,
-                    summary=summary_list,
-                    content=content_list,
-                    encrypted_content=enc,
-                    status=status,
+            elif item_type == "function_call":
+                # Handle generic objects (e.g., BaseLiteLLMOpenAIResponseObject
+                # from streaming) or dicts with function_call type
+                raw_item_id = _get(item, "id")
+                tc = MessageToolCall(
+                    id=_get(item, "call_id") or raw_item_id or "",
+                    responses_item_id=str(raw_item_id) if raw_item_id else None,
+                    name=_get(item, "name", ""),
+                    arguments=_get(item, "arguments", ""),
+                    origin="responses",
                 )
+                tool_calls.append(tc)
+            elif item_type == "reasoning":
+                if isinstance(item, ResponseReasoningItem):
+                    # Typed path: preserves type narrowing for standard API
+                    responses_reasoning_item = ReasoningItemModel(
+                        id=item.id,
+                        summary=[s.text for s in (item.summary or [])],
+                        content=[c.text for c in (item.content or [])] or None,
+                        encrypted_content=item.encrypted_content,
+                        status=item.status,
+                    )
+                else:
+                    # Generic fallback for BaseLiteLLMOpenAIResponseObject
+                    # or dicts (e.g., streaming items from Codex subscription)
+                    summaries = _get(item, "summary") or []
+                    contents = _get(item, "content") or []
+                    responses_reasoning_item = ReasoningItemModel(
+                        id=_get(item, "id"),
+                        summary=[_get(s, "text", "") for s in summaries],
+                        content=[_get(c, "text", "") for c in contents] or None,
+                        encrypted_content=_get(item, "encrypted_content"),
+                        status=_get(item, "status"),
+                    )
 
         assistant_text = "\n".join(assistant_text_parts).strip()
         return Message(

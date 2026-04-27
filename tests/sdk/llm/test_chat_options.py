@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.options.chat_options import select_chat_options
 
 
@@ -17,6 +18,7 @@ class DummyLLM:
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
+    _prompt_cache_key: str | None = None
 
 
 def test_opus_4_5_uses_reasoning_effort_and_strips_temp_top_p():
@@ -177,3 +179,20 @@ def test_extended_thinking_budget_clamped_below_max_tokens():
         "budget_tokens": 500,
     }
     assert out.get("max_tokens") == 1000
+
+
+def test_chat_options_forwards_prompt_cache_key_when_set():
+    """Regression test for #2904."""
+    llm = LLM(model="gpt-4o")
+    llm._prompt_cache_key = "conv-abc123"
+    assert (
+        select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
+        == "conv-abc123"
+    )
+
+
+def test_chat_options_omits_prompt_cache_key_when_unset():
+    llm = LLM(model="gpt-4o")
+    assert "prompt_cache_key" not in select_chat_options(
+        llm, user_kwargs={}, has_tools=True
+    )

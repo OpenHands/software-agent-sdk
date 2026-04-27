@@ -83,6 +83,22 @@ class TerminalSession(TerminalSessionBase):
         # Stateful filter for terminal query sequences (handles split sequences)
         self._query_filter = TerminalQueryFilter()
 
+    @classmethod
+    def attach_to_existing(
+        cls,
+        terminal: TerminalInterface,
+        no_change_timeout_seconds: int | None = None,
+    ) -> "TerminalSession":
+        """Create a TerminalSession for an already-initialized terminal.
+
+        Use this instead of ``__init__`` + ``initialize()`` when the
+        terminal has already been set up (e.g. by a pane pool) and
+        calling ``initialize()`` again would create a duplicate session.
+        """
+        session = cls(terminal, no_change_timeout_seconds)
+        session._initialized = True
+        return session
+
     def initialize(self) -> None:
         """Initialize the terminal backend."""
         self.terminal.initialize()
@@ -165,10 +181,43 @@ class TerminalSession(TerminalSessionBase):
     ) -> TerminalObservation:
         """Handle a completed command."""
         is_special_key = self._is_special_key(command)
-        assert len(ps1_matches) >= 1, (
-            f"Expected at least one PS1 metadata block, but got {len(ps1_matches)}.\n"
-            f"---FULL OUTPUT---\n{terminal_content!r}\n---END OF OUTPUT---"
-        )
+
+        # When PS1 metadata markers are missing (e.g., corrupted by TUI/ANSI
+        # output or scrolled off-screen), fall back gracefully instead of
+        # crashing. The command likely completed but we can't extract the
+        # exit code or working directory.
+        if len(ps1_matches) == 0:
+            logger.warning(
+                "No PS1 metadata found in terminal output. "
+                "Command output may have overwritten the markers "
+                "(e.g., TUI rendering, large output)."
+            )
+            metadata = CmdOutputMetadata(exit_code=-1, working_dir=self._cwd)
+            metadata.suffix = (
+                "\n[The command completed but the exit code could not "
+                "be determined. Terminal output may have corrupted the "
+                "PS1 metadata markers.]"
+            )
+            command_output = self._get_command_output(
+                command,
+                terminal_content,
+                metadata,
+                is_final=True,
+            )
+            command_output = maybe_truncate(
+                command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+            )
+            self.prev_status = TerminalCommandStatus.COMPLETED
+            self.prev_output = ""
+            self._query_filter.reset()
+            self._ready_for_next_command()
+            return TerminalObservation.from_text(
+                command=command,
+                text=command_output,
+                metadata=metadata,
+                exit_code=metadata.exit_code,
+            )
+
         metadata = CmdOutputMetadata.from_ps1_match(ps1_matches[-1])
 
         # Special case where the previous command output is truncated
