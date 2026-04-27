@@ -110,13 +110,15 @@ jobs:
                               -H "Content-Type: application/json" \
                               "${API_URL}" \
                               -d "$payload"); then
-                              echo "::error::Failed to create PR comment."
-                              exit 1
+                              echo "::warning::Failed to create PR comment (expected for fork PRs). Continuing without comments."
+                              API_URL=""
+                              return
                           fi
                           COMMENT_ID=$(echo "$response" | jq -r '.id // ""')
                           if [ -z "$COMMENT_ID" ]; then
-                              echo "::error::GitHub API response did not include a comment id: $response"
-                              exit 1
+                              echo "::warning::GitHub API response did not include a comment id. Continuing without comments."
+                              API_URL=""
+                              return
                           fi
                           echo "Created comment with ID: $COMMENT_ID"
                       else
@@ -127,8 +129,8 @@ jobs:
                               -H "Content-Type: application/json" \
                               "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${COMMENT_ID}" \
                               -d "$payload" > /dev/null; then
-                              echo "::error::Failed to update PR comment (ID: $COMMENT_ID)."
-                              exit 1
+                              echo "::warning::Failed to update PR comment (ID: $COMMENT_ID). Continuing."
+                              return
                           fi
                       fi
                   }
