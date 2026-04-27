@@ -283,7 +283,7 @@ class Skill(BaseModel):
         """
         path = Path(path) if isinstance(path, str) else path
 
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
@@ -362,9 +362,10 @@ class Skill(BaseModel):
 
         # Calculate derived name from path
         if skill_base_dir is not None:
-            skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(
-                path.name.lower()
-            ) or str(path.relative_to(skill_base_dir).with_suffix(""))
+            skill_name = (
+                cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
+                or path.relative_to(skill_base_dir).with_suffix("").as_posix()
+            )
         else:
             skill_name = path.stem
 
@@ -936,7 +937,7 @@ def load_marketplace_skill_names(
         return None
 
     try:
-        with open(marketplace_file) as f:
+        with open(marketplace_file, encoding="utf-8") as f:
             data = json.load(f)
 
         # Use Marketplace model for validation and parsing

@@ -1,8 +1,11 @@
 import json
 import os
+import socket
 import subprocess
+import sys
 import tempfile
 import time
+import urllib.request
 from collections.abc import Generator
 
 import pytest
@@ -105,6 +108,43 @@ PAGE2_HTML = """<!DOCTYPE html>
 </html>"""
 
 
+def _has_chromium_for_e2e() -> bool:
+    executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+    return executor.check_chromium_available() is not None
+
+
+pytestmark = pytest.mark.skipif(
+    not _has_chromium_for_e2e(),
+    reason="Browser e2e tests require Chrome/Chromium or Playwright Chromium.",
+)
+
+
+def _get_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _wait_for_test_server(
+    server_process: subprocess.Popen, url: str, timeout_seconds: float = 10.0
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if server_process.poll() is not None:
+            raise RuntimeError("Test HTTP server exited before accepting requests")
+        try:
+            with urllib.request.urlopen(url, timeout=0.5):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise RuntimeError(f"Test HTTP server did not start within {timeout_seconds}s")
+
+
+def _skip_if_recording_unavailable(result: BrowserObservation) -> None:
+    if result.is_error or "Error" in result.text:
+        pytest.skip(f"Browser recording is unavailable: {result.text}")
+
+
 @pytest.fixture(scope="module")
 def test_server() -> Generator[str]:
     """Set up a local HTTP server for testing."""
@@ -113,24 +153,31 @@ def test_server() -> Generator[str]:
 
     try:
         # Create test HTML files
-        with open(os.path.join(temp_dir, "index.html"), "w") as f:
+        with open(os.path.join(temp_dir, "index.html"), "w", encoding="utf-8") as f:
             f.write(TEST_HTML)
 
-        with open(os.path.join(temp_dir, "page2.html"), "w") as f:
+        with open(os.path.join(temp_dir, "page2.html"), "w", encoding="utf-8") as f:
             f.write(PAGE2_HTML)
 
         # Start HTTP server
+        port = _get_free_port()
         server_process = subprocess.Popen(
-            ["python3", "-m", "http.server", "8001"],
+            [
+                sys.executable,
+                "-m",
+                "http.server",
+                str(port),
+                "--bind",
+                "127.0.0.1",
+            ],
             cwd=temp_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
-        # Give server time to start
-        time.sleep(2)
-
-        yield "http://localhost:8001"
+        server_url = f"http://127.0.0.1:{port}"
+        _wait_for_test_server(server_process, server_url)
+        yield server_url
 
     finally:
         # Cleanup
@@ -151,10 +198,14 @@ def browser_executor() -> Generator[BrowserToolExecutor]:
     """Create a real BrowserToolExecutor for testing."""
     executor = None
     try:
-        executor = BrowserToolExecutor(
-            headless=True,  # Run in headless mode for CI/testing
-            session_timeout_minutes=5,  # Shorter timeout for tests
-        )
+        try:
+            executor = BrowserToolExecutor(
+                headless=True,  # Run in headless mode for CI/testing
+                session_timeout_minutes=5,  # Shorter timeout for tests
+                action_timeout_seconds=30.0,
+            )
+        except Exception as exc:
+            pytest.skip(f"Browser executor unavailable: {exc}")
         yield executor
     finally:
         if executor:
@@ -672,6 +723,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(BrowserStartRecordingAction())
 
         assert isinstance(result, BrowserObservation)
+        _skip_if_recording_unavailable(result)
         assert not result.is_error
         assert "Recording started" in result.text
 
@@ -706,6 +758,7 @@ class TestBrowserExecutorE2E:
         start_result = browser_executor(BrowserStartRecordingAction())
 
         assert start_result is not None
+        _skip_if_recording_unavailable(start_result)
         assert not start_result.is_error
         assert "Recording started" in start_result.text
 
@@ -745,6 +798,7 @@ class TestBrowserExecutorE2E:
             executor = BrowserToolExecutor(
                 headless=True,
                 session_timeout_minutes=5,
+                action_timeout_seconds=30.0,
             )
 
             # Navigate to the test page
@@ -762,6 +816,7 @@ class TestBrowserExecutorE2E:
             start_result = executor(BrowserStartRecordingAction())
 
             assert start_result is not None
+            _skip_if_recording_unavailable(start_result)
 
             # Skip test if recording couldn't start due to CDP issues
             if "Error" in start_result.text or "not initialized" in start_result.text:

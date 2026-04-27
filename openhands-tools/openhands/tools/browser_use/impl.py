@@ -182,6 +182,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             # macOS
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            # Windows
+            "C:/Program Files/Google/Chrome/Application/chrome.exe",
+            "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
         ]
         for install_path in standard_paths:
             p = Path(install_path)
@@ -194,6 +197,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             Path.home() / ".cache" / "ms-playwright",  # Linux
             Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
         ]
+        if local_app_data := os.environ.get("LOCALAPPDATA"):
+            playwright_cache_candidates.append(Path(local_app_data) / "ms-playwright")
 
         for playwright_cache in playwright_cache_candidates:
             if playwright_cache.exists():
@@ -221,13 +226,19 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                         / "Contents"
                         / "MacOS"
                         / "Google Chrome for Testing",  # macOS x64
+                        chromium_dir / "chrome-win" / "chrome.exe",  # Windows
                     ]
                     for p in possible_paths:
                         if p.exists():
                             return str(p)
 
         # Fallback: check PATH for any chromium-based binary
-        for binary in ("google-chrome", "chrome", "chromium", "chromium-browser"):
+        for binary in (
+            "google-chrome",
+            "chrome",
+            "chromium",
+            "chromium-browser",
+        ):
             if path := shutil.which(binary):
                 return path
 
@@ -294,7 +305,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             # SECURITY: Running Chrome as root without a sandbox is risky
             # - a compromised browser has full root access. Use only in
             # controlled environments.
-            running_as_root = os.getuid() == 0
+            getuid = getattr(os, "getuid", None)
+            running_as_root = getuid is not None and getuid() == 0
             if running_as_root:
                 logger.warning(
                     "Running as root - disabling Chromium sandbox "

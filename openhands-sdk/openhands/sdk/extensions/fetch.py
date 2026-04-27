@@ -29,6 +29,12 @@ class SourceType(StrEnum):
     GITHUB = "github"
 
 
+def _is_local_path_source(source: str) -> bool:
+    if source.startswith(("/", "~", ".")):
+        return True
+    return "\\" in source or Path(source).expanduser().is_absolute()
+
+
 def parse_extension_source(source: str) -> tuple[SourceType, str]:
     """Parse extension source into (SourceType, url).
 
@@ -73,8 +79,9 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
         url = normalize_git_url(source)
         return (SourceType.GIT, url)
 
-    # Local path: starts with /, ~, . or contains / without a URL scheme
-    if source.startswith(("/", "~", ".")):
+    # Local path: starts with /, ~, ., is Windows-absolute, or contains a
+    # path separator without a URL scheme.
+    if _is_local_path_source(source):
         return (SourceType.LOCAL, source)
 
     if "/" in source and "://" not in source:

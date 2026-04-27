@@ -264,7 +264,7 @@ class CommandDefinition(BaseModel):
         Returns:
             Loaded CommandDefinition instance.
         """
-        with open(command_path) as f:
+        with open(command_path, encoding="utf-8") as f:
             post = frontmatter.load(f)
 
         # Extract frontmatter fields with proper type handling

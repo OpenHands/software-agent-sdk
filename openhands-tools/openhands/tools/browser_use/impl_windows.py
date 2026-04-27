@@ -11,7 +11,7 @@ class WindowsBrowserToolExecutor(BrowserToolExecutor):
     """Windows-specific browser tool executor with Chromium detection.
 
     This class extends BrowserToolExecutor to provide Windows-specific
-    browser detection logic for Chrome and Edge installations.
+    browser detection logic for Chrome and Chromium installations.
     """
 
     def check_chromium_available(self) -> str | None:
@@ -19,7 +19,7 @@ class WindowsBrowserToolExecutor(BrowserToolExecutor):
 
         Checks:
         1. Standard PATH binaries
-        2. Common Windows installation paths for Chrome and Edge
+        2. Common Windows installation paths for Chrome
         3. Playwright cache directory using LOCALAPPDATA
 
         Returns:
@@ -39,7 +39,6 @@ class WindowsBrowserToolExecutor(BrowserToolExecutor):
         ]
         windows_browsers = [
             ("Google", "Chrome", "Application", "chrome.exe"),
-            ("Microsoft", "Edge", "Application", "msedge.exe"),
         ]
 
         for env_var, default in env_vars:

@@ -14,8 +14,10 @@ from openhands.tools.file_editor import file_editor
 from .conftest import assert_successful_result
 
 
-# Apply the forked marker and serialize execution across workers
-pytestmark = [pytest.mark.forked, pytest.mark.usefixtures("isolate_memory_usage_tests")]
+# Apply the forked marker where supported and serialize execution across workers.
+pytestmark = [pytest.mark.usefixtures("isolate_memory_usage_tests")]
+if os.name != "nt":
+    pytestmark.append(pytest.mark.forked)
 
 
 @pytest.fixture(scope="function")

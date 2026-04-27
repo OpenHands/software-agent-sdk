@@ -14,9 +14,13 @@ from openhands.tools.file_editor.editor import FileEditor
 def temp_file():
     """Create a temporary file for testing."""
     with tempfile.NamedTemporaryFile(delete=False) as f:
-        yield Path(f.name)
+        path = Path(f.name)
+
+    try:
+        yield path
+    finally:
         try:
-            Path(f.name).unlink()
+            path.unlink()
         except FileNotFoundError:
             pass
 

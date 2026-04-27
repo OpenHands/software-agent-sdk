@@ -167,7 +167,7 @@ def test_get_changes_in_repo_nested_directories():
         assert len(changes) == 3
 
         # Convert to set of paths for easier testing
-        paths = {str(change.path) for change in changes}
+        paths = {change.path.as_posix() for change in changes}
 
         assert "src/utils/helper.py" in paths
         assert "src/main.py" in paths

@@ -154,7 +154,8 @@ class EventLog(EventsListBase):
         return sum(
             1
             for p in paths
-            if p.rsplit("/", 1)[-1].startswith("event-") and p.endswith(".json")
+            if p.replace("\\", "/").rsplit("/", 1)[-1].startswith("event-")
+            and p.endswith(".json")
         )
 
     def _sync_from_disk(self, disk_length: int) -> None:
@@ -198,7 +199,7 @@ class EventLog(EventsListBase):
 
         by_idx: dict[int, EventID] = {}
         for p in paths:
-            name = p.rsplit("/", 1)[-1]
+            name = p.replace("\\", "/").rsplit("/", 1)[-1]
             m = EVENT_NAME_RE.match(name)
             if m:
                 idx = int(m.group("idx"))

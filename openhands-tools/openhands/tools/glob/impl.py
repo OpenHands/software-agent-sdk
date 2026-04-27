@@ -171,7 +171,7 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
         if result.stdout:
             for line in result.stdout.strip().split("\n"):
                 if line:
-                    file_paths.append(line)
+                    file_paths.append(str(Path(line).resolve()))
                     # Limit to first 100 files
                     if len(file_paths) >= 100:
                         break
@@ -208,12 +208,12 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             # Use glob to find matching files
             matches = glob_module.glob(pattern, recursive=True)
 
-            # Convert to absolute paths (without resolving symlinks)
-            # and sort by modification time
+            # Convert to resolved absolute paths and sort by modification time.
+            # This matches ripgrep output on Windows, where temp directories may
+            # enter Python as 8.3-short paths but subprocess output expands them.
             file_paths = []
             for match in matches:
-                # Use absolute() instead of resolve() to avoid resolving symlinks
-                abs_path = str((search_path / match).absolute())
+                abs_path = str((search_path / match).resolve())
                 if os.path.isfile(abs_path):
                     file_paths.append((abs_path, os.path.getmtime(abs_path)))
 
@@ -263,13 +263,15 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
         # Expand ~ for user home directory
         pattern = os.path.expanduser(pattern)
 
-        # Check if pattern is an absolute path
-        if not pattern.startswith("/"):
+        path_obj = Path(pattern)
+
+        # Check if pattern is an absolute path. Keep POSIX-style absolute paths
+        # working on Windows too, since agents often emit /tmp-style paths.
+        if not pattern.startswith("/") and not path_obj.is_absolute():
             # Relative pattern - caller should use default working directory
             return None, pattern
 
         # Absolute path pattern - extract the base path
-        path_obj = Path(pattern)
         parts = path_obj.parts
 
         # Find where the glob characters start using glob.has_magic()
@@ -287,6 +289,6 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             search_path = Path(*search_parts)
             # Get the remaining parts as the pattern
             remaining = parts[len(search_parts) :]
-            adjusted_pattern = str(Path(*remaining)) if remaining else "**/*"
+            adjusted_pattern = "/".join(remaining) if remaining else "**/*"
 
         return search_path.resolve(), adjusted_pattern

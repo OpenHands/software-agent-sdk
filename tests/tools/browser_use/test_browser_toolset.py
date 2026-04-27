@@ -1,6 +1,7 @@
 """Test BrowserToolSet functionality."""
 
 import tempfile
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -20,7 +21,19 @@ def _reset_shared_executor():
     """Reset the shared executor singleton before and after each test."""
     BrowserToolSet._shared_executor = None
     yield
+    if BrowserToolSet._shared_executor is not None:
+        BrowserToolSet._shared_executor.close()
     BrowserToolSet._shared_executor = None
+
+
+@pytest.fixture(autouse=True)
+def _mock_browser_available():
+    with patch.object(
+        BrowserToolExecutor,
+        "_ensure_chromium_available",
+        return_value="/usr/bin/chromium",
+    ):
+        yield
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:

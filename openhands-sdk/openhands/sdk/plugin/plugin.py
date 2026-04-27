@@ -378,7 +378,7 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 
     if manifest_path:
         try:
-            with open(manifest_path) as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             # Handle author field - can be string or object

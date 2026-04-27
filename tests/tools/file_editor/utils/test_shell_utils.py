@@ -17,7 +17,7 @@ from openhands.tools.file_editor.utils.shell import (
 
 def test_run_shell_cmd_success():
     """Test running a successful shell command."""
-    cmd = "echo 'Hello, World!'"
+    cmd = "echo Hello, World!"
     returncode, stdout, stderr = run_shell_cmd(cmd)
 
     assert returncode == 0

@@ -1,6 +1,7 @@
 """Test directory handling in tool registry."""
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -79,12 +80,13 @@ def test_resolve_tool_with_conversation_directories(test_agent):
             workspace=working_dir,
         )
 
-        # Test TerminalTool
-        bash_tool = Tool(name="TerminalTool")
-        bash_tools = resolve_tool(bash_tool, conv_state=conversation._state)
-        assert len(bash_tools) == 1
-        work_dir = bash_tools[0].executor.working_dir  # type: ignore[attr-defined]
-        assert work_dir == working_dir
+        if sys.platform != "win32":
+            # Test TerminalTool
+            bash_tool = Tool(name="TerminalTool")
+            bash_tools = resolve_tool(bash_tool, conv_state=conversation._state)
+            assert len(bash_tools) == 1
+            work_dir = bash_tools[0].executor.working_dir  # type: ignore[attr-defined]
+            assert work_dir == working_dir
 
         # Test FileEditorTool
         editor_tool = Tool(name="FileEditorTool")

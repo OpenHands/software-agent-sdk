@@ -161,6 +161,8 @@ def test_size_limit():
 
 
 def test_file_permissions(file_cache):
+    if os.name == "nt":
+        pytest.skip("POSIX execute bits are not meaningful on Windows")
     file_cache.set("test_key", "test_value")
     file_path = file_cache._get_file_path("test_key")
     assert os.access(file_path, os.R_OK)

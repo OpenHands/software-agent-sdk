@@ -235,6 +235,9 @@ def _extract_repo_name(url: str) -> str:
     if "://" in url:
         url = url.split("://")[-1]
 
+    # Windows file:// URLs often carry backslash-separated local paths.
+    url = url.replace("\\", "/")
+
     # Get the last path component (repo name)
     parts = url.rstrip("/").split("/")
     return parts[-1] if parts else "repo"

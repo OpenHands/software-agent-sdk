@@ -1,7 +1,7 @@
 """Tests for legacy tool-name compatibility shims."""
 
 import json
-import shlex
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -52,11 +52,12 @@ class _TerminalExecutor(ToolExecutor[_TerminalAction, _TerminalObservation]):
     ) -> _TerminalObservation:
         working_dir = conversation.workspace.working_dir if conversation else None
         completed = subprocess.run(
-            shlex.split(action.command),
+            action.command,
             cwd=working_dir,
             capture_output=True,
             text=True,
             check=False,
+            shell=True,
         )
         return _TerminalObservation.from_text(completed.stdout or completed.stderr)
 
@@ -193,7 +194,7 @@ def test_bash_alias_executes_terminal_tool(tmp_path):
     events = _run_tool_call(
         tmp_path,
         tool_name="bash",
-        arguments={"command": "printf hello"},
+        arguments={"command": "echo hello"},
         tool_names=(TERMINAL_TOOL_SPEC,),
     )
 
@@ -203,7 +204,7 @@ def test_bash_alias_executes_terminal_tool(tmp_path):
     assert action_event.tool_name == TERMINAL_TOOL_NAME
     assert action_event.tool_call.name == TERMINAL_TOOL_NAME
     assert action_event.action is not None
-    assert getattr(action_event.action, "command") == "printf hello"
+    assert getattr(action_event.action, "command") == "echo hello"
     assert "hello" in observation_event.observation.text
 
 
@@ -308,6 +309,7 @@ def test_shell_tool_name_does_not_fall_back_without_terminal(tmp_path):
     assert errors[0].tool_name == "ls"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="grep fallback emits a Unix command")
 def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
     test_file = tmp_path / "needle.txt"
     test_file.write_text("needle\n")
@@ -332,13 +334,10 @@ def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
 
 def test_security_risk_typo_normalized(tmp_path):
     """Test that security_risk typos are normalized before validation."""
-    test_file = tmp_path / "hello.txt"
-    test_file.write_text("hello\n")
-
     events = _run_tool_call(
         tmp_path,
         tool_name="bash",
-        arguments={"command": "cat hello.txt", "security_rort": "LOW"},
+        arguments={"command": "echo hello", "security_rort": "LOW"},
         tool_names=(TERMINAL_TOOL_SPEC,),
     )
 

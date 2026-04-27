@@ -24,6 +24,13 @@ from .conftest import (
 )
 
 
+def _symlink_or_skip(source: Path, link_name: Path) -> None:
+    try:
+        link_name.symlink_to(source, target_is_directory=source.is_dir())
+    except OSError as e:
+        pytest.skip(f"symlinks are not available in this environment: {e}")
+
+
 @pytest.fixture
 def editor(tmp_path):
     editor = FileEditor()
@@ -557,7 +564,7 @@ def test_insert_chinese_text_into_english_file(editor):
         new_str="中文文本",
     )
     assert isinstance(result, FileEditorObservation)
-    assert "中文文本" in test_file.read_text()
+    assert "中文文本" in test_file.read_text(encoding="utf-8")
     assert (
         result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of the edited file:
@@ -725,7 +732,7 @@ def test_view_symlinked_directory(tmp_path):
 
     # Create a symlink to the directory
     symlink_dir = tmp_path / "symlink_dir"
-    symlink_dir.symlink_to(source_dir)
+    _symlink_or_skip(source_dir, symlink_dir)
 
     # View the symlinked directory
     result = editor(command="view", path=str(symlink_dir))

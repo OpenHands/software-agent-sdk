@@ -70,6 +70,20 @@ class AsyncProcessManager:
         Uses process groups to kill the entire process tree, not just
         the parent shell when shell=True is used.
         """
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            return
+
         try:
             # Kill the entire process group (handles shell=True child processes)
             pgid = os.getpgid(process.pid)

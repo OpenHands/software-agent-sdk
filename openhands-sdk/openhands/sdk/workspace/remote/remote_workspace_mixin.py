@@ -14,6 +14,10 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 _logger = logging.getLogger(__name__)
 
 
+def _remote_path(path: str | Path) -> str:
+    return Path(path).as_posix()
+
+
 class RemoteWorkspaceMixin(BaseModel):
     """Mixin providing remote workspace operations.
     This allows the same code to be used for sync and async."""
@@ -74,7 +78,7 @@ class RemoteWorkspaceMixin(BaseModel):
             "timeout": int(timeout),
         }
         if cwd is not None:
-            payload["cwd"] = str(cwd)
+            payload["cwd"] = _remote_path(cwd)
 
         try:
             # Start the command
@@ -200,6 +204,7 @@ class RemoteWorkspaceMixin(BaseModel):
         """
         source = Path(source_path)
         destination = Path(destination_path)
+        destination_remote = _remote_path(destination_path)
 
         _logger.debug(f"Remote file upload: {source} -> {destination}")
 
@@ -215,7 +220,7 @@ class RemoteWorkspaceMixin(BaseModel):
             response: httpx.Response = yield {
                 "method": "POST",
                 "url": f"{self.host}/api/file/upload",
-                "params": {"path": str(destination)},
+                "params": {"path": destination_remote},
                 "files": files,
                 "headers": self._headers,
                 "timeout": 60.0,
@@ -227,7 +232,7 @@ class RemoteWorkspaceMixin(BaseModel):
             return FileOperationResult(
                 success=result_data.get("success", True),
                 source_path=str(source),
-                destination_path=str(destination),
+                destination_path=destination_remote,
                 file_size=result_data.get("file_size"),
                 error=result_data.get("error"),
             )
@@ -237,7 +242,7 @@ class RemoteWorkspaceMixin(BaseModel):
             return FileOperationResult(
                 success=False,
                 source_path=str(source),
-                destination_path=str(destination),
+                destination_path=destination_remote,
                 error=str(e),
             )
 
@@ -259,6 +264,7 @@ class RemoteWorkspaceMixin(BaseModel):
         """
         source = Path(source_path)
         destination = Path(destination_path)
+        source_remote = _remote_path(source_path)
 
         _logger.debug(f"Remote file download: {source} -> {destination}")
 
@@ -267,7 +273,7 @@ class RemoteWorkspaceMixin(BaseModel):
             response = yield {
                 "method": "GET",
                 "url": "/api/file/download",
-                "params": {"path": str(source)},
+                "params": {"path": source_remote},
                 "headers": self._headers,
                 "timeout": 60.0,
             }
@@ -282,7 +288,7 @@ class RemoteWorkspaceMixin(BaseModel):
 
             return FileOperationResult(
                 success=True,
-                source_path=str(source),
+                source_path=source_remote,
                 destination_path=str(destination),
                 file_size=len(response.content),
             )
@@ -291,7 +297,7 @@ class RemoteWorkspaceMixin(BaseModel):
             _logger.error(f"Remote file download failed: {e}")
             return FileOperationResult(
                 success=False,
-                source_path=str(source),
+                source_path=source_remote,
                 destination_path=str(destination),
                 error=str(e),
             )

@@ -138,7 +138,7 @@ class InstalledPluginsMetadata(BaseModel):
         if not metadata_path.exists():
             return cls()
         try:
-            with open(metadata_path) as f:
+            with open(metadata_path, encoding="utf-8") as f:
                 data = json.load(f)
             return cls.model_validate(data)
         except Exception as e:
@@ -149,7 +149,7 @@ class InstalledPluginsMetadata(BaseModel):
         """Save metadata to the installed plugins directory."""
         metadata_path = self.get_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(metadata_path, "w") as f:
+        with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(self.model_dump(), f, indent=2)
 
 

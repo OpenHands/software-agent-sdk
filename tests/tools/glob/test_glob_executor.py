@@ -76,7 +76,7 @@ def test_glob_executor_custom_path():
         assert observation.is_error is False
         assert len(observation.files) == 2
         assert observation.search_path == str(sub_dir.resolve())
-        assert all(str(sub_dir) in f for f in observation.files)
+        assert all(str(sub_dir.resolve()) in f for f in observation.files)
 
 
 def test_glob_executor_invalid_path():
