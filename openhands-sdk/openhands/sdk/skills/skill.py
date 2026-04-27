@@ -1146,12 +1146,7 @@ def load_available_skills(
     return available
 
 
-def to_prompt(
-    skills: list[Skill],
-    max_description_length: int = 1024,
-    *,
-    include_content: bool = False,
-) -> str:
+def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:
     """Generate XML prompt block for available skills.
 
     Creates an `<available_skills>` XML block suitable for inclusion
@@ -1160,8 +1155,6 @@ def to_prompt(
     Args:
         skills: List of skills to include in the prompt
         max_description_length: Maximum length for descriptions (default 1024)
-        include_content: Whether to include the full skill content in a
-            `<content>` element. Defaults to False for progressive disclosure.
 
     Returns:
         XML string in AgentSkills format with name and description. The
@@ -1205,14 +1198,12 @@ def to_prompt(
                 break
         description = description or ""
 
-        # Calculate total truncated characters. If full content is included,
-        # the catalog is self-contained and does not need invoke_skill guidance.
-        total_truncated = 0 if include_content else content_truncated
+        # Calculate total truncated characters
+        total_truncated = content_truncated
 
-        # Truncate description if needed and add truncation indicator.
+        # Truncate description if needed and add truncation indicator
         if len(description) > max_description_length:
-            if not include_content:
-                total_truncated += len(description) - max_description_length
+            total_truncated += len(description) - max_description_length
             description = description[:max_description_length]
 
         if total_truncated > 0:
@@ -1232,9 +1223,6 @@ def to_prompt(
         lines.append("  <skill>")
         lines.append(f"    <name>{name}</name>")
         lines.append(f"    <description>{description}</description>")
-        if include_content:
-            content = xml_escape(skill.content.strip())
-            lines.append(f"    <content>{content}</content>")
         lines.append("  </skill>")
 
     lines.append("</available_skills>")
