@@ -4,7 +4,7 @@ from pydantic import Field
 
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.types import EventID, ToolCallID
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
 
 
 class UnknownEvent(LLMConvertibleEvent):
@@ -25,12 +25,33 @@ class UnknownEvent(LLMConvertibleEvent):
     action_id: EventID | None = Field(default=None)
 
     def to_llm_message(self) -> Message:
-        # Safety net only: a user-role placeholder breaks tool_call/response
-        # pairing if this event was originally an Action or Observation. Callers
-        # are expected to condense UnknownEvents away before the next LLM turn.
-        return Message(
-            role="user",
-            content=[
-                TextContent(text=f"[Unloadable event '{self.original_kind}' omitted.]")
-            ],
-        )
+        # Preserve tool_call/response pairing: if the original event was an
+        # Observation or Action, emit a shape that keeps a surviving partner
+        # event's tool_call_id answered. Callers should still condense
+        # UnknownEvents away before the next LLM turn; this is a safety net.
+        placeholder = f"[Unloadable event '{self.original_kind}' omitted.]"
+        name = self.tool_name or "unknown"
+        if self.action_id is not None and self.tool_call_id is not None:
+            # Original was an Observation → tool-role reply.
+            return Message(
+                role="tool",
+                name=name,
+                tool_call_id=self.tool_call_id,
+                content=[TextContent(text=placeholder)],
+            )
+        if self.llm_response_id is not None and self.tool_call_id is not None:
+            # Original was an Action → assistant message carrying a dummy
+            # tool_call so the paired Observation has something to answer.
+            return Message(
+                role="assistant",
+                content=[],
+                tool_calls=[
+                    MessageToolCall(
+                        id=self.tool_call_id,
+                        name=name,
+                        arguments="{}",
+                        origin="completion",
+                    )
+                ],
+            )
+        return Message(role="user", content=[TextContent(text=placeholder)])
