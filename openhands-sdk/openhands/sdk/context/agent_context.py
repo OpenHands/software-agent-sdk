@@ -310,8 +310,6 @@ class AgentContext(BaseModel):
                 f"ACP prompt context does not support AgentContext field(s): {fields}"
             )
 
-        parts: list[str] = []
-
         repo_skills, available_skills = self._partition_skills()
 
         has_explicit_prompt_context = (
@@ -320,6 +318,8 @@ class AgentContext(BaseModel):
             or bool(self.user_message_suffix)
             or "current_datetime" in self.model_fields_set
         )
+        
+        parts: list[str] = []
         if has_explicit_prompt_context:
             formatted_datetime = self.get_formatted_datetime()
             if formatted_datetime:
