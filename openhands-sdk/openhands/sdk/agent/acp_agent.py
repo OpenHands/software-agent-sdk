@@ -172,7 +172,7 @@ def _select_auth_method(
         if method_id in method_ids and env_var in env:
             return method_id
     if "chatgpt" in method_ids:
-        home = env.get("HOME")
+        home = env.get("HOME") or env.get("USERPROFILE")
         if home and (Path(home) / _CHATGPT_AUTH_PATH).is_file():
             return "chatgpt"
     return None
