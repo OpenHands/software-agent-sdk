@@ -169,6 +169,27 @@ class AgentContext(BaseModel):
             return self.current_datetime.isoformat()
         return self.current_datetime
 
+    def _partition_skills(self) -> tuple[list[Skill], list[Skill]]:
+        """Split skills into repo-context and available-skills lists.
+
+        Categorization rules (shared by system-message and ACP adapters):
+        - AgentSkills-format: always in available_skills (progressive disclosure).
+          Triggers also auto-inject via ``get_user_message_suffix``.
+        - Legacy with ``trigger=None``: full content in REPO_CONTEXT (always active).
+        - Legacy with triggers: listed in available_skills, injected on trigger.
+
+        Returns:
+            ``(repo_skills, available_skills)`` tuple.
+        """
+        repo_skills: list[Skill] = []
+        available_skills: list[Skill] = []
+        for s in self.skills:
+            if s.is_agentskills_format or s.trigger is not None:
+                available_skills.append(s)
+            else:
+                repo_skills.append(s)
+        return repo_skills, available_skills
+
     def get_system_message_suffix(
         self,
         llm_model: str | None = None,
@@ -198,23 +219,7 @@ class AgentContext(BaseModel):
         - Legacy with trigger=None: Full content in <REPO_CONTEXT> (always active)
         - Legacy with triggers: Listed in <available_skills>, injected on trigger
         """
-        # Categorize skills based on format and trigger:
-        # - AgentSkills-format: always in available_skills (progressive disclosure)
-        # - Legacy: trigger=None -> REPO_CONTEXT, else -> available_skills
-        repo_skills: list[Skill] = []
-        available_skills: list[Skill] = []
-
-        for s in self.skills:
-            if s.is_agentskills_format:
-                # AgentSkills: always list (triggers also auto-inject via
-                # get_user_message_suffix)
-                available_skills.append(s)
-            elif s.trigger is None:
-                # Legacy OpenHands: no trigger = full content in REPO_CONTEXT
-                repo_skills.append(s)
-            else:
-                # Legacy OpenHands: has trigger = list in available_skills
-                available_skills.append(s)
+        repo_skills, available_skills = self._partition_skills()
 
         # Gate vendor-specific repo skills based on model family.
         if llm_model or llm_model_canonical:
@@ -307,13 +312,7 @@ class AgentContext(BaseModel):
 
         parts: list[str] = []
 
-        repo_skills: list[Skill] = []
-        available_skills: list[Skill] = []
-        for skill in self.skills:
-            if skill.is_agentskills_format or skill.trigger is not None:
-                available_skills.append(skill)
-            else:
-                repo_skills.append(skill)
+        repo_skills, available_skills = self._partition_skills()
 
         has_explicit_prompt_context = (
             bool(self.skills)

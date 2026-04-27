@@ -692,6 +692,23 @@ class TestACPAgentStep:
         assert isinstance(content_block, TextContent)
         assert content_block.text == "The answer is 4"
 
+    @staticmethod
+    def _wire_passthrough_mocks(agent: ACPAgent) -> None:
+        """Wire mock ACP internals that relay prompt() calls through asyncio."""
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._conn.prompt = AsyncMock(return_value=None)
+        agent._session_id = "test-session"
+
+        def _fake_run_async(coro_factory, **_kwargs):
+            return asyncio.run(coro_factory())
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
     def test_step_sends_skill_catalog_to_acp_server(self, tmp_path):
         agent = _make_agent(
             agent_context=AgentContext(
@@ -722,20 +739,7 @@ class TestACPAgentStep:
         )
         conversation = MagicMock()
         conversation.state = state
-
-        mock_client = _OpenHandsACPBridge()
-        mock_client.get_turn_usage_update = MagicMock(return_value=object())
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._conn.prompt = AsyncMock(return_value=None)
-        agent._session_id = "test-session"
-
-        def _fake_run_async(coro_factory, **_kwargs):
-            return asyncio.run(coro_factory())
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
+        self._wire_passthrough_mocks(agent)
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -783,20 +787,7 @@ class TestACPAgentStep:
         )
         conversation = MagicMock()
         conversation.state = state
-
-        mock_client = _OpenHandsACPBridge()
-        mock_client.get_turn_usage_update = MagicMock(return_value=object())
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._conn.prompt = AsyncMock(return_value=None)
-        agent._session_id = "test-session"
-
-        def _fake_run_async(coro_factory, **_kwargs):
-            return asyncio.run(coro_factory())
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
+        self._wire_passthrough_mocks(agent)
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -849,20 +840,7 @@ class TestACPAgentStep:
         )
         conversation = MagicMock()
         conversation.state = state
-
-        mock_client = _OpenHandsACPBridge()
-        mock_client.get_turn_usage_update = MagicMock(return_value=object())
-        agent._client = mock_client
-        agent._conn = MagicMock()
-        agent._conn.prompt = AsyncMock(return_value=None)
-        agent._session_id = "test-session"
-
-        def _fake_run_async(coro_factory, **_kwargs):
-            return asyncio.run(coro_factory())
-
-        mock_executor = MagicMock()
-        mock_executor.run_async = _fake_run_async
-        agent._executor = mock_executor
+        self._wire_passthrough_mocks(agent)
 
         agent.step(conversation, on_event=lambda _: None)
 
