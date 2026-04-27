@@ -40,6 +40,9 @@ class InstallationManager[T: ExtensionProtocol]:
     installation_dir: Path
     installation_interface: InstallationInterface[T]
 
+    def __post_init__(self) -> None:
+        self.installation_dir = self.installation_dir.resolve()
+
     @property
     def metadata_session(self) -> MetadataSession:
         """Open a metadata session bound to this manager's dir and interface."""

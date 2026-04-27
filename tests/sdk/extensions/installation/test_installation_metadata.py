@@ -171,6 +171,29 @@ def test_migrate_extensions_wins_on_conflict():
     assert metadata.extensions["shared"].source == "local"
 
 
+def test_migrate_conflicting_legacy_keys():
+    """When both plugins and skills have the same name, the later key wins."""
+    data = {
+        "plugins": {
+            "shared": {
+                "name": "shared",
+                "source": "github:A",
+                "install_path": "/tmp/installed/shared",
+            }
+        },
+        "skills": {
+            "shared": {
+                "name": "shared",
+                "source": "github:B",
+                "install_path": "/tmp/installed/shared",
+            }
+        },
+    }
+    metadata = InstallationMetadata.model_validate(data)
+    # skills is iterated after plugins in _LEGACY_KEYS, so it overwrites
+    assert metadata.extensions["shared"].source == "github:B"
+
+
 # ============================================================================
 # Load / Save Tests
 # ============================================================================

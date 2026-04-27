@@ -20,3 +20,19 @@ def test_validate_extension_name(input: str, valid: bool):
     else:
         with pytest.raises(ValueError):
             validate_extension_name(input)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "../evil",
+        "../../bad",
+        "/absolute",
+        "./relative",
+        "test/",
+        ".hidden",
+    ],
+)
+def test_validate_rejects_path_traversal(invalid: str):
+    with pytest.raises(ValueError, match="Invalid extension name"):
+        validate_extension_name(invalid)
