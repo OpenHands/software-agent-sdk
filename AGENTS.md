@@ -119,6 +119,8 @@ When reviewing code, provide constructive feedback:
 - `RemoteConversation.generate_title()` now reconciles remote events and reuses the shared local `generate_conversation_title(...)` helper instead of calling the removed deprecated agent-server `/generate_title` REST route, so explicit remote title generation still works without a transport-only compatibility endpoint.
 
 
+- Remote workspace git operations should call `/api/git/changes` and `/api/git/diff` via the `path` query parameter with slash-normalized strings; building those URLs with `pathlib.Path` leaks host-platform separators and breaks Windows paths. For grep parity, the Python fallback should hide dotfiles by default but still let explicit `include` globs surface files like `.env`, matching ripgrep. For glob parity, any symlink-preservation regression test should force the Python fallback path, because ripgrep availability changes whether the fallback implementation runs at all.
+
 
 ## Package-specific guidance
 When reviewing or modifying code, read the closest AGENTS file for the

@@ -11,6 +11,7 @@ from binaryornot.check import is_binary
 
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import is_absolute_path_source, to_posix_path
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.definition import (
     CommandLiteral,
@@ -34,7 +35,6 @@ from openhands.tools.file_editor.utils.encoding import (
     with_encoding,
 )
 from openhands.tools.file_editor.utils.history import FileHistoryManager
-from openhands.tools.file_editor.utils.shell import run_shell_cmd
 
 
 logger = get_logger(__name__)
@@ -283,38 +283,17 @@ class FileEditor:
                     "a directory.",
                 )
 
-            # First count hidden files/dirs in current directory only
-            # -mindepth 1 excludes . and .. automatically
-            _, hidden_stdout, _ = run_shell_cmd(
-                rf"find -L {path} -mindepth 1 -maxdepth 1 -name '.*'"
-            )
-            hidden_count = (
-                len(hidden_stdout.strip().split("\n")) if hidden_stdout.strip() else 0
-            )
-
-            # Then get files/dirs up to 2 levels deep, excluding hidden entries at
-            # both depth 1 and 2
-            _, stdout, stderr = run_shell_cmd(
-                rf"find -L {path} -maxdepth 2 -not \( -path '{path}/\.*' -o "
-                rf"-path '{path}/*/\.*' \) | sort",
-                truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
-            )
-            if stderr:
+            try:
+                hidden_count = self._count_hidden_children(path)
+                formatted_paths = self._list_directory_for_view(path)
+            except OSError as e:
                 return FileEditorObservation.from_text(
-                    text=stderr,
+                    text=str(e),
                     command="view",
                     is_error=True,
                     path=str(path),
                     prev_exist=True,
                 )
-            # Add trailing slashes to directories
-            paths = stdout.strip().split("\n") if stdout.strip() else []
-            formatted_paths = []
-            for p in paths:
-                if Path(p).is_dir():
-                    formatted_paths.append(f"{p}/")
-                else:
-                    formatted_paths.append(p)
 
             msg = [
                 f"Here's the files and directories up to 2 levels deep in {path}, "
@@ -325,7 +304,11 @@ class FileEditor:
                     f"\n{hidden_count} hidden files/directories in this directory "
                     f"are excluded. You can use 'ls -la {path}' to see them."
                 )
-            stdout = "\n".join(msg)
+            stdout = maybe_truncate(
+                "\n".join(msg),
+                truncate_after=MAX_RESPONSE_LEN_CHAR,
+                truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
+            )
             return FileEditorObservation.from_text(
                 text=stdout,
                 command="view",
@@ -435,6 +418,36 @@ class FileEditor:
             path=str(path),
             prev_exist=True,
         )
+
+    def _format_directory_entry(self, root: Path, entry: Path) -> str:
+        root_display = to_posix_path(root)
+        if entry == root:
+            display = root_display
+        else:
+            display = f"{root_display}/{to_posix_path(entry.relative_to(root))}"
+        if entry.is_dir():
+            return f"{display}/"
+        return display
+
+    def _count_hidden_children(self, path: Path) -> int:
+        return sum(1 for item in path.iterdir() if item.name.startswith("."))
+
+    def _list_directory_for_view(self, path: Path) -> list[str]:
+        visible_entries = [path]
+        for item in sorted(path.iterdir(), key=lambda p: str(p)):
+            if item.name.startswith("."):
+                continue
+            visible_entries.append(item)
+            if item.is_dir():
+                try:
+                    visible_entries.extend(
+                        child
+                        for child in sorted(item.iterdir(), key=lambda p: str(p))
+                        if not child.name.startswith(".")
+                    )
+                except OSError:
+                    pass
+        return [self._format_directory_entry(path, entry) for entry in visible_entries]
 
     @with_encoding
     def write_file(self, path: Path, file_text: str, encoding: str = "utf-8") -> None:
@@ -560,14 +573,14 @@ class FileEditor:
         2. Path and command are compatible
         """
         # Check if its an absolute path
-        if not path.is_absolute():
+        if not is_absolute_path_source(path):
             suggestion_message = (
                 "The path should be an absolute path, starting with `/`."
             )
 
             # Only suggest the absolute path if cwd is provided and the path exists
             if self._cwd is not None:
-                suggested_path = self._cwd / path
+                suggested_path = Path(self._cwd) / path
                 if suggested_path.exists():
                     suggestion_message += f" Maybe you meant {suggested_path}?"
 

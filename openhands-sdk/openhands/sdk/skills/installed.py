@@ -17,6 +17,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills.skill import Skill
 from openhands.sdk.skills.utils import find_skill_md
+from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -218,7 +219,9 @@ def install_skills_from_marketplace(
 
     for name, path in skill_dirs:
         try:
-            info = install_skill(str(path), installed_dir=installed_dir, force=force)
+            info = install_skill(
+                to_posix_path(path), installed_dir=installed_dir, force=force
+            )
             installed.append(info)
             logger.info(f"Installed skill '{info.name}'")
         except FileExistsError:

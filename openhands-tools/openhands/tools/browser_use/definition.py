@@ -794,10 +794,6 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
-        # Import executor only when actually needed to
-        # avoid hanging during module import
-        import sys
-
         with cls._shared_executor_lock:
             if cls._shared_executor is not None:
                 if executor_config:
@@ -809,16 +805,6 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
                         list(executor_config.keys()),
                     )
                 executor = cls._shared_executor
-            elif sys.platform == "win32":
-                from openhands.tools.browser_use.impl_windows import (
-                    WindowsBrowserToolExecutor,
-                )
-
-                executor = WindowsBrowserToolExecutor(
-                    full_output_save_dir=conv_state.env_observation_persistence_dir,
-                    **executor_config,
-                )
-                cls._shared_executor = executor
             else:
                 from openhands.tools.browser_use.impl import BrowserToolExecutor
 

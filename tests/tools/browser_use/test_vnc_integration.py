@@ -8,6 +8,16 @@ import pytest
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 
+@pytest.fixture(autouse=True)
+def _mock_browser_available():
+    with patch.object(
+        BrowserToolExecutor,
+        "_ensure_chromium_available",
+        return_value="/usr/bin/chromium",
+    ):
+        yield
+
+
 class TestVNCIntegration:
     """Test VNC integration with browser tool executor."""
 

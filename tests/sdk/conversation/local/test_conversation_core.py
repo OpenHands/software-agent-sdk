@@ -152,8 +152,9 @@ def test_conversation_event_id_validation():
 
 def _maybe_forked(test_func):
     # pytest-forked doesn't reliably compose with xdist; under xdist we already
-    # have process isolation per worker, so avoid forking again.
-    if os.environ.get("PYTEST_XDIST_WORKER"):
+    # have process isolation per worker, so avoid forking again. Windows has no
+    # os.fork(), so the pytest-forked marker cannot run there.
+    if os.name == "nt" or os.environ.get("PYTEST_XDIST_WORKER"):
         return test_func
     return pytest.mark.forked(test_func)
 
