@@ -998,11 +998,11 @@ class ACPAgentSettings(BaseModel):
 
 
 def _agent_settings_discriminator(value: Any) -> str:
-    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'llm'``.
+    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'openhands'``.
 
     Existing persisted payloads predate ``agent_kind`` and carry only
-    LLM-agent fields. Treating a missing discriminator as ``'llm'`` lets
-    those payloads validate without a migration.
+    OpenHands-agent fields. Treating a missing discriminator as ``'openhands'``
+    lets those payloads validate without a migration.
     """
     if isinstance(value, BaseModel):
         return getattr(value, "agent_kind", "openhands")
