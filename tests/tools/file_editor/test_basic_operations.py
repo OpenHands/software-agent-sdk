@@ -18,17 +18,11 @@ from openhands.tools.file_editor.utils.constants import (
     DIRECTORY_CONTENT_TRUNCATED_NOTICE,
     TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
 )
+from tests.platform_utils import symlink_or_skip
 
 from .conftest import (
     assert_successful_result,
 )
-
-
-def _symlink_or_skip(source: Path, link_name: Path) -> None:
-    try:
-        link_name.symlink_to(source, target_is_directory=source.is_dir())
-    except OSError as e:
-        pytest.skip(f"symlinks are not available in this environment: {e}")
 
 
 @pytest.fixture
@@ -733,7 +727,7 @@ def test_view_symlinked_directory(tmp_path):
 
     # Create a symlink to the directory
     symlink_dir = tmp_path / "symlink_dir"
-    _symlink_or_skip(source_dir, symlink_dir)
+    symlink_or_skip(source_dir, symlink_dir)
 
     # View the symlinked directory
     result = editor(command="view", path=str(symlink_dir))
