@@ -32,7 +32,7 @@ def _get_powershell_command(explicit_shell_path: str | None = None) -> str | Non
     """Return a usable PowerShell executable for the current platform."""
     candidates = [explicit_shell_path] if explicit_shell_path else []
     if platform.system() == "Windows":
-        candidates.extend(["powershell.exe", "pwsh.exe", "powershell", "pwsh"])
+        candidates.extend(["pwsh.exe", "pwsh", "powershell.exe", "powershell"])
     else:
         candidates.extend(["pwsh"])
 
@@ -47,7 +47,7 @@ def _get_powershell_command(explicit_shell_path: str | None = None) -> str | Non
                 timeout=5.0,
                 env=sanitized_env(),
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError, OSError):
             continue
         if result.returncode == 0:
             return candidate
@@ -110,10 +110,6 @@ def create_terminal_session(
             return TerminalSession(terminal, no_change_timeout_seconds)
 
         if terminal_type == "powershell":
-            if platform.system() != "Windows":
-                raise RuntimeError(
-                    "PowerShell terminal backend is only supported on Windows"
-                )
             logger.info("Using forced WindowsTerminal")
             return _create_windows_terminal(
                 work_dir,
@@ -124,7 +120,11 @@ def create_terminal_session(
 
         if terminal_type == "subprocess":
             if platform.system() == "Windows":
-                logger.info("Using WindowsTerminal for forced single-session backend")
+                warnings.warn(
+                    "The 'subprocess' terminal type is not supported on Windows. "
+                    "Using the PowerShell (WindowsTerminal) backend instead.",
+                    stacklevel=2,
+                )
                 return _create_windows_terminal(
                     work_dir,
                     username,

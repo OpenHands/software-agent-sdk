@@ -1,4 +1,4 @@
-import json
+import re
 import threading
 import time
 from typing import TYPE_CHECKING, Literal
@@ -31,6 +31,10 @@ from openhands.tools.terminal.terminal.tmux_pane_pool import (
 
 
 logger = get_logger(__name__)
+
+# Environment variable names must be alphanumeric + underscores, starting with
+# a letter or underscore. This guards against shell injection via key names.
+_ENV_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
@@ -203,21 +207,41 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         escaped = value.replace("'", "''")
         return f"'{escaped}'"
 
+    @staticmethod
+    def _bash_quote(value: str) -> str:
+        """Quote a value for bash using $'...' ANSI-C quoting."""
+        escaped = value.replace("\\", "\\\\")
+        escaped = escaped.replace("'", "\\'")
+        escaped = escaped.replace("\n", "\\n")
+        escaped = escaped.replace("\r", "\\r")
+        escaped = escaped.replace("\t", "\\t")
+        return f"$'{escaped}'"
+
     @classmethod
     def _build_env_exports(
         cls,
         env_vars: dict[str, str],
         session: TerminalSession,
     ) -> str:
+        valid: dict[str, str] = {}
+        for key, value in env_vars.items():
+            if _ENV_VAR_NAME_RE.match(key):
+                valid[key] = value
+            else:
+                logger.warning("Skipping secret with invalid env var name: %r", key)
+
+        if not valid:
+            return ""
+
         if session.terminal.is_powershell():
             assignments = [
                 f"$env:{key} = {cls._powershell_quote(value)}"
-                for key, value in env_vars.items()
+                for key, value in valid.items()
             ]
             return "; ".join(assignments)
 
         assignments = [
-            f"export {key}={json.dumps(value)}" for key, value in env_vars.items()
+            f"export {key}={cls._bash_quote(value)}" for key, value in valid.items()
         ]
         return " && ".join(assignments)
 
@@ -251,6 +275,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
         target = session or self.session
         exports_cmd = self._build_env_exports(env_vars, target)
+
+        if not exports_cmd:
+            return
 
         logger.debug(f"Exporting {len(env_vars)} environment variables before command")
         # Execute the export command separately to persist env in the session

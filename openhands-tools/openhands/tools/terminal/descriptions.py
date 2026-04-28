@@ -2,7 +2,7 @@
 
 UNIX_TOOL_DESCRIPTION = "\n".join(
     [
-        "Execute a shell command in the terminal within a persistent bash session.",
+        "Execute a shell command in the terminal within a persistent shell session.",
         "",
         "",
         "### Command Execution",

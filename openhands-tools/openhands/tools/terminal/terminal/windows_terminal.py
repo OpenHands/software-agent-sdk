@@ -58,7 +58,7 @@ class WindowsTerminal(TerminalInterface):
     reader_thread: threading.Thread | None
     shell_path: str
     _command_running_event: threading.Event
-    _stop_reader: bool
+    _stop_reader: threading.Event
     _decoder: codecs.IncrementalDecoder
 
     def __init__(
@@ -74,7 +74,7 @@ class WindowsTerminal(TerminalInterface):
         self.reader_thread = None
         self.shell_path = shell_path
         self._command_running_event = threading.Event()
-        self._stop_reader = False
+        self._stop_reader = threading.Event()
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def initialize(self) -> None:
@@ -109,7 +109,7 @@ class WindowsTerminal(TerminalInterface):
             creationflags=creationflags,
         )
 
-        self._stop_reader = False
+        self._stop_reader.clear()
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
         self._initialized = True
@@ -133,7 +133,7 @@ class WindowsTerminal(TerminalInterface):
         if self._closed:
             return
 
-        self._stop_reader = True
+        self._stop_reader.set()
 
         if self.process is not None:
             try:
@@ -142,16 +142,15 @@ class WindowsTerminal(TerminalInterface):
             except (OSError, ValueError) as exc:
                 logger.debug("Error closing PowerShell stdin: %s", exc)
 
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
+
+        if self.process is not None:
             try:
                 if self.process.stdout is not None:
                     self.process.stdout.close()
             except (OSError, ValueError) as exc:
                 logger.debug("Error closing PowerShell stdout: %s", exc)
-
-        if self.reader_thread and self.reader_thread.is_alive():
-            self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
-
-        if self.process is not None:
             try:
                 self.process.terminate()
                 self.process.wait(timeout=5.0)
@@ -185,7 +184,7 @@ class WindowsTerminal(TerminalInterface):
 
         if text.strip():
             self._command_running_event.set()
-            command = f"{text.rstrip()}{self._metadata_suffix()}"
+            command = f"{text.rstrip()}; {self._metadata_suffix()}"
         else:
             command = text
 
@@ -241,7 +240,7 @@ class WindowsTerminal(TerminalInterface):
             return
 
         stdout = self.process.stdout
-        while not self._stop_reader:
+        while not self._stop_reader.is_set():
             try:
                 chunk = stdout.read(_READ_CHUNK_SIZE)
                 if not chunk:
