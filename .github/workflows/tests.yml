@@ -226,6 +226,10 @@ jobs:
                     Remove-Item .coverage -Force
                   }
                   $env:CI = 'true'
+                  # Keep the initial Windows pass non-blocking on coverage while
+                  # OS-specific gaps tracked in #2989 are still open.
+                  # Browser/file-editor e2e and terminal shell assumptions remain
+                  # tracked in #2986 and #2988.
                   uv run python -m pytest -vvs `
                     --cov=openhands-tools `
                     --cov-report=term-missing `

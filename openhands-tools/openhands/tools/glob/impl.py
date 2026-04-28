@@ -146,6 +146,8 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             Tuple of (file_paths, truncated) where file_paths is a list of matching files
             and truncated is True if results were limited to 100 files
         """  # noqa: E501
+        search_path = search_path.resolve()
+
         # Build ripgrep command: rg --files {path} -g {pattern} --sortr=modified
         cmd = [
             "rg",
@@ -193,6 +195,8 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             Tuple of (file_paths, truncated) where file_paths is a list of matching files
             and truncated is True if results were limited to 100 files
         """  # noqa: E501
+        search_path = search_path.resolve()
+
         # Change to search directory for glob to work correctly
         original_cwd = os.getcwd()
         try:
@@ -208,12 +212,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             # Use glob to find matching files
             matches = glob_module.glob(pattern, recursive=True)
 
-            # Convert to resolved absolute paths and sort by modification time.
-            # This matches ripgrep output on Windows, where temp directories may
-            # enter Python as 8.3-short paths but subprocess output expands them.
+            # Convert to absolute paths without resolving symlinks and sort by
+            # modification time.
             file_paths = []
             for match in matches:
-                abs_path = str((search_path / match).resolve())
+                abs_path = str((search_path / match).absolute())
                 if os.path.isfile(abs_path):
                     file_paths.append((abs_path, os.path.getmtime(abs_path)))
 

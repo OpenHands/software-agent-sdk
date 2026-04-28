@@ -342,6 +342,7 @@ def test_grep_terminal_command_uses_portable_python_on_windows(monkeypatch, tmp_
     assert command is not None
     assert command.startswith("python ") or command.startswith('"python" ')
     assert "grep -RIn" not in command
+    assert "\n" not in command
 
 
 def test_security_risk_typo_normalized(tmp_path):
