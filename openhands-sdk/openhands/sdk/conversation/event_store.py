@@ -1,6 +1,7 @@
 # state.py
 import operator
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from typing import SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -37,6 +38,7 @@ class EventLog(EventsListBase):
     _dir: str
     _length: int
     _lock_path: str
+    _write_guard: Callable[[], AbstractContextManager[None]] | None
 
     def __init__(self, fs: FileStore, dir_path: str = EVENTS_DIR) -> None:
         self._fs = fs
@@ -44,7 +46,14 @@ class EventLog(EventsListBase):
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
+        self._write_guard = None
         self._length = self._scan_and_build_index()
+
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
 
     def get_index(self, event_id: EventID) -> int:
         """Return the integer index for a given event_id."""
@@ -129,8 +138,14 @@ class EventLog(EventsListBase):
                         f"{existing_idx}"
                     )
 
-                target_path = self._path(self._length, event_id=evt_id)
-                self._fs.write(target_path, event.model_dump_json(exclude_none=True))
+                payload = event.model_dump_json(exclude_none=True)
+                if self._write_guard is None:
+                    target_path = self._path(self._length, event_id=evt_id)
+                    self._fs.write(target_path, payload)
+                else:
+                    with self._write_guard():
+                        target_path = self._path(self._length, event_id=evt_id)
+                        self._fs.write(target_path, payload)
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length
                 self._length += 1
