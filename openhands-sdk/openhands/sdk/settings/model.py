@@ -934,14 +934,6 @@ class ACPAgentSettings(BaseModel):
             ).model_dump(),
         },
     )
-    agent_context: AgentContext | None = Field(
-        default=None,
-        description=(
-            "Optional prompt-only context injected into each ACP user turn. "
-            "Secrets in agent_context are resolved to plain strings and injected "
-            "into the subprocess environment at start time."
-        ),
-    )
     llm: LLM = Field(
         default_factory=_default_llm_settings,
         description=(
@@ -1002,7 +994,6 @@ class ACPAgentSettings(BaseModel):
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
-            agent_context=self.agent_context,
         )
 
 
