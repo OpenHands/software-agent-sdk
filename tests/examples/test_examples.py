@@ -111,6 +111,8 @@ def test_example_scripts(
     start = time.perf_counter()
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # Windows pipes default to the active code page; examples may print model text.
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     # Apply model overrides for certain examples requiring provider-specific models
     overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
     if overrides:
