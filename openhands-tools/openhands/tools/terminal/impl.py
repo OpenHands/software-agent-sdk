@@ -41,7 +41,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         working_dir: str,
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
-        terminal_type: Literal["tmux", "subprocess"] | None = None,
+        terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
         full_output_save_dir: str | None = None,
         max_panes: int = DEFAULT_MAX_PANES,
@@ -49,14 +49,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
         Args:
-            working_dir: Working directory for bash commands
-            username: Optional username for the bash session
+            working_dir: Working directory for shell commands
+            username: Optional username for the shell session
             no_change_timeout_seconds: Timeout for no output change
             terminal_type: Force a specific session type:
-                         ('tmux', 'subprocess').
-                         If None, auto-detect based on system capabilities
-            shell_path: Path to the shell binary (for subprocess terminal type only).
-                       If None, will auto-detect bash from PATH.
+                         ('tmux', 'subprocess', or 'powershell').
+                         If None, auto-detect based on system capabilities.
+            shell_path: Path to the shell binary. On Unix this applies to the
+                       subprocess backend; on Windows it can point to a
+                       PowerShell executable.
             full_output_save_dir: Path to directory to save full output
                                   logs and files, used when truncation is needed.
             max_panes: Maximum number of concurrent panes in pool mode.
@@ -197,6 +198,29 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         session.prev_status = None
         session.prev_output = ""
 
+    @staticmethod
+    def _powershell_quote(value: str) -> str:
+        escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+
+    @classmethod
+    def _build_env_exports(
+        cls,
+        env_vars: dict[str, str],
+        session: TerminalSession,
+    ) -> str:
+        if session.terminal.is_powershell():
+            assignments = [
+                f"$env:{key} = {cls._powershell_quote(value)}"
+                for key, value in env_vars.items()
+            ]
+            return "; ".join(assignments)
+
+        assignments = [
+            f"export {key}={json.dumps(value)}" for key, value in env_vars.items()
+        ]
+        return " && ".join(assignments)
+
     # ------------------------------------------------------------------
     # Env export / secret masking
     # ------------------------------------------------------------------
@@ -225,14 +249,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         if not env_vars:
             return
 
-        export_statements = []
-        for key, value in env_vars.items():
-            export_statements.append(f"export {key}={json.dumps(value)}")
-        exports_cmd = " && ".join(export_statements)
+        target = session or self.session
+        exports_cmd = self._build_env_exports(env_vars, target)
 
         logger.debug(f"Exporting {len(env_vars)} environment variables before command")
-
-        target = session or self.session
         # Execute the export command separately to persist env in the session
         _ = target.execute(
             TerminalAction(
