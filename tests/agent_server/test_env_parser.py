@@ -13,7 +13,7 @@ Tests cover:
 
 import json
 import os
-from enum import Enum
+from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from typing import Literal
@@ -783,7 +783,7 @@ def test_config_vnc_various_boolean_values(clean_env, env_value, expected):
 # ============================================================================
 
 
-class SampleEnum(str, Enum):
+class SampleEnum(StrEnum):
     """Sample enum for parsing tests."""
 
     OPTION_A = "option_a"
