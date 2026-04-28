@@ -655,3 +655,52 @@ def test_start_bash_command_endpoint_used():
         assert result.exit_code == 0
         assert "Hello from sandboxed environment!" in result.stdout
         assert result.timeout_occurred is False
+
+
+def test_git_changes_generator_uses_query_param_with_posix_paths():
+    """Test git changes requests use query params with slash-normalized paths."""
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000",
+        api_key="test-key",
+        working_dir=r"C:\workspace\repo",
+    )
+
+    generator = mixin._git_changes_generator(r"subdir\file.py")
+    request_kwargs = next(generator)
+
+    assert request_kwargs["method"] == "GET"
+    assert request_kwargs["url"] == "/api/git/changes"
+    assert request_kwargs["params"] == {"path": "C:/workspace/repo/subdir/file.py"}
+    assert request_kwargs["headers"] == {"X-Session-API-Key": "test-key"}
+
+
+def test_git_diff_generator_uses_query_param_with_posix_paths():
+    """Test git diff requests use query params with slash-normalized paths."""
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000",
+        working_dir=r"C:\workspace\repo",
+    )
+
+    generator = mixin._git_diff_generator(Path("nested") / "file.py")
+    request_kwargs = next(generator)
+
+    assert request_kwargs["method"] == "GET"
+    assert request_kwargs["url"] == "/api/git/diff"
+    assert request_kwargs["params"] == {"path": "C:/workspace/repo/nested/file.py"}
+    assert request_kwargs["headers"] == {}
+
+
+def test_git_changes_generator_preserves_absolute_paths():
+    """Test git changes requests keep absolute paths instead of joining them."""
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000",
+        working_dir=r"C:\workspace\repo",
+    )
+
+    windows_generator = mixin._git_changes_generator(r"D:\other\file.py")
+    windows_request_kwargs = next(windows_generator)
+    assert windows_request_kwargs["params"] == {"path": "D:/other/file.py"}
+
+    posix_generator = mixin._git_changes_generator("/var/tmp/file.py")
+    posix_request_kwargs = next(posix_generator)
+    assert posix_request_kwargs["params"] == {"path": "/var/tmp/file.py"}

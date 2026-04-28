@@ -208,12 +208,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             # Use glob to find matching files
             matches = glob_module.glob(pattern, recursive=True)
 
-            # Convert to resolved absolute paths and sort by modification time.
-            # This matches ripgrep output on Windows, where temp directories may
-            # enter Python as 8.3-short paths but subprocess output expands them.
+            # Convert to absolute paths without resolving symlinks and sort by
+            # modification time.
             file_paths = []
             for match in matches:
-                abs_path = str((search_path / match).resolve())
+                abs_path = str((search_path / match).absolute())
                 if os.path.isfile(abs_path):
                     file_paths.append((abs_path, os.path.getmtime(abs_path)))
 

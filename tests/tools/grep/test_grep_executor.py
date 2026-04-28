@@ -137,6 +137,21 @@ def test_grep_executor_hidden_files_excluded():
         assert ".hidden" not in observation.matches[0]
 
 
+def test_grep_executor_include_filter_excludes_hidden_files():
+    """Test that include filters do not re-include hidden files."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "visible.py").write_text("test")
+        (Path(temp_dir) / ".hidden.py").write_text("test")
+
+        executor = GrepExecutor(working_dir=temp_dir)
+        action = GrepAction(pattern="test", include="*.py")
+        observation = executor(action)
+
+        assert observation.is_error is False
+        assert len(observation.matches) == 1
+        assert ".hidden" not in observation.matches[0]
+
+
 @pytest.mark.skipif(
     not _check_ripgrep_available(),
     reason="ripgrep not available - sorting test requires ripgrep",

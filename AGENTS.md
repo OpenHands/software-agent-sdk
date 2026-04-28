@@ -117,6 +117,8 @@ When reviewing code, provide constructive feedback:
 - The duplicate-issue automation scripts should validate `owner/repo` arguments before interpolating GitHub API paths, handle per-issue auto-close failures without aborting the whole batch, and keep `app_conversation_id` paths unquoted because OpenHands conversation IDs are already canonicalized for those endpoints.
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
 
+- Remote workspace git operations should call `/api/git/changes` and `/api/git/diff` via the `path` query parameter with slash-normalized strings; building those URLs with `pathlib.Path` leaks host-platform separators and breaks Windows paths. Likewise, the Python grep fallback should keep matching ripgrep/grep behavior by excluding hidden files even when an `include` glob is present, and the Python glob fallback should use `.absolute()` rather than `.resolve()` so symlink paths are preserved.
+
 
 ## Package-specific guidance
 When reviewing or modifying code, read the closest AGENTS file for the

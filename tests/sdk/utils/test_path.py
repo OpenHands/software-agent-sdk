@@ -30,3 +30,8 @@ def test_is_local_path_source_keeps_url_sources_remote():
 def test_is_local_path_source_detects_backslash_path_syntax():
     assert is_local_path_source(r"relative\plugin")
     assert is_local_path_source(r"\rooted")
+
+
+def test_is_local_path_source_detects_dot_paths():
+    assert is_local_path_source(".")
+    assert is_local_path_source("..")
