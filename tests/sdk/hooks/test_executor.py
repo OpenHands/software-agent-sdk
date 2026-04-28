@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from unittest import mock
 
 import pytest
 
@@ -231,6 +232,33 @@ class TestAsyncHookExecution:
         assert content["tool_name"] == "TestTool"
         assert content["event_type"] == "PostToolUse"
 
+    def test_execute_async_hook_uses_windows_process_group(
+        self, executor, sample_event, monkeypatch
+    ):
+        """Test that async hooks request a Windows process group on win32."""
+        import openhands.sdk.hooks.executor as executor_module
+
+        popen_kwargs: dict[str, object] = {}
+        stdin = mock.Mock()
+        process = mock.Mock()
+        process.stdin = stdin
+        process.poll.return_value = None
+
+        def fake_popen(*args, **kwargs):
+            popen_kwargs.update(kwargs)
+            return process
+
+        monkeypatch.setattr(executor_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 512, raising=False)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        hook = HookDefinition.model_validate({"command": "echo test", "async": True})
+        result = executor.execute(hook, sample_event)
+
+        assert result.async_started is True
+        assert popen_kwargs["creationflags"] == 512
+        assert popen_kwargs["start_new_session"] is False
+
     def test_sync_hook_not_marked_async(self, executor, sample_event):
         """Test that synchronous hooks are not marked as async_started."""
         hook = HookDefinition.model_validate({"command": "echo 'sync'", "async": False})
@@ -335,6 +363,37 @@ class TestAsyncProcessManager:
         time.sleep(0.1)
         assert process.poll() is not None  # Terminated
         assert len(manager._processes) == 0
+
+    def test_async_process_manager_windows_kill_uses_bounded_wait(self, monkeypatch):
+        """Test that Windows cleanup does not wait indefinitely after kill."""
+        import openhands.sdk.hooks.executor as executor_module
+        from openhands.sdk.hooks.executor import AsyncProcessManager
+
+        process = mock.Mock()
+        process.pid = 123
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="cmd", timeout=1),
+            subprocess.TimeoutExpired(cmd="cmd", timeout=1),
+        ]
+
+        taskkill_calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            taskkill_calls.append(args)
+            return mock.Mock()
+
+        monkeypatch.setattr(executor_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        manager = AsyncProcessManager()
+        manager._terminate_process(process)
+
+        assert taskkill_calls == [["taskkill", "/F", "/T", "/PID", "123"]]
+        assert process.wait.call_args_list == [
+            mock.call(timeout=1),
+            mock.call(timeout=1),
+        ]
+        process.kill.assert_called_once_with()
 
     def test_cleanup_expired_keeps_active_processes(self, tmp_path):
         """Test that cleanup_expired keeps processes within their timeout."""

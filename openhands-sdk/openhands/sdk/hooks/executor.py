@@ -81,7 +81,10 @@ class AsyncProcessManager:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
             return
 
         try:
@@ -163,6 +166,12 @@ class HookExecutor:
         # Handle async hooks: fire and forget
         if hook.async_:
             try:
+                creationflags = 0
+                start_new_session = True
+                if os.name == "nt":
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    start_new_session = False
+
                 process = subprocess.Popen(
                     hook.command,
                     shell=True,
@@ -171,7 +180,8 @@ class HookExecutor:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    start_new_session=True,  # Create new process group for cleanup
+                    start_new_session=start_new_session,
+                    creationflags=creationflags,
                 )
                 # Write event JSON to stdin safely
                 try:
