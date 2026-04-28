@@ -32,6 +32,18 @@ def _get_int_env(key: str) -> int | None:
     return None
 
 
+def _get_bool_env(key: str) -> bool:
+    """Read an environment variable as a boolean.
+
+    Returns True if the value is 'true', '1', 'yes', 'on' (case-insensitive).
+    Returns False otherwise.
+    """
+    val = get_env(key)
+    if val is None:
+        return False
+    return val.lower() in ("true", "1", "yes", "on")
+
+
 def maybe_init_laminar():
     """Initialize Laminar if the environment variables are set.
 
@@ -53,14 +65,20 @@ def maybe_init_laminar():
     LMNR_BASE_URL=https://api.lmnr.ai  # optional, defaults to https://api.lmnr.ai
     LMNR_HTTP_PORT=8000
     LMNR_GRPC_PORT=8001
+
+    To force HTTP instead of gRPC for Laminar communication:
+    LMNR_USE_HTTP=true  # or 1, yes, on
     """
     base_url = get_env("LMNR_BASE_URL") or None
+    force_http = _get_bool_env("LMNR_USE_HTTP")
+
     if should_enable_observability():
         if _is_otel_backend_laminar():
             Laminar.initialize(
                 base_url=base_url,
                 http_port=_get_int_env("LMNR_HTTP_PORT"),
                 grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+                force_http=force_http,
             )
         else:
             # Do not enable browser session replays for non-laminar backends
@@ -70,6 +88,7 @@ def maybe_init_laminar():
                     Instruments.PATCHRIGHT,
                     Instruments.PLAYWRIGHT,
                 ],
+                force_http=force_http,
             )
         litellm.callbacks.append(LaminarLiteLLMCallback())
     else:

@@ -1,5 +1,6 @@
 """Tests for Laminar observability configuration."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -89,8 +90,6 @@ def test_lmnr_base_url_passed_to_laminar():
 
 def test_lmnr_base_url_not_passed_when_empty():
     """Test that base_url is None when LMNR_BASE_URL is not set."""
-    import os
-
     # Save original values
     original_base_url = os.environ.get("LMNR_BASE_URL")
     original_key = os.environ.get("LMNR_PROJECT_API_KEY")
@@ -124,3 +123,88 @@ def test_lmnr_base_url_not_passed_when_empty():
             os.environ["LMNR_PROJECT_API_KEY"] = original_key
         elif "LMNR_PROJECT_API_KEY" in os.environ:
             del os.environ["LMNR_PROJECT_API_KEY"]
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        ("true", True),
+        ("True", True),
+        ("TRUE", True),
+        ("1", True),
+        ("yes", True),
+        ("YES", True),
+        ("on", True),
+        ("ON", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_get_bool_env(env_value, expected):
+    """Test that _get_bool_env correctly parses boolean environment variables."""
+    original = os.environ.get("TEST_BOOL_VAR")
+
+    try:
+        if env_value is not None:
+            os.environ["TEST_BOOL_VAR"] = env_value
+        elif "TEST_BOOL_VAR" in os.environ:
+            del os.environ["TEST_BOOL_VAR"]
+
+        from openhands.sdk.observability.laminar import _get_bool_env
+
+        result = _get_bool_env("TEST_BOOL_VAR")
+        assert result == expected
+    finally:
+        if original is not None:
+            os.environ["TEST_BOOL_VAR"] = original
+        elif "TEST_BOOL_VAR" in os.environ:
+            del os.environ["TEST_BOOL_VAR"]
+
+
+@pytest.mark.parametrize(
+    ("use_http_value", "expected_force_http"),
+    [
+        ("true", True),
+        ("1", True),
+        ("false", False),
+        ("0", False),
+        (None, False),
+    ],
+)
+def test_lmnr_use_http_passed_to_laminar(use_http_value, expected_force_http):
+    """Test that LMNR_USE_HTTP is correctly passed to Laminar.initialize."""
+    original_key = os.environ.get("LMNR_PROJECT_API_KEY")
+    original_use_http = os.environ.get("LMNR_USE_HTTP")
+
+    try:
+        os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+        if use_http_value is not None:
+            os.environ["LMNR_USE_HTTP"] = use_http_value
+        elif "LMNR_USE_HTTP" in os.environ:
+            del os.environ["LMNR_USE_HTTP"]
+
+        with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
+            with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
+                with patch(
+                    "openhands.sdk.observability.laminar.litellm"
+                ) as mock_litellm:
+                    mock_laminar.is_initialized.return_value = False
+                    mock_litellm.callbacks = MagicMock()
+                    from openhands.sdk.observability.laminar import maybe_init_laminar
+
+                    maybe_init_laminar()
+
+                    call_kwargs = mock_laminar.initialize.call_args.kwargs
+                    assert call_kwargs.get("force_http") == expected_force_http
+    finally:
+        if original_key is not None:
+            os.environ["LMNR_PROJECT_API_KEY"] = original_key
+        elif "LMNR_PROJECT_API_KEY" in os.environ:
+            del os.environ["LMNR_PROJECT_API_KEY"]
+        if original_use_http is not None:
+            os.environ["LMNR_USE_HTTP"] = original_use_http
+        elif "LMNR_USE_HTTP" in os.environ:
+            del os.environ["LMNR_USE_HTTP"]
