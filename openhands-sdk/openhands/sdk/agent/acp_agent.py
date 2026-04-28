@@ -56,6 +56,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 
@@ -885,6 +886,20 @@ class ACPAgent(AgentBase):
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
+        # Inject secrets from agent_context. acp_env entries take precedence
+        # (already set above), so we only fill keys not already present.
+        # SecretSource.get_value() is synchronous; calling it here is safe
+        # because _start_acp_server is a regular (non-async) method.
+        if self.agent_context and self.agent_context.secrets:
+            for name, secret in self.agent_context.secrets.items():
+                if name not in env:
+                    value = (
+                        secret.get_value()
+                        if isinstance(secret, SecretSource)
+                        else str(secret)
+                    )
+                    if value:
+                        env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
