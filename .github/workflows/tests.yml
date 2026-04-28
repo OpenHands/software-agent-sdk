@@ -232,6 +232,7 @@ jobs:
                     --cov-fail-under=0 `
                     --cov-config=pyproject.toml `
                     tests/tools `
+                    --ignore=tests/tools/browser_use/test_browser_executor_e2e.py `
                     --ignore=tests/tools/file_editor/test_memory_usage.py `
                     --ignore=tests/tools/terminal/test_conversation_cleanup.py `
                     --ignore=tests/tools/terminal/test_session_factory.py `

@@ -293,12 +293,13 @@ def test_view_file(editor):
 def test_view_directory(editor):
     editor, test_file = editor
     parent_dir = test_file.parent
+    expected_dir = parent_dir.as_posix()
     result = editor(command="view", path=str(parent_dir))
     assert (
         result.text
         == f"""Here's the files and directories up to 2 levels deep in {parent_dir}, excluding hidden items:
-{parent_dir}/
-{parent_dir}/test.txt"""  # noqa: E501
+{expected_dir}/
+{expected_dir}/test.txt"""  # noqa: E501
     )
 
 
