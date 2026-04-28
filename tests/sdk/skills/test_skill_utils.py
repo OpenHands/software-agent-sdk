@@ -14,7 +14,7 @@ from openhands.sdk.context import (
 )
 from openhands.sdk.skills.utils import find_third_party_files
 from openhands.sdk.utils.path import to_posix_path
-from tests.path_utils import symlink_or_skip
+from tests.platform_utils import symlink_or_skip
 
 
 CONTENT = "# dummy header\ndummy content\n## dummy subheader\ndummy subcontent\n"

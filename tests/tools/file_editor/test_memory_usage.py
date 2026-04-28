@@ -2,7 +2,6 @@
 
 import gc
 import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -11,13 +10,17 @@ import pytest
 from filelock import FileLock
 
 from openhands.tools.file_editor import file_editor
+from tests.platform_utils import (
+    can_fork_test_process,
+    set_address_space_limit_if_available,
+)
 
 from .conftest import assert_successful_result
 
 
 # Apply the forked marker where supported and serialize execution across workers.
 pytestmark = [pytest.mark.usefixtures("isolate_memory_usage_tests")]
-if os.name != "nt":
+if can_fork_test_process():
     pytestmark.append(pytest.mark.forked)
 
 
@@ -137,18 +140,10 @@ def test_file_editor_memory_leak(temp_file):
 
     # Set memory limit to 170MB to make it more likely to catch issues
     memory_limit = 170 * 1024 * 1024  # 170MB in bytes
-    if sys.platform != "win32":
-        try:
-            import resource
-
-            resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-            print("Memory limit set successfully")
-        except Exception as e:
-            print(f"Warning: Could not set memory limit: {str(e)}")
-            # If we can't set memory limit, we'll still run the test but rely on
-            # growth checks
+    if set_address_space_limit_if_available(memory_limit):
+        print("Memory limit set successfully")
     else:
-        print("Memory limit not available on Windows")
+        print("Address-space memory limit not available in this environment")
 
     initial_memory = psutil.Process(os.getpid()).memory_info().rss
     print(f"\nInitial memory usage: {initial_memory / 1024 / 1024:.2f} MB")
