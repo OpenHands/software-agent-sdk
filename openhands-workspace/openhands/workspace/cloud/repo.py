@@ -12,7 +12,7 @@ import subprocess
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 CLONE_TIMEOUT = 300
 
 
-class GitProvider(str, Enum):
+class GitProvider(StrEnum):
     """Supported git hosting providers."""
 
     GITHUB = "github"

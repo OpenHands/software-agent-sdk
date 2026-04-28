@@ -450,6 +450,12 @@ class FileEditor:
         """
         self.validate_file(path)
         try:
+            if encoding == "utf-8":
+                first_two_lines = "\n".join(file_text.splitlines()[:2])
+                match = re.search(r"coding[:=]\s*([-\w.]+)", first_two_lines)
+                if match:
+                    encoding = match.group(1)
+
             # Use open with encoding instead of path.write_text
             with open(path, "w", encoding=encoding) as f:
                 f.write(file_text)
@@ -649,9 +655,22 @@ class FileEditor:
                 ),
             )
 
-        # Check file type - allow image files
+        # Check file type - allow image files and text-like files that binaryornot
+        # misclassifies (e.g. PDFs with plain-text streams or source files in a
+        # declared legacy encoding such as cp1251).
         file_extension = path.suffix.lower()
         if is_binary(str(path)) and file_extension not in IMAGE_EXTENSIONS:
+            with open(path, "rb") as f:
+                sample = f.read(min(file_size, 1024 * 1024))
+
+            detected_encoding = self._encoding_manager.get_encoding(path)
+            if b"\x00" not in sample:
+                try:
+                    sample.decode(detected_encoding)
+                    return
+                except UnicodeDecodeError:
+                    pass
+
             raise FileValidationError(
                 path=str(path),
                 reason=(

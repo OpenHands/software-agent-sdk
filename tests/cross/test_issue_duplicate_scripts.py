@@ -509,18 +509,16 @@ def test_auto_close_main_honors_author_veto(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "remove_candidate_label",
-        lambda repository, issue_number, *, dry_run: removed.append(
-            (repository, issue_number, dry_run)
-        )
-        or True,
+        lambda repository, issue_number, *, dry_run: (
+            removed.append((repository, issue_number, dry_run)) or True
+        ),
     )
     monkeypatch.setattr(
         module,
         "post_veto_note",
-        lambda repository, issue_number, *, dry_run: veto_notes.append(
-            (repository, issue_number, dry_run)
-        )
-        or True,
+        lambda repository, issue_number, *, dry_run: (
+            veto_notes.append((repository, issue_number, dry_run)) or True
+        ),
     )
     monkeypatch.setattr(
         module,
@@ -584,12 +582,8 @@ def test_auto_close_main_closes_old_duplicate(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "close_issue_as_duplicate",
-        lambda repository,
-        issue_number,
-        canonical_issue_number,
-        *,
-        dry_run: closed.append(
-            (repository, issue_number, canonical_issue_number, dry_run)
+        lambda repository, issue_number, canonical_issue_number, *, dry_run: (
+            closed.append((repository, issue_number, canonical_issue_number, dry_run))
         ),
     )
 
@@ -861,10 +855,10 @@ def test_auto_close_main_removes_label_when_newer_comment_exists(monkeypatch, ca
     monkeypatch.setattr(
         module,
         "keep_open_due_to_newer_comments",
-        lambda repository, issue_arg, issue_number, *, dry_run: keep_open_calls.append(
-            (repository, issue_number, dry_run)
-        )
-        or {"issue_number": issue_number, "action": "kept-open"},
+        lambda repository, issue_arg, issue_number, *, dry_run: (
+            keep_open_calls.append((repository, issue_number, dry_run))
+            or {"issue_number": issue_number, "action": "kept-open"}
+        ),
     )
     monkeypatch.setattr(
         module,
@@ -925,12 +919,8 @@ def test_auto_close_main_ignores_newer_bot_comments(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "close_issue_as_duplicate",
-        lambda repository,
-        issue_number,
-        canonical_issue_number,
-        *,
-        dry_run: closed.append(
-            (repository, issue_number, canonical_issue_number, dry_run)
+        lambda repository, issue_number, canonical_issue_number, *, dry_run: (
+            closed.append((repository, issue_number, canonical_issue_number, dry_run))
         ),
     )
     monkeypatch.setattr(
@@ -1001,12 +991,8 @@ def test_auto_close_main_ignores_newer_deleted_user_comments(monkeypatch, capsys
     monkeypatch.setattr(
         module,
         "close_issue_as_duplicate",
-        lambda repository,
-        issue_number,
-        canonical_issue_number,
-        *,
-        dry_run: closed.append(
-            (repository, issue_number, canonical_issue_number, dry_run)
+        lambda repository, issue_number, canonical_issue_number, *, dry_run: (
+            closed.append((repository, issue_number, canonical_issue_number, dry_run))
         ),
     )
 
@@ -1106,12 +1092,8 @@ def test_auto_close_main_ignores_newer_comments_with_invalid_timestamps(
     monkeypatch.setattr(
         module,
         "close_issue_as_duplicate",
-        lambda repository,
-        issue_number,
-        canonical_issue_number,
-        *,
-        dry_run: closed.append(
-            (repository, issue_number, canonical_issue_number, dry_run)
+        lambda repository, issue_number, canonical_issue_number, *, dry_run: (
+            closed.append((repository, issue_number, canonical_issue_number, dry_run))
         ),
     )
 
@@ -2002,22 +1984,24 @@ def test_issue_duplicate_main_prefers_agent_final_response(monkeypatch, tmp_path
     monkeypatch.setattr(
         module,
         "fetch_agent_server_final_response",
-        lambda app_conversation_id, agent_server_url, session_api_key: json.dumps(
-            {
-                "classification": "overlapping-scope",
-                "confidence": "medium",
-                "should_comment": True,
-                "is_duplicate": False,
-                "auto_close_candidate": False,
-                "canonical_issue_number": 45,
-                "candidate_issues": [{"number": 45, "title": "Existing issue"}],
-                "summary": "overlap summary",
-            }
-        )
-        if app_conversation_id == "conv-123"
-        and agent_server_url == "https://runtime.example"
-        and session_api_key == "session-key"
-        else pytest.fail("Unexpected final-response parameters"),
+        lambda app_conversation_id, agent_server_url, session_api_key: (
+            json.dumps(
+                {
+                    "classification": "overlapping-scope",
+                    "confidence": "medium",
+                    "should_comment": True,
+                    "is_duplicate": False,
+                    "auto_close_candidate": False,
+                    "canonical_issue_number": 45,
+                    "candidate_issues": [{"number": 45, "title": "Existing issue"}],
+                    "summary": "overlap summary",
+                }
+            )
+            if app_conversation_id == "conv-123"
+            and agent_server_url == "https://runtime.example"
+            and session_api_key == "session-key"
+            else pytest.fail("Unexpected final-response parameters")
+        ),
     )
     monkeypatch.setattr(
         module,
@@ -2091,25 +2075,29 @@ def test_issue_duplicate_main_falls_back_to_agent_server_events(monkeypatch, tmp
     monkeypatch.setattr(
         module,
         "fetch_agent_server_events",
-        lambda app_conversation_id, agent_server_url, session_api_key: [
-            make_agent_message(
-                json.dumps(
-                    {
-                        "classification": "overlapping-scope",
-                        "confidence": "medium",
-                        "should_comment": True,
-                        "is_duplicate": False,
-                        "auto_close_candidate": False,
-                        "canonical_issue_number": 45,
-                        "candidate_issues": [{"number": 45, "title": "Existing issue"}],
-                        "summary": "overlap summary",
-                    }
+        lambda app_conversation_id, agent_server_url, session_api_key: (
+            [
+                make_agent_message(
+                    json.dumps(
+                        {
+                            "classification": "overlapping-scope",
+                            "confidence": "medium",
+                            "should_comment": True,
+                            "is_duplicate": False,
+                            "auto_close_candidate": False,
+                            "canonical_issue_number": 45,
+                            "candidate_issues": [
+                                {"number": 45, "title": "Existing issue"}
+                            ],
+                            "summary": "overlap summary",
+                        }
+                    )
                 )
-            )
-        ]
-        if agent_server_url == "https://runtime.example"
-        and session_api_key == "session-key"
-        else pytest.fail("Unexpected fallback parameters"),
+            ]
+            if agent_server_url == "https://runtime.example"
+            and session_api_key == "session-key"
+            else pytest.fail("Unexpected fallback parameters")
+        ),
     )
 
     assert module.main() == 0

@@ -1,7 +1,7 @@
 # state.py
 import json
 from collections.abc import Sequence
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
 
@@ -42,7 +42,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 logger = get_logger(__name__)
 
 
-class ConversationExecutionStatus(str, Enum):
+class ConversationExecutionStatus(StrEnum):
     """Enum representing the current execution state of the conversation."""
 
     IDLE = "idle"  # Conversation is ready to receive tasks
@@ -267,6 +267,7 @@ class ConversationState(OpenHandsModel):
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        file_store: FileStore | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -296,6 +297,12 @@ class ConversationState(OpenHandsModel):
                     are redacted (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            file_store: Optional pre-configured FileStore for event
+                    persistence. When provided, ``persistence_dir`` is **not**
+                    used for EventLog storage (the supplied store takes
+                    precedence). Note that ``persistence_dir`` is still read
+                    for ``env_observation_persistence_dir`` — pass both if you
+                    need observation persistence alongside a custom store.
 
         Returns:
             ConversationState ready for use
@@ -304,16 +311,17 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        if persistence_dir:
-            file_store = LocalFileStore(
-                persistence_dir, cache_limit_size=max_iterations
-            )
-        else:
-            logger.warning(
-                "No persistence_dir provided; falling back to InMemoryFileStore. "
-                "EventLog data will not persist across requests."
-            )
-            file_store = InMemoryFileStore()
+        if file_store is None:
+            if persistence_dir:
+                file_store = LocalFileStore(
+                    persistence_dir, cache_limit_size=max_iterations
+                )
+            else:
+                logger.warning(
+                    "No persistence_dir provided; falling back to InMemoryFileStore. "
+                    "EventLog data will not persist across requests."
+                )
+                file_store = InMemoryFileStore()
 
         try:
             base_text = file_store.read(BASE_STATE)

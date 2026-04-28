@@ -49,8 +49,8 @@ def test_get_response_with_finish_action(
         "Task completed successfully!"
     )
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -76,8 +76,8 @@ def test_get_response_empty_when_no_agent_events(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.get_agent_final_response.return_value = ""
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -98,8 +98,8 @@ def test_get_response_conversation_not_found(
     """Endpoint returns 404 when conversation does not exist."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
