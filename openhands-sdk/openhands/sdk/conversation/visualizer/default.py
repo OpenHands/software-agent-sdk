@@ -1,6 +1,8 @@
 import logging
 import re
+import sys
 from collections.abc import Callable
+from typing import IO, TextIO, cast
 
 from pydantic import BaseModel
 from rich.console import Console, Group
@@ -52,6 +54,40 @@ DEFAULT_HIGHLIGHT_REGEX = {
     r"\*\*(.*?)\*\*": "bold",
     r"\*(.*?)\*": "italic",
 }
+
+
+class _EncodingSafeTextIO:
+    """Text stream wrapper that replaces characters unsupported by stdout."""
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+
+    @property
+    def encoding(self) -> str | None:
+        return self._stream.encoding
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+    def write(self, text: str) -> int:
+        encoding = self.encoding
+        if encoding:
+            try:
+                text.encode(encoding)
+            except UnicodeEncodeError:
+                text = text.encode(encoding, errors="replace").decode(encoding)
+        return self._stream.write(text)
+
+
+def _create_console() -> Console:
+    stdout = getattr(sys.stdout, "rich_proxied_file", sys.stdout)
+    return Console(file=cast(IO[str], _EncodingSafeTextIO(cast(TextIO, stdout))))
 
 
 class EventVisualizationConfig(BaseModel):
@@ -242,7 +278,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                                 scenarios where user input is not relevant to show.
         """
         super().__init__()
-        self._console = Console()
+        self._console = _create_console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
 
