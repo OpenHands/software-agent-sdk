@@ -80,7 +80,7 @@ def __getattr__(name: str) -> Any:
         warn_deprecated(
             f"Importing {name} from openhands.sdk.plugin",
             deprecated_in="1.16.0",
-            removed_in="1.19.0",
+            removed_in="1.21.0",
             details="Import from openhands.sdk.marketplace instead.",
             stacklevel=3,
         )
