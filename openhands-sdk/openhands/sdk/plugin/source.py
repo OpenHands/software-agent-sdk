@@ -12,7 +12,7 @@ from typing import NamedTuple
 
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.path import is_local_path_source
+from openhands.sdk.utils.path import is_absolute_path_source, is_local_path_source
 
 
 logger = get_logger(__name__)
@@ -97,12 +97,8 @@ def resolve_source_path(
         logger.warning(f"Failed to clone/update: {source}")
         return None
 
-    # Handle local paths
-    if source.startswith("/"):
-        return Path(source)
-
     path = Path(source).expanduser()
-    if path.is_absolute():
+    if is_absolute_path_source(source):
         return path
     if base_path:
         return (base_path / path).resolve()

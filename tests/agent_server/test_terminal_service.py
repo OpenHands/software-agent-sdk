@@ -1,6 +1,7 @@
 """Comprehensive tests for BashEventService bash command execution."""
 
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,12 @@ import pytest
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.models import BashCommand, BashOutput, ExecuteBashRequest
 from openhands.agent_server.pub_sub import Subscriber
-from tests.command_utils import python_command
 
 
-def _normalize_output(output: str | None) -> str:
-    return (output or "").replace("\r\n", "\n")
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="BashEventService tests require the Unix terminal backend.",
+)
 
 
 @pytest.fixture
@@ -49,9 +51,8 @@ async def test_single_output_command(bash_service):
     collector = EventCollector()
     await bash_service.subscribe_to_events(collector)
 
-    # Simple command that should produce single output.
-    shell_command = python_command("print('Hello World')")
-    request = ExecuteBashRequest(command=shell_command, cwd="/tmp")
+    # Simple echo command - should produce single output
+    request = ExecuteBashRequest(command='echo "Hello World"', cwd="/tmp")
     command, task = await bash_service.start_bash_command(request)
 
     # Wait for command to complete
@@ -64,7 +65,7 @@ async def test_single_output_command(bash_service):
     # Verify command event
     cmd_event = collector.commands[0]
     assert cmd_event.id == command.id
-    assert cmd_event.command == shell_command
+    assert cmd_event.command == 'echo "Hello World"'
     assert cmd_event.cwd == "/tmp"
 
     # Verify output event
@@ -72,7 +73,7 @@ async def test_single_output_command(bash_service):
     assert output_event.command_id == command.id
     assert output_event.order == 0
     assert output_event.exit_code == 0
-    assert _normalize_output(output_event.stdout) == "Hello World\n"
+    assert output_event.stdout == "Hello World\n"
     assert output_event.stderr is None
 
     # Verify events can be retrieved from storage
@@ -198,9 +199,8 @@ async def test_command_timeout(bash_service):
     collector = EventCollector()
     await bash_service.subscribe_to_events(collector)
 
-    # Command that should timeout.
-    shell_command = python_command("import time; time.sleep(10)")
-    request = ExecuteBashRequest(command=shell_command, cwd="/tmp", timeout=1)
+    # Command that should timeout (sleep longer than timeout)
+    request = ExecuteBashRequest(command="sleep 10", cwd="/tmp", timeout=1)
     start_time = time.time()
     _, task = await bash_service.start_bash_command(request)
 
@@ -218,7 +218,7 @@ async def test_command_timeout(bash_service):
 
     # Verify the command was started correctly
     cmd_event = collector.commands[0]
-    assert cmd_event.command == shell_command
+    assert cmd_event.command == "sleep 10"
 
     # Verify the timeout resulted in exit code -1
     final_output = collector.outputs[-1]  # Last output should have the exit code
@@ -233,13 +233,10 @@ async def test_large_output_chunking(bash_service):
     collector = EventCollector()
     await bash_service.subscribe_to_events(collector)
 
-    # Generate large output using a simple command that should work everywhere.
+    # Generate large output using a simple command that should work everywhere
     # Create a string larger than MAX_CONTENT_CHAR_LENGTH (1MB)
     large_size = 1024 * 1024 + 1000  # Slightly over 1MB
-    request = ExecuteBashRequest(
-        command=python_command(f"import sys; sys.stdout.write('x' * {large_size})"),
-        cwd="/tmp",
-    )
+    request = ExecuteBashRequest(command=f'yes "x" | head -c {large_size}', cwd="/tmp")
     command, task = await bash_service.start_bash_command(request)
 
     # Wait for command to complete
@@ -516,12 +513,9 @@ async def test_terminal_does_not_expose_session_api_key(bash_service, monkeypatc
     collector = EventCollector()
     await bash_service.subscribe_to_events(collector)
 
-    # An agent might try to read the env var from the subprocess environment.
+    # An agent might try to read the env var via echo or printenv
     request = ExecuteBashRequest(
-        command=python_command(
-            "import os; print('SESSION_API_KEY=' + "
-            "os.environ.get('SESSION_API_KEY', ''))"
-        ),
+        command='echo "SESSION_API_KEY=$SESSION_API_KEY"',
         cwd="/tmp",
     )
     command, task = await bash_service.start_bash_command(request)
@@ -539,9 +533,10 @@ async def test_terminal_does_not_expose_session_api_key(bash_service, monkeypatc
         f"SESSION_API_KEY was exposed to terminal command! Output: {combined_stdout}"
     )
     # The env var should be empty/unset
-    assert "SESSION_API_KEY=\n" in _normalize_output(combined_stdout), (
-        f"SESSION_API_KEY should be unset in subprocess. Output: {combined_stdout}"
-    )
+    assert (
+        "SESSION_API_KEY=$" in combined_stdout
+        or "SESSION_API_KEY=\n" in combined_stdout
+    ), f"SESSION_API_KEY should be unset in subprocess. Output: {combined_stdout}"
 
 
 @pytest.mark.asyncio
@@ -562,11 +557,7 @@ async def test_terminal_does_not_expose_session_api_key_via_env_command(
     await bash_service.subscribe_to_events(collector)
 
     request = ExecuteBashRequest(
-        command=python_command(
-            "import os; "
-            "[print(f'{k}={os.environ[k]}') "
-            "for k in ('SESSION_API_KEY', 'SAFE_TEST_VAR') if k in os.environ]"
-        ),
+        command="env | grep -E '(SESSION_API_KEY|SAFE_TEST_VAR)' || true",
         cwd="/tmp",
     )
     command, task = await bash_service.start_bash_command(request)

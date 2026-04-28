@@ -11,7 +11,7 @@ from binaryornot.check import is_binary
 
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import is_absolute_path_source, to_posix_path
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.definition import (
     CommandLiteral,
@@ -573,7 +573,7 @@ class FileEditor:
         2. Path and command are compatible
         """
         # Check if its an absolute path
-        if not path.is_absolute() and not str(path).startswith(("/", "\\")):
+        if not is_absolute_path_source(path):
             suggestion_message = (
                 "The path should be an absolute path, starting with `/`."
             )
