@@ -46,6 +46,16 @@ def _remove_command_prefix(command_output: str, command: str) -> str:
     return command_output.lstrip().removeprefix(command.lstrip()).lstrip()
 
 
+def _remove_powershell_echo(command_output: str, command: str) -> str:
+    command_output = command_output.lstrip()
+    command = command.lstrip()
+    first_line = command_output.splitlines()[0] if command_output else ""
+    if command and command in first_line:
+        _, separator, rest = command_output.partition("\n")
+        command_output = rest if separator else ""
+    return re.sub(r"(?:\r?\n)?PS [^\r\n]*>\s*$", "", command_output).lstrip()
+
+
 class TerminalSession(TerminalSessionBase):
     """Unified bash session that works with any TerminalInterface backend.
 
@@ -161,7 +171,10 @@ class TerminalSession(TerminalSessionBase):
         else:
             command_output = raw_command_output
         self.prev_output = raw_command_output  # update current command output anyway
-        command_output = _remove_command_prefix(command_output, command)
+        if self.terminal.is_powershell():
+            command_output = _remove_powershell_echo(command_output, command)
+        else:
+            command_output = _remove_command_prefix(command_output, command)
 
         # Filter terminal query sequences that would cause the terminal to
         # respond when displayed, producing visible garbage.
@@ -494,6 +507,7 @@ class TerminalSession(TerminalSessionBase):
             return obs
 
         # Send actual command/inputs to the terminal
+        sent_command = command != ""
         if command != "":
             is_special_key = self._is_special_key(command)
             if is_input:
@@ -529,6 +543,9 @@ class TerminalSession(TerminalSessionBase):
             )
             ps1_matches = CmdOutputMetadata.matches_ps1_metadata(cur_terminal_output)
             current_ps1_count = len(ps1_matches)
+            output_changed_since_command = (
+                cur_terminal_output != initial_terminal_output
+            )
 
             if cur_terminal_output != last_terminal_output:
                 last_terminal_output = cur_terminal_output
@@ -540,7 +557,7 @@ class TerminalSession(TerminalSessionBase):
             # Condition 2: The prompt count hasn't increased (potentially because the
             # initial one scrolled off), BUT the *current* visible terminal ends with a
             # prompt, indicating completion.
-            if (
+            if (not sent_command or output_changed_since_command) and (
                 current_ps1_count > initial_ps1_count
                 or cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
             ):

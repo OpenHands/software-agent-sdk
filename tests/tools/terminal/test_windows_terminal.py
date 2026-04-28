@@ -105,6 +105,23 @@ def test_working_directory_updates_and_persists(windows_session, temp_dir: str) 
     assert windows_session.cwd.replace("\\", "/").lower() == _normalize_path(subdir)
 
 
+def test_failed_powershell_command_reports_failure(windows_session) -> None:
+    obs = windows_session.execute(TerminalAction(command="Get-Item __missing_path__"))
+
+    assert obs.exit_code == 1
+
+
+def test_native_exit_code_does_not_leak_to_next_command(windows_session) -> None:
+    obs = windows_session.execute(
+        TerminalAction(command='python -c "import sys; sys.exit(7)"')
+    )
+    assert obs.exit_code == 7
+
+    obs = windows_session.execute(TerminalAction(command='Write-Output "ok"'))
+    assert obs.exit_code == 0
+    assert "ok" in obs.text
+
+
 def test_terminal_executor_exports_conversation_secrets_in_powershell(
     conversation: LocalConversation,
     terminal_executor: TerminalExecutor,

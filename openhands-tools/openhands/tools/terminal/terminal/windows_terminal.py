@@ -1,7 +1,10 @@
 """PowerShell-backed terminal backend for Windows."""
 
 import codecs
+import json
+import os
 import platform
+import shutil
 import signal
 import subprocess
 import threading
@@ -97,7 +100,7 @@ class WindowsTerminal(TerminalInterface):
         env.setdefault("PYTHONUTF8", "1")
 
         self.process = subprocess.Popen(
-            [self.shell_path, "-NoLogo", "-NoProfile", "-Command", "-"],
+            [self.shell_path, "-NoLogo", "-NoProfile"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -127,6 +130,41 @@ class WindowsTerminal(TerminalInterface):
                     break
         time.sleep(_SETUP_DELAY_SECONDS)
         self._get_buffered_output(clear=True)
+
+    def _preserve_latest_metadata_block(self) -> bool:
+        ps1_begin = CMD_OUTPUT_PS1_BEGIN.strip()
+        ps1_end = CMD_OUTPUT_PS1_END.strip()
+        with self.output_lock:
+            output = "".join(self.output_buffer)
+            start_index = output.rfind(ps1_begin)
+            end_index = output.rfind(ps1_end)
+            if start_index == -1 or end_index == -1 or end_index < start_index:
+                self.output_buffer.clear()
+                return False
+
+            end_index += len(ps1_end)
+            self.output_buffer.clear()
+            self.output_buffer.append(output[start_index:end_index] + "\n")
+            return True
+
+    def _seed_metadata_prompt(self) -> None:
+        env = os.environ
+        metadata = {
+            "pid": self.process.pid if self.process is not None else -1,
+            "exit_code": 0,
+            "username": env.get("USERNAME"),
+            "hostname": env.get("COMPUTERNAME"),
+            "working_dir": os.path.realpath(self.work_dir).replace("\\", "/"),
+            "py_interpreter_path": shutil.which("python"),
+        }
+        prompt = (
+            f"{CMD_OUTPUT_PS1_BEGIN.strip()}\n"
+            f"{json.dumps(metadata, separators=(',', ':'))}\n"
+            f"{CMD_OUTPUT_PS1_END.strip()}\n"
+        )
+        with self.output_lock:
+            self.output_buffer.clear()
+            self.output_buffer.append(prompt)
 
     def close(self) -> None:
         """Stop the PowerShell process and background reader."""
@@ -182,9 +220,10 @@ class WindowsTerminal(TerminalInterface):
             self._write_to_stdin(ctrl_char)
             return
 
-        if text.strip():
+        stripped_text = text.rstrip()
+        if stripped_text:
             self._command_running_event.set()
-            command = f"{text.rstrip()}; {self._metadata_suffix()}"
+            command = f"{stripped_text}; {self._metadata_suffix()}"
         else:
             command = text
 
@@ -196,11 +235,13 @@ class WindowsTerminal(TerminalInterface):
         ps1_begin = self._escape_single_quoted(CMD_OUTPUT_PS1_BEGIN.strip())
         ps1_end = self._escape_single_quoted(CMD_OUTPUT_PS1_END.strip())
         commands = [
+            "$oh1 = $?",
+            "$oh2 = $LASTEXITCODE",
             f"Write-Host '{ps1_begin}'",
             (
-                "$exit_code = if ($?) { "
-                "if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 } "
-                "} else { 1 }"
+                "$exit_code = if ($null -ne $oh2) { "
+                "$oh2 "
+                "} elseif ($oh1) { 0 } else { 1 }"
             ),
             (
                 "$py_path = (Get-Command python -ErrorAction SilentlyContinue | "
@@ -218,6 +259,7 @@ class WindowsTerminal(TerminalInterface):
             ),
             "Write-Host (ConvertTo-Json $meta -Compress)",
             f"Write-Host '{ps1_end}'",
+            "$global:LASTEXITCODE = $null",
         ]
         return "; ".join(commands)
 
@@ -279,9 +321,10 @@ class WindowsTerminal(TerminalInterface):
         """Clear the visible screen and reset buffered output."""
         if self.process is None or self.process.poll() is not None:
             return
-        self._write_to_stdin("Clear-Host\n")
+
+        if not self._preserve_latest_metadata_block():
+            self._seed_metadata_prompt()
         time.sleep(_SCREEN_CLEAR_DELAY_SECONDS)
-        self._get_buffered_output(clear=True)
         self._command_running_event.clear()
 
     def interrupt(self) -> bool:
