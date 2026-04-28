@@ -578,7 +578,7 @@ class ConversationSettings(BaseModel):
         return request_type(**self._start_request_kwargs(**kwargs))
 
 
-AgentKind = Literal["llm", "acp"]
+AgentKind = Literal["openhands", "acp"]
 
 ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
 """Known ACP backend servers the GUI can pick from.
@@ -606,11 +606,11 @@ class LLMAgentSettings(BaseModel):
     """
 
     schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
-    agent_kind: Literal["llm"] = Field(
-        default="llm",
+    agent_kind: Literal["openhands"] = Field(
+        default="openhands",
         description=(
-            "Discriminator for the ``AgentSettings`` union. ``'llm'`` selects a "
-            "standard LLM-backed agent."
+            "Discriminator for the ``AgentSettings`` union. ``'openhands'`` selects "
+            "the standard built-in OpenHands agent."
         ),
     )
     agent: str = Field(
@@ -620,7 +620,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Agent",
                 prominence=SettingProminence.MAJOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -631,7 +631,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="llm",
                 label="LLM",
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -642,7 +642,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Tools",
                 prominence=SettingProminence.MAJOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -653,7 +653,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable sub-agents",
                 prominence=SettingProminence.MAJOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -664,7 +664,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="MCP configuration",
                 prominence=SettingProminence.MINOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -679,7 +679,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="condenser",
                 label="Condenser",
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -690,7 +690,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",
                 label="Verification",
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -998,21 +998,21 @@ class ACPAgentSettings(BaseModel):
 
 
 def _agent_settings_discriminator(value: Any) -> str:
-    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'llm'``.
+    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'openhands'``.
 
     Existing persisted payloads predate ``agent_kind`` and carry only
-    LLM-agent fields. Treating a missing discriminator as ``'llm'`` lets
+    LLM-agent fields. Treating a missing discriminator as ``'openhands'`` lets
     those payloads validate without a migration.
     """
     if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "llm")
+        return getattr(value, "agent_kind", "openhands")
     if isinstance(value, dict):
-        return value.get("agent_kind", "llm")
-    return "llm"
+        return value.get("agent_kind", "openhands")
+    return "openhands"
 
 
 AgentSettingsConfig = Annotated[
-    Annotated[LLMAgentSettings, Tag("llm")] | Annotated[ACPAgentSettings, Tag("acp")],
+    Annotated[LLMAgentSettings, Tag("openhands")] | Annotated[ACPAgentSettings, Tag("acp")],
     Discriminator(_agent_settings_discriminator),
 ]
 """Discriminated union over the agent-settings variants.
@@ -1159,7 +1159,7 @@ def export_agent_settings_schema() -> SettingsSchema:
                     if field.key not in seen_keys:
                         existing.fields.append(field)
 
-    _merge(llm_schema, default_variant="llm")
+    _merge(llm_schema, default_variant="openhands")
     _merge(acp_schema, default_variant="acp")
 
     return SettingsSchema(model_name="AgentSettings", sections=merged_sections)

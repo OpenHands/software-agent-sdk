@@ -240,8 +240,8 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
 
     by_keyvariant = {(s.key, s.variant): s for s in schema.sections}
 
-    # Shared general section contains LLM-only top-level fields with
-    # field-level variant="llm" tags (so they hide on the ACP page).
+    # Shared general section contains OpenHands-only top-level fields with
+    # field-level variant="openhands" tags (so they hide on the ACP page).
     general = by_keyvariant.get(("general", None))
     assert general is not None
     general_keys = {f.key for f in general.fields}
@@ -250,14 +250,14 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys
     for f in general.fields:
-        assert f.variant == "llm", (
-            f"expected field {f.key} variant=llm, got {f.variant}"
+        assert f.variant == "openhands", (
+            f"expected field {f.key} variant=openhands, got {f.variant}"
         )
 
-    # LLM-variant sections.
-    assert ("llm", "llm") in by_keyvariant
-    assert ("condenser", "llm") in by_keyvariant
-    assert ("verification", "llm") in by_keyvariant
+    # OpenHands-variant sections.
+    assert ("llm", "openhands") in by_keyvariant
+    assert ("condenser", "openhands") in by_keyvariant
+    assert ("verification", "openhands") in by_keyvariant
 
     # ACP-variant sections.
     acp_section = by_keyvariant.get(("acp", "acp"))
@@ -286,13 +286,13 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_default_agent_settings_returns_llm_variant() -> None:
+def test_default_agent_settings_returns_openhands_variant() -> None:
     s = default_agent_settings()
     assert isinstance(s, LLMAgentSettings)
-    assert s.agent_kind == "llm"
+    assert s.agent_kind == "openhands"
 
 
-def test_validate_agent_settings_defaults_to_llm_when_discriminator_missing() -> None:
+def test_validate_agent_settings_defaults_to_openhands_when_discriminator_missing() -> None:
     """Existing persisted payloads predate ``agent_kind`` — they must round-trip."""
     v = validate_agent_settings({"llm": {"model": "test-model"}})
     assert isinstance(v, LLMAgentSettings)
@@ -300,8 +300,8 @@ def test_validate_agent_settings_defaults_to_llm_when_discriminator_missing() ->
 
 
 def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
-    llm = validate_agent_settings({"agent_kind": "llm", "llm": {"model": "m"}})
-    assert isinstance(llm, LLMAgentSettings)
+    openhands = validate_agent_settings({"agent_kind": "openhands", "llm": {"model": "m"}})
+    assert isinstance(openhands, LLMAgentSettings)
 
     acp = validate_agent_settings(
         {
@@ -319,7 +319,7 @@ def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
 
     assert isinstance(settings, LLMAgentSettings)
     assert settings.schema_version == 1
-    assert settings.agent_kind == "llm"
+    assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
 
@@ -542,7 +542,7 @@ def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
 
     # It remains a LLMAgentSettings subclass so existing code paths work.
     assert isinstance(settings, LLMAgentSettings)
-    assert settings.agent_kind == "llm"
+    assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
 
