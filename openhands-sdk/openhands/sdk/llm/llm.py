@@ -94,6 +94,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_features
@@ -1425,6 +1426,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
+
+        messages = maybe_resize_messages_for_provider(
+            messages,
+            provider=self._infer_litellm_provider(),
+            vision_enabled=vision_enabled,
+        )
 
         formatted_messages = [
             message.to_chat_dict(
