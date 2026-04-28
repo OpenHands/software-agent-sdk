@@ -1,5 +1,6 @@
 """Tests for GlobExecutor implementation."""
 
+import os
 import tempfile
 import threading
 from pathlib import Path
@@ -230,6 +231,32 @@ def test_glob_executor_absolute_paths():
         file_path = observation.files[0]
         assert Path(file_path).is_absolute()
         assert Path(file_path).exists()
+
+
+def test_glob_executor_preserves_symlink_paths():
+    """Test that the Python glob fallback preserves symlink paths."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        real_dir = Path(temp_dir) / "real"
+        real_dir.mkdir()
+        target = real_dir / "target.data"
+        target.write_text("target")
+
+        link = Path(temp_dir) / "link.txt"
+        try:
+            link.symlink_to(target)
+        except (NotImplementedError, OSError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        executor = GlobExecutor(working_dir=temp_dir)
+        executor._ripgrep_available = False
+        action = GlobAction(pattern="*.txt")
+        observation = executor(action)
+
+        assert observation.is_error is False
+        assert len(observation.files) == 1
+        assert Path(observation.files[0]).is_absolute()
+        assert Path(observation.files[0]).name == link.name
+        assert os.path.islink(observation.files[0])
 
 
 def test_glob_executor_empty_directory():

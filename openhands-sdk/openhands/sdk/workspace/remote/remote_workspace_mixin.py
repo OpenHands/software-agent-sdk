@@ -1,7 +1,7 @@
 import logging
 import time
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import httpx
@@ -17,6 +17,18 @@ _logger = logging.getLogger(__name__)
 
 def _remote_path(path: str | Path) -> str:
     return to_posix_path(path)
+
+
+def _join_remote_path(base: str | Path, path: str | Path) -> str:
+    path_str = _remote_path(path)
+    if path_str.startswith("/") or PureWindowsPath(path_str).is_absolute():
+        return path_str
+
+    base_str = _remote_path(base)
+    prefix = "/" if base_str.startswith("/") else ""
+    base_parts = [part for part in base_str.split("/") if part]
+    path_parts = [part for part in path_str.split("/") if part]
+    return prefix + "/".join(base_parts + path_parts)
 
 
 class RemoteWorkspaceMixin(BaseModel):
@@ -318,10 +330,11 @@ class RemoteWorkspaceMixin(BaseModel):
         Raises:
             Exception: If path is not a git repository or getting changes failed
         """
-        # Make HTTP call
+        remote_path = _join_remote_path(self.working_dir, path)
         response = yield {
             "method": "GET",
-            "url": Path("/api/git/changes") / self.working_dir / path,
+            "url": "/api/git/changes",
+            "params": {"path": remote_path},
             "headers": self._headers,
             "timeout": 60.0,
         }
@@ -345,10 +358,11 @@ class RemoteWorkspaceMixin(BaseModel):
         Raises:
             Exception: If path is not a git repository or getting diff failed
         """
-        # Make HTTP call
+        remote_path = _join_remote_path(self.working_dir, path)
         response = yield {
             "method": "GET",
-            "url": Path("/api/git/diff") / self.working_dir / path,
+            "url": "/api/git/diff",
+            "params": {"path": remote_path},
             "headers": self._headers,
             "timeout": 60.0,
         }

@@ -283,8 +283,17 @@ class FileEditor:
                     "a directory.",
                 )
 
-            hidden_count = self._count_hidden_children(path)
-            formatted_paths = self._list_directory_for_view(path)
+            try:
+                hidden_count = self._count_hidden_children(path)
+                formatted_paths = self._list_directory_for_view(path)
+            except OSError as e:
+                return FileEditorObservation.from_text(
+                    text=str(e),
+                    command="view",
+                    is_error=True,
+                    path=str(path),
+                    prev_exist=True,
+                )
 
             msg = [
                 f"Here's the files and directories up to 2 levels deep in {path}, "
@@ -430,11 +439,14 @@ class FileEditor:
                 continue
             visible_entries.append(item)
             if item.is_dir():
-                visible_entries.extend(
-                    child
-                    for child in sorted(item.iterdir(), key=lambda p: str(p))
-                    if not child.name.startswith(".")
-                )
+                try:
+                    visible_entries.extend(
+                        child
+                        for child in sorted(item.iterdir(), key=lambda p: str(p))
+                        if not child.name.startswith(".")
+                    )
+                except OSError:
+                    pass
         return [self._format_directory_entry(path, entry) for entry in visible_entries]
 
     @with_encoding

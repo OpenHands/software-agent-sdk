@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shlex
 import subprocess
@@ -24,4 +25,6 @@ def touch_command(path: str | Path) -> str:
 
 
 def sleep_command(seconds: float) -> str:
-    return python_command(f"import time; time.sleep({seconds})")
+    if not math.isfinite(seconds):
+        raise ValueError("seconds must be finite")
+    return python_command(f"import time; time.sleep({seconds!r})")

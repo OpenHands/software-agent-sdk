@@ -38,6 +38,8 @@ def is_local_path_source(source: str) -> bool:
     value = source.strip()
     if not value:
         return False
+    if value in {".", ".."}:
+        return True
     if value.startswith(("file://", "~", "/", "./", "../")):
         return True
     if Path(value).expanduser().is_absolute():
