@@ -140,60 +140,49 @@ def test_validation_error_shows_keys_not_values():
     assert large_value not in error_msg
 
 
-def test_unparseable_json_error_message():
-    """Error message should indicate unparseable JSON when parsing fails."""
-    llm = LLM(
-        usage_id="test-llm",
-        model="test-model",
-        api_key=SecretStr("test-key"),
-        base_url="http://test",
-    )
-    agent = Agent(llm=llm, tools=[Tool(name="ValidationTestTool")])
+def test_unparseable_json_rejected_at_llm_layer():
+    """Malformed JSON in tool call args is caught by the LLM layer.
 
-    # Invalid JSON that cannot be parsed
+    Since #2887, ``_validate_tool_call_args`` inside ``_one_attempt()``
+    rejects malformed JSON before it reaches the agent.  The error is
+    retried automatically and, after retries are exhausted, raises
+    ``LLMMalformedToolArgsError``.
+    """
+    from openhands.sdk.llm.exceptions import LLMMalformedToolArgsError
+    from openhands.sdk.llm.llm import _validate_tool_call_args
+
     invalid_json = "{invalid json syntax"
 
-    def mock_llm_response(messages, **kwargs):
-        return ModelResponse(
-            id="mock-1",
-            choices=[
-                Choices(
-                    index=0,
-                    message=LiteLLMMessage(
-                        role="assistant",
-                        content="I'll use the tool.",
-                        tool_calls=[
-                            ChatCompletionMessageToolCall(
-                                id="call_1",
-                                type="function",
-                                function=Function(
-                                    name="validation_test_tool", arguments=invalid_json
-                                ),
-                            )
-                        ],
-                    ),
-                    finish_reason="tool_calls",
-                )
-            ],
-            created=0,
-            model="test-model",
-            object="chat.completion",
-        )
+    resp = ModelResponse(
+        id="mock-1",
+        choices=[
+            Choices(
+                index=0,
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="I'll use the tool.",
+                    tool_calls=[
+                        ChatCompletionMessageToolCall(
+                            id="call_1",
+                            type="function",
+                            function=Function(
+                                name="validation_test_tool",
+                                arguments=invalid_json,
+                            ),
+                        )
+                    ],
+                ),
+                finish_reason="tool_calls",
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
 
-    collected_events = []
-    conversation = Conversation(agent=agent, callbacks=[collected_events.append])
-
-    with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
-    ):
-        conversation.send_message(
-            Message(role="user", content=[TextContent(text="Do something")])
-        )
-        agent.step(conversation, on_event=collected_events.append)
-
-    error_events = [e for e in collected_events if isinstance(e, AgentErrorEvent)]
-    assert len(error_events) == 1
-
-    error_msg = error_events[0].error
-    assert "validation_test_tool" in error_msg
-    assert "unparseable JSON" in error_msg
+    try:
+        _validate_tool_call_args(resp)
+        raise AssertionError("Expected LLMMalformedToolArgsError")
+    except LLMMalformedToolArgsError as e:
+        assert "validation_test_tool" in str(e)
+        assert "unparseable JSON" in str(e)
