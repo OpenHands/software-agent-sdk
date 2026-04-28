@@ -234,7 +234,7 @@ def test_glob_executor_absolute_paths():
 
 
 def test_glob_executor_preserves_symlink_paths():
-    """Test that glob results preserve symlink paths instead of resolving them."""
+    """Test that the Python glob fallback preserves symlink paths."""
     with tempfile.TemporaryDirectory() as temp_dir:
         real_dir = Path(temp_dir) / "real"
         real_dir.mkdir()
@@ -248,6 +248,7 @@ def test_glob_executor_preserves_symlink_paths():
             pytest.skip(f"symlink creation unavailable: {exc}")
 
         executor = GlobExecutor(working_dir=temp_dir)
+        executor._ripgrep_available = False
         action = GlobAction(pattern="*.txt")
         observation = executor(action)
 

@@ -201,9 +201,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         regex = re.compile(action.pattern, re.IGNORECASE)
         matches = []
         for root, dirs, files in os.walk(search_path):
-            dirs[:] = [name for name in dirs if not name.startswith(".")]
+            if not action.include:
+                dirs[:] = [name for name in dirs if not name.startswith(".")]
             for filename in files:
-                if filename.startswith("."):
+                if not action.include and filename.startswith("."):
                     continue
                 if action.include and not fnmatch.fnmatch(filename, action.include):
                     continue
