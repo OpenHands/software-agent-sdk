@@ -37,6 +37,7 @@ DASHBOARD_BASE = "https://openhands-eval-monitor.vercel.app"
 SDK_REPO = "OpenHands/software-agent-sdk"
 BENCHMARKS = [
     "swebench",
+    "swebenchpro",
     "gaia",
     "swtbench",
     "commit0",

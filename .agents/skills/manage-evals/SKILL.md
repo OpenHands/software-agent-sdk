@@ -64,6 +64,7 @@ done
 | Benchmark | Description |
 |-----------|-------------|
 | `swebench` | SWE-bench (default) — software engineering tasks |
+| `swebenchpro` | SWE-Bench Pro — harder software engineering tasks |
 | `gaia` | GAIA — general AI assistant tasks |
 | `swtbench` | SWT-bench — software testing tasks |
 | `commit0` | Commit0 — commit generation tasks |
@@ -129,7 +130,7 @@ Each line is a run path. Match by benchmark and model to find the run.
 ### Step 2: Identify the Run Path Components
 
 A run path has three components:
-- **benchmark**: `swebench`, `gaia`, `swtbench`, `commit0`, `swebenchmultimodal`, `terminalbench`
+- **benchmark**: `swebench`, `swebenchpro`, `gaia`, `swtbench`, `commit0`, `swebenchmultimodal`, `terminalbench`
 - **model_slug**: Derived from model name with `/:@.` replaced by `-` (e.g., `litellm_proxy-claude-sonnet-4-5-20250929`)
 - **run_id**: The GitHub Actions workflow run ID from the `OpenHands/evaluation` repo
 
