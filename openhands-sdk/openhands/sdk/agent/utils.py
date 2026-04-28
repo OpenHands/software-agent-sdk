@@ -1,8 +1,11 @@
 import contextlib
 import json
 import logging
+import os
 import re
 import shlex
+import subprocess
+import textwrap
 import types
 from collections.abc import Collection, Sequence
 from typing import (
@@ -243,8 +246,44 @@ def _has_file_editor_hint(arguments: dict[str, Any]) -> bool:
     return bool(arguments and any(k in arguments for k in file_editor_hints))
 
 
+_GREP_FALLBACK_SCRIPT = textwrap.dedent(
+    """
+    import fnmatch
+    import pathlib
+    import sys
+
+    pattern = sys.argv[1]
+    root = pathlib.Path(sys.argv[2])
+    include = sys.argv[3] if len(sys.argv) > 3 else None
+
+    if root.is_file():
+        candidates = [root]
+    else:
+        candidates = sorted(path for path in root.rglob("*") if path.is_file())
+
+    for path in candidates:
+        if include and not fnmatch.fnmatch(path.name, include):
+            continue
+        try:
+            with path.open(encoding="utf-8", errors="ignore") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if pattern in line:
+                        sys.stdout.write(f"{path}:{line_number}:{line}")
+        except OSError:
+            continue
+    """
+).strip()
+
+
+def _join_shell_command(parts: list[str]) -> str:
+    """Join a command list using the current platform's shell quoting rules."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
+
+
 def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
-    """Return a safe terminal command for structured grep fallbacks.
+    """Return a portable terminal command for structured grep fallbacks.
 
     Returning ``None`` keeps malformed grep payloads on the normal "tool not
     found" path instead of broadening terminal execution.
@@ -253,16 +292,16 @@ def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
     if not isinstance(pattern, str) or not pattern.strip():
         return None
 
-    command_parts = ["grep", "-RIn"]
-    include = arguments.get("include")
-    if isinstance(include, str) and include.strip():
-        command_parts.extend(["--include", include])
-
-    command_parts.extend(["--", pattern])
+    command_parts = ["python", "-c", _GREP_FALLBACK_SCRIPT, pattern]
 
     path = arguments.get("path")
     command_parts.append(path if isinstance(path, str) and path.strip() else ".")
-    return shlex.join(command_parts)
+
+    include = arguments.get("include")
+    if isinstance(include, str) and include.strip():
+        command_parts.append(include)
+
+    return _join_shell_command(command_parts)
 
 
 def _maybe_rewrite_as_terminal_command(
