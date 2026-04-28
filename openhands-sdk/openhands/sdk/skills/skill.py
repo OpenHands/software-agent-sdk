@@ -168,6 +168,10 @@ class Skill(BaseModel):
     MAX_DESCRIPTION_LENGTH: ClassVar[int] = 1024
 
     # AgentSkills standard fields (https://agentskills.io/specification)
+    version: str = Field(
+        default="1.0.0",
+        description="Skill version (AgentSkills standard field).",
+    )
     description: str | None = Field(
         default=None,
         description=(
