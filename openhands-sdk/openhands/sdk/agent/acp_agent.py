@@ -3,7 +3,9 @@
 The Agent Client Protocol (ACP) lets OpenHands power conversations using
 ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
 LLM calls.  The ACP server manages its own LLM, tools, and execution;
-the ACPAgent simply relays user messages and collects the response.
+the ACPAgent relays user messages and collects the response. OpenHands
+can still append prompt-only context, such as a skill catalog, to the
+user message before it is sent to the ACP server.
 
 Unlike the built-in Agent, one ACP ``step()`` maps to one complete remote
 assistant turn. ACPAgent therefore emits a terminal ``FinishAction`` at the
@@ -21,6 +23,7 @@ import threading
 import time
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from acp.client.connection import ClientSideConnection
@@ -144,7 +147,7 @@ _DEFAULT_BYPASS_MODE = "full-access"
 
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
-# required env var is set.
+# required credential source is present.
 # Note: claude-login is intentionally NOT included because Claude Code ACP
 # uses bypassPermissions mode instead of API key authentication.
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
@@ -152,18 +155,28 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "openai-api-key": "OPENAI_API_KEY",
     "gemini-api-key": "GEMINI_API_KEY",
 }
+_CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 
 
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
 ) -> str | None:
-    """Pick an auth method whose required env var is present.
+    """Pick an auth method whose required credentials are present.
 
     Returns the ``id`` of the first matching method, or ``None`` if no
-    env-var-based method is available (the server may not require auth).
+    supported credential source is available (the server may not require auth).
+
+    ChatGPT subscription login (device-code flow stored in
+    ``~/.codex/auth.json``) is checked first so it takes precedence over
+    explicit API keys, which serve as the fallback.
     """
     method_ids = {m.id for m in auth_methods}
+    # Prefer ChatGPT subscription login when the auth file is present.
+    if "chatgpt" in method_ids:
+        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
+            return "chatgpt"
+    # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
             return method_id
@@ -810,7 +823,10 @@ class ACPAgent(AgentBase):
             )
         )
 
-        # Validate no unsupported features
+        # Validate unsupported execution features. agent_context is allowed
+        # because it contributes prompt-only extensions to user messages; ACP
+        # server tools, MCP configuration, and context-window management remain
+        # owned by the server.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "
@@ -826,11 +842,8 @@ class ACPAgent(AgentBase):
                 "ACPAgent does not support condenser; "
                 "the ACP server manages its own context"
             )
-        if self.agent_context is not None:
-            raise NotImplementedError(
-                "ACPAgent does not support agent_context; "
-                "configure the ACP server directly"
-            )
+        if self.agent_context:
+            self.agent_context.validate_acp_compatibility()
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
@@ -1100,6 +1113,24 @@ class ACPAgent(AgentBase):
                     exc_info=True,
                 )
 
+    def _build_acp_prompt(self, event: MessageEvent) -> str | None:
+        """Build the prompt text for one ACP user turn."""
+        message = event.to_llm_message()
+        # Preserve all text blocks produced by the conversation layer, including
+        # any extended_content it already attached to the user turn.
+        text_parts = [
+            content.text
+            for content in message.content
+            if isinstance(content, TextContent) and content.text.strip()
+        ]
+        if self.agent_context:
+            acp_prompt_context = self.agent_context.to_acp_prompt_context()
+            if acp_prompt_context:
+                text_parts.append(acp_prompt_context)
+        if not text_parts:
+            return None
+        return "\n\n".join(text_parts)
+
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
@@ -1110,15 +1141,13 @@ class ACPAgent(AgentBase):
         """Send the latest user message to the ACP server and emit the response."""
         state = conversation.state
 
-        # Find the latest user message
+        # Find the latest user message. Conversation implementations already
+        # attach per-turn AgentContext extensions to MessageEvent.extended_content;
+        # MessageEvent.to_llm_message() merges those extensions with the user text.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                # Extract text from the message
-                for content in event.llm_message.content:
-                    if isinstance(content, TextContent) and content.text.strip():
-                        user_message = content.text
-                        break
+                user_message = self._build_acp_prompt(event)
                 if user_message:
                     break
 

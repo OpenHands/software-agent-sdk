@@ -78,6 +78,7 @@ print("All done!")
 ```
 
 For installation instructions and detailed setup, see the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started).
+For local development from this repository, run `make build` to install the workspace dependencies and pre-commit hooks.
 
 ## Documentation
 
@@ -89,7 +90,7 @@ The documentation includes:
 - [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started) - Installation and setup
 - [Architecture & Core Concepts](https://docs.openhands.dev/sdk/arch/overview) - Agents, tools, workspaces, and more
 - [Guides](https://docs.openhands.dev/sdk/guides/hello-world) - Hello World, custom tools, MCP, skills, and more
-- [API Reference](https://docs.openhands.dev/sdk/guides/agent-server/api-reference/server-details/alive) - Agent Server REST API documentation
+- [Agent Server API Reference](https://docs.openhands.dev/sdk/guides/agent-server/api-reference/server-details/alive) - REST API reference for the remote agent server
 
 ## Examples
 
