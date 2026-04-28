@@ -533,9 +533,9 @@ class ConversationSettings(BaseModel):
             payload["agent"] = self.agent_settings.create_agent()
 
         # --- secrets (from agent's context) ---------------------------------
-        # ACPAgent doesn't carry an ``agent_context`` at all; its context is
-        # owned by the subprocess. ``getattr(..., None)`` keeps this no-op
-        # for the ACP variant.
+        # ACPAgent may carry prompt-only context, but its execution context is
+        # owned by the subprocess. ``getattr(..., None)`` keeps this no-op for
+        # agents without AgentContext.
         agent = payload.get("agent")
         if "secrets" not in payload and agent is not None:
             ctx = getattr(agent, "agent_context", None)
@@ -954,6 +954,25 @@ class ACPAgentSettings(BaseModel):
     def export_schema(cls) -> SettingsSchema:
         """Export a structured schema describing configurable ACP settings."""
         return export_settings_schema(cls)
+
+    @property
+    def api_key_env_var(self) -> str | None:
+        """Env var name the ACP subprocess expects for its API key.
+
+        Returns ``None`` for ``'custom'`` servers — users manage credentials
+        entirely via :attr:`acp_env` in that case.
+
+        Mapping:
+        - ``claude-code``  → ``ANTHROPIC_API_KEY``
+        - ``codex``        → ``OPENAI_API_KEY``
+        - ``gemini-cli``   → ``GEMINI_API_KEY``
+        - ``custom``       → ``None``
+        """
+        return {
+            "claude-code": "ANTHROPIC_API_KEY",
+            "codex": "OPENAI_API_KEY",
+            "gemini-cli": "GEMINI_API_KEY",
+        }.get(self.acp_server)
 
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.

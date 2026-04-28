@@ -41,7 +41,6 @@ from openhands.sdk.skills.fetch import SkillFetchError, fetch_skill_with_resolut
 # Installed skills management
 from openhands.sdk.skills.installed import (
     InstalledSkillInfo,
-    InstalledSkillsMetadata,
     disable_skill,
     enable_skill,
     get_installed_skill,
@@ -99,7 +98,6 @@ __all__ = [
     "fetch_skill_with_resolution",
     # Installed skills management
     "InstalledSkillInfo",
-    "InstalledSkillsMetadata",
     "install_skill",
     "install_skills_from_marketplace",
     "uninstall_skill",
