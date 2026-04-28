@@ -67,10 +67,10 @@ def maybe_init_laminar():
     LMNR_GRPC_PORT=8001
 
     To force HTTP instead of gRPC for Laminar communication:
-    LMNR_USE_HTTP=true  # or 1, yes, on
+    LMNR_FORCE_HTTP=true  # or 1, yes, on
     """
     base_url = get_env("LMNR_BASE_URL") or None
-    force_http = _get_bool_env("LMNR_USE_HTTP")
+    force_http = _get_bool_env("LMNR_FORCE_HTTP")
 
     if should_enable_observability():
         if _is_otel_backend_laminar():

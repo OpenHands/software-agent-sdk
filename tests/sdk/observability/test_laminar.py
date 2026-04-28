@@ -165,7 +165,7 @@ def test_get_bool_env(env_value, expected):
 
 
 @pytest.mark.parametrize(
-    ("use_http_value", "expected_force_http"),
+    ("force_http_value", "expected_force_http"),
     [
         ("true", True),
         ("1", True),
@@ -174,17 +174,17 @@ def test_get_bool_env(env_value, expected):
         (None, False),
     ],
 )
-def test_lmnr_use_http_passed_to_laminar(use_http_value, expected_force_http):
-    """Test that LMNR_USE_HTTP is correctly passed to Laminar.initialize."""
+def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http):
+    """Test that LMNR_FORCE_HTTP is correctly passed to Laminar.initialize."""
     original_key = os.environ.get("LMNR_PROJECT_API_KEY")
-    original_use_http = os.environ.get("LMNR_USE_HTTP")
+    original_force_http = os.environ.get("LMNR_FORCE_HTTP")
 
     try:
         os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
-        if use_http_value is not None:
-            os.environ["LMNR_USE_HTTP"] = use_http_value
-        elif "LMNR_USE_HTTP" in os.environ:
-            del os.environ["LMNR_USE_HTTP"]
+        if force_http_value is not None:
+            os.environ["LMNR_FORCE_HTTP"] = force_http_value
+        elif "LMNR_FORCE_HTTP" in os.environ:
+            del os.environ["LMNR_FORCE_HTTP"]
 
         with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
             with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
@@ -204,7 +204,7 @@ def test_lmnr_use_http_passed_to_laminar(use_http_value, expected_force_http):
             os.environ["LMNR_PROJECT_API_KEY"] = original_key
         elif "LMNR_PROJECT_API_KEY" in os.environ:
             del os.environ["LMNR_PROJECT_API_KEY"]
-        if original_use_http is not None:
-            os.environ["LMNR_USE_HTTP"] = original_use_http
-        elif "LMNR_USE_HTTP" in os.environ:
-            del os.environ["LMNR_USE_HTTP"]
+        if original_force_http is not None:
+            os.environ["LMNR_FORCE_HTTP"] = original_force_http
+        elif "LMNR_FORCE_HTTP" in os.environ:
+            del os.environ["LMNR_FORCE_HTTP"]
