@@ -66,6 +66,10 @@ def register_tools():
     register_tool("TaskTrackerTool", TaskTrackerTool)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool directory resolution requires the Unix terminal backend.",
+)
 def test_resolve_tool_with_conversation_directories(test_agent):
     """Test that resolve_tool uses directories from conversation."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -80,13 +84,12 @@ def test_resolve_tool_with_conversation_directories(test_agent):
             workspace=working_dir,
         )
 
-        if sys.platform != "win32":
-            # Test TerminalTool
-            bash_tool = Tool(name="TerminalTool")
-            bash_tools = resolve_tool(bash_tool, conv_state=conversation._state)
-            assert len(bash_tools) == 1
-            work_dir = bash_tools[0].executor.working_dir  # type: ignore[attr-defined]
-            assert work_dir == working_dir
+        # Test TerminalTool
+        bash_tool = Tool(name="TerminalTool")
+        bash_tools = resolve_tool(bash_tool, conv_state=conversation._state)
+        assert len(bash_tools) == 1
+        work_dir = bash_tools[0].executor.working_dir  # type: ignore[attr-defined]
+        assert work_dir == working_dir
 
         # Test FileEditorTool
         editor_tool = Tool(name="FileEditorTool")

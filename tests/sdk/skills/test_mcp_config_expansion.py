@@ -71,6 +71,23 @@ class TestExpandMcpVariables:
             "/path/to/skill/scripts/server.py"
         )
 
+    def test_expand_windows_path_variables_preserves_backslashes(self):
+        """Windows paths must be expanded as values, not raw JSON fragments."""
+        config = {
+            "mcpServers": {
+                "test-server": {
+                    "command": "${SKILL_ROOT}\\scripts\\server.py",
+                }
+            }
+        }
+        variables = {"SKILL_ROOT": r"C:\Users\tester\skill"}
+
+        result = expand_mcp_variables(config, variables)
+
+        assert result["mcpServers"]["test-server"]["command"] == (
+            r"C:\Users\tester\skill\scripts\server.py"
+        )
+
     def test_expand_environment_variables(self):
         """Test expanding variables from environment."""
         os.environ["TEST_MCP_VAR"] = "env-value-123"

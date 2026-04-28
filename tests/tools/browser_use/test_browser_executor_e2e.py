@@ -140,11 +140,6 @@ def _wait_for_test_server(
     raise RuntimeError(f"Test HTTP server did not start within {timeout_seconds}s")
 
 
-def _skip_if_recording_unavailable(result: BrowserObservation) -> None:
-    if result.is_error or "Error" in result.text:
-        pytest.skip(f"Browser recording is unavailable: {result.text}")
-
-
 @pytest.fixture(scope="module")
 def test_server() -> Generator[str]:
     """Set up a local HTTP server for testing."""
@@ -723,7 +718,6 @@ class TestBrowserExecutorE2E:
         result = browser_executor(BrowserStartRecordingAction())
 
         assert isinstance(result, BrowserObservation)
-        _skip_if_recording_unavailable(result)
         assert not result.is_error
         assert "Recording started" in result.text
 
@@ -758,7 +752,6 @@ class TestBrowserExecutorE2E:
         start_result = browser_executor(BrowserStartRecordingAction())
 
         assert start_result is not None
-        _skip_if_recording_unavailable(start_result)
         assert not start_result.is_error
         assert "Recording started" in start_result.text
 
@@ -816,7 +809,6 @@ class TestBrowserExecutorE2E:
             start_result = executor(BrowserStartRecordingAction())
 
             assert start_result is not None
-            _skip_if_recording_unavailable(start_result)
 
             # Skip test if recording couldn't start due to CDP issues
             if "Error" in start_result.text or "not initialized" in start_result.text:

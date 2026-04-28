@@ -10,6 +10,7 @@ These tests aim to be a behavioral spec for conversation restore:
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -39,11 +40,17 @@ from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 from tests.conftest import create_mock_litellm_response
 
 
-register_tool("TaskTrackerTool", TaskTrackerTool)
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool restore tests require the Unix terminal backend.",
+)
+
+
+register_tool("TerminalTool", TerminalTool)
 register_tool("FileEditorTool", FileEditorTool)
 
 
@@ -201,7 +208,7 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        persisted_tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        persisted_tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=persisted_tools,
@@ -214,7 +221,7 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
 
         # Tool *ordering* is intentionally different from persisted_tools; restore
         # should be order-insensitive as long as the toolset is identical.
-        runtime_tools = [Tool(name="FileEditorTool"), Tool(name="TaskTrackerTool")]
+        runtime_tools = [Tool(name="FileEditorTool"), Tool(name="TerminalTool")]
         runtime_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=runtime_tools,
@@ -245,19 +252,19 @@ def test_conversation_restore_preserves_security_risk_and_summary(mock_completio
     """Restore should preserve action metadata derived from tool call arguments."""
 
     tool_arguments = {
-        "command": "view",
+        "command": "printf 'hello from restore test\\n'",
         "security_risk": "LOW",
-        "summary": "View the task tracker",
+        "summary": "Print hello from terminal",
     }
 
     responses = [
         _tool_call_response(
-            tool_name="task_tracker",
+            tool_name="terminal",
             arguments=tool_arguments,
             response_id="response_action",
         ),
         create_mock_litellm_response(
-            content="The task tracker command finished.",
+            content="The terminal command finished.",
             response_id="response_follow_up",
             finish_reason="stop",
         ),
@@ -282,7 +289,7 @@ def test_conversation_restore_preserves_security_risk_and_summary(mock_completio
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        persisted_tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        persisted_tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=persisted_tools,
@@ -295,12 +302,12 @@ def test_conversation_restore_preserves_security_risk_and_summary(mock_completio
         try:
             lifecycle.conversation_id = persisted.id
             persisted.set_security_analyzer(LLMSecurityAnalyzer())
-            lifecycle.send_and_run(persisted, "Use the task tracker tool once")
+            lifecycle.send_and_run(persisted, "Use the terminal tool once")
             initial_event_count = len(persisted.state.events)
         finally:
             persisted.close()
 
-        runtime_tools = [Tool(name="FileEditorTool"), Tool(name="TaskTrackerTool")]
+        runtime_tools = [Tool(name="FileEditorTool"), Tool(name="TerminalTool")]
         runtime_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=runtime_tools,
@@ -361,7 +368,7 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        persisted_tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        persisted_tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=persisted_tools,
@@ -373,7 +380,7 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
 
         runtime_agent = _agent(
             llm_model="gpt-4o-mini",
-            tools=[Tool(name="TaskTrackerTool")],
+            tools=[Tool(name="TerminalTool")],
             condenser_max_size=80,
             skill_name="skill-v1",
             skill_keyword="alpha",
@@ -408,7 +415,7 @@ def test_conversation_restore_succeeds_when_adding_tools(mock_completion):
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        persisted_tools = [Tool(name="TaskTrackerTool")]
+        persisted_tools = [Tool(name="TerminalTool")]
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=persisted_tools,
@@ -420,7 +427,7 @@ def test_conversation_restore_succeeds_when_adding_tools(mock_completion):
 
         runtime_agent = _agent(
             llm_model="gpt-4o-mini",
-            tools=[Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")],
+            tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")],
             condenser_max_size=80,
             skill_name="skill-v1",
             skill_keyword="alpha",
@@ -447,7 +454,7 @@ def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=tools,
@@ -490,7 +497,7 @@ def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=tools,
@@ -539,7 +546,7 @@ def test_conversation_restore_succeeds_when_default_tools_added(mock_completion)
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
             tools=tools,
@@ -582,7 +589,7 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
 
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",
@@ -645,7 +652,7 @@ def test_restore_reasoning_effort_none_strips_temperature(mock_completion):
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        tools = [Tool(name="TaskTrackerTool"), Tool(name="FileEditorTool")]
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
 
         persisted_agent = _agent(
             llm_model="gpt-4o-mini",

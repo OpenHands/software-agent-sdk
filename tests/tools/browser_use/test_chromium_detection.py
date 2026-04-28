@@ -169,9 +169,7 @@ class TestChromiumDetection:
 
     def test_check_chromium_available_playwright_windows(self):
         """Test detection of Playwright-installed Chromium on Windows."""
-        from openhands.tools.browser_use.impl_windows import WindowsBrowserToolExecutor
-
-        executor = WindowsBrowserToolExecutor.__new__(WindowsBrowserToolExecutor)
+        executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         mock_cache_dir = Path("C:/Users/user/AppData/Local/ms-playwright")
         mock_chromium_dir = mock_cache_dir / "chromium-1234"
         mock_chrome_path = mock_chromium_dir / "chrome-win64" / "chrome.exe"

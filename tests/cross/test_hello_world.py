@@ -1,12 +1,13 @@
 """Test based on hello_world.py example with mocked LLM responses."""
 
-import json
 import logging
 import os
+import sys
 import tempfile
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from pydantic import SecretStr
 
@@ -27,6 +28,13 @@ from openhands.sdk.event.llm_convertible import (
 )
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Hello-world cross tests include TerminalTool until PowerShell follow-up.",
+)
 
 
 class TestHelloWorld:
@@ -95,13 +103,6 @@ class TestHelloWorld:
         """Create mock LLM responses that simulate the agent's behavior."""
         # Use absolute path in temp directory
         hello_path = os.path.join(self.temp_dir, "hello.py")
-        file_editor_arguments = json.dumps(
-            {
-                "command": "create",
-                "path": hello_path,
-                "file_text": 'print("Hello, World!")',
-            }
-        )
 
         # First response: Agent decides to create the file
         first_response = ModelResponse(
@@ -119,7 +120,9 @@ class TestHelloWorld:
                                 "type": "function",
                                 "function": {
                                     "name": "file_editor",
-                                    "arguments": file_editor_arguments,
+                                    "arguments": f'{{"command": "create", '
+                                    f'"path": "{hello_path}", '
+                                    f'"file_text": "print(\\"Hello, World!\\")"}}',
                                 },
                             }
                         ],
@@ -170,8 +173,12 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
+        register_tool("terminal", TerminalTool)
         register_tool("file_editor", FileEditorTool)
-        tools = [Tool(name="file_editor")]
+        tools = [
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
+        ]
 
         # Agent setup
         agent = Agent(llm=llm, tools=tools)
@@ -286,8 +293,12 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
+        register_tool("terminal", TerminalTool)
         register_tool("file_editor", FileEditorTool)
-        tools = [Tool(name="file_editor")]
+        tools = [
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
+        ]
 
         # Create agent and conversation
         agent = Agent(llm=llm, tools=tools)
