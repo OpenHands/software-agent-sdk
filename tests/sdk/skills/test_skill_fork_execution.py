@@ -20,7 +20,7 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
-from openhands.sdk.skills.fork import run_skill_forked
+from openhands.sdk.skills.fork import build_fork_resolver, run_skill_forked
 from openhands.sdk.testing import TestLLM
 
 
@@ -106,14 +106,13 @@ def test_dispatch_calls_fork_only_for_fork_context(context, expect_fork_called):
     ctx = _make_context(skill)
 
     with patch(
-        "openhands.sdk.context.agent_context.run_skill_forked",
+        "openhands.sdk.skills.fork.run_skill_forked",
         return_value="subagent result",
     ) as mock_fork:
         result = ctx.get_user_message_suffix(
             user_message=_user_message("datadog debug"),
             skip_skill_names=[],
-            agent=MagicMock(),
-            working_dir="/workspace",
+            resolve_skill_content=build_fork_resolver(MagicMock(), "/workspace", None),
         )
 
     assert mock_fork.called == expect_fork_called
@@ -127,11 +126,6 @@ def test_dispatch_calls_fork_only_for_fork_context(context, expect_fork_called):
         assert "raw content" in content.text
 
 
-@pytest.fixture
-def mock_agent():
-    return MagicMock()
-
-
 @pytest.mark.parametrize(
     "persistence_dir",
     [None, "/state/abc123"],
@@ -142,15 +136,15 @@ def test_fork_skill_persistence_dir_forwarded(persistence_dir):
     ctx = _make_context(skill)
 
     with patch(
-        "openhands.sdk.context.agent_context.run_skill_forked",
+        "openhands.sdk.skills.fork.run_skill_forked",
         return_value="result",
     ) as mock_fork:
         ctx.get_user_message_suffix(
             user_message=_user_message("datadog debug"),
             skip_skill_names=[],
-            agent=MagicMock(),
-            working_dir="/workspace",
-            persistence_dir=persistence_dir,
+            resolve_skill_content=build_fork_resolver(
+                MagicMock(), "/workspace", persistence_dir
+            ),
         )
 
     args, _ = mock_fork.call_args
@@ -191,26 +185,17 @@ def test_fork_persistence_dir_path_construction(persistence_dir, skill_name, exp
     assert conv_kwargs.get("persistence_dir") == expected
 
 
-@pytest.mark.parametrize(
-    "working_dir, use_agent",
-    [
-        (None, False),  # no agent, no working_dir
-        ("/workspace", False),  # working_dir but no agent
-        (None, True),  # agent but no working_dir
-    ],
-)
-def test_fork_skill_fallback_when_agent_or_working_dir_missing(
-    mock_agent, working_dir, use_agent
-):
+def test_fork_skill_inlines_when_no_resolver_passed():
+    """Without a resolve_skill_content callback, AgentContext doesn't know about
+    forks and just inlines raw skill.content — even for context='fork' skills.
+    Fork dispatch is the caller's responsibility (LocalConversation's resolver)."""
     skill = _fork_skill(content="inline fallback content")
     ctx = _make_context(skill)
 
-    with patch("openhands.sdk.context.agent_context.run_skill_forked") as mock_fork:
+    with patch("openhands.sdk.skills.fork.run_skill_forked") as mock_fork:
         result = ctx.get_user_message_suffix(
             user_message=_user_message("datadog debug"),
             skip_skill_names=[],
-            agent=mock_agent if use_agent else None,
-            working_dir=working_dir,
         )
 
     mock_fork.assert_not_called()

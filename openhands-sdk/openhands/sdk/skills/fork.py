@@ -75,6 +75,26 @@ def _fork_persistence_dir(
     return str(Path(persistence_dir) / "forks" / safe_name)
 
 
+def build_fork_resolver(
+    agent: AgentBase,
+    working_dir: str,
+    persistence_dir: str | None,
+):
+    """Resolve triggered-skill content, forking a subagent for ``context='fork'``.
+
+    Returned callable matches ``Callable[[Skill], str]`` — suitable for passing
+    as ``resolve_skill_content`` to ``AgentContext.get_user_message_suffix``.
+    """
+
+    def resolve(skill: Skill) -> str:
+        if skill.context != "fork":
+            return skill.content
+        logger.info("Skill ‘%s’ running as forked subagent", skill.name)
+        return run_skill_forked(skill, agent, working_dir, persistence_dir)
+
+    return resolve
+
+
 def run_skill_forked(
     skill: Skill,
     agent: AgentBase,

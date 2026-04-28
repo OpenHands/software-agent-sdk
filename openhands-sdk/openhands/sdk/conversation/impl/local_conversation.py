@@ -53,6 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills.fork import build_fork_resolver
 from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -701,9 +702,11 @@ class LocalConversation(BaseConversation):
                     user_message=message,
                     # We skip skills that were already activated
                     skip_skill_names=self._state.activated_knowledge_skills,
-                    agent=self.agent,
-                    working_dir=str(self.workspace.working_dir),
-                    persistence_dir=self._state.persistence_dir,
+                    resolve_skill_content=build_fork_resolver(
+                        self.agent,
+                        str(self.workspace.working_dir),
+                        self._state.persistence_dir,
+                    ),
                 )
                 # TODO(calvin): we need to update
                 # self._state.activated_knowledge_skills
