@@ -174,7 +174,8 @@ def main(files: list[str] | None = None) -> int:
     for file_path in files_to_check:
         # Check if this is a special file
         rel_path = file_path.relative_to(repo_root)
-        is_special = any(special in str(rel_path) for special in special_files)
+        rel_path_posix = rel_path.as_posix()
+        is_special = any(special in rel_path_posix for special in special_files)
 
         errors = check_tool_registration(file_path, is_special_file=is_special)
         if errors:

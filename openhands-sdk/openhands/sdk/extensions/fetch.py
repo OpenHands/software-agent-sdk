@@ -30,12 +30,6 @@ class SourceType(StrEnum):
     GITHUB = "github"
 
 
-def _is_local_path_source(source: str) -> bool:
-    if source.startswith("."):
-        return True
-    return is_local_path_source(source)
-
-
 def parse_extension_source(source: str) -> tuple[SourceType, str]:
     """Parse extension source into (SourceType, url).
 
@@ -82,7 +76,7 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
 
     # Local path: starts with /, ~, ., is Windows-absolute, or contains a
     # path separator without a URL scheme.
-    if _is_local_path_source(source):
+    if is_local_path_source(source):
         return (SourceType.LOCAL, source)
 
     if "/" in source and "://" not in source:

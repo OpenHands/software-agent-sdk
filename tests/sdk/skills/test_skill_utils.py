@@ -1,6 +1,5 @@
 """Tests for the skill system."""
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -15,16 +14,10 @@ from openhands.sdk.context import (
 )
 from openhands.sdk.skills.utils import find_third_party_files
 from openhands.sdk.utils.path import to_posix_path
+from tests.path_utils import symlink_or_skip
 
 
 CONTENT = "# dummy header\ndummy content\n## dummy subheader\ndummy subcontent\n"
-
-
-def _symlink_or_skip(source: Path, link_name: Path) -> None:
-    try:
-        os.symlink(source, link_name)
-    except OSError as e:
-        pytest.skip(f"symlinks are not available in this environment: {e}")
 
 
 def test_legacy_micro_agent_load(tmp_path):
@@ -757,7 +750,7 @@ def test_find_third_party_files_skips_symlink_duplicates(tmp_path):
     agents_md = tmp_path / "AGENTS.md"
     agents_md.write_text("# My repo guide")
     claude_md = tmp_path / "CLAUDE.md"
-    _symlink_or_skip(agents_md, claude_md)
+    symlink_or_skip(agents_md, claude_md)
 
     files = find_third_party_files(tmp_path, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME)
 
@@ -770,7 +763,7 @@ def test_load_project_skills_symlinked_claude_to_agents(tmp_path):
     agents_md = tmp_path / "AGENTS.md"
     agents_md.write_text("# My repo guide\nShared instructions.")
     claude_md = tmp_path / "CLAUDE.md"
-    _symlink_or_skip(agents_md, claude_md)
+    symlink_or_skip(agents_md, claude_md)
 
     skills = load_project_skills(tmp_path)
 

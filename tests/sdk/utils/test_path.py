@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from openhands.sdk.utils.path import (
+    is_absolute_path_source,
     is_local_path_source,
     posix_path_name,
     to_posix_path,
@@ -35,3 +36,12 @@ def test_is_local_path_source_detects_backslash_path_syntax():
 def test_is_local_path_source_detects_dot_paths():
     assert is_local_path_source(".")
     assert is_local_path_source("..")
+    assert is_local_path_source(".openhands")
+
+
+def test_is_absolute_path_source_detects_posix_and_windows_paths():
+    assert is_absolute_path_source("/workspace/file.py")
+    assert is_absolute_path_source(r"\workspace\file.py")
+    assert is_absolute_path_source(r"C:\workspace\file.py")
+    assert not is_absolute_path_source("relative/file.py")
+    assert not is_absolute_path_source(r"relative\file.py")

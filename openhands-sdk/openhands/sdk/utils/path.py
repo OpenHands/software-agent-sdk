@@ -27,6 +27,19 @@ def posix_path_name(path: str | os.PathLike[str]) -> str:
     return normalized.rsplit("/", 1)[-1] if normalized else ""
 
 
+def is_absolute_path_source(path: str | os.PathLike[str]) -> bool:
+    """Return whether ``path`` is absolute in POSIX or Windows syntax."""
+
+    value = os.fspath(path).strip()
+    if not value:
+        return False
+    if value.startswith(("/", "\\")):
+        return True
+    if Path(value).expanduser().is_absolute():
+        return True
+    return PureWindowsPath(value).is_absolute()
+
+
 def is_local_path_source(source: str) -> bool:
     """Return whether a plugin/skill source is a local filesystem path.
 
@@ -38,12 +51,8 @@ def is_local_path_source(source: str) -> bool:
     value = source.strip()
     if not value:
         return False
-    if value in {".", ".."}:
+    if value.startswith(("file://", "~", ".")):
         return True
-    if value.startswith(("file://", "~", "/", "./", "../")):
-        return True
-    if Path(value).expanduser().is_absolute():
-        return True
-    if PureWindowsPath(value).is_absolute():
+    if is_absolute_path_source(value):
         return True
     return "\\" in value and _URL_SCHEME_RE.match(value) is None

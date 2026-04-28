@@ -1,5 +1,6 @@
 """Test agent loading (conversation restart) behavior."""
 
+import sys
 import tempfile
 import uuid
 from unittest.mock import patch
@@ -19,10 +20,16 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import get_default_agent
-from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 
 
-register_tool("TaskTrackerTool", TaskTrackerTool)
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool restore tests require the Unix terminal backend.",
+)
+
+
+register_tool("TerminalTool", TerminalTool)
 register_tool("FileEditorTool", FileEditorTool)
 
 
@@ -122,7 +129,7 @@ def test_conversation_fails_when_removing_tools():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with original agent having 2 tools
         original_tools = [
-            Tool(name="TaskTrackerTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -145,7 +152,7 @@ def test_conversation_fails_when_removing_tools():
         del conversation
 
         # Resume with only one tool - should FAIL (tools must match exactly)
-        reduced_tools = [Tool(name="TaskTrackerTool")]  # Removed FileEditorTool
+        reduced_tools = [Tool(name="TerminalTool")]  # Removed FileEditorTool
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -172,7 +179,7 @@ def test_conversation_succeeds_when_adding_tools():
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with only one tool
-        original_tools = [Tool(name="TaskTrackerTool")]
+        original_tools = [Tool(name="TerminalTool")]
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -194,7 +201,7 @@ def test_conversation_succeeds_when_adding_tools():
 
         # Resume with additional tools - should SUCCEED (adding tools is allowed)
         expanded_tools = [
-            Tool(name="TaskTrackerTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),  # New tool added
         ]
         llm2 = LLM(
@@ -224,7 +231,7 @@ def test_conversation_fails_when_used_tool_is_missing():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with two tools
         original_tools = [
-            Tool(name="TaskTrackerTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -241,16 +248,16 @@ def test_conversation_fails_when_used_tool_is_missing():
         # Initialize the agent to get actual tool definitions
         conversation.agent.init_state(conversation.state, lambda e: None)
 
-        # Simulate that TaskTrackerTool was used by adding an ActionEvent
+        # Simulate that TerminalTool was used by adding an ActionEvent
         from openhands.sdk.llm import MessageToolCall, TextContent
 
         action_event = ActionEvent(
-            tool_name="TaskTrackerTool",
+            tool_name="TerminalTool",
             tool_call_id="test-call-1",
             thought=[TextContent(text="Running a command")],
             tool_call=MessageToolCall(
                 id="test-call-1",
-                name="TaskTrackerTool",
+                name="TerminalTool",
                 arguments="{}",
                 origin="completion",
             ),
@@ -261,8 +268,8 @@ def test_conversation_fails_when_used_tool_is_missing():
         conversation_id = conversation.state.id
         del conversation
 
-        # Try to resume WITHOUT TaskTrackerTool - should fail
-        reduced_tools = [Tool(name="FileEditorTool")]  # Missing TaskTrackerTool
+        # Try to resume WITHOUT TerminalTool - should fail
+        reduced_tools = [Tool(name="FileEditorTool")]  # Missing TerminalTool
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -284,7 +291,7 @@ def test_conversation_with_same_agent_succeeds():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation
         tools = [
-            Tool(name="TaskTrackerTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -311,7 +318,7 @@ def test_conversation_with_same_agent_succeeds():
 
         # Create new conversation with same agent configuration
         same_tools = [
-            Tool(name="TaskTrackerTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm2 = LLM(
@@ -336,7 +343,7 @@ def test_conversation_with_different_llm_succeeds():
     """Test that using an agent with different LLM succeeds (LLM can change)."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation with original agent
-        tools = [Tool(name="TaskTrackerTool")]
+        tools = [Tool(name="TerminalTool")]
         llm1 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -389,7 +396,7 @@ def test_conversation_fails_when_agent_type_changes():
     snapshot can be deserialized; otherwise, Pydantic rejects local classes.
     """
 
-    tools = [Tool(name="TaskTrackerTool")]
+    tools = [Tool(name="TerminalTool")]
 
     llm1 = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="llm")
     llm2 = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="llm")
@@ -427,7 +434,7 @@ def test_conversation_persistence_lifecycle(mock_completion):
 
     with tempfile.TemporaryDirectory() as temp_dir:
         tools = [
-            Tool(name="TaskTrackerTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -506,7 +513,7 @@ def test_conversation_resume_overrides_agent_llm_but_preserves_state_settings():
     from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        tools = [Tool(name="TaskTrackerTool")]
+        tools = [Tool(name="TerminalTool")]
 
         # Initial agent (persisted snapshot contains this agent config, but on resume
         # we should use the runtime-provided agent).
@@ -583,7 +590,7 @@ def test_conversation_restart_with_different_agent_context():
         )
 
         tools = [
-            Tool(name="TaskTrackerTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
